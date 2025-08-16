@@ -1,0 +1,72 @@
+name: iOS CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Xcode (latest stable)
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Developer/Xcode/DerivedData
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Install xcpretty
+        run: sudo gem install xcpretty --no-document
+
+      - name: Resolve dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj -scheme PayBack
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project PayBack.xcodeproj \
+            -scheme PayBack \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,OS=latest,name=iPhone 15' \
+            clean build | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Test
+        run: |
+          xcodebuild \
+            -project PayBack.xcodeproj \
+            -scheme PayBack \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,OS=latest,name=iPhone 15' \
+            test | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Install SwiftLint
+        run: |
+          brew update
+          brew install swiftlint || true
+
+      - name: Run SwiftLint (non-failing)
+        run: swiftlint lint || true
+
