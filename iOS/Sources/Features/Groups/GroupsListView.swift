@@ -5,48 +5,49 @@ struct GroupsListView: View {
     @State private var showCreate = false
 
     var body: some View {
-        NavigationStack {
-            SwiftUI.Group {
-                if store.groups.isEmpty {
-                    EmptyStateView("No Groups", systemImage: "person.3", description: "Create a group to start splitting")
-                        .padding(.horizontal)
-                } else {
-                    List {
-                        ForEach(store.groups) { group in
-                            NavigationLink(value: group.id) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(group.name).font(.headline)
-                                    Text("\(group.members.count) members")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(.vertical, 6)
-                            }
-                        }
-                        .onDelete(perform: store.deleteGroups)
+        SwiftUI.Group {
+            if store.groups.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        EmptyStateView("No Groups", systemImage: "person.3", description: "Create a group to start splitting")
+                            .padding(.horizontal)
+                            .padding(.top, AppMetrics.emptyStateTopPadding)
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
+                    .frame(maxWidth: .infinity, alignment: .top)
                 }
-            }
-            .navigationTitle("Groups")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) { EditButton() }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showCreate = true
-                    } label: { Image(systemName: "plus") }
+            } else {
+                List {
+                    ForEach(store.groups.filter { !($0.isDirect ?? false) }) { group in
+                        NavigationLink(value: group.id) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(group.name).font(.headline)
+                                Text("\(group.members.count) members")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, AppMetrics.listRowVerticalPadding)
+                        }
+                        .listRowSeparator(.hidden)
+                    }
+                    .onDelete(perform: store.deleteGroups)
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(AppTheme.background)
             }
-            .navigationDestination(for: UUID.self) { id in
-                if let group = store.group(by: id) {
-                    GroupDetailView(group: group)
-                }
-            }
-            .sheet(isPresented: $showCreate) {
-                CreateGroupView()
-                    .environmentObject(store)
-            }
-            .background(AppTheme.background.ignoresSafeArea())
         }
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(for: UUID.self) { id in
+            if let group = store.group(by: id) {
+                GroupDetailView(group: group)
+            }
+        }
+        .sheet(isPresented: $showCreate) {
+            CreateGroupView()
+                .environmentObject(store)
+        }
+        .background(AppTheme.background.ignoresSafeArea())
     }
 }
 

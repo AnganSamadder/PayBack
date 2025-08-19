@@ -15,12 +15,15 @@ struct SpendingGroup: Identifiable, Codable, Hashable {
     var name: String
     var members: [GroupMember]
     var createdAt: Date
+    // Direct person-to-person group if true; hidden from regular Groups list
+    var isDirect: Bool?
 
-    init(id: UUID = UUID(), name: String, members: [GroupMember]) {
+    init(id: UUID = UUID(), name: String, members: [GroupMember], isDirect: Bool? = false) {
         self.id = id
         self.name = name
         self.members = members
         self.createdAt = Date()
+        self.isDirect = isDirect
     }
 }
 

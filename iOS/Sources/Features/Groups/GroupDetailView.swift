@@ -33,12 +33,17 @@ struct GroupDetailView: View {
                 } else {
                     ForEach(items) { exp in
                         expenseRow(exp)
+                            .listRowSeparator(.hidden)
                     }
                     .onDelete { idx in store.deleteExpenses(groupId: group.id, at: idx) }
                 }
             }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(AppTheme.background)
         .navigationTitle(group.name)
+        .toolbar(.automatic, for: .navigationBar)
         .sheet(isPresented: $showAddExpense) {
             AddExpenseView(group: group)
                 .environmentObject(store)
@@ -67,7 +72,7 @@ struct GroupDetailView: View {
             Text(exp.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                 .font(.headline)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, AppMetrics.listRowVerticalPadding)
     }
 
     private func balanceText(for member: GroupMember) -> String {

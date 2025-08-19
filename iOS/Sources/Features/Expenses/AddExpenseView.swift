@@ -12,17 +12,24 @@ struct AddExpenseView: View {
     @Environment(\.dismiss) var dismiss
 
     let group: SpendingGroup
+    let onClose: (() -> Void)?
     @State private var descriptionText: String = ""
     @State private var amountText: String = ""
+    @State private var currency: String = Locale.current.currency?.identifier ?? "USD"
+    @State private var rates: [String: Double] = [:]
     @State private var date: Date = Date()
     @State private var payerId: UUID
     @State private var involvedIds: Set<UUID>
     @State private var mode: SplitMode = .equal
     @State private var percents: [UUID: Double] = [:]
     @State private var manualAmounts: [UUID: Double] = [:]
+    @State private var showNotesSheet: Bool = false
+    @State private var showSaveConfirm: Bool = false
+    @State private var dragOffset: CGFloat = 0
 
-    init(group: SpendingGroup) {
+    init(group: SpendingGroup, onClose: (() -> Void)? = nil) {
         self.group = group
+        self.onClose = onClose
         _payerId = State(initialValue: group.members.first?.id ?? UUID())
         _involvedIds = State(initialValue: Set(group.members.map(\.id)))
     }
@@ -31,93 +38,101 @@ struct AddExpenseView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    // Hero card with big amount and title
-                    VStack(spacing: 12) {
-                        TextField("What did you buy?", text: $descriptionText)
-                            .multilineTextAlignment(.center)
-                            .font(.system(size: 22, weight: .semibold))
-                            .textInputAutocapitalization(.words)
-                            .submitLabel(.done)
+            ZStack {
+                AppTheme.brand.ignoresSafeArea()
+                VStack(spacing: AppMetrics.AddExpense.verticalStackSpacing) {
+                Spacer(minLength: AppMetrics.AddExpense.topSpacerMinLength)
 
-                        AmountField(text: $amountText)
-                    }
-                    .padding(20)
-                    .frame(maxWidth: .infinity)
-                    .background(AppTheme.card)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                Text("Add Expense")
+                    .font(.system(size: AppMetrics.headerTitleFontSize, weight: .bold))
+                    .foregroundStyle(.white)
 
-                    // Date and payer row
-                    VStack(spacing: 12) {
-                        DatePicker("Date", selection: $date, displayedComponents: .date)
-                            .datePickerStyle(.compact)
-                        HStack {
-                            Text("Paid by")
-                            Spacer()
-                            Picker("Paid by", selection: $payerId) {
-                                ForEach(group.members) { m in
-                                    Text(m.name).tag(m.id)
-                                }
-                            }
-                            .labelsHidden()
-                        }
-                    }
-                    .padding(16)
-                    .background(AppTheme.card)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                CenterEntryBubble(
+                    descriptionText: $descriptionText,
+                    amountText: $amountText,
+                    currency: $currency,
+                    rates: $rates
+                )
+                .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
 
-                    // Participants
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Participants").font(.headline)
-                        ForEach(group.members) { m in
-                            Toggle(isOn: Binding(
-                                get: { involvedIds.contains(m.id) },
-                                set: { newValue in
-                                    if newValue { involvedIds.insert(m.id) } else { involvedIds.remove(m.id) }
-                                }
-                            )) {
-                                Text(m.name)
-                            }
-                        }
-                    }
-                    .padding(16)
-                    .background(AppTheme.card)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                PaidSplitBubble(
+                    group: group,
+                    payerId: $payerId,
+                    involvedIds: $involvedIds,
+                    mode: $mode,
+                    percents: $percents,
+                    manualAmounts: $manualAmounts,
+                    totalAmount: totalAmount
+                )
+                .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
 
-                    // Split mode
-                    VStack(alignment: .leading, spacing: 12) {
-                        Picker("Mode", selection: $mode) {
-                            ForEach(SplitMode.allCases) { m in
-                                Text(m.rawValue).tag(m)
-                            }
-                        }
-                        .pickerStyle(.segmented)
+                Spacer()
 
-                        switch mode {
-                        case .equal:
-                            EqualSplitView(total: totalAmount, participants: participants)
-                        case .percent:
-                            PercentSplitView(total: totalAmount, participants: participants, percents: $percents)
-                        case .manual:
-                            ManualSplitView(total: totalAmount, participants: participants, manualAmounts: $manualAmounts)
-                        }
-                    }
-                    .padding(16)
-                    .background(AppTheme.card)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                BottomMetaBubble(group: group, date: $date, showNotes: $showNotesSheet)
+                    .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
+                    .padding(.bottom, AppMetrics.AddExpense.bottomInnerPadding)
+                    .padding(.horizontal)
                 }
-                .padding()
+                .padding(.horizontal)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(AppTheme.brand)
+                .navigationTitle("")
             }
-            .background(AppTheme.background.ignoresSafeArea())
-            .navigationTitle("Add Expense")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save", action: save)
-                        .disabled(totalAmount <= 0 || descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || participants.isEmpty)
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: { close() }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: AppMetrics.AddExpense.topBarIconSize, weight: .semibold))
+                        .foregroundStyle(.white)
                 }
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: { dismiss() }) }
             }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button(action: { showSaveConfirm = true }) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: AppMetrics.AddExpense.topBarIconSize, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .disabled(totalAmount <= 0 || descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || participants.isEmpty)
+            }
+        }
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .tint(.white)
+        .background(Color.clear)
+        .contentShape(Rectangle())
+        .offset(y: dragOffset)
+        .overlay(
+            RoundedRectangle(cornerRadius: min(AppMetrics.AddExpense.dragCornerMax, max(0, dragOffset / 12)), style: .continuous)
+                .strokeBorder(Color.white.opacity(dragOffset > 0 ? 0.06 : 0), lineWidth: dragOffset > 0 ? 1 : 0)
+        )
+        .mask(
+            RoundedRectangle(cornerRadius: min(AppMetrics.AddExpense.dragCornerMax, max(0, dragOffset / 12)), style: .continuous)
+                .padding(.horizontal, min(AppMetrics.AddExpense.dragEdgePaddingMax, max(0, dragOffset / 25)))
+        )
+        .padding(.horizontal, min(AppMetrics.AddExpense.dragEdgePaddingMax, max(0, dragOffset / 25)))
+        .compositingGroup()
+        .ignoresSafeArea(edges: .top)
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 10)
+                .onChanged { value in
+                    let dy = value.translation.height
+                    dragOffset = max(0, dy)
+                }
+                .onEnded { value in
+                    if dragOffset > AppMetrics.AddExpense.dragThreshold {
+                        close()
+                    } else if value.translation.height < -AppMetrics.AddExpense.dragThreshold {
+                        showSaveConfirm = true
+                    } else {
+                        withAnimation(AppAnimation.springy) { dragOffset = 0 }
+                    }
+                }
+        )
+        .alert("Save expense?", isPresented: $showSaveConfirm) {
+            Button("Save") { save() }
+            Button("Cancel", role: .cancel) { }
         }
     }
 
@@ -168,7 +183,11 @@ struct AddExpenseView: View {
             splits: splits
         )
         store.addExpense(expense)
-        dismiss()
+        close()
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 }
 
@@ -176,7 +195,7 @@ private struct AmountField: View {
     @Binding var text: String
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: AppMetrics.AddExpense.paidSplitRowSpacing) {
             Text("Amount")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -185,7 +204,7 @@ private struct AmountField: View {
                 set: { newVal in text = sanitize(newVal) }
             ))
             .multilineTextAlignment(.center)
-            .font(.system(size: 36, weight: .bold, design: .rounded))
+            .font(.system(size: AppMetrics.AddExpense.amountFontSize, weight: .bold, design: .rounded))
             .keyboardType(.decimalPad)
         }
     }
@@ -212,6 +231,414 @@ private struct AmountField: View {
     private func formatted(_ raw: String) -> String {
         // Avoid aggressive reformatting while typing; just return raw
         raw
+    }
+}
+
+// MARK: - Center Entry Bubble
+private struct CenterEntryBubble: View {
+    @Binding var descriptionText: String
+    @Binding var amountText: String
+    @Binding var currency: String
+    @Binding var rates: [String: Double]
+
+    private let supported = ["USD","EUR","GBP","JPY","INR","CAD","AUD","BTC","ETH"]
+
+    var body: some View {
+        // Metrics
+        let descriptionRowHeight: CGFloat = AppMetrics.AddExpense.descriptionRowHeight
+        let amountRowHeight: CGFloat = AppMetrics.AddExpense.amountRowHeight
+        let leftColumnWidth: CGFloat = AppMetrics.AddExpense.leftColumnWidth
+
+        return VStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
+            // Description row
+            HStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
+                // Smaller rounded teal square icon inside the bubble
+                // 1:1 teal square (scaled up version of the bottom icon style)
+                RoundedRectangle(cornerRadius: AppMetrics.AddExpense.iconCornerRadius, style: .continuous)
+                    .fill(AppTheme.brand)
+                    .overlay(
+                        SmartIconView(text: descriptionText, size: descriptionRowHeight - (AppMetrics.AddExpense.iconCornerRadius * 1.5), showBackground: false, foreground: .white)
+                    )
+                    .frame(width: leftColumnWidth, height: leftColumnWidth)
+
+                ZStack {
+                    Color.clear
+                    TextField("Description", text: $descriptionText)
+                        .multilineTextAlignment(.center)
+                        .font(.system(size: AppMetrics.AddExpense.descriptionFontSize, weight: .semibold))
+                        .textInputAutocapitalization(.words)
+                }
+                .frame(height: descriptionRowHeight)
+                .frame(maxWidth: .infinity)
+            }
+
+            // Amount row
+            HStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
+                Menu {
+                    ForEach(supported, id: \.self) { code in
+                        Button(code) { Task { await select(code) } }
+                    }
+                } label: {
+                    // 1:1 teal square currency (scaled up, consistent with top)
+                    RoundedRectangle(cornerRadius: AppMetrics.AddExpense.iconCornerRadius, style: .continuous)
+                        .fill(AppTheme.brand)
+                        .overlay(
+                            CurrencySymbolIcon(code: currency, size: leftColumnWidth * AppMetrics.AddExpense.currencyGlyphScale, foreground: .white)
+                        )
+                        .frame(width: leftColumnWidth, height: leftColumnWidth)
+                }
+
+                ZStack {
+                    Color.clear
+                    AmountField(text: $amountText)
+                }
+                .frame(height: amountRowHeight)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(AppMetrics.AddExpense.centerInnerPadding)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: AppMetrics.AddExpense.centerCornerRadius, style: .continuous))
+        .shadow(color: .black.opacity(0.1), radius: AppMetrics.AddExpense.centerShadowRadius, y: 4)
+        .padding(AppMetrics.AddExpense.centerOuterPadding)
+        .task { await select(currency) }
+    }
+
+    private func select(_ code: String) async {
+        currency = code
+        if ["BTC","ETH"].contains(code) {
+            rates = ["USD": (code == "BTC" ? 1.0/60000.0 : 1.0/3000.0)]
+        } else {
+            do { rates = try await CurrencyService.shared.fetchRates(base: code) } catch { rates = [:] }
+        }
+    }
+}
+
+private struct SmartIconView: View {
+    let text: String
+    var size: CGFloat = 60        // glyph box size
+    var showBackground: Bool = false
+    var foreground: Color = .white
+    var body: some View {
+        let icon = SmartIcon.icon(for: text)
+        ZStack {
+            if showBackground {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(icon.background)
+            }
+            Image(systemName: icon.systemName)
+                .font(.system(size: size * AppMetrics.AddExpense.smartIconGlyphScale, weight: .bold))
+                .foregroundStyle(showBackground ? icon.foreground : foreground)
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct CurrencySymbolIcon: View {
+    let code: String
+    var size: CGFloat = 32
+    var foreground: Color = .white
+    var body: some View {
+        if let name = sfName(for: code), UIImage(systemName: name) != nil {
+            Image(systemName: name)
+                .font(.system(size: size, weight: .bold))
+                .foregroundStyle(foreground)
+        } else {
+            Text(code)
+                .font(.system(size: max(AppMetrics.AddExpense.currencyTextMinSize, size * AppMetrics.AddExpense.currencyTextScale), weight: .bold))
+                .foregroundStyle(foreground)
+        }
+    }
+
+    private func sfName(for code: String) -> String? {
+        switch code.uppercased() {
+        case "USD": return "dollarsign"
+        case "EUR": return "eurosign"
+        case "GBP": return "sterlingsign"
+        case "JPY": return "yensign"
+        case "INR": return "indianrupeesign"
+        case "CAD": return "dollarsign"
+        case "AUD": return "dollarsign"
+        case "BTC": return "bitcoinsign"
+        case "ETH": return nil
+        default: return nil
+        }
+    }
+}
+
+// MARK: - Paid / Split Bubble
+private struct PaidSplitBubble: View {
+    let group: SpendingGroup
+    @Binding var payerId: UUID
+    @Binding var involvedIds: Set<UUID>
+    @Binding var mode: SplitMode
+    @Binding var percents: [UUID: Double]
+    @Binding var manualAmounts: [UUID: Double]
+    let totalAmount: Double
+
+    @State private var showPayerPicker = false
+    @State private var showSplitDetail = false
+
+    var body: some View {
+        VStack(spacing: AppMetrics.AddExpense.paidSplitRowSpacing) {
+            HStack {
+                Text("Paid by")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(payerLabel) {
+                    if group.isDirect == true || group.members.count == 2 {
+                        if let other = group.members.first(where: { $0.id != payerId }) {
+                            payerId = other.id
+                        }
+                    } else {
+                        showPayerPicker = true
+                    }
+                }
+                    .font(.headline)
+                    .foregroundColor(.black)
+            }
+
+            Divider().opacity(0.2)
+
+            HStack {
+                Text("Split")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(modeTitle) { showSplitDetail = true }
+                    .font(.headline)
+                    .foregroundColor(.black)
+            }
+        }
+        .padding(AppMetrics.AddExpense.paidSplitInnerPadding)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: AppMetrics.AddExpense.paidSplitCornerRadius, style: .continuous))
+        .sheet(isPresented: $showPayerPicker) {
+            NavigationStack {
+                List {
+                    ForEach(group.members) { m in
+                        Button {
+                            payerId = m.id
+                            showPayerPicker = false
+                        } label: {
+                            HStack {
+                                Text(m.name)
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                if payerId == m.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(AppTheme.brand)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .navigationTitle("Select Payer")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") { showPayerPicker = false }
+                    }
+                }
+                .tint(AppTheme.brand)
+                .toolbarColorScheme(.light, for: .navigationBar)
+            }
+        }
+        .navigationDestination(isPresented: $showSplitDetail) {
+            SplitDetailView(
+                group: group,
+                totalAmount: totalAmount,
+                mode: $mode,
+                involvedIds: $involvedIds,
+                percents: $percents,
+                manualAmounts: $manualAmounts
+            )
+        }
+    }
+
+    private var currentPayer: GroupMember { group.members.first(where: { $0.id == payerId }) ?? group.members.first! }
+    private var modeTitle: String {
+        switch mode { case .equal: return "Equally"; case .percent: return "Percent"; case .manual: return "Manual" }
+    }
+    private var payerLabel: String {
+        if let first = group.members.first, first.id == payerId {
+            return "Me"
+        }
+        return currentPayer.name
+    }
+}
+
+// MARK: - Split Detail Page
+private struct SplitDetailView: View {
+    let group: SpendingGroup
+    let totalAmount: Double
+    @Binding var mode: SplitMode
+    @Binding var involvedIds: Set<UUID>
+    @Binding var percents: [UUID: Double]
+    @Binding var manualAmounts: [UUID: Double]
+
+    var body: some View {
+        List {
+            Section("Participants") {
+                ForEach(group.members) { m in
+                    Toggle(isOn: Binding(
+                        get: { involvedIds.contains(m.id) },
+                        set: { newValue in
+                            if newValue { involvedIds.insert(m.id) } else { involvedIds.remove(m.id) }
+                        }
+                    )) { Text(m.name) }
+                }
+            }
+
+            Section("Mode") {
+                Picker("Mode", selection: $mode) {
+                    ForEach(SplitMode.allCases) { m in Text(m.rawValue).tag(m) }
+                }
+                .pickerStyle(.segmented)
+
+                switch mode {
+                case .equal:
+                    EqualSplitView(total: totalAmount, participants: participants)
+                case .percent:
+                    PercentSplitView(total: totalAmount, participants: participants, percents: $percents)
+                case .manual:
+                    ManualSplitView(total: totalAmount, participants: participants, manualAmounts: $manualAmounts)
+                }
+            }
+        }
+        .navigationTitle("Split Details")
+    }
+
+    private var participants: [GroupMember] {
+        group.members.filter { involvedIds.contains($0.id) }
+    }
+}
+
+// MARK: - Bottom Meta Bubble
+private struct BottomMetaBubble: View {
+    let group: SpendingGroup
+    @Binding var date: Date
+    @Binding var showNotes: Bool
+
+    var body: some View {
+        HStack(spacing: AppMetrics.AddExpense.bottomRowSpacing) {
+            GroupIcon(name: group.name)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(group.name)
+                    .font(.headline)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
+                DatePicker("Date", selection: $date, displayedComponents: .date)
+                    .labelsHidden()
+                    .tint(AppTheme.brand)
+                    .datePickerStyle(.compact)
+                    .layoutPriority(0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer()
+            Button { /* camera placeholder */ } label: {
+                Image(systemName: "camera.fill")
+                    .symbolRenderingMode(.monochrome)
+                    .font(.title3)
+                    .foregroundColor(.primary)
+            }
+            .tint(.primary)
+            Button { showNotes = true } label: {
+                Image(systemName: "note.text")
+                    .symbolRenderingMode(.monochrome)
+                    .font(.title3)
+                    .foregroundColor(.primary)
+            }
+            .tint(.primary)
+        }
+        .padding(AppMetrics.AddExpense.bottomInnerPadding)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: AppMetrics.AddExpense.bottomCornerRadius, style: .continuous))
+        .sheet(isPresented: $showNotes) {
+            NavigationStack {
+                NotesEditor()
+            }
+        }
+    }
+}
+
+private struct NotesEditor: View {
+    @Environment(\.dismiss) var dismiss
+    @State private var text: String = ""
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text("Notes").font(.headline)
+            TextEditor(text: $text)
+                .frame(maxHeight: .infinity)
+                .padding(8)
+                .background(Color(uiColor: .secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .padding()
+        .navigationTitle("Add Notes")
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+    }
+}
+
+private struct ItemizedBillHelper: View {
+    @Binding var totalText: String
+    let participants: [GroupMember]
+    @Binding var manualAmounts: [UUID: Double]
+
+    @State private var subtotalText: String = ""
+    @State private var feesText: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Itemized Bill").font(.headline)
+            HStack {
+                Text("Subtotal")
+                Spacer()
+                AmountField(text: $subtotalText)
+            }
+            HStack {
+                Text("Fees/Tip")
+                Spacer()
+                AmountField(text: $feesText)
+            }
+            if let subtotal = Double(subtotalText), let fees = Double(feesText), subtotal > 0 {
+                let feePerDollar = fees / subtotal
+                ForEach(participants) { p in
+                    let base = manualAmounts[p.id] ?? 0
+                    let withFees = base + base * feePerDollar
+                    HStack {
+                        Text(p.name)
+                        Spacer()
+                        Text(withFees, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    }
+                }
+                Button("Apply to Manual Split") {
+                    apply(subtotal: subtotal, fees: fees)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(AppTheme.brand)
+            }
+        }
+        .padding(16)
+        .background(AppTheme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func apply(subtotal: Double, fees: Double) {
+        let sum = participants.map { manualAmounts[$0.id] ?? 0 }.reduce(0, +)
+        guard sum > 0 else { return }
+        let feePerDollar = fees / subtotal
+        for p in participants {
+            let base = manualAmounts[p.id] ?? 0
+            manualAmounts[p.id] = base + base * feePerDollar
+        }
+        totalText = String(format: "%.2f", sum + fees)
     }
 }
 
@@ -249,7 +676,7 @@ private struct PercentSplitView: View {
                         set: { percents[p.id] = $0 }
                     ), format: .number)
                     .keyboardType(.decimalPad)
-                    .frame(width: 70)
+                    .frame(width: AppMetrics.AddExpense.percentFieldWidth)
                     Text("%")
                 }
             }
@@ -281,7 +708,7 @@ private struct ManualSplitView: View {
                         set: { manualAmounts[p.id] = $0 }
                     ), format: .number)
                     .keyboardType(.decimalPad)
-                    .frame(width: 100)
+                    .frame(width: AppMetrics.AddExpense.manualAmountFieldWidth)
                 }
             }
             let sum = participants.map { manualAmounts[$0.id] ?? 0 }.reduce(0, +)
@@ -294,7 +721,7 @@ private struct ManualSplitView: View {
                 Text("Remaining")
                 Spacer()
                 Text(total - sum, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
-                    .foregroundStyle((total - sum).magnitude < 0.01 ? .green : .orange)
+                    .foregroundStyle((total - sum).magnitude < AppMetrics.AddExpense.balanceTolerance ? .green : .orange)
             }
         }
     }

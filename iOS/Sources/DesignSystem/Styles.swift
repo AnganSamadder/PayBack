@@ -9,18 +9,19 @@ enum AppTheme {
             // Cool blue for dark mode
             return UIColor(red: 0.24, green: 0.56, blue: 0.96, alpha: 1.0)
         default:
-            // Teal for light mode
-            return UIColor(red: 0.00, green: 0.65, blue: 0.60, alpha: 1.0)
+            // Brighter, slightly bluer teal for light mode
+            return UIColor(red: 0.06, green: 0.72, blue: 0.78, alpha: 1.0)
         }
     })
 
-    // Dynamic backgrounds: white (grouped) in light, near-black in dark
+    // Dynamic backgrounds: white in light, near-black in dark
     static let background: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
         case .dark:
             return UIColor(red: 0.06, green: 0.06, blue: 0.07, alpha: 1.0) // almost black
         default:
-            return UIColor.systemGroupedBackground
+            // Force pure white background in light mode
+            return UIColor.white
         }
     })
 
@@ -35,12 +36,84 @@ enum AppTheme {
     })
 }
 
+// Centralized spacing, sizing, and layout metrics (avoid magic numbers)
+enum AppMetrics {
+    // Header
+    static let headerTitleFontSize: CGFloat = 32
+    static let headerTopPadding: CGFloat = 8
+    static let headerBottomPadding: CGFloat = 2
+
+    // Dropdown next to header title
+    static let dropdownFontSize: CGFloat = 18
+    static let dropdownHorizontalGap: CGFloat = 65 // gap from end of title to option
+    static let dropdownTextHorizontalPadding: CGFloat = 16
+    static let dropdownTextVerticalPadding: CGFloat = 8
+
+    // Buttons
+    static let smallIconButtonSize: CGFloat = 32
+
+    // Empty states
+    static let emptyStateTopPadding: CGFloat = 24
+
+    // Lists
+    static let listRowVerticalPadding: CGFloat = 6
+
+    // MARK: - Add Expense specific metrics
+    enum AddExpense {
+        // General layout
+        static let contentMaxWidth: CGFloat = 360
+        static let verticalStackSpacing: CGFloat = 12
+        static let topSpacerMinLength: CGFloat = 16
+        static let dragThreshold: CGFloat = 60
+        static let dragCornerMax: CGFloat = 44
+        static let dragEdgePaddingMax: CGFloat = 24
+
+        // Top bar icons
+        static let topBarIconSize: CGFloat = 18
+
+        // Center entry bubble (description + amount)
+        static let centerOuterPadding: CGFloat = 12
+        static let centerInnerPadding: CGFloat = 12
+        static let centerCornerRadius: CGFloat = 18
+        static let centerShadowRadius: CGFloat = 8
+        static let centerRowSpacing: CGFloat = 8
+        static let descriptionRowHeight: CGFloat = 52
+        static let amountRowHeight: CGFloat = 84
+        static let leftColumnWidth: CGFloat = 56
+        static let iconCornerRadius: CGFloat = 12
+        static let descriptionFontSize: CGFloat = 20
+        static let amountFontSize: CGFloat = 34
+        static let smartIconGlyphScale: CGFloat = 0.55
+        static let currencyGlyphScale: CGFloat = 0.45
+        static let currencyTextMinSize: CGFloat = 18
+        static let currencyTextScale: CGFloat = 0.6
+
+        // Paid / Split bubble
+        static let paidSplitInnerPadding: CGFloat = 12
+        static let paidSplitCornerRadius: CGFloat = 16
+        static let paidSplitRowSpacing: CGFloat = 8
+
+        // Bottom meta bubble
+        static let bottomInnerPadding: CGFloat = 12
+        static let bottomCornerRadius: CGFloat = 16
+        static let bottomRowSpacing: CGFloat = 12
+
+        // Notes editor styling
+        static let notesTextPadding: CGFloat = 8
+        static let notesCornerRadius: CGFloat = 12
+
+        // Split detail inputs
+        static let percentFieldWidth: CGFloat = 70
+        static let manualAmountFieldWidth: CGFloat = 100
+        static let balanceTolerance: CGFloat = 0.01
+    }
+}
+
 extension View {
     func cardStyle() -> some View {
         self
             .padding()
-            .background(AppTheme.card)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(GlassBackground(cornerRadius: 16))
     }
 }
 
@@ -50,6 +123,19 @@ struct FormSectionHeader: ViewModifier {
             .font(.headline)
             .foregroundStyle(.secondary)
             .textCase(.uppercase)
+    }
+}
+
+struct GlassBackground: View {
+    let cornerRadius: CGFloat
+    var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(LinearGradient(colors: [AppTheme.brand.opacity(0.35), .clear], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1)
+            )
+            .background(AppTheme.card.opacity(0.2))
     }
 }
 

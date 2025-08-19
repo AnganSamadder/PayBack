@@ -4,6 +4,8 @@ import Combine
 final class AppStore: ObservableObject {
     @Published private(set) var groups: [SpendingGroup]
     @Published private(set) var expenses: [Expense]
+    // The current user (owner of device)
+    let currentUser: GroupMember
 
     private let persistence: PersistenceServiceProtocol
     private var cancellables: Set<AnyCancellable> = []
@@ -13,6 +15,12 @@ final class AppStore: ObservableObject {
         let loaded = persistence.load()
         self.groups = loaded.groups
         self.expenses = loaded.expenses
+        // Default current user derived or created
+        if let firstMember = loaded.groups.first?.members.first {
+            self.currentUser = firstMember
+        } else {
+            self.currentUser = GroupMember(name: "You")
+        }
 
         $groups.combineLatest($expenses)
             .debounce(for: .milliseconds(250), scheduler: DispatchQueue.main)
@@ -33,6 +41,12 @@ final class AppStore: ObservableObject {
     func updateGroup(_ group: SpendingGroup) {
         guard let idx = groups.firstIndex(where: { $0.id == group.id }) else { return }
         groups[idx] = group
+    }
+
+    func addExistingGroup(_ group: SpendingGroup) {
+        if !groups.contains(where: { $0.id == group.id }) {
+            groups.append(group)
+        }
     }
 
     func deleteGroups(at offsets: IndexSet) {
@@ -65,6 +79,18 @@ final class AppStore: ObservableObject {
     }
 
     func group(by id: UUID) -> SpendingGroup? { groups.first { $0.id == id } }
+
+    // MARK: - Direct (person-to-person) helpers
+    func directGroup(with friend: GroupMember) -> SpendingGroup {
+        // Try to find an existing direct group with exactly two members: currentUser and friend
+        if let existing = groups.first(where: { ($0.isDirect ?? false) && Set($0.members.map(\.id)) == Set([currentUser.id, friend.id]) }) {
+            return existing
+        }
+        // Otherwise create one
+        let g = SpendingGroup(name: friend.name, members: [currentUser, friend], isDirect: true)
+        groups.append(g)
+        return g
+    }
 }
 
 
