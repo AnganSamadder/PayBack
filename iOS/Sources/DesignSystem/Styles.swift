@@ -2,36 +2,125 @@ import SwiftUI
 import UIKit
 
 enum AppTheme {
-    // Dynamic brand color: teal in light, cool blue in dark
+    // ========================================
+    // CENTRALIZED COLOR SYSTEM
+    // ========================================
+    // To change the app's color scheme, modify these two variables:
+    // - lightModeBrand: Color used in light mode
+    // - darkModeBrand: Color used in dark mode
+    // All other colors are derived from these base colors
+    // ========================================
+    
+    private static let lightModeBrand = UIColor(red: 0.06, green: 0.72, blue: 0.78, alpha: 1.0) // Light mode teal
+    private static let darkModeBrand = UIColor(red: 0.0, green: 0.8, blue: 0.9, alpha: 1.0) // Dark mode turquoise
+    
+    // Dynamic brand color: teal in light, turquoise blue in dark
     static let brand: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
         case .dark:
-            // Cool blue for dark mode
-            return UIColor(red: 0.24, green: 0.56, blue: 0.96, alpha: 1.0)
+            return darkModeBrand
         default:
-            // Brighter, slightly bluer teal for light mode
-            return UIColor(red: 0.06, green: 0.72, blue: 0.78, alpha: 1.0)
+            return lightModeBrand
         }
     })
 
-    // Dynamic backgrounds: white in light, near-black in dark
+    // Dynamic backgrounds: white in light, pure black in dark
     static let background: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
         case .dark:
-            return UIColor(red: 0.06, green: 0.06, blue: 0.07, alpha: 1.0) // almost black
+            return UIColor.black // pure black
         default:
-            // Force pure white background in light mode
             return UIColor.white
         }
     })
 
-    // Card surface: light: secondary grouped. Dark: deep gray
+    // Card surface: light: secondary grouped. Dark: very dark gray
     static let card: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
         case .dark:
-            return UIColor(red: 0.12, green: 0.12, blue: 0.13, alpha: 1.0)
+            return UIColor(red: 0.08, green: 0.08, blue: 0.08, alpha: 1.0) // very dark gray
         default:
             return UIColor.secondarySystemGroupedBackground
+        }
+    })
+    
+    // Helper function to get brand color for UIKit components
+    static func brandColor(for traits: UITraitCollection) -> UIColor {
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return darkModeBrand
+        default:
+            return lightModeBrand
+        }
+    }
+    
+    // Centralized color for + button icons
+    static let plusIconColor: Color = Color(UIColor { traits in
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return UIColor.black
+        default:
+            return UIColor.white
+        }
+    })
+    
+    // Centralized color for expanding circle inner circle
+    static let expandingCircleInnerColor: Color = Color(UIColor { traits in
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return UIColor.black
+        default:
+            return UIColor.clear
+        }
+    })
+    
+    // Centralized color for choose target background
+    static let chooseTargetBackground: Color = Color(UIColor { traits in
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return UIColor.black
+        default:
+            return brandColor(for: traits)
+        }
+    })
+    
+    // Centralized color for text on choose target screen
+    static let chooseTargetTextColor: Color = Color(UIColor { traits in
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return UIColor.white
+        default:
+            return UIColor.white
+        }
+    })
+    
+    // Centralized color for text that should use the brand color
+    static let brandTextColor: Color = Color(UIColor { traits in
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return darkModeBrand
+        default:
+            return lightModeBrand
+        }
+    })
+    
+    // Centralized color for AddExpense screen background
+    static let addExpenseBackground: Color = Color(UIColor { traits in
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return UIColor.black
+        default:
+            return brandColor(for: traits)
+        }
+    })
+    
+    // Centralized color for AddExpense screen text and icons
+    static let addExpenseTextColor: Color = Color(UIColor { traits in
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return brandColor(for: traits)
+        default:
+            return UIColor.white
         }
     })
 }
@@ -141,7 +230,6 @@ struct GlassBackground: View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(LinearGradient(colors: [AppTheme.brand.opacity(0.35), .clear], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1)
             )
-            .background(AppTheme.card.opacity(0.2))
     }
 }
 

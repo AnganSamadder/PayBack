@@ -3,14 +3,9 @@ import UIKit
 
 enum AppAppearance {
 	static func configure() {
-		// Brand color for UIKit components
+		// Brand color for UIKit components - uses centralized AppTheme colors
 		let brand = UIColor { traits in
-			switch traits.userInterfaceStyle {
-			case .dark:
-				return UIColor(red: 0.24, green: 0.56, blue: 0.96, alpha: 1.0)
-			default:
-				return UIColor(red: 0.06, green: 0.72, blue: 0.78, alpha: 1.0)
-			}
+			return AppTheme.brandColor(for: traits)
 		}
 
 		// Navigation Bar: transparent background; white titles; no large titles

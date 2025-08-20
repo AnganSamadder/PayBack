@@ -20,9 +20,12 @@ struct ActivityView: View {
                             Text(e.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                         }
                         .padding(.vertical, 6)
+                        .listRowSeparator(.hidden)
                     }
                 }
-                .listStyle(.insetGrouped)
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(AppTheme.background)
             }
         }
         .navigationTitle("Activity")

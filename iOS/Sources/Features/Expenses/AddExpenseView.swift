@@ -25,6 +25,7 @@ struct AddExpenseView: View {
     @State private var manualAmounts: [UUID: Double] = [:]
     @State private var showNotesSheet: Bool = false
     @State private var showSaveConfirm: Bool = false
+
     @State private var dragOffset: CGFloat = 0
 
     init(group: SpendingGroup, onClose: (() -> Void)? = nil) {
@@ -38,15 +39,15 @@ struct AddExpenseView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            mainContent(geometry: geometry)
-                .alert("Save expense?", isPresented: $showSaveConfirm) {
-                    Button("Save") { save() }
-                    Button("Cancel", role: .cancel) { 
-                        withAnimation(AppAnimation.springy) { dragOffset = 0 }
+                                            mainContent(geometry: geometry)
+                    .alert("Save expense?", isPresented: $showSaveConfirm) {
+                        Button("Save") { save() }
+                        Button("Cancel", role: .cancel) {
+                            withAnimation(AppAnimation.springy) { dragOffset = 0 }
+                        }
                     }
-                }
-                .gesture(dragGesture)
-                .offset(y: dragOffset)
+                    .gesture(dragGesture)
+                    .offset(y: dragOffset)
                 .ignoresSafeArea()
                 .compositingGroup()
         }
@@ -124,7 +125,7 @@ struct AddExpenseView: View {
             Spacer()
         }
         .frame(width: geometry.size.width, height: geometry.size.height)
-        .background(AppTheme.brand)
+        .background(AppTheme.addExpenseBackground)
         .cornerRadius(AppMetrics.deviceCornerRadius(for: geometry.safeAreaInsets.top))
     }
     
@@ -133,13 +134,13 @@ struct AddExpenseView: View {
             Button(action: { close() }) {
                 Image(systemName: "xmark")
                     .font(.system(size: AppMetrics.AddExpense.topBarIconSize, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.addExpenseTextColor)
             }
             Spacer()
-            Button(action: { showSaveConfirm = true }) {
+            Button(action: { save() }) {
                 Image(systemName: "checkmark")
                     .font(.system(size: AppMetrics.AddExpense.topBarIconSize, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.addExpenseTextColor)
             }
             .disabled(totalAmount <= 0 || descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || participants.isEmpty)
         }
@@ -154,7 +155,7 @@ struct AddExpenseView: View {
                      
                      Text("Add Expense")
                          .font(.system(size: AppMetrics.headerTitleFontSize, weight: .bold))
-                         .foregroundStyle(.white)
+                         .foregroundStyle(AppTheme.addExpenseTextColor)
 
                      CenterEntryBubble(
                          descriptionText: $descriptionText,
@@ -314,9 +315,9 @@ private struct CenterEntryBubble: View {
             }
         }
         .padding(AppMetrics.AddExpense.centerInnerPadding)
-        .background(Color.white)
+        .background(AppTheme.card)
         .clipShape(RoundedRectangle(cornerRadius: AppMetrics.AddExpense.centerCornerRadius, style: .continuous))
-        .shadow(color: .black.opacity(0.1), radius: AppMetrics.AddExpense.centerShadowRadius, y: 4)
+        .shadow(color: AppTheme.brand.opacity(0.15), radius: AppMetrics.AddExpense.centerShadowRadius, y: 4)
         .padding(AppMetrics.AddExpense.centerOuterPadding)
         .task { await select(currency) }
     }
@@ -414,7 +415,7 @@ private struct PaidSplitBubble: View {
                     }
                 }
                     .font(.headline)
-                    .foregroundColor(.black)
+                    .foregroundStyle(.primary)
             }
 
             Divider().opacity(0.2)
@@ -426,11 +427,11 @@ private struct PaidSplitBubble: View {
                 Spacer()
                 Button(modeTitle) { showSplitDetail = true }
                     .font(.headline)
-                    .foregroundColor(.black)
+                    .foregroundStyle(.primary)
             }
         }
         .padding(AppMetrics.AddExpense.paidSplitInnerPadding)
-        .background(Color.white)
+        .background(AppTheme.card)
         .clipShape(RoundedRectangle(cornerRadius: AppMetrics.AddExpense.paidSplitCornerRadius, style: .continuous))
         .sheet(isPresented: $showPayerPicker) {
             NavigationStack {
@@ -507,7 +508,7 @@ private struct SplitDetailView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Participants")
                         .font(.headline)
-                        .foregroundStyle(.black)
+                        .foregroundStyle(.primary)
                         .padding(.horizontal, 20)
                     
                     if group.members.count <= 3 {
@@ -553,7 +554,7 @@ private struct SplitDetailView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Split Mode")
                         .font(.headline)
-                        .foregroundStyle(.black)
+                        .foregroundStyle(.primary)
                         .padding(.horizontal, 20)
                     
                     VStack(spacing: 12) {
@@ -606,7 +607,7 @@ private struct ParticipantRow: View {
             HStack(spacing: 12) {
                 // Avatar/Icon
                 Circle()
-                    .fill(isSelected ? AppTheme.brand : Color.gray.opacity(0.3))
+                    .fill(isSelected ? AppTheme.brand : AppTheme.card)
                     .frame(width: 40, height: 40)
                     .overlay(
                         Text(String(member.name.prefix(1)).uppercased())
@@ -634,7 +635,7 @@ private struct ParticipantRow: View {
                     .fill(isSelected ? AppTheme.brand.opacity(0.1) : Color.clear)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(isSelected ? AppTheme.brand : Color.gray.opacity(0.2), lineWidth: 1)
+                            .strokeBorder(isSelected ? AppTheme.brand : AppTheme.card.opacity(0.3), lineWidth: 1)
                     )
             )
         }
@@ -653,7 +654,7 @@ private struct ParticipantGridItem: View {
             VStack(spacing: 8) {
                 // Avatar/Icon - 1:1 aspect ratio
                 Circle()
-                    .fill(isSelected ? AppTheme.brand : Color.gray.opacity(0.3))
+                    .fill(isSelected ? AppTheme.brand : AppTheme.card)
                     .frame(width: 60, height: 60)
                     .overlay(
                         Text(String(member.name.prefix(1)).uppercased())
@@ -676,7 +677,7 @@ private struct ParticipantGridItem: View {
                     .fill(isSelected ? AppTheme.brand.opacity(0.1) : Color.clear)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(isSelected ? AppTheme.brand : Color.gray.opacity(0.2), lineWidth: 1)
+                            .strokeBorder(isSelected ? AppTheme.brand : AppTheme.card.opacity(0.3), lineWidth: 1)
                     )
             )
         }
@@ -725,7 +726,7 @@ private struct BottomMetaBubble: View {
             .tint(.primary)
         }
         .padding(AppMetrics.AddExpense.bottomInnerPadding)
-        .background(Color.white)
+        .background(AppTheme.card)
         .clipShape(RoundedRectangle(cornerRadius: AppMetrics.AddExpense.bottomCornerRadius, style: .continuous))
         .sheet(isPresented: $showNotes) {
             NavigationStack {
@@ -753,7 +754,7 @@ private struct NotesEditor: View {
                 .frame(maxWidth: .infinity)
                 .background(
                     Rectangle()
-                        .fill(Color.gray.opacity(0.05))
+                        .fill(AppTheme.card.opacity(0.3))
                         .frame(height: 60)
                 )
                 

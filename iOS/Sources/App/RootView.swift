@@ -12,6 +12,7 @@ struct RootView: View {
     @State private var backgroundSnapshot: UIImage?
     @State private var showPickerUI: Bool = false
     @State private var circleSize: CGFloat = 64
+    @State private var showExpandingCircle: Bool = false
 
     var body: some View {
         ZStack {
@@ -79,18 +80,33 @@ struct RootView: View {
                     }
                 }()
                 ZStack {
-                    if showAddOverlay && selectedGroupForNewExpense == nil && showPickerUI {
-                        // Expanding circle from FAB center - only show during picker transition
-                        Circle()
-                            .fill(AppTheme.brand)
-                            .frame(width: circleSize, height: circleSize)
-                            .position(x: center.x, y: center.y)
-                            .ignoresSafeArea()
-                            .onAppear {
-                                let diagonal = sqrt(proxy.size.width * proxy.size.width + proxy.size.height * proxy.size.height)
-                                let diameter = diagonal * 2.2
-                                withAnimation(.spring(response: 0.5, dampingFraction: 0.9)) { circleSize = diameter }
+                    if showAddOverlay && selectedGroupForNewExpense == nil && showExpandingCircle {
+                        // Expanding circle from FAB center - show immediately when overlay appears
+                        ZStack {
+                            // Outer turquoise circle
+                            Circle()
+                                .fill(AppTheme.brand)
+                                .frame(width: circleSize, height: circleSize)
+                            
+                            // Inner circle (smaller) - black in dark mode, white in light mode
+                            Circle()
+                                .fill(AppTheme.expandingCircleInnerColor)
+                                .frame(width: circleSize * 0.85, height: circleSize * 0.85)
+                        }
+                        .position(x: center.x, y: center.y)
+                        .ignoresSafeArea()
+                        .onAppear {
+                            let diagonal = sqrt(proxy.size.width * proxy.size.width + proxy.size.height * proxy.size.height)
+                            let diameter = diagonal * 2.2
+                            withAnimation(.spring(response: 0.8, dampingFraction: 0.8)) { circleSize = diameter }
+                            
+                            // Hide circle after animation completes
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    showExpandingCircle = false
+                                }
                             }
+                        }
                     }
 
                     if showAddOverlay && showPickerUI {
@@ -118,6 +134,7 @@ struct RootView: View {
         backgroundSnapshot = captureWindowSnapshot()
         showPickerUI = false
         circleSize = 64
+        showExpandingCircle = true
         withAnimation(.spring(response: 0.5, dampingFraction: 0.9)) { showAddOverlay = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             withAnimation(AppAnimation.fade) { showPickerUI = true }
@@ -128,6 +145,7 @@ struct RootView: View {
         withAnimation(AppAnimation.quick) {
             showPickerUI = false
             showAddOverlay = false
+            showExpandingCircle = false
         }
         circleSize = 64
     }
@@ -163,7 +181,7 @@ private struct AddFAB: View {
                     .shadow(color: AppTheme.brand.opacity(0.35), radius: 8, y: 4)
                 Image(systemName: "plus")
                     .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.plusIconColor)
             }
         }
         .anchorPreference(key: FABBoundsKey.self, value: .bounds) { $0 }
@@ -180,19 +198,19 @@ private struct TargetPickerTeal: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Choose target")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
-                Spacer()
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(8)
-                        .background(Capsule().fill(Color.white.opacity(0.15)))
-                }
-            }
+                                HStack {
+                        Text("Choose target")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(AppTheme.chooseTargetTextColor)
+                        Spacer()
+                        Button(action: onClose) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(AppTheme.chooseTargetTextColor)
+                                .padding(8)
+                                .background(Capsule().fill(AppTheme.chooseTargetTextColor.opacity(0.15)))
+                        }
+                    }
             .padding(.horizontal)
             .padding(.top, 24)
             .padding(.bottom, 8)
@@ -209,12 +227,12 @@ private struct TargetPickerTeal: View {
                                         AvatarView(name: m.name)
                                         Text(m.name)
                                             .font(.headline)
-                                            .foregroundStyle(.primary)
+                                            .foregroundStyle(AppTheme.brandTextColor)
                                         Spacer()
                                     }
                                     .padding(.horizontal)
                                     .padding(.vertical, 14)
-                                    .background(Color.white)
+                                    .background(AppTheme.card)
                                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                                 }
                             }
@@ -231,14 +249,14 @@ private struct TargetPickerTeal: View {
                                     HStack(spacing: 12) {
                                         GroupIcon(name: g.name)
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text(g.name).font(.headline).foregroundStyle(.primary)
-                                            Text("\(g.members.count) members").font(.caption).foregroundStyle(.secondary)
+                                            Text(g.name).font(.headline).foregroundStyle(AppTheme.brandTextColor)
+                                            Text("\(g.members.count) members").font(.caption).foregroundStyle(AppTheme.brandTextColor.opacity(0.7))
                                         }
                                         Spacer()
                                     }
                                     .padding(.horizontal)
                                     .padding(.vertical, 14)
-                                    .background(Color.white)
+                                    .background(AppTheme.card)
                                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                                 }
                             }
@@ -250,7 +268,7 @@ private struct TargetPickerTeal: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(AppTheme.brand)
+        .background(AppTheme.chooseTargetBackground)
     }
 
     private var uniqueMembers: [GroupMember] {
@@ -271,7 +289,7 @@ private struct SectionHeader: View {
     var body: some View {
         Text(text.uppercased())
             .font(.caption)
-            .foregroundStyle(.white.opacity(0.8))
+            .foregroundStyle(AppTheme.chooseTargetTextColor.opacity(0.8))
             .padding(.horizontal, 4)
     }
 }

@@ -54,7 +54,7 @@ struct PeopleHomeView: View {
                         }) {
                             Image(systemName: "plus")
                                 .font(.headline)
-                                .foregroundStyle(.white)
+                                .foregroundStyle(AppTheme.plusIconColor)
                                 .frame(width: AppMetrics.smallIconButtonSize, height: AppMetrics.smallIconButtonSize)
                                 .background(Circle().fill(AppTheme.brand))
                                 .shadow(radius: 3)

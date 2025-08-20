@@ -21,7 +21,7 @@ struct SmartIcon {
             return make("fork.knife", bg: .orange)
         }
         if lower.contains("flight") || lower.contains("travel") || lower.contains("plane") {
-            return make("airplane", bg: .blue)
+            return make("airplane", bg: AppTheme.brand)
         }
         if lower.contains("grocer") {
             return make("cart.fill", bg: .green)

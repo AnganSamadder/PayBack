@@ -53,7 +53,7 @@ struct GroupDetailView: View {
             Button(action: { showAddExpense = true }) {
                 Image(systemName: "plus")
                     .font(.title2)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.plusIconColor)
                     .padding(16)
                     .background(Circle().fill(AppTheme.brand))
                     .shadow(radius: 6)
@@ -77,7 +77,7 @@ struct GroupDetailView: View {
 
     private func balanceText(for member: GroupMember) -> String {
         let net = calculateNetBalance(for: member)
-        if net > 0.0001 { return "Should receive \(currency(net))" }
+        if net > 0.0001 { return "Get \(currency(net))" }
         if net < -0.0001 { return "Owes \(currency(abs(net)))" }
         return "Settled"
     }
