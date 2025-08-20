@@ -79,8 +79,8 @@ struct RootView: View {
                     }
                 }()
                 ZStack {
-                    if showAddOverlay {
-                        // Expanding circle from FAB center
+                    if showAddOverlay && selectedGroupForNewExpense == nil && showPickerUI {
+                        // Expanding circle from FAB center - only show during picker transition
                         Circle()
                             .fill(AppTheme.brand)
                             .frame(width: circleSize, height: circleSize)

@@ -11,6 +11,7 @@ struct PayBackApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(store)
+                .statusBarHidden(true)
         }
     }
 }

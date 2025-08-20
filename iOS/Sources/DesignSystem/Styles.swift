@@ -38,6 +38,12 @@ enum AppTheme {
 
 // Centralized spacing, sizing, and layout metrics (avoid magic numbers)
 enum AppMetrics {
+    // Device-specific metrics
+    static func deviceCornerRadius(for safeAreaTop: CGFloat) -> CGFloat {
+        // Use the actual display corner radius from UIScreen (like ScreenCorners library)
+        return UIScreen.main.displayCornerRadius
+    }
+    
     // Header
     static let headerTitleFontSize: CGFloat = 32
     static let headerTopPadding: CGFloat = 8
@@ -64,8 +70,8 @@ enum AppMetrics {
         static let contentMaxWidth: CGFloat = 360
         static let verticalStackSpacing: CGFloat = 12
         static let topSpacerMinLength: CGFloat = 16
-        static let dragThreshold: CGFloat = 60
-        static let dragCornerMax: CGFloat = 44
+        static let dragThreshold: CGFloat = 100
+        static let dragCornerMax: CGFloat = 20
         static let dragEdgePaddingMax: CGFloat = 24
 
         // Top bar icons
@@ -141,6 +147,21 @@ struct GlassBackground: View {
 
 extension Text {
     func sectionHeader() -> some View { self.modifier(FormSectionHeader()) }
+}
+
+// MARK: - UIScreen Extension for Display Corner Radius
+extension UIScreen {
+    var displayCornerRadius: CGFloat {
+        // Access the private _displayCornerRadius property (like ScreenCorners library)
+        let selector = NSSelectorFromString("_displayCornerRadius")
+        guard responds(to: selector) else { return 0 }
+        
+        let method = class_getInstanceMethod(UIScreen.self, selector)
+        let implementation = method_getImplementation(method!)
+        let function = unsafeBitCast(implementation, to: (@convention(c) (AnyObject, Selector) -> CGFloat).self)
+        
+        return function(self, selector)
+    }
 }
 
 struct EmptyStateView: View {

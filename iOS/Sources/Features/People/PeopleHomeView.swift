@@ -40,8 +40,8 @@ struct PeopleHomeView: View {
                                         titleButtonWidth = proxy.size.width
                                         titleButtonHeight = proxy.size.height
                                     }
-                                    .onChange(of: proxy.size.width) { titleButtonWidth = $0 }
-                                    .onChange(of: proxy.size.height) { titleButtonHeight = $0 }
+                                    .onChange(of: proxy.size.width) { _, newValue in titleButtonWidth = newValue }
+                                    .onChange(of: proxy.size.height) { _, newValue in titleButtonHeight = newValue }
                             }
                         )
                         .simultaneousGesture(TapGesture(count: 2).onEnded { _ in doubleTapSwap() })
@@ -89,7 +89,7 @@ struct PeopleHomeView: View {
                                     GeometryReader { proxy in
                                         Color.clear
                                             .onAppear { dropdownSize = proxy.size }
-                                            .onChange(of: proxy.size) { dropdownSize = $0 }
+                                            .onChange(of: proxy.size) { _, newValue in dropdownSize = newValue }
                                     }
                                 )
                         }

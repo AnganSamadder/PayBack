@@ -37,102 +37,18 @@ struct AddExpenseView: View {
     var totalAmount: Double { Double(amountText) ?? 0 }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                AppTheme.brand.ignoresSafeArea()
-                VStack(spacing: AppMetrics.AddExpense.verticalStackSpacing) {
-                Spacer(minLength: AppMetrics.AddExpense.topSpacerMinLength)
-
-                Text("Add Expense")
-                    .font(.system(size: AppMetrics.headerTitleFontSize, weight: .bold))
-                    .foregroundStyle(.white)
-
-                CenterEntryBubble(
-                    descriptionText: $descriptionText,
-                    amountText: $amountText,
-                    currency: $currency,
-                    rates: $rates
-                )
-                .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
-
-                PaidSplitBubble(
-                    group: group,
-                    payerId: $payerId,
-                    involvedIds: $involvedIds,
-                    mode: $mode,
-                    percents: $percents,
-                    manualAmounts: $manualAmounts,
-                    totalAmount: totalAmount
-                )
-                .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
-
-                Spacer()
-
-                BottomMetaBubble(group: group, date: $date, showNotes: $showNotesSheet)
-                    .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
-                    .padding(.bottom, AppMetrics.AddExpense.bottomInnerPadding)
-                    .padding(.horizontal)
-                }
-                .padding(.horizontal)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(AppTheme.brand)
-                .navigationTitle("")
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button(action: { close() }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: AppMetrics.AddExpense.topBarIconSize, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-            }
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button(action: { showSaveConfirm = true }) {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: AppMetrics.AddExpense.topBarIconSize, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .disabled(totalAmount <= 0 || descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || participants.isEmpty)
-            }
-        }
-        .toolbarBackground(.hidden, for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .tint(.white)
-        .background(Color.clear)
-        .contentShape(Rectangle())
-        .offset(y: dragOffset)
-        .overlay(
-            RoundedRectangle(cornerRadius: min(AppMetrics.AddExpense.dragCornerMax, max(0, dragOffset / 12)), style: .continuous)
-                .strokeBorder(Color.white.opacity(dragOffset > 0 ? 0.06 : 0), lineWidth: dragOffset > 0 ? 1 : 0)
-        )
-        .mask(
-            RoundedRectangle(cornerRadius: min(AppMetrics.AddExpense.dragCornerMax, max(0, dragOffset / 12)), style: .continuous)
-                .padding(.horizontal, min(AppMetrics.AddExpense.dragEdgePaddingMax, max(0, dragOffset / 25)))
-        )
-        .padding(.horizontal, min(AppMetrics.AddExpense.dragEdgePaddingMax, max(0, dragOffset / 25)))
-        .compositingGroup()
-        .ignoresSafeArea(edges: .top)
-        .ignoresSafeArea(.keyboard, edges: .bottom)
-        .highPriorityGesture(
-            DragGesture(minimumDistance: 10)
-                .onChanged { value in
-                    let dy = value.translation.height
-                    dragOffset = max(0, dy)
-                }
-                .onEnded { value in
-                    if dragOffset > AppMetrics.AddExpense.dragThreshold {
-                        close()
-                    } else if value.translation.height < -AppMetrics.AddExpense.dragThreshold {
-                        showSaveConfirm = true
-                    } else {
+        GeometryReader { geometry in
+            mainContent(geometry: geometry)
+                .alert("Save expense?", isPresented: $showSaveConfirm) {
+                    Button("Save") { save() }
+                    Button("Cancel", role: .cancel) { 
                         withAnimation(AppAnimation.springy) { dragOffset = 0 }
                     }
                 }
-        )
-        .alert("Save expense?", isPresented: $showSaveConfirm) {
-            Button("Save") { save() }
-            Button("Cancel", role: .cancel) { }
+                .gesture(dragGesture)
+                .offset(y: dragOffset)
+                .ignoresSafeArea()
+                .compositingGroup()
         }
     }
 
@@ -188,6 +104,107 @@ struct AddExpenseView: View {
 
     private func close() {
         if let onClose { onClose() } else { dismiss() }
+    }
+    
+    // MARK: - View Components
+    
+    private func mainContent(geometry: GeometryProxy) -> some View {
+        VStack(spacing: AppMetrics.AddExpense.verticalStackSpacing) {
+            // Empty content for now
+        }
+        .safeAreaInset(edge: .top, alignment: .center, spacing: 0) {
+            expensePanel(geometry: geometry)
+        }
+    }
+    
+    private func expensePanel(geometry: GeometryProxy) -> some View {
+        VStack {
+            topBar
+            mainExpenseContent
+            Spacer()
+        }
+        .frame(width: geometry.size.width, height: geometry.size.height)
+        .background(AppTheme.brand)
+        .cornerRadius(AppMetrics.deviceCornerRadius(for: geometry.safeAreaInsets.top))
+    }
+    
+    private var topBar: some View {
+        HStack {
+            Button(action: { close() }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: AppMetrics.AddExpense.topBarIconSize, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            Spacer()
+            Button(action: { showSaveConfirm = true }) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: AppMetrics.AddExpense.topBarIconSize, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .disabled(totalAmount <= 0 || descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || participants.isEmpty)
+        }
+        .padding(.horizontal)
+        .padding(.top, 60) // Status bar area
+        .padding(.bottom, 20)
+    }
+    
+                 private var mainExpenseContent: some View {
+                 VStack(spacing: AppMetrics.AddExpense.verticalStackSpacing) {
+                     Spacer()
+                     
+                     Text("Add Expense")
+                         .font(.system(size: AppMetrics.headerTitleFontSize, weight: .bold))
+                         .foregroundStyle(.white)
+
+                     CenterEntryBubble(
+                         descriptionText: $descriptionText,
+                         amountText: $amountText,
+                         currency: $currency,
+                         rates: $rates
+                     )
+                     .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
+
+                     PaidSplitBubble(
+                         group: group,
+                         payerId: $payerId,
+                         involvedIds: $involvedIds,
+                         mode: $mode,
+                         percents: $percents,
+                         manualAmounts: $manualAmounts,
+                         totalAmount: totalAmount
+                     )
+                     .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
+
+                     Spacer()
+
+                     BottomMetaBubble(group: group, date: $date, showNotes: $showNotesSheet)
+                         .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
+                         .padding(.bottom, AppMetrics.AddExpense.bottomInnerPadding)
+                         .padding(.bottom, 20)
+                 }
+                 .frame(maxWidth: .infinity)
+                 .padding(.horizontal)
+             }
+    
+    // MARK: - Gesture Handling
+    
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                let dy = value.translation.height
+                withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.8)) {
+                    dragOffset = dy
+                }
+            }
+            .onEnded { value in
+                if dragOffset > AppMetrics.AddExpense.dragThreshold {
+                    close()
+                } else if dragOffset < -AppMetrics.AddExpense.dragThreshold {
+                    showSaveConfirm = true
+                } else {
+                    withAnimation(AppAnimation.springy) { dragOffset = 0 }
+                }
+            }
     }
 }
 
@@ -448,15 +465,17 @@ private struct PaidSplitBubble: View {
                 .toolbarColorScheme(.light, for: .navigationBar)
             }
         }
-        .navigationDestination(isPresented: $showSplitDetail) {
-            SplitDetailView(
-                group: group,
-                totalAmount: totalAmount,
-                mode: $mode,
-                involvedIds: $involvedIds,
-                percents: $percents,
-                manualAmounts: $manualAmounts
-            )
+        .sheet(isPresented: $showSplitDetail) {
+            NavigationStack {
+                SplitDetailView(
+                    group: group,
+                    totalAmount: totalAmount,
+                    mode: $mode,
+                    involvedIds: $involvedIds,
+                    percents: $percents,
+                    manualAmounts: $manualAmounts
+                )
+            }
         }
     }
 
@@ -482,39 +501,187 @@ private struct SplitDetailView: View {
     @Binding var manualAmounts: [UUID: Double]
 
     var body: some View {
-        List {
-            Section("Participants") {
-                ForEach(group.members) { m in
-                    Toggle(isOn: Binding(
-                        get: { involvedIds.contains(m.id) },
-                        set: { newValue in
-                            if newValue { involvedIds.insert(m.id) } else { involvedIds.remove(m.id) }
+        ScrollView {
+            VStack(spacing: 20) {
+                // Participants Section
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Participants")
+                        .font(.headline)
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 20)
+                    
+                    if group.members.count <= 3 {
+                        // List layout for 2-3 people
+                        VStack(spacing: 8) {
+                            ForEach(group.members) { member in
+                                ParticipantRow(
+                                    member: member,
+                                    isSelected: involvedIds.contains(member.id),
+                                    onToggle: { isSelected in
+                                        if isSelected {
+                                            involvedIds.insert(member.id)
+                                        } else {
+                                            involvedIds.remove(member.id)
+                                        }
+                                    }
+                                )
+                            }
                         }
-                    )) { Text(m.name) }
+                        .padding(.horizontal, 20)
+                    } else {
+                        // Grid layout for 4+ people
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
+                            ForEach(group.members) { member in
+                                ParticipantGridItem(
+                                    member: member,
+                                    isSelected: involvedIds.contains(member.id),
+                                    onToggle: { isSelected in
+                                        if isSelected {
+                                            involvedIds.insert(member.id)
+                                        } else {
+                                            involvedIds.remove(member.id)
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                }
+                
+                // Split Mode Section
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Split Mode")
+                        .font(.headline)
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 20)
+                    
+                    VStack(spacing: 12) {
+                        // Mode Picker
+                        Picker("Mode", selection: $mode) {
+                            ForEach(SplitMode.allCases) { mode in 
+                                Text(mode.rawValue).tag(mode) 
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .padding(.horizontal, 20)
+                        
+                        // Split Details
+                        VStack(spacing: 8) {
+                            switch mode {
+                            case .equal:
+                                EqualSplitView(total: totalAmount, participants: participants)
+                            case .percent:
+                                PercentSplitView(total: totalAmount, participants: participants, percents: $percents)
+                            case .manual:
+                                ManualSplitView(total: totalAmount, participants: participants, manualAmounts: $manualAmounts)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
                 }
             }
-
-            Section("Mode") {
-                Picker("Mode", selection: $mode) {
-                    ForEach(SplitMode.allCases) { m in Text(m.rawValue).tag(m) }
-                }
-                .pickerStyle(.segmented)
-
-                switch mode {
-                case .equal:
-                    EqualSplitView(total: totalAmount, participants: participants)
-                case .percent:
-                    PercentSplitView(total: totalAmount, participants: participants, percents: $percents)
-                case .manual:
-                    ManualSplitView(total: totalAmount, participants: participants, manualAmounts: $manualAmounts)
-                }
-            }
+            .padding(.top, 8)
+            .padding(.bottom, 20)
         }
-        .navigationTitle("Split Details")
+        .background(AppTheme.background)
+        .navigationTitle("Split")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
     }
 
     private var participants: [GroupMember] {
         group.members.filter { involvedIds.contains($0.id) }
+    }
+}
+
+// MARK: - Participant Row
+private struct ParticipantRow: View {
+    let member: GroupMember
+    let isSelected: Bool
+    let onToggle: (Bool) -> Void
+    
+    var body: some View {
+        Button(action: { onToggle(!isSelected) }) {
+            HStack(spacing: 12) {
+                // Avatar/Icon
+                Circle()
+                    .fill(isSelected ? AppTheme.brand : Color.gray.opacity(0.3))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Text(String(member.name.prefix(1)).uppercased())
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(isSelected ? .white : .primary)
+                    )
+                
+                // Name
+                Text(member.name)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                
+                Spacer()
+                
+                // Checkmark
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(AppTheme.brand)
+                }
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isSelected ? AppTheme.brand.opacity(0.1) : Color.clear)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(isSelected ? AppTheme.brand : Color.gray.opacity(0.2), lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Participant Grid Item
+private struct ParticipantGridItem: View {
+    let member: GroupMember
+    let isSelected: Bool
+    let onToggle: (Bool) -> Void
+    
+    var body: some View {
+        Button(action: { onToggle(!isSelected) }) {
+            VStack(spacing: 8) {
+                // Avatar/Icon - 1:1 aspect ratio
+                Circle()
+                    .fill(isSelected ? AppTheme.brand : Color.gray.opacity(0.3))
+                    .frame(width: 60, height: 60)
+                    .overlay(
+                        Text(String(member.name.prefix(1)).uppercased())
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(isSelected ? .white : .primary)
+                    )
+
+                
+                // Name
+                Text(member.name)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isSelected ? AppTheme.brand.opacity(0.1) : Color.clear)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(isSelected ? AppTheme.brand : Color.gray.opacity(0.2), lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .aspectRatio(1, contentMode: .fit)
     }
 }
 
@@ -571,18 +738,54 @@ private struct BottomMetaBubble: View {
 private struct NotesEditor: View {
     @Environment(\.dismiss) var dismiss
     @State private var text: String = ""
+    
     var body: some View {
-        VStack(alignment: .leading) {
-            Text("Notes").font(.headline)
-            TextEditor(text: $text)
-                .frame(maxHeight: .infinity)
-                .padding(8)
-                .background(Color(uiColor: .secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        NavigationStack {
+            VStack(spacing: 0) {
+                // Header with subtle background
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Add your notes")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
+                }
+                .frame(maxWidth: .infinity)
+                .background(
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.05))
+                        .frame(height: 60)
+                )
+                
+                // Notes Input
+                TextEditor(text: $text)
+                    .frame(maxHeight: .infinity)
+                    .padding(20)
+                    .background(
+                        RoundedRectangle(cornerRadius: 0, style: .continuous)
+                            .fill(Color(uiColor: .systemBackground))
+                    )
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+            }
+            .background(Color(uiColor: .systemBackground))
+            .navigationTitle("Notes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 8)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                        .foregroundStyle(AppTheme.brand)
+                        .padding(.bottom, 8)
+                }
+            }
         }
-        .padding()
-        .navigationTitle("Add Notes")
-        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
     }
 }
 
