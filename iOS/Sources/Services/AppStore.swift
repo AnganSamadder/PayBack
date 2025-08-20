@@ -70,6 +70,17 @@ final class AppStore: ObservableObject {
         let ids = offsets.map { groupExpenses[$0].id }
         expenses.removeAll { ids.contains($0.id) }
     }
+    
+    func deleteExpense(_ expense: Expense) {
+        expenses.removeAll { $0.id == expense.id }
+    }
+    
+    func markExpenseAsSettled(_ expense: Expense) {
+        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
+        var updatedExpense = expense
+        updatedExpense.isSettled = true
+        expenses[idx] = updatedExpense
+    }
 
     // MARK: - Queries
     func expenses(in groupId: UUID) -> [Expense] {

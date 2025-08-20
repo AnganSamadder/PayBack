@@ -48,6 +48,7 @@ struct Expense: Identifiable, Codable, Hashable {
     var paidByMemberId: UUID
     var involvedMemberIds: [UUID]
     var splits: [ExpenseSplit] // amounts owed per member
+    var isSettled: Bool
 
     init(
         id: UUID = UUID(),
@@ -57,7 +58,8 @@ struct Expense: Identifiable, Codable, Hashable {
         totalAmount: Double,
         paidByMemberId: UUID,
         involvedMemberIds: [UUID],
-        splits: [ExpenseSplit]
+        splits: [ExpenseSplit],
+        isSettled: Bool = false
     ) {
         self.id = id
         self.groupId = groupId
@@ -67,6 +69,7 @@ struct Expense: Identifiable, Codable, Hashable {
         self.paidByMemberId = paidByMemberId
         self.involvedMemberIds = involvedMemberIds
         self.splits = splits
+        self.isSettled = isSettled
     }
 }
 
