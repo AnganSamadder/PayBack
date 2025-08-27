@@ -14,23 +14,26 @@ struct RootView: View {
     @State private var circleSize: CGFloat = 64
     @State private var showExpandingCircle: Bool = false
     @State private var peopleScope: PeopleScope = .friends
+    @State private var activityViewSelectedTab: Int = 0
+    @State private var peopleNavigationState: PeopleNavigationState = .home
+    @State private var shouldResetActivityNavigation: Bool = false
 
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
                 // Main content
                 TabView(selection: $selectedTab) {
-                    PeopleHomeView(scope: $peopleScope)
+                    PeopleHomeView(scope: $peopleScope, navigationState: $peopleNavigationState)
                         .environmentObject(store)
                         .tag(0)
 
-                    ActivityView()
+                    ActivityView(selectedTab: $activityViewSelectedTab, shouldResetNavigation: $shouldResetActivityNavigation)
                         .environmentObject(store)
                         .tag(1)
                 }
                 
                 // Custom tab bar
-                CustomTabBar(selectedTab: $selectedTab, peopleScope: $peopleScope)
+                CustomTabBar(selectedTab: $selectedTab, peopleScope: $peopleScope, activityViewSelectedTab: $activityViewSelectedTab, peopleNavigationState: $peopleNavigationState, shouldResetActivityNavigation: $shouldResetActivityNavigation)
                     .offset(y: -40) // Compensate for safe area changes
             }
 
@@ -231,12 +234,21 @@ private struct AddFAB: View {
 private struct CustomTabBar: View {
     @Binding var selectedTab: Int
     @Binding var peopleScope: PeopleScope
+    @Binding var activityViewSelectedTab: Int
+    @Binding var peopleNavigationState: PeopleNavigationState
+    @Binding var shouldResetActivityNavigation: Bool
     
     var body: some View {
         HStack(spacing: 0) {
             // People tab
             Button(action: {
                 selectedTab = 0
+                // Reset navigation state to home when switching to People tab
+                if peopleNavigationState != .home {
+                    withAnimation(.easeInOut(duration: 0.35)) {
+                        peopleNavigationState = .home
+                    }
+                }
             }) {
                 VStack(spacing: 4) {
                     Image(systemName: "person.2")
@@ -259,6 +271,14 @@ private struct CustomTabBar: View {
             // Activity tab
             Button(action: {
                 selectedTab = 1
+                // Reset navigation state to home when switching to Activity tab
+                if peopleNavigationState != .home {
+                    withAnimation(.easeInOut(duration: 0.35)) {
+                        peopleNavigationState = .home
+                    }
+                }
+                // Reset Activity navigation when switching to Activity tab
+                shouldResetActivityNavigation = true
             }) {
                 VStack(spacing: 4) {
                     Image(systemName: "clock.arrow.circlepath")
@@ -271,6 +291,13 @@ private struct CustomTabBar: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
             }
+            .simultaneousGesture(TapGesture(count: 2).onEnded { _ in
+                if selectedTab == 1 {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        activityViewSelectedTab = (activityViewSelectedTab == 0 ? 1 : 0)
+                    }
+                }
+            })
             .padding(.bottom, 8)
         }
         .frame(height: 0)

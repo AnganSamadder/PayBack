@@ -2,10 +2,12 @@ import SwiftUI
 
 struct ActivityView: View {
     @EnvironmentObject var store: AppStore
-    @State private var selectedTab = 0
+    @Binding var selectedTab: Int
+    @Binding var shouldResetNavigation: Bool
+    @State private var navigationPath = NavigationPath()
     
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
                 // Bubbly tab bar
                 HStack(spacing: 8) {
@@ -67,6 +69,12 @@ struct ActivityView: View {
         }
         .navigationTitle("Activity")
         .background(AppTheme.background.ignoresSafeArea())
+        .onChange(of: shouldResetNavigation) { _, shouldReset in
+            if shouldReset {
+                navigationPath = NavigationPath()
+                shouldResetNavigation = false
+            }
+        }
     }
     
     private func clearAllData() {

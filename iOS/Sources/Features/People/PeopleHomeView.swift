@@ -9,12 +9,13 @@ enum PeopleScope: String, CaseIterable, Identifiable {
 enum PeopleNavigationState: Equatable {
     case home
     case friendDetail(GroupMember)
+    case groupDetail(SpendingGroup)
 }
 
 struct PeopleHomeView: View {
     @EnvironmentObject var store: AppStore
     @Binding var scope: PeopleScope
-    @State private var navigationState: PeopleNavigationState = .home
+    @Binding var navigationState: PeopleNavigationState
     @State private var showMenu = false
     @State private var titleRowHeight: CGFloat = 0
     @State private var titleButtonWidth: CGFloat = 0
@@ -31,6 +32,17 @@ struct PeopleHomeView: View {
                     homeContent
                 case .friendDetail(let friend):
                     FriendDetailView(friend: friend, onBack: {
+                        withAnimation(.easeInOut(duration: 0.35)) {
+                            navigationState = .home
+                        }
+                    })
+                    .environmentObject(store)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .trailing).combined(with: .opacity)
+                    ))
+                case .groupDetail(let group):
+                    GroupDetailView(group: group, onBack: {
                         withAnimation(.easeInOut(duration: 0.35)) {
                             navigationState = .home
                         }
@@ -148,7 +160,8 @@ struct PeopleHomeView: View {
             .background(AppTheme.background)
         }
         .sheet(isPresented: $showCreateGroup) {
-            CreateGroupView().environmentObject(store)
+            CreateGroupView()
+                .environmentObject(store)
         }
         .sheet(isPresented: $showAddFriend) {
             AddFriendSheet { name in
@@ -169,7 +182,11 @@ struct PeopleHomeView: View {
                 }
             })
         case .groups:
-            GroupsListView()
+            GroupsListView(onGroupSelected: { group in
+                withAnimation(.easeInOut(duration: 0.35)) {
+                    navigationState = .groupDetail(group)
+                }
+            })
         }
     }
 

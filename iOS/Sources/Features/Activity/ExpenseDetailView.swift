@@ -9,7 +9,11 @@ struct ExpenseDetailView: View {
     @State private var selectedSettleMethod = SettleMethod.markAsPaid
     
     var body: some View {
-        ScrollView(showsIndicators: false) {
+        VStack(spacing: 0) {
+            // Custom navigation header
+            customNavigationHeader
+            
+            ScrollView(showsIndicators: false) {
             VStack(spacing: 24) {
                 // Header card
                 VStack(spacing: 16) {
@@ -69,7 +73,7 @@ struct ExpenseDetailView: View {
                         // Splits
                         ForEach(expense.splits) { split in
                             PaymentDetailRow(
-                                title: "\(memberName(for: split.memberId)) owes",
+                                title: split.memberId == store.currentUser.id ? "You owe" : "\(memberName(for: split.memberId)) owes",
                                 value: currency(split.amount),
                                 isHighlighted: split.memberId == store.currentUser.id
                             )
@@ -110,12 +114,49 @@ struct ExpenseDetailView: View {
             }
             .padding(.vertical, 16)
         }
+        }
         .background(AppTheme.background)
-        .navigationTitle("Expense Details")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showSettleSheet) {
             SettleExpenseSheet(expense: expense, settleMethod: $selectedSettleMethod)
         }
+    }
+    
+    // MARK: - Custom Navigation Header
+    
+    private var customNavigationHeader: some View {
+        HStack {
+            Button(action: { dismiss() }) {
+                HStack(spacing: AppMetrics.FriendDetail.headerIconSpacing) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: AppMetrics.FriendDetail.headerIconSize, weight: .semibold))
+                    Text("Back")
+                        .font(.system(.body, design: .rounded, weight: .medium))
+                }
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            
+            Spacer()
+            
+            Text("Expense Details")
+                .font(.system(.headline, design: .rounded, weight: .semibold))
+                .foregroundStyle(.white)
+            
+            Spacer()
+            
+            // Invisible spacer to balance the back button
+            HStack(spacing: AppMetrics.FriendDetail.headerIconSpacing) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: AppMetrics.FriendDetail.headerIconSize, weight: .semibold))
+                Text("Back")
+                    .font(.system(.body, design: .rounded, weight: .medium))
+            }
+            .opacity(0)
+        }
+        .padding(.horizontal, AppMetrics.FriendDetail.headerHorizontalPadding)
+        .padding(.vertical, AppMetrics.FriendDetail.headerVerticalPadding)
+        .background(.black)
     }
     
     private var shouldShowSettleButton: Bool {

@@ -3,6 +3,7 @@ import SwiftUI
 struct GroupsListView: View {
     @EnvironmentObject var store: AppStore
     @State private var showCreate = false
+    let onGroupSelected: (SpendingGroup) -> Void
 
     var body: some View {
         SwiftUI.Group {
@@ -19,15 +20,22 @@ struct GroupsListView: View {
             } else {
                 List {
                     ForEach(store.groups.filter { !($0.isDirect ?? false) }) { group in
-                        NavigationLink(value: group.id) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(group.name).font(.headline)
-                                Text("\(group.members.count) members")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
+                        Button {
+                            onGroupSelected(group)
+                        } label: {
+                            HStack(spacing: 12) {
+                                GroupIconView(name: group.name)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(group.name).font(.headline)
+                                    Text("\(group.members.count) members")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
                             }
                             .padding(.vertical, AppMetrics.listRowVerticalPadding)
                         }
+                        .buttonStyle(.plain)
                         .listRowSeparator(.hidden)
                     }
                     .onDelete(perform: store.deleteGroups)
@@ -37,17 +45,10 @@ struct GroupsListView: View {
                 .background(AppTheme.background)
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(for: UUID.self) { id in
-            if let group = store.group(by: id) {
-                GroupDetailView(group: group)
-            }
-        }
         .sheet(isPresented: $showCreate) {
             CreateGroupView()
                 .environmentObject(store)
         }
-        .background(AppTheme.background.ignoresSafeArea())
     }
 }
 
@@ -90,4 +91,17 @@ struct CreateGroupView: View {
     }
 }
 
-
+// MARK: - Group Icon (Local implementation)
+private struct GroupIconView: View {
+    let name: String
+    var body: some View {
+        let icon = SmartIcon.icon(for: name)
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(icon.background)
+            Image(systemName: icon.systemName)
+                .foregroundStyle(icon.foreground)
+        }
+        .frame(width: 32, height: 32)
+    }
+}

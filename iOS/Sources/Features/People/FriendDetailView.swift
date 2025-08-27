@@ -88,7 +88,7 @@ struct FriendDetailView: View {
         if isSettled {
             return "$0"
         } else {
-            return currency(netBalance)
+            return currencyPositive(netBalance)
         }
     }
     
@@ -122,6 +122,12 @@ struct FriendDetailView: View {
     private func currency(_ amount: Double) -> String {
         let id = Locale.current.currency?.identifier ?? "USD"
         return amount.formatted(.currency(code: id))
+    }
+    
+    private func currencyPositive(_ amount: Double) -> String {
+        let id = Locale.current.currency?.identifier ?? "USD"
+        let positiveAmount = abs(amount)
+        return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
     }
 
     var body: some View {
@@ -485,7 +491,7 @@ struct DirectExpenseCard: View {
                             } else {
                                 // Friend paid - current user owes friend
                                 if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
-                                    Text("You owe \(currency(userSplit.amount))")
+                                    Text("You owe \(currencyPositive(userSplit.amount))")
                                         .font(.system(.caption, design: .rounded, weight: .medium))
                                         .foregroundStyle(.red)
                                 }
@@ -507,6 +513,12 @@ struct DirectExpenseCard: View {
     private func currency(_ amount: Double) -> String {
         let id = Locale.current.currency?.identifier ?? "USD"
         return amount.formatted(.currency(code: id))
+    }
+    
+    private func currencyPositive(_ amount: Double) -> String {
+        let id = Locale.current.currency?.identifier ?? "USD"
+        let positiveAmount = abs(amount)
+        return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
     }
 
     private func memberName(for id: UUID) -> String {
@@ -591,7 +603,7 @@ struct GroupExpenseRow: View {
                 } else {
                     // Friend paid - current user owes friend
                     if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
-                        Text("You owe \(currency(userSplit.amount))")
+                        Text("You owe \(currencyPositive(userSplit.amount))")
                             .font(.system(.caption, design: .rounded, weight: .medium))
                             .foregroundStyle(.red)
                     }
@@ -604,6 +616,12 @@ struct GroupExpenseRow: View {
     private func currency(_ amount: Double) -> String {
         let id = Locale.current.currency?.identifier ?? "USD"
         return amount.formatted(.currency(code: id))
+    }
+    
+    private func currencyPositive(_ amount: Double) -> String {
+        let id = Locale.current.currency?.identifier ?? "USD"
+        let positiveAmount = abs(amount)
+        return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
     }
 
     private func memberName(for id: UUID) -> String {
