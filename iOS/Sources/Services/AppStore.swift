@@ -15,9 +15,9 @@ final class AppStore: ObservableObject {
         let loaded = persistence.load()
         self.groups = loaded.groups
         self.expenses = loaded.expenses
-        // Default current user derived or created
-        if let firstMember = loaded.groups.first?.members.first {
-            self.currentUser = firstMember
+        // Current user is always "You" - find existing or create new
+        if let existingUser = loaded.groups.flatMap({ $0.members }).first(where: { $0.name == "You" }) {
+            self.currentUser = existingUser
         } else {
             self.currentUser = GroupMember(name: "You")
         }
@@ -88,6 +88,12 @@ final class AppStore: ObservableObject {
             .filter { $0.groupId == groupId }
             .sorted(by: { $0.date > $1.date })
     }
+    
+    func expensesInvolvingCurrentUser() -> [Expense] {
+        expenses
+            .filter { $0.involvedMemberIds.contains(currentUser.id) }
+            .sorted(by: { $0.date > $1.date })
+    }
 
     func group(by id: UUID) -> SpendingGroup? { groups.first { $0.id == id } }
 
@@ -101,6 +107,12 @@ final class AppStore: ObservableObject {
         let g = SpendingGroup(name: friend.name, members: [currentUser, friend], isDirect: true)
         groups.append(g)
         return g
+    }
+    
+    // MARK: - Debug helpers
+    func clearAllData() {
+        groups.removeAll()
+        expenses.removeAll()
     }
 }
 

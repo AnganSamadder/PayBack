@@ -7,7 +7,7 @@ struct GroupsListView: View {
     var body: some View {
         SwiftUI.Group {
             if store.groups.isEmpty {
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
                         EmptyStateView("No Groups", systemImage: "person.3", description: "Create a group to start splitting")
                             .padding(.horizontal)

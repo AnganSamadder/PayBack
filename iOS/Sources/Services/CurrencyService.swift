@@ -21,5 +21,3 @@ final class CurrencyService: CurrencyServiceProtocol {
         let rates: [String: Double]
     }
 }
-
-

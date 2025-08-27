@@ -34,6 +34,18 @@ struct ActivityView: View {
                                     .fill(.orange.opacity(0.1))
                             )
                     }
+                    
+                    // Temporary trash button
+                    Button(action: clearAllData) {
+                        Image(systemName: "trash.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.red)
+                            .padding(8)
+                            .background(
+                                Circle()
+                                    .fill(.red.opacity(0.1))
+                            )
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -57,15 +69,22 @@ struct ActivityView: View {
         .background(AppTheme.background.ignoresSafeArea())
     }
     
+    private func clearAllData() {
+        // Clear all groups and expenses
+        store.clearAllData()
+    }
+    
     private func addTestData() {
-        // Add sample groups
+        // Add sample groups with current user included
         let group1 = SpendingGroup(name: "Roommates", members: [
+            store.currentUser, // Include current user
             GroupMember(name: "Alex"),
             GroupMember(name: "Sam"),
             GroupMember(name: "Jordan")
         ])
         
         let group2 = SpendingGroup(name: "Work Team", members: [
+            store.currentUser, // Include current user
             GroupMember(name: "Mike"),
             GroupMember(name: "Sarah"),
             GroupMember(name: "David"),
@@ -90,11 +109,11 @@ struct ActivityView: View {
             date: Date().addingTimeInterval(-86400 * 2), // 2 days ago
             totalAmount: 85.50,
             paidByMemberId: store.currentUser.id,
-            involvedMemberIds: [store.currentUser.id, group1.members[0].id, group1.members[1].id],
+            involvedMemberIds: [store.currentUser.id, group1.members[1].id, group1.members[2].id], // Use indices 1,2 since 0 is current user
             splits: [
                 ExpenseSplit(memberId: store.currentUser.id, amount: 28.50),
-                ExpenseSplit(memberId: group1.members[0].id, amount: 28.50),
-                ExpenseSplit(memberId: group1.members[1].id, amount: 28.50)
+                ExpenseSplit(memberId: group1.members[1].id, amount: 28.50),
+                ExpenseSplit(memberId: group1.members[2].id, amount: 28.50)
             ]
         )
         
@@ -103,13 +122,13 @@ struct ActivityView: View {
             description: "Electric Bill",
             date: Date().addingTimeInterval(-86400 * 5), // 5 days ago
             totalAmount: 120.00,
-            paidByMemberId: group1.members[0].id,
-            involvedMemberIds: [store.currentUser.id, group1.members[0].id, group1.members[1].id, group1.members[2].id],
+            paidByMemberId: group1.members[1].id, // Alex paid
+            involvedMemberIds: [store.currentUser.id, group1.members[1].id, group1.members[2].id, group1.members[3].id],
             splits: [
                 ExpenseSplit(memberId: store.currentUser.id, amount: 30.00),
-                ExpenseSplit(memberId: group1.members[0].id, amount: 30.00),
                 ExpenseSplit(memberId: group1.members[1].id, amount: 30.00),
-                ExpenseSplit(memberId: group1.members[2].id, amount: 30.00)
+                ExpenseSplit(memberId: group1.members[2].id, amount: 30.00),
+                ExpenseSplit(memberId: group1.members[3].id, amount: 30.00)
             ]
         )
         
@@ -120,11 +139,11 @@ struct ActivityView: View {
             date: Date().addingTimeInterval(-86400 * 1), // 1 day ago
             totalAmount: 65.25,
             paidByMemberId: store.currentUser.id,
-            involvedMemberIds: [store.currentUser.id, group2.members[0].id, group2.members[1].id],
+            involvedMemberIds: [store.currentUser.id, group2.members[1].id, group2.members[2].id],
             splits: [
                 ExpenseSplit(memberId: store.currentUser.id, amount: 21.75),
-                ExpenseSplit(memberId: group2.members[0].id, amount: 21.75),
-                ExpenseSplit(memberId: group2.members[1].id, amount: 21.75)
+                ExpenseSplit(memberId: group2.members[1].id, amount: 21.75),
+                ExpenseSplit(memberId: group2.members[2].id, amount: 21.75)
             ]
         )
         
@@ -133,12 +152,12 @@ struct ActivityView: View {
             description: "Office Supplies",
             date: Date().addingTimeInterval(-86400 * 3), // 3 days ago
             totalAmount: 45.00,
-            paidByMemberId: group2.members[2].id,
-            involvedMemberIds: [store.currentUser.id, group2.members[2].id, group2.members[3].id],
+            paidByMemberId: group2.members[3].id, // David paid
+            involvedMemberIds: [store.currentUser.id, group2.members[3].id, group2.members[4].id],
             splits: [
                 ExpenseSplit(memberId: store.currentUser.id, amount: 15.00),
-                ExpenseSplit(memberId: group2.members[2].id, amount: 15.00),
-                ExpenseSplit(memberId: group2.members[3].id, amount: 15.00)
+                ExpenseSplit(memberId: group2.members[3].id, amount: 15.00),
+                ExpenseSplit(memberId: group2.members[4].id, amount: 15.00)
             ]
         )
         
@@ -176,10 +195,10 @@ struct ActivityView: View {
             date: Date().addingTimeInterval(-86400 * 10), // 10 days ago
             totalAmount: 28.00,
             paidByMemberId: store.currentUser.id,
-            involvedMemberIds: [store.currentUser.id, group1.members[0].id],
+            involvedMemberIds: [store.currentUser.id, group1.members[1].id],
             splits: [
                 ExpenseSplit(memberId: store.currentUser.id, amount: 14.00),
-                ExpenseSplit(memberId: group1.members[0].id, amount: 14.00)
+                ExpenseSplit(memberId: group1.members[1].id, amount: 14.00)
             ],
             isSettled: true
         )
@@ -227,7 +246,7 @@ struct DashboardView: View {
     @EnvironmentObject var store: AppStore
     
     var body: some View {
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(spacing: 20) {
                 // Hero balance card
                 VStack(spacing: 0) {
@@ -250,6 +269,21 @@ struct DashboardView: View {
                 }
                 .background(AppTheme.card)
                 .clipShape(RoundedRectangle(cornerRadius: 24))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24)
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    balanceColor.opacity(0.3),
+                                    balanceColor.opacity(0.15),
+                                    balanceColor.opacity(0.05)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 2
+                        )
+                )
                 .shadow(color: AppTheme.brand.opacity(0.1), radius: 16, x: 0, y: 8)
                 .padding(.horizontal, 16)
                 
@@ -269,7 +303,7 @@ struct DashboardView: View {
                                 ModernGroupBalanceCard(group: group)
                             }
                         }
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, 12)
                     }
                 }
             }
@@ -301,24 +335,27 @@ struct DashboardView: View {
     private var gradientColors: [Color] {
         let net = calculateOverallNetBalance()
         if net > 0.0001 {
-            // Green gradient for positive balance
+            // Green gradient for positive balance - more vibrant in light mode
             return [
-                Color.green.opacity(0.1),
-                Color.green.opacity(0.05),
+                Color.green.opacity(0.25),
+                Color.green.opacity(0.15),
+                Color.green.opacity(0.08),
                 Color.clear
             ]
         } else if net < -0.0001 {
-            // Red gradient for negative balance
+            // Red gradient for negative balance - more vibrant in light mode
             return [
-                Color.red.opacity(0.1),
-                Color.red.opacity(0.05),
+                Color.red.opacity(0.25),
+                Color.red.opacity(0.15),
+                Color.red.opacity(0.08),
                 Color.clear
             ]
         } else {
-            // Neutral gradient for settled balance
+            // Neutral gradient for settled balance - more vibrant in light mode
             return [
-                AppTheme.brand.opacity(0.1),
-                AppTheme.brand.opacity(0.05),
+                AppTheme.brand.opacity(0.25),
+                AppTheme.brand.opacity(0.15),
+                AppTheme.brand.opacity(0.08),
                 Color.clear
             ]
         }
@@ -330,26 +367,27 @@ struct DashboardView: View {
     }
     
     private func calculateOverallNetBalance() -> Double {
-        var totalNet: Double = 0
-        
+        var totalBalance: Double = 0
+
+        // TODO: DATABASE_INTEGRATION - Replace with efficient database query
+        // Example: SELECT SUM(amount) FROM balances WHERE user_id = currentUser.id
         for group in store.groups {
-            let groupExpenses = store.expenses(in: group.id)
-            var paidByUser: Double = 0
-            var owes: Double = 0
-            
-            for exp in groupExpenses where !exp.isSettled {
-                if exp.paidByMemberId == store.currentUser.id {
-                    paidByUser += exp.totalAmount
-                }
-                if let split = exp.splits.first(where: { $0.memberId == store.currentUser.id }) {
-                    owes += split.amount
+            for expense in store.expenses(in: group.id) where !expense.isSettled {
+                if expense.paidByMemberId == store.currentUser.id {
+                    // Current user paid - others owe current user
+                    for split in expense.splits where split.memberId != store.currentUser.id {
+                        totalBalance += split.amount
+                    }
+                } else {
+                    // Someone else paid - current user might owe
+                    if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
+                        totalBalance -= userSplit.amount
+                    }
                 }
             }
-            
-            totalNet += (paidByUser - owes)
         }
-        
-        return totalNet
+
+        return totalBalance
     }
 }
 
@@ -361,7 +399,7 @@ struct ModernGroupBalanceCard: View {
         let net = calculateNetBalance()
         let expenseCount = store.expenses(in: group.id).count
         
-        HStack(spacing: 16) {
+        HStack(spacing: 12) {
             // Group icon/avatar
             if group.isDirect == true {
                 // Friend avatar
@@ -377,11 +415,14 @@ struct ModernGroupBalanceCard: View {
                 Text(group.name)
                     .font(.system(.headline, design: .rounded, weight: .semibold))
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
                 
-                HStack(spacing: 8) {
+                HStack(spacing: 4) {
                     Text("\(expenseCount) expense\(expenseCount == 1 ? "" : "s")")
                         .font(.system(.caption, design: .rounded))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     
                     if group.isDirect != true && group.members.count > 0 {
                         Text("•")
@@ -391,11 +432,14 @@ struct ModernGroupBalanceCard: View {
                         Text("\(group.members.count) member\(group.members.count == 1 ? "" : "s")")
                             .font(.system(.caption, design: .rounded))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                     }
+                    
+                    Spacer(minLength: 0)
                 }
             }
-            
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
             
             VStack(alignment: .trailing, spacing: 4) {
                 Text(balanceText(net))
@@ -414,15 +458,37 @@ struct ModernGroupBalanceCard: View {
                 }
             }
         }
-        .padding(20)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 18)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(AppTheme.card)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            AppTheme.card,
+                            AppTheme.card.opacity(0.95),
+                            balanceColor(net).opacity(0.03)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
                 .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 4)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16)
-                .stroke(balanceColor(net).opacity(0.2), lineWidth: 1)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            balanceColor(net).opacity(0.4),
+                            balanceColor(net).opacity(0.2),
+                            balanceColor(net).opacity(0.1)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 2.5
+                )
         )
     }
     
@@ -450,19 +516,22 @@ struct ModernGroupBalanceCard: View {
     }
     
     private func calculateNetBalance() -> Double {
-        let items = store.expenses(in: group.id)
         var paidByUser: Double = 0
         var owes: Double = 0
-        
-        for exp in items where !exp.isSettled {
-            if exp.paidByMemberId == store.currentUser.id {
-                paidByUser += exp.totalAmount
+
+        // TODO: DATABASE_INTEGRATION - Replace with database query
+        // Example: SELECT * FROM expenses WHERE group_id = group.id AND settled = false
+        let groupExpenses = store.expenses(in: group.id)
+
+        for expense in groupExpenses where !expense.isSettled {
+            if expense.paidByMemberId == store.currentUser.id {
+                paidByUser += expense.totalAmount
             }
-            if let split = exp.splits.first(where: { $0.memberId == store.currentUser.id }) {
+            if let split = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
                 owes += split.amount
             }
         }
-        
+
         return paidByUser - owes
     }
 }
@@ -471,31 +540,47 @@ struct HistoryView: View {
     @EnvironmentObject var store: AppStore
     
     var body: some View {
-        if store.expenses.isEmpty {
+        let userExpenses = store.expensesInvolvingCurrentUser()
+        
+        if userExpenses.isEmpty {
             EmptyStateView("No activity yet", systemImage: "clock.arrow.circlepath", description: "Add an expense to get started")
                 .padding()
         } else {
             List {
-                ForEach(store.expenses.sorted(by: { $0.date > $1.date })) { e in
+                ForEach(userExpenses) { e in
                     NavigationLink(value: e) {
                         HStack(spacing: 12) {
                             GroupIcon(name: e.description)
                                 .opacity(e.isSettled ? 0.6 : 1.0)
-                            VStack(alignment: .leading) {
-                                HStack {
-                                    Text(e.description).font(.headline)
+                                .frame(width: 40, height: 40)
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Text(e.description)
+                                        .font(.headline)
                                         .foregroundStyle(e.isSettled ? .secondary : .primary)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.9)
+                                    
                                     if e.isSettled {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundStyle(.green)
                                             .font(.caption)
                                     }
                                 }
-                                Text(e.date, style: .date).font(.caption).foregroundStyle(.secondary)
+                                
+                                Text(e.date, style: .date)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
                             }
-                            Spacer()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            
                             Text(e.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                                .font(.headline)
                                 .foregroundStyle(e.isSettled ? .secondary : .primary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                         }
                         .padding(.vertical, 6)
                     }
@@ -508,7 +593,3 @@ struct HistoryView: View {
         }
     }
 }
-
-
-
-

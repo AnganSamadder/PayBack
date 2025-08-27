@@ -202,6 +202,73 @@ enum AppMetrics {
         static let manualAmountFieldWidth: CGFloat = 100
         static let balanceTolerance: CGFloat = 0.01
     }
+    
+    // MARK: - Friend Detail specific metrics
+    enum FriendDetail {
+        // Layout spacing
+        static let verticalStackSpacing: CGFloat = 20
+        static let contentVerticalPadding: CGFloat = 16
+        static let contentHorizontalPadding: CGFloat = 16
+        static let contentTopPadding: CGFloat = 20
+        static let contentSpacing: CGFloat = 16
+        
+        // Header metrics
+        static let headerIconSpacing: CGFloat = 8
+        static let headerIconSize: CGFloat = 18
+        static let headerHorizontalPadding: CGFloat = 20
+        static let headerVerticalPadding: CGFloat = 16
+        
+        // Hero balance card metrics
+        static let heroCardSpacing: CGFloat = 20
+        static let heroCardPadding: CGFloat = 24
+        static let heroCardCornerRadius: CGFloat = 24
+        static let heroCardShadowRadius: CGFloat = 16
+        static let heroCardShadowY: CGFloat = 8
+        
+        // Avatar and name metrics
+        static let avatarSize: CGFloat = 80
+        static let avatarNameSpacing: CGFloat = 12
+        
+        // Balance display metrics
+        static let balanceDisplaySpacing: CGFloat = 8
+        static let balanceIconSpacing: CGFloat = 12
+        static let balanceIconSize: CGFloat = 28
+        static let balanceTextSpacing: CGFloat = 4
+        static let balanceHorizontalPadding: CGFloat = 20
+        static let balanceVerticalPadding: CGFloat = 16
+        static let balanceCardCornerRadius: CGFloat = 20
+        
+        // Tab metrics
+        static let tabVerticalPadding: CGFloat = 16
+        static let tabCornerRadius: CGFloat = 16
+        
+        // Expense card metrics
+        static let expenseCardSpacing: CGFloat = 12
+        static let expenseCardInternalSpacing: CGFloat = 12
+        static let expenseCardPadding: CGFloat = 16
+        static let expenseCardCornerRadius: CGFloat = 16
+        static let expenseIconSize: CGFloat = 40
+        static let expenseTextSpacing: CGFloat = 4
+        static let expenseAmountSpacing: CGFloat = 4
+        
+        // Group section metrics
+        static let groupSectionSpacing: CGFloat = 16
+        static let groupSectionInternalSpacing: CGFloat = 12
+        static let groupSectionPadding: CGFloat = 16
+        static let groupSectionCornerRadius: CGFloat = 16
+        static let groupExpenseSpacing: CGFloat = 8
+        static let groupExpenseRowSpacing: CGFloat = 12
+        static let groupExpenseIconSize: CGFloat = 32
+        static let groupExpenseTextSpacing: CGFloat = 2
+        static let groupExpenseAmountSpacing: CGFloat = 2
+        static let groupExpenseRowPadding: CGFloat = 8
+        
+        // Border and shadow metrics
+        static let borderWidth: CGFloat = 2.5
+        static let dashboardBorderWidth: CGFloat = 2.5
+        static let groupCardBorderWidth: CGFloat = 2.5
+        static let dragThreshold: CGFloat = 100
+    }
 }
 
 extension View {

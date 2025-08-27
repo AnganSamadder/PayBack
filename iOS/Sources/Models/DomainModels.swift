@@ -8,6 +8,14 @@ struct GroupMember: Identifiable, Codable, Hashable {
         self.id = id
         self.name = name
     }
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    static func == (lhs: GroupMember, rhs: GroupMember) -> Bool {
+        lhs.id == rhs.id
+    }
 }
 
 struct SpendingGroup: Identifiable, Codable, Hashable {

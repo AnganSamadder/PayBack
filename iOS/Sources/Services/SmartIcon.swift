@@ -32,5 +32,3 @@ struct SmartIcon {
         return make("tag.fill", bg: AppTheme.brand)
     }
 }
-
-

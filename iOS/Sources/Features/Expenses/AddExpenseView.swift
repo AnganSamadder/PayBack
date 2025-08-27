@@ -502,7 +502,7 @@ private struct SplitDetailView: View {
     @Binding var manualAmounts: [UUID: Double]
 
     var body: some View {
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(spacing: 20) {
                 // Participants Section
                 VStack(alignment: .leading, spacing: 12) {

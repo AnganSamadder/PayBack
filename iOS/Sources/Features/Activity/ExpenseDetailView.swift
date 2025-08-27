@@ -9,7 +9,7 @@ struct ExpenseDetailView: View {
     @State private var selectedSettleMethod = SettleMethod.markAsPaid
     
     var body: some View {
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(spacing: 24) {
                 // Header card
                 VStack(spacing: 16) {
@@ -31,6 +31,21 @@ struct ExpenseDetailView: View {
                 .padding(24)
                 .background(AppTheme.card)
                 .clipShape(RoundedRectangle(cornerRadius: 20))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    AppTheme.brand.opacity(0.2),
+                                    AppTheme.brand.opacity(0.1),
+                                    AppTheme.brand.opacity(0.05)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 2
+                        )
+                )
                 .shadow(color: AppTheme.brand.opacity(0.1), radius: 12, x: 0, y: 6)
                 .padding(.horizontal, 16)
                 

@@ -13,21 +13,26 @@ struct RootView: View {
     @State private var showPickerUI: Bool = false
     @State private var circleSize: CGFloat = 64
     @State private var showExpandingCircle: Bool = false
+    @State private var peopleScope: PeopleScope = .friends
 
     var body: some View {
         ZStack {
-            TabView(selection: $selectedTab) {
-                PeopleHomeView()
-                    .tabItem { Label("People", systemImage: "person.2") }
-                    .tag(0)
+            VStack(spacing: 0) {
+                // Main content
+                TabView(selection: $selectedTab) {
+                    PeopleHomeView(scope: $peopleScope)
+                        .environmentObject(store)
+                        .tag(0)
 
-                ActivityView()
-                    .tabItem { Label("Activity", systemImage: "clock.arrow.circlepath") }
-                    .tag(1)
+                    ActivityView()
+                        .environmentObject(store)
+                        .tag(1)
+                }
+                
+                // Custom tab bar
+                CustomTabBar(selectedTab: $selectedTab, peopleScope: $peopleScope)
+                    .offset(y: -40) // Compensate for safe area changes
             }
-            .tint(AppTheme.brand)
-            .accentColor(AppTheme.brand)
-            .background(AppTheme.background.ignoresSafeArea())
 
             // Center FAB overlay; expose bounds via preference for precise circle origin
             VStack {
@@ -35,12 +40,12 @@ struct RootView: View {
                 HStack {
                     Spacer()
                     AddFAB(action: openAdd, namespace: addNS, isActive: showAddOverlay || selectedGroupForNewExpense != nil)
-                        .padding(.bottom, 10)
                         .allowsHitTesting(!(showAddOverlay || selectedGroupForNewExpense != nil))
                         // Anchor preference set inside AddFAB
                     Spacer()
                 }
             }
+            .padding(.bottom, 40) // Compensate for safe area changes
 
             // Teal background + picker are attached via overlay on the ZStack below
 
@@ -64,7 +69,7 @@ struct RootView: View {
                     }
                 })
                     .environmentObject(store)
-                    .transition(.opacity)
+                    .transition(.opacity.animation(.easeInOut(duration: 0.2)))
                     .zIndex(3)
             }
         }
@@ -80,6 +85,12 @@ struct RootView: View {
                     }
                 }()
                 ZStack {
+                    // Full screen background to fill safe areas - during TargetPicker and transition to AddExpenseView
+                    if showAddOverlay && (showPickerUI || selectedGroupForNewExpense != nil) {
+                        AppTheme.chooseTargetBackground
+                            .ignoresSafeArea()
+                            .zIndex(-1)
+                    }
                     if showAddOverlay && selectedGroupForNewExpense == nil && showExpandingCircle {
                         // Expanding circle from FAB center - show immediately when overlay appears
                         ZStack {
@@ -87,11 +98,15 @@ struct RootView: View {
                             Circle()
                                 .fill(AppTheme.brand)
                                 .frame(width: circleSize, height: circleSize)
-                            
+                                .opacity(showExpandingCircle ? 1 : 0)
+                                .animation(.easeOut(duration: 0.2), value: showExpandingCircle)
+
                             // Inner circle (smaller) - black in dark mode, white in light mode
                             Circle()
                                 .fill(AppTheme.expandingCircleInnerColor)
                                 .frame(width: circleSize * 0.85, height: circleSize * 0.85)
+                                .opacity(showExpandingCircle ? 1 : 0)
+                                .animation(.easeOut(duration: 0.3).delay(0.1), value: showExpandingCircle)
                         }
                         .position(x: center.x, y: center.y)
                         .ignoresSafeArea()
@@ -100,33 +115,56 @@ struct RootView: View {
                             let diameter = diagonal * 2.2
                             withAnimation(.spring(response: 0.8, dampingFraction: 0.8)) { circleSize = diameter }
                             
-                            // Hide circle after animation completes
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                                withAnimation(.easeOut(duration: 0.2)) {
-                                    showExpandingCircle = false
-                                }
+                            // Hide circle after animation completes, with extra time for fade-out
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                showExpandingCircle = false
                             }
                         }
                     }
 
                     if showAddOverlay && showPickerUI {
-                        TargetPickerTeal(
+                        TargetPicker(
                             onClose: closeAdd,
                             onSelectGroup: { group in
-                                withAnimation(AppAnimation.fade) { selectedGroupForNewExpense = group }
-                                withAnimation(AppAnimation.fade) { showAddOverlay = false; showPickerUI = false }
+                                // Fast fade transition between TargetPicker and AddExpenseView
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    selectedGroupForNewExpense = group
+                                }
+                                // Keep background visible during transition, hide after
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        showPickerUI = false
+                                    }
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    showAddOverlay = false
+                                }
                             },
                             onSelectFriend: { friend in
                                 let g = store.directGroup(with: friend)
-                                withAnimation(AppAnimation.fade) { selectedGroupForNewExpense = g }
-                                withAnimation(AppAnimation.fade) { showAddOverlay = false; showPickerUI = false }
+                                // Fast fade transition between TargetPicker and AddExpenseView
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    selectedGroupForNewExpense = g
+                                }
+                                // Keep background visible during transition, hide after
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        showPickerUI = false
+                                    }
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    showAddOverlay = false
+                                }
                             }
                         )
-                        .transition(.opacity)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.opacity.animation(.easeInOut(duration: 0.2)))
                     }
                 }
             }
         }
+        .statusBarHidden(true)
+        .ignoresSafeArea(.container, edges: showAddOverlay ? [] : .bottom)
         // keep preference available; circle rendered inside ZStack above
     }
 
@@ -190,7 +228,56 @@ private struct AddFAB: View {
     }
 }
 
-private struct TargetPickerTeal: View {
+private struct CustomTabBar: View {
+    @Binding var selectedTab: Int
+    @Binding var peopleScope: PeopleScope
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            // People tab
+            Button(action: {
+                selectedTab = 0
+            }) {
+                VStack(spacing: 4) {
+                    Image(systemName: "person.2")
+                        .font(.system(size: 24))
+                        .foregroundStyle(selectedTab == 0 ? AppTheme.brand : .secondary)
+                    Text("People")
+                        .font(.caption)
+                        .foregroundStyle(selectedTab == 0 ? AppTheme.brand : .secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
+            .simultaneousGesture(TapGesture(count: 2).onEnded { _ in
+                if selectedTab == 0 {
+                    peopleScope = (peopleScope == .friends ? .groups : .friends)
+                }
+            })
+            .padding(.bottom, 8)
+            
+            // Activity tab
+            Button(action: {
+                selectedTab = 1
+            }) {
+                VStack(spacing: 4) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 24))
+                        .foregroundStyle(selectedTab == 1 ? AppTheme.brand : .secondary)
+                    Text("Activity")
+                        .font(.caption)
+                        .foregroundStyle(selectedTab == 1 ? AppTheme.brand : .secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
+            .padding(.bottom, 8)
+        }
+        .frame(height: 0)
+    }
+}
+
+private struct TargetPicker: View {
     @EnvironmentObject var store: AppStore
     let onClose: () -> Void
     let onSelectGroup: (SpendingGroup) -> Void
@@ -215,7 +302,7 @@ private struct TargetPickerTeal: View {
             .padding(.top, 24)
             .padding(.bottom, 8)
 
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 20) {
                     // Friends section (cards on white background)
                     if !uniqueMembers.isEmpty {
@@ -267,8 +354,7 @@ private struct TargetPickerTeal: View {
                 .padding(.horizontal)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(AppTheme.chooseTargetBackground)
+        // .background(Color.orange)
     }
 
     private var uniqueMembers: [GroupMember] {
