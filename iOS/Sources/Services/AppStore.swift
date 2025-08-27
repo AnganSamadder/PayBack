@@ -18,8 +18,20 @@ final class AppStore: ObservableObject {
         // Current user is always "You" - find existing or create new
         if let existingUser = loaded.groups.flatMap({ $0.members }).first(where: { $0.name == "You" }) {
             self.currentUser = existingUser
+            print("👤 Current user found: \(existingUser.name) (ID: \(existingUser.id))")
         } else {
             self.currentUser = GroupMember(name: "You")
+            print("👤 New current user created: \(self.currentUser.name) (ID: \(self.currentUser.id))")
+        }
+
+        print("📊 Loaded data:")
+        print("   - Groups: \(loaded.groups.count)")
+        print("   - Expenses: \(loaded.expenses.count)")
+        for group in loaded.groups {
+            print("   - Group: \(group.name) with \(group.members.count) members")
+            for member in group.members {
+                print("     * Member: \(member.name) (ID: \(member.id))")
+            }
         }
 
         $groups.combineLatest($expenses)
@@ -75,11 +87,100 @@ final class AppStore: ObservableObject {
         expenses.removeAll { $0.id == expense.id }
     }
     
+    // MARK: - Settlement Methods
+    
     func markExpenseAsSettled(_ expense: Expense) {
         guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
         var updatedExpense = expense
         updatedExpense.isSettled = true
+        // Mark all splits as settled
+        updatedExpense.splits = updatedExpense.splits.map { split in
+            var updatedSplit = split
+            updatedSplit.isSettled = true
+            return updatedSplit
+        }
         expenses[idx] = updatedExpense
+    }
+    
+    func settleExpenseForMember(_ expense: Expense, memberId: UUID) {
+        print("🛠️ AppStore.settleExpenseForMember called")
+        print("   - Expense ID: \(expense.id)")
+        print("   - Member ID: \(memberId)")
+        print("   - Current user ID: \(currentUser.id)")
+
+        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else {
+            print("   ❌ Could not find expense with ID: \(expense.id)")
+            return
+        }
+
+        print("   ✅ Found expense at index: \(idx)")
+
+        // Create a completely new expense to ensure SwiftUI detects the change
+        let updatedSplits = expense.splits.map { split in
+            if split.memberId == memberId {
+                print("   ✅ Found split for member")
+                print("   📝 Split was settled: \(split.isSettled)")
+                var newSplit = split
+                newSplit.isSettled = true
+                print("   🎉 Split marked as settled")
+                return newSplit
+            }
+            return split
+        }
+
+        let allSplitsSettled = updatedSplits.allSatisfy { $0.isSettled }
+        print("   📊 All splits settled: \(allSplitsSettled)")
+
+        let updatedExpense = Expense(
+            id: expense.id,
+            groupId: expense.groupId,
+            description: expense.description,
+            date: expense.date,
+            totalAmount: expense.totalAmount,
+            paidByMemberId: expense.paidByMemberId,
+            involvedMemberIds: expense.involvedMemberIds,
+            splits: updatedSplits,
+            isSettled: allSplitsSettled
+        )
+
+        print("   📊 Expense fully settled: \(updatedExpense.isSettled)")
+
+        // Replace the entire expense in the array
+        expenses[idx] = updatedExpense
+        print("   💾 Expense updated in store")
+
+        // Force immediate persistence
+        let appData = AppData(groups: groups, expenses: expenses)
+        persistence.save(appData)
+        print("   💾 Changes persisted immediately")
+
+        // Force a debug print of the current state
+        if let updated = expenses.first(where: { $0.id == expense.id }) {
+            print("   🔍 Verification - Updated expense isSettled: \(updated.isSettled)")
+            if let split = updated.splits.first(where: { $0.memberId == memberId }) {
+                print("   🔍 Verification - Member split isSettled: \(split.isSettled)")
+            }
+        }
+    }
+    
+    func settleExpenseForCurrentUser(_ expense: Expense) {
+        settleExpenseForMember(expense, memberId: currentUser.id)
+    }
+    
+    func canSettleExpenseForAll(_ expense: Expense) -> Bool {
+        // Only the person who paid can settle for everyone
+        return expense.paidByMemberId == currentUser.id
+    }
+    
+    func canSettleExpenseForSelf(_ expense: Expense) -> Bool {
+        // Anyone involved in the expense can settle their own part
+        let canSettle = expense.involvedMemberIds.contains(currentUser.id)
+        print("🔐 canSettleExpenseForSelf check:")
+        print("   - Expense ID: \(expense.id)")
+        print("   - Current user ID: \(currentUser.id)")
+        print("   - Involved member IDs: \(expense.involvedMemberIds)")
+        print("   - Can settle: \(canSettle)")
+        return canSettle
     }
 
     // MARK: - Queries
@@ -92,6 +193,15 @@ final class AppStore: ObservableObject {
     func expensesInvolvingCurrentUser() -> [Expense] {
         expenses
             .filter { $0.involvedMemberIds.contains(currentUser.id) }
+            .sorted(by: { $0.date > $1.date })
+    }
+    
+    func unsettledExpensesInvolvingCurrentUser() -> [Expense] {
+        expenses
+            .filter { expense in
+                expense.involvedMemberIds.contains(currentUser.id) && 
+                !expense.isSettled(for: currentUser.id)
+            }
             .sorted(by: { $0.date > $1.date })
     }
 

@@ -83,6 +83,7 @@ struct ChooseTargetView: View {
                     }
                 }
             }
+            .scrollIndicators(.hidden)
             .navigationTitle("Choose Target")
         }
     }

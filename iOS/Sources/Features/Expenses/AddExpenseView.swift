@@ -455,6 +455,7 @@ private struct PaidSplitBubble: View {
                         .buttonStyle(.plain)
                     }
                 }
+                .scrollIndicators(.hidden)
                 .navigationTitle("Select Payer")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {

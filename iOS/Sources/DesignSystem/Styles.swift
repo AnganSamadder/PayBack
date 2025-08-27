@@ -94,6 +94,34 @@ enum AppTheme {
         }
     })
     
+    // Navigation header colors
+    static let navigationHeaderBackground: Color = Color(UIColor { traits in
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return UIColor.black // Dark background for header in dark mode
+        default:
+            return UIColor.white // White background for header in light mode
+        }
+    })
+
+    static let navigationHeaderText: Color = Color(UIColor { traits in
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return UIColor.white // White text on dark background
+        default:
+            return UIColor.black // Black text on light background
+        }
+    })
+
+    static let navigationHeaderAccent: Color = Color(UIColor { traits in
+        switch traits.userInterfaceStyle {
+        case .dark:
+            return UIColor.white // White accent on dark background
+        default:
+            return UIColor(red: 0.06, green: 0.72, blue: 0.78, alpha: 1.0) // Teal accent on light background
+        }
+    })
+
     // Centralized color for text that should use the brand color
     static let brandTextColor: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
@@ -123,10 +151,14 @@ enum AppTheme {
             return UIColor.white
         }
     })
+
+    // Centralized colors for settlement status
+    static let settlementOrange: Color = .orange
+    static let settlementText: Color = .orange
 }
 
 // Centralized spacing, sizing, and layout metrics (avoid magic numbers)
-enum AppMetrics {
+public enum AppMetrics {
     // Device-specific metrics
     static func deviceCornerRadius(for safeAreaTop: CGFloat) -> CGFloat {
         // Use the actual display corner radius from UIScreen (like ScreenCorners library)
@@ -208,7 +240,7 @@ enum AppMetrics {
         // Layout spacing
         static let verticalStackSpacing: CGFloat = 20
         static let contentVerticalPadding: CGFloat = 16
-        static let contentHorizontalPadding: CGFloat = 16
+        static let contentHorizontalPadding: CGFloat = 8
         static let contentTopPadding: CGFloat = 20
         static let contentSpacing: CGFloat = 16
         
@@ -268,6 +300,16 @@ enum AppMetrics {
         static let dashboardBorderWidth: CGFloat = 2.5
         static let groupCardBorderWidth: CGFloat = 2.5
         static let dragThreshold: CGFloat = 100
+    }
+    
+    // MARK: - Navigation Header metrics
+    public enum Navigation {
+        static let headerIconSpacing: CGFloat = 8
+        static let headerIconSize: CGFloat = 18
+        static let headerHorizontalPadding: CGFloat = 20
+        static let headerVerticalPadding: CGFloat = 16
+        static let headerTitleFontSize: CGFloat = 18
+        static let headerTitleFontWeight: Font.Weight = .bold
     }
 }
 

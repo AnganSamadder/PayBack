@@ -68,6 +68,7 @@ struct ActivityView: View {
             }
         }
         .navigationTitle("Activity")
+        .toolbar(.hidden, for: .navigationBar)
         .background(AppTheme.background.ignoresSafeArea())
         .onChange(of: shouldResetNavigation) { _, shouldReset in
             if shouldReset {
@@ -119,10 +120,11 @@ struct ActivityView: View {
             paidByMemberId: store.currentUser.id,
             involvedMemberIds: [store.currentUser.id, group1.members[1].id, group1.members[2].id], // Use indices 1,2 since 0 is current user
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 28.50),
-                ExpenseSplit(memberId: group1.members[1].id, amount: 28.50),
-                ExpenseSplit(memberId: group1.members[2].id, amount: 28.50)
-            ]
+                ExpenseSplit(memberId: store.currentUser.id, amount: 28.50, isSettled: true),
+                ExpenseSplit(memberId: group1.members[1].id, amount: 28.50, isSettled: true),
+                ExpenseSplit(memberId: group1.members[2].id, amount: 28.50, isSettled: false)
+            ],
+            isSettled: false
         )
         
         let expense2 = Expense(
@@ -133,11 +135,12 @@ struct ActivityView: View {
             paidByMemberId: group1.members[1].id, // Alex paid
             involvedMemberIds: [store.currentUser.id, group1.members[1].id, group1.members[2].id, group1.members[3].id],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 30.00),
-                ExpenseSplit(memberId: group1.members[1].id, amount: 30.00),
-                ExpenseSplit(memberId: group1.members[2].id, amount: 30.00),
-                ExpenseSplit(memberId: group1.members[3].id, amount: 30.00)
-            ]
+                ExpenseSplit(memberId: store.currentUser.id, amount: 30.00, isSettled: false),
+                ExpenseSplit(memberId: group1.members[1].id, amount: 30.00, isSettled: true),
+                ExpenseSplit(memberId: group1.members[2].id, amount: 30.00, isSettled: true),
+                ExpenseSplit(memberId: group1.members[3].id, amount: 30.00, isSettled: false)
+            ],
+            isSettled: false
         )
         
         // Add sample expenses for Work Team group
@@ -149,10 +152,11 @@ struct ActivityView: View {
             paidByMemberId: store.currentUser.id,
             involvedMemberIds: [store.currentUser.id, group2.members[1].id, group2.members[2].id],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 21.75),
-                ExpenseSplit(memberId: group2.members[1].id, amount: 21.75),
-                ExpenseSplit(memberId: group2.members[2].id, amount: 21.75)
-            ]
+                ExpenseSplit(memberId: store.currentUser.id, amount: 21.75, isSettled: true),
+                ExpenseSplit(memberId: group2.members[1].id, amount: 21.75, isSettled: false),
+                ExpenseSplit(memberId: group2.members[2].id, amount: 21.75, isSettled: true)
+            ],
+            isSettled: false
         )
         
         let expense4 = Expense(
@@ -163,10 +167,11 @@ struct ActivityView: View {
             paidByMemberId: group2.members[3].id, // David paid
             involvedMemberIds: [store.currentUser.id, group2.members[3].id, group2.members[4].id],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 15.00),
-                ExpenseSplit(memberId: group2.members[3].id, amount: 15.00),
-                ExpenseSplit(memberId: group2.members[4].id, amount: 15.00)
-            ]
+                ExpenseSplit(memberId: store.currentUser.id, amount: 15.00, isSettled: true),
+                ExpenseSplit(memberId: group2.members[3].id, amount: 15.00, isSettled: true),
+                ExpenseSplit(memberId: group2.members[4].id, amount: 15.00, isSettled: false)
+            ],
+            isSettled: false
         )
         
         // Add sample expenses for direct friends
@@ -178,9 +183,10 @@ struct ActivityView: View {
             paidByMemberId: store.currentUser.id,
             involvedMemberIds: [store.currentUser.id, friend1.id],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 6.25),
-                ExpenseSplit(memberId: friend1.id, amount: 6.25)
-            ]
+                ExpenseSplit(memberId: store.currentUser.id, amount: 6.25, isSettled: true),
+                ExpenseSplit(memberId: friend1.id, amount: 6.25, isSettled: false)
+            ],
+            isSettled: false
         )
         
         let expense6 = Expense(
@@ -191,12 +197,13 @@ struct ActivityView: View {
             paidByMemberId: friend2.id,
             involvedMemberIds: [store.currentUser.id, friend2.id],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 16.00),
-                ExpenseSplit(memberId: friend2.id, amount: 16.00)
-            ]
+                ExpenseSplit(memberId: store.currentUser.id, amount: 16.00, isSettled: false),
+                ExpenseSplit(memberId: friend2.id, amount: 16.00, isSettled: true)
+            ],
+            isSettled: false
         )
         
-        // Add one settled expense
+        // Add one fully settled expense
         let expense7 = Expense(
             groupId: group1.id,
             description: "Pizza Night",
@@ -205,10 +212,60 @@ struct ActivityView: View {
             paidByMemberId: store.currentUser.id,
             involvedMemberIds: [store.currentUser.id, group1.members[1].id],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 14.00),
-                ExpenseSplit(memberId: group1.members[1].id, amount: 14.00)
+                ExpenseSplit(memberId: store.currentUser.id, amount: 14.00, isSettled: true),
+                ExpenseSplit(memberId: group1.members[1].id, amount: 14.00, isSettled: true)
             ],
             isSettled: true
+        )
+        
+        // Add one partially settled expense
+        let expense8 = Expense(
+            groupId: group2.id,
+            description: "Team Dinner",
+            date: Date().addingTimeInterval(-86400 * 7), // 7 days ago
+            totalAmount: 120.00,
+            paidByMemberId: store.currentUser.id,
+            involvedMemberIds: [store.currentUser.id, group2.members[1].id, group2.members[2].id, group2.members[3].id],
+            splits: [
+                ExpenseSplit(memberId: store.currentUser.id, amount: 30.00, isSettled: true),
+                ExpenseSplit(memberId: group2.members[1].id, amount: 30.00, isSettled: true),
+                ExpenseSplit(memberId: group2.members[2].id, amount: 30.00, isSettled: false),
+                ExpenseSplit(memberId: group2.members[3].id, amount: 30.00, isSettled: false)
+            ],
+            isSettled: false
+        )
+        
+        // Add another expense with different settlement pattern
+        let expense9 = Expense(
+            groupId: group1.id,
+            description: "Internet Bill",
+            date: Date().addingTimeInterval(-86400 * 8), // 8 days ago
+            totalAmount: 80.00,
+            paidByMemberId: group1.members[2].id, // Jordan paid
+            involvedMemberIds: [store.currentUser.id, group1.members[1].id, group1.members[2].id, group1.members[3].id],
+            splits: [
+                ExpenseSplit(memberId: store.currentUser.id, amount: 20.00, isSettled: false),
+                ExpenseSplit(memberId: group1.members[1].id, amount: 20.00, isSettled: true),
+                ExpenseSplit(memberId: group1.members[2].id, amount: 20.00, isSettled: true),
+                ExpenseSplit(memberId: group1.members[3].id, amount: 20.00, isSettled: false)
+            ],
+            isSettled: false
+        )
+        
+        // Add a fully unsettled expense
+        let expense10 = Expense(
+            groupId: group2.id,
+            description: "Conference Tickets",
+            date: Date().addingTimeInterval(-86400 * 9), // 9 days ago
+            totalAmount: 200.00,
+            paidByMemberId: group2.members[4].id, // Emma paid
+            involvedMemberIds: [store.currentUser.id, group2.members[1].id, group2.members[4].id],
+            splits: [
+                ExpenseSplit(memberId: store.currentUser.id, amount: 66.67, isSettled: false),
+                ExpenseSplit(memberId: group2.members[1].id, amount: 66.67, isSettled: false),
+                ExpenseSplit(memberId: group2.members[4].id, amount: 66.66, isSettled: true)
+            ],
+            isSettled: false
         )
         
         // Add all expenses to store
@@ -219,6 +276,9 @@ struct ActivityView: View {
         store.addExpense(expense5)
         store.addExpense(expense6)
         store.addExpense(expense7)
+        store.addExpense(expense8)
+        store.addExpense(expense9)
+        store.addExpense(expense10)
     }
 }
 
@@ -380,15 +440,15 @@ struct DashboardView: View {
         // TODO: DATABASE_INTEGRATION - Replace with efficient database query
         // Example: SELECT SUM(amount) FROM balances WHERE user_id = currentUser.id
         for group in store.groups {
-            for expense in store.expenses(in: group.id) where !expense.isSettled {
+            for expense in store.expenses(in: group.id) {
                 if expense.paidByMemberId == store.currentUser.id {
-                    // Current user paid - others owe current user
-                    for split in expense.splits where split.memberId != store.currentUser.id {
+                    // Current user paid - others owe current user (only unsettled splits)
+                    for split in expense.splits where split.memberId != store.currentUser.id && !split.isSettled {
                         totalBalance += split.amount
                     }
                 } else {
-                    // Someone else paid - current user might owe
-                    if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
+                    // Someone else paid - current user might owe (only unsettled splits)
+                    if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }), !userSplit.isSettled {
                         totalBalance -= userSplit.amount
                     }
                 }
@@ -531,11 +591,11 @@ struct ModernGroupBalanceCard: View {
         // Example: SELECT * FROM expenses WHERE group_id = group.id AND settled = false
         let groupExpenses = store.expenses(in: group.id)
 
-        for expense in groupExpenses where !expense.isSettled {
+        for expense in groupExpenses {
             if expense.paidByMemberId == store.currentUser.id {
                 paidByUser += expense.totalAmount
             }
-            if let split = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
+            if let split = expense.splits.first(where: { $0.memberId == store.currentUser.id }), !split.isSettled {
                 owes += split.amount
             }
         }
@@ -574,6 +634,10 @@ struct HistoryView: View {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundStyle(.green)
                                             .font(.caption)
+                                    } else if e.settledSplits.count > 0 {
+                                        Image(systemName: "clock.circle.fill")
+                                            .foregroundStyle(AppTheme.settlementOrange)
+                                            .font(.caption)
                                     }
                                 }
                                 
@@ -597,6 +661,7 @@ struct HistoryView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
             .background(AppTheme.background)
         }
     }

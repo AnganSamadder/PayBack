@@ -25,15 +25,15 @@ struct FriendDetailView: View {
                 // TODO: DATABASE_INTEGRATION - Replace store.expenses(in:) with database query
                 // Example: SELECT * FROM expenses WHERE group_id = group.id AND settled = false
                 let groupExpenses = store.expenses(in: group.id)
-                for expense in groupExpenses where !expense.isSettled {
+                for expense in groupExpenses {
                     if expense.paidByMemberId == store.currentUser.id {
-                        // Current user paid, check if friend owes anything
-                        if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
+                        // Current user paid, check if friend owes anything (only unsettled)
+                        if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }), !friendSplit.isSettled {
                             balance += friendSplit.amount
                         }
                     } else if expense.paidByMemberId == friend.id {
-                        // Friend paid, check if current user owes anything
-                        if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
+                        // Friend paid, check if current user owes anything (only unsettled)
+                        if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }), !userSplit.isSettled {
                             balance -= userSplit.amount
                         }
                     }
@@ -131,23 +131,51 @@ struct FriendDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Custom navigation header
-            customNavigationHeader
+        VStack(spacing: AppMetrics.FriendDetail.verticalStackSpacing) {
+            // Hero balance card with gradient
+            heroBalanceCard
             
-            VStack(spacing: AppMetrics.FriendDetail.verticalStackSpacing) {
-                // Hero balance card with gradient
-                heroBalanceCard
-                
-                // Tab selector
-                tabSelector
-                
-                // Tab content
-                tabContent
-            }
-            .padding(.vertical, AppMetrics.FriendDetail.contentVerticalPadding)
+            // Tab selector
+            tabSelector
+            
+            // Tab content
+            tabContent
         }
-        .background(AppTheme.background)
+        .padding(.vertical, AppMetrics.FriendDetail.contentVerticalPadding)
+        .safeAreaInset(edge: .top) {
+            HStack {
+                Button(action: onBack) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                        Text("Back")
+                            .font(.system(.body, design: .rounded, weight: .medium))
+                    }
+                    .foregroundStyle(AppTheme.navigationHeaderAccent)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Text("Friend Details")
+                    .font(.system(size: AppMetrics.Navigation.headerTitleFontSize, weight: AppMetrics.Navigation.headerTitleFontWeight, design: .rounded))
+                    .foregroundStyle(AppTheme.navigationHeaderAccent)
+
+                Spacer()
+
+                // Invisible spacer for balance
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 18, weight: .semibold))
+                    Text("Back")
+                        .font(.system(.body, design: .rounded, weight: .medium))
+                }
+                .opacity(0)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(AppTheme.navigationHeaderBackground)
+        }
         .sheet(isPresented: $showAddExpense) {
             if let directGroup = getDirectGroup() {
                 AddExpenseView(group: directGroup)
@@ -173,42 +201,7 @@ struct FriendDetailView: View {
         )
     }
     
-    // MARK: - Custom Navigation Header
-    
-    private var customNavigationHeader: some View {
-        HStack {
-            Button(action: onBack) {
-                HStack(spacing: AppMetrics.FriendDetail.headerIconSpacing) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: AppMetrics.FriendDetail.headerIconSize, weight: .semibold))
-                    Text("Back")
-                        .font(.system(.body, design: .rounded, weight: .medium))
-                }
-                .foregroundStyle(.white)
-            }
-            .buttonStyle(.plain)
-            
-            Spacer()
-            
-            Text("Friend Details")
-                .font(.system(.headline, design: .rounded, weight: .semibold))
-                .foregroundStyle(.white)
-            
-            Spacer()
-            
-            // Invisible spacer to balance the back button
-            HStack(spacing: AppMetrics.FriendDetail.headerIconSpacing) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: AppMetrics.FriendDetail.headerIconSize, weight: .semibold))
-                Text("Back")
-                    .font(.system(.body, design: .rounded, weight: .medium))
-            }
-            .opacity(0)
-        }
-        .padding(.horizontal, AppMetrics.FriendDetail.headerHorizontalPadding)
-        .padding(.vertical, AppMetrics.FriendDetail.headerVerticalPadding)
-        .background(.black)
-    }
+
     
     // MARK: - Hero Balance Card
     
@@ -458,7 +451,7 @@ struct DirectExpenseCard: View {
     let friend: GroupMember
     
     var body: some View {
-        NavigationLink(destination: ExpenseDetailView(expense: expense)) {
+                        NavigationLink(destination: ExpenseDetailView(expense: expense)) {
             VStack(spacing: AppMetrics.FriendDetail.expenseCardInternalSpacing) {
                 HStack {
                     GroupIcon(name: expense.description)
@@ -484,18 +477,34 @@ struct DirectExpenseCard: View {
                         if expense.paidByMemberId == store.currentUser.id {
                         // Current user paid - friend owes current user
                             if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
+                                HStack(spacing: 4) {
                                     Text("\(friend.name) owes \(currency(friendSplit.amount))")
                                         .font(.system(.caption, design: .rounded, weight: .medium))
                                         .foregroundStyle(.green)
+                                    
+                                    if friendSplit.isSettled {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.green)
+                                    }
                                 }
-                            } else {
-                                // Friend paid - current user owes friend
-                                if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
+                            }
+                        } else {
+                            // Friend paid - current user owes friend
+                            if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
+                                HStack(spacing: 4) {
                                     Text("You owe \(currencyPositive(userSplit.amount))")
                                         .font(.system(.caption, design: .rounded, weight: .medium))
                                         .foregroundStyle(.red)
+                                    
+                                    if userSplit.isSettled {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.green)
+                                    }
                                 }
                             }
+                        }
                     }
                 }
             }
@@ -596,16 +605,32 @@ struct GroupExpenseRow: View {
                 if expense.paidByMemberId == store.currentUser.id {
                     // Current user paid - friend owes current user
                     if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
-                        Text("\(friend.name) owes \(currency(friendSplit.amount))")
-                            .font(.system(.caption, design: .rounded, weight: .medium))
-                            .foregroundStyle(.green)
+                        HStack(spacing: 4) {
+                            Text("\(friend.name) owes \(currency(friendSplit.amount))")
+                                .font(.system(.caption, design: .rounded, weight: .medium))
+                                .foregroundStyle(.green)
+                            
+                            if friendSplit.isSettled {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.green)
+                            }
+                        }
                     }
                 } else {
                     // Friend paid - current user owes friend
                     if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
-                        Text("You owe \(currencyPositive(userSplit.amount))")
-                            .font(.system(.caption, design: .rounded, weight: .medium))
-                            .foregroundStyle(.red)
+                        HStack(spacing: 4) {
+                            Text("You owe \(currencyPositive(userSplit.amount))")
+                                .font(.system(.caption, design: .rounded, weight: .medium))
+                                .foregroundStyle(.red)
+                            
+                            if userSplit.isSettled {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.green)
+                            }
+                        }
                     }
                 }
             }

@@ -299,6 +299,7 @@ private struct FriendsList: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .scrollIndicators(.hidden)
                 .background(AppTheme.background)
             }
         }

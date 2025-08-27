@@ -9,11 +9,7 @@ struct ExpenseDetailView: View {
     @State private var selectedSettleMethod = SettleMethod.markAsPaid
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Custom navigation header
-            customNavigationHeader
-            
-            ScrollView(showsIndicators: false) {
+        ScrollView(showsIndicators: false) {
             VStack(spacing: 24) {
                 // Header card
                 VStack(spacing: 16) {
@@ -72,11 +68,24 @@ struct ExpenseDetailView: View {
                         
                         // Splits
                         ForEach(expense.splits) { split in
-                            PaymentDetailRow(
-                                title: split.memberId == store.currentUser.id ? "You owe" : "\(memberName(for: split.memberId)) owes",
-                                value: currency(split.amount),
-                                isHighlighted: split.memberId == store.currentUser.id
-                            )
+                            HStack {
+                                PaymentDetailRow(
+                                    title: split.memberId == store.currentUser.id ? "You owe" : "\(memberName(for: split.memberId)) owes",
+                                    value: currency(split.amount),
+                                    isHighlighted: split.memberId == store.currentUser.id
+                                )
+
+                                // Settlement status icon
+                                if split.isSettled {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                        .font(.system(size: 16, weight: .semibold))
+                                } else {
+                                    Image(systemName: "clock.circle.fill")
+                                        .foregroundStyle(AppTheme.settlementOrange)
+                                        .font(.system(size: 16, weight: .semibold))
+                                }
+                            }
                         }
                     }
                     .padding(.horizontal, 16)
@@ -114,6 +123,44 @@ struct ExpenseDetailView: View {
             }
             .padding(.vertical, 16)
         }
+        .safeAreaInset(edge: .top) {
+            HStack {
+                Button(action: { dismiss() }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                        Text("Back")
+                            .font(.system(.body, design: .rounded, weight: .medium))
+                    }
+                    .foregroundStyle(AppTheme.navigationHeaderAccent)
+                    .frame(width: 80, alignment: .leading) // Fixed width for left button
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Text("Expense Details")
+                    .font(.system(size: AppMetrics.Navigation.headerTitleFontSize, weight: AppMetrics.Navigation.headerTitleFontWeight, design: .rounded))
+                    .foregroundStyle(AppTheme.navigationHeaderAccent)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                Spacer()
+
+                Button(action: {
+                    selectedSettleMethod = .markAsPaid
+                    showSettleSheet = true
+                }) {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(AppTheme.navigationHeaderAccent)
+                        .frame(width: 80, alignment: .trailing) // Fixed width for right button
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(AppTheme.navigationHeaderBackground)
         }
         .background(AppTheme.background)
         .toolbar(.hidden, for: .navigationBar)
@@ -121,56 +168,19 @@ struct ExpenseDetailView: View {
             SettleExpenseSheet(expense: expense, settleMethod: $selectedSettleMethod)
         }
     }
-    
-    // MARK: - Custom Navigation Header
-    
-    private var customNavigationHeader: some View {
-        HStack {
-            Button(action: { dismiss() }) {
-                HStack(spacing: AppMetrics.FriendDetail.headerIconSpacing) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: AppMetrics.FriendDetail.headerIconSize, weight: .semibold))
-                    Text("Back")
-                        .font(.system(.body, design: .rounded, weight: .medium))
-                }
-                .foregroundStyle(.white)
-            }
-            .buttonStyle(.plain)
-            
-            Spacer()
-            
-            Text("Expense Details")
-                .font(.system(.headline, design: .rounded, weight: .semibold))
-                .foregroundStyle(.white)
-            
-            Spacer()
-            
-            // Invisible spacer to balance the back button
-            HStack(spacing: AppMetrics.FriendDetail.headerIconSpacing) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: AppMetrics.FriendDetail.headerIconSize, weight: .semibold))
-                Text("Back")
-                    .font(.system(.body, design: .rounded, weight: .medium))
-            }
-            .opacity(0)
-        }
-        .padding(.horizontal, AppMetrics.FriendDetail.headerHorizontalPadding)
-        .padding(.vertical, AppMetrics.FriendDetail.headerVerticalPadding)
-        .background(.black)
-    }
-    
+
     private var shouldShowSettleButton: Bool {
         // Show settle button if current user is involved in the expense
         let isPaidByUser = expense.paidByMemberId == store.currentUser.id
         let isOwingUser = expense.splits.contains { $0.memberId == store.currentUser.id }
         return isPaidByUser || isOwingUser
     }
-    
+
     private func memberName(for id: UUID) -> String {
         guard let group = store.group(by: expense.groupId) else { return "Unknown" }
         return group.members.first { $0.id == id }?.name ?? "Unknown"
     }
-    
+
     private func currency(_ amount: Double) -> String {
         let id = Locale.current.currency?.identifier ?? "USD"
         return amount.formatted(.currency(code: id))

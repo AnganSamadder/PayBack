@@ -42,6 +42,7 @@ struct GroupsListView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .scrollIndicators(.hidden)
                 .background(AppTheme.background)
             }
         }
