@@ -7,7 +7,7 @@ public struct NavigationHeader: View {
     let onBack: () -> Void
     let showBackButton: Bool
     
-    init(
+    public init(
         title: String,
         showBackButton: Bool = true,
         onBack: @escaping () -> Void
@@ -17,7 +17,7 @@ public struct NavigationHeader: View {
         self.onBack = onBack
     }
     
-    var body: some View {
+    public var body: some View {
         HStack {
             if showBackButton {
                 Button(action: onBack) {
@@ -71,7 +71,7 @@ public struct NavigationHeaderModifier: ViewModifier {
     let showBackButton: Bool
     let onBack: () -> Void
     
-    func body(content: Content) -> some View {
+    public func body(content: Content) -> some View {
         content
             .safeAreaInset(edge: .top) {
                 NavigationHeader(
@@ -85,7 +85,7 @@ public struct NavigationHeaderModifier: ViewModifier {
 
 // MARK: - View Extension for Easy Usage
 
-extension View {
+public extension View {
     /// Adds a custom navigation header to the view
     /// - Parameters:
     ///   - title: The title to display in the header
@@ -115,7 +115,7 @@ public struct NavigationHeaderWithAction: View {
     let rightActionTitle: String?
     let rightActionIcon: String?
     
-    init(
+    public init(
         title: String,
         showBackButton: Bool = true,
         onBack: @escaping () -> Void,
@@ -131,7 +131,7 @@ public struct NavigationHeaderWithAction: View {
         self.rightActionIcon = rightActionIcon
     }
     
-    var body: some View {
+    public var body: some View {
         HStack {
             if showBackButton {
                 Button(action: onBack) {
@@ -205,7 +205,7 @@ public struct NavigationHeaderWithActionModifier: ViewModifier {
     let rightActionTitle: String?
     let rightActionIcon: String?
     
-    func body(content: Content) -> some View {
+    public func body(content: Content) -> some View {
         content
             .safeAreaInset(edge: .top) {
                 NavigationHeaderWithAction(
@@ -222,7 +222,7 @@ public struct NavigationHeaderWithActionModifier: ViewModifier {
 
 // MARK: - View Extension for Navigation Header with Action
 
-extension View {
+public extension View {
     /// Adds a custom navigation header with optional right action to the view
     /// - Parameters:
     ///   - title: The title to display in the header

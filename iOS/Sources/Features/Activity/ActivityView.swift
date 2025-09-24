@@ -4,75 +4,173 @@ struct ActivityView: View {
     @EnvironmentObject var store: AppStore
     @Binding var selectedTab: Int
     @Binding var shouldResetNavigation: Bool
-    @State private var navigationPath = NavigationPath()
-    
+    @State private var navigationState: ActivityNavigationState = .home
+    @State private var expenseDetailReturnState: ActivityNavigationState?
+    @State private var friendDetailReturnState: ActivityNavigationState?
+
+    enum ActivityNavigationState: Hashable {
+        case home
+        case expenseDetail(Expense)
+        case groupDetail(SpendingGroup)
+        case friendDetail(GroupMember)
+    }
+
+    var homeContent: some View {
+        VStack(spacing: 0) {
+            // Bubbly tab bar
+            HStack(spacing: 8) {
+                TabButton(title: "Dashboard", isSelected: selectedTab == 0) {
+                    selectedTab = 0
+                }
+
+                TabButton(title: "History", isSelected: selectedTab == 1) {
+                    selectedTab = 1
+                }
+
+                Spacer()
+
+                // Temporary test data button
+                Button(action: addTestData) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.orange)
+                        .padding(8)
+                        .background(
+                            Circle()
+                                .fill(.orange.opacity(0.1))
+                        )
+                }
+
+                // Temporary trash button
+                Button(action: clearAllData) {
+                    Image(systemName: "trash.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.red)
+                        .padding(8)
+                        .background(
+                            Circle()
+                                .fill(.red.opacity(0.1))
+                        )
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+                        // Tab content with swipe gesture
+            TabView(selection: $selectedTab) {
+                DashboardView(
+                    onGroupTap: { group in
+                        friendDetailReturnState = nil
+                        expenseDetailReturnState = nil
+                        navigationState = .groupDetail(group)
+                    },
+                    onFriendTap: { friend in
+                        friendDetailReturnState = .home
+                        navigationState = .friendDetail(friend)
+                    }
+                )
+                .tag(0)
+
+                HistoryView(onExpenseTap: { expense in
+                    expenseDetailReturnState = .home
+                    navigationState = .expenseDetail(expense)
+                })
+                .tag(1)
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+        }
+    }
+
     var body: some View {
-        NavigationStack(path: $navigationPath) {
-            VStack(spacing: 0) {
-                // Bubbly tab bar
-                HStack(spacing: 8) {
-                    TabButton(title: "Dashboard", isSelected: selectedTab == 0) {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                            selectedTab = 0
-                        }
+        ZStack {
+            switch navigationState {
+            case .home:
+                homeContent
+            case .expenseDetail(let expense):
+                DetailContainer(
+                    action: {
+                        navigationState = expenseDetailReturnState ?? .home
+                        expenseDetailReturnState = nil
+                    },
+                    background: {
+                        homeContent
+                            .opacity(0.2)
+                            .scaleEffect(0.95)
+                            .offset(y: 50)
                     }
-                    
-                    TabButton(title: "History", isSelected: selectedTab == 1) {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                            selectedTab = 1
-                        }
-                    }
-                    
-                    Spacer()
-                    
-                    // Temporary test data button
-                    Button(action: addTestData) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.orange)
-                            .padding(8)
-                            .background(
-                                Circle()
-                                    .fill(.orange.opacity(0.1))
-                            )
-                    }
-                    
-                    // Temporary trash button
-                    Button(action: clearAllData) {
-                        Image(systemName: "trash.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.red)
-                            .padding(8)
-                            .background(
-                                Circle()
-                                    .fill(.red.opacity(0.1))
-                            )
-                    }
+                ) {
+                    ExpenseDetailView(expense: expense, onBack: {
+                        navigationState = expenseDetailReturnState ?? .home
+                        expenseDetailReturnState = nil
+                    })
+                    .environmentObject(store)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                
-                // Tab content with swipe gesture
-                TabView(selection: $selectedTab) {
-                    DashboardView()
-                        .tag(0)
-                    
-                    HistoryView()
-                        .tag(1)
+            case .groupDetail(let group):
+                DetailContainer(
+                    action: {
+                        navigationState = .home
+                        expenseDetailReturnState = nil
+                        friendDetailReturnState = nil
+                    },
+                    background: {
+                        homeContent
+                            .opacity(0.2)
+                            .scaleEffect(0.95)
+                            .offset(y: 50)
+                    }
+                ) {
+                    GroupDetailView(
+                        group: group,
+                        onBack: {
+                            navigationState = .home
+                            expenseDetailReturnState = nil
+                            friendDetailReturnState = nil
+                        },
+                        onMemberTap: { member in
+                            friendDetailReturnState = .groupDetail(group)
+                            navigationState = .friendDetail(member)
+                        },
+                        onExpenseTap: { expense in
+                            expenseDetailReturnState = .groupDetail(group)
+                            navigationState = .expenseDetail(expense)
+                        }
+                    )
+                    .environmentObject(store)
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .animation(.easeInOut(duration: 0.3), value: selectedTab)
-                .navigationDestination(for: Expense.self) { expense in
-                    ExpenseDetailView(expense: expense)
+            case .friendDetail(let friend):
+                DetailContainer(
+                    action: {
+                        navigationState = friendDetailReturnState ?? .home
+                        friendDetailReturnState = nil
+                    },
+                    background: {
+                        homeContent
+                            .opacity(0.2)
+                            .scaleEffect(0.95)
+                            .offset(y: 50)
+                    }
+                ) {
+                    FriendDetailView(
+                        friend: friend,
+                        onBack: {
+                            navigationState = friendDetailReturnState ?? .home
+                            friendDetailReturnState = nil
+                        },
+                        onExpenseSelected: { expense in
+                            expenseDetailReturnState = .friendDetail(friend)
+                            navigationState = .expenseDetail(expense)
+                        }
+                    )
+                    .environmentObject(store)
                 }
             }
         }
-        .navigationTitle("Activity")
-        .toolbar(.hidden, for: .navigationBar)
         .background(AppTheme.background.ignoresSafeArea())
         .onChange(of: shouldResetNavigation) { _, shouldReset in
             if shouldReset {
-                navigationPath = NavigationPath()
+                navigationState = .home
+                expenseDetailReturnState = nil
+                friendDetailReturnState = nil
                 shouldResetNavigation = false
             }
         }
@@ -312,6 +410,16 @@ struct TabButton: View {
 
 struct DashboardView: View {
     @EnvironmentObject var store: AppStore
+    let onGroupTap: (SpendingGroup) -> Void
+    let onFriendTap: (GroupMember) -> Void
+
+    init(
+        onGroupTap: @escaping (SpendingGroup) -> Void = { _ in },
+        onFriendTap: @escaping (GroupMember) -> Void = { _ in }
+    ) {
+        self.onGroupTap = onGroupTap
+        self.onFriendTap = onFriendTap
+    }
     
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -368,7 +476,18 @@ struct DashboardView: View {
                         
                         LazyVStack(spacing: 12) {
                             ForEach(store.groups) { group in
-                                ModernGroupBalanceCard(group: group)
+                                Button(action: {
+                                    let isDirectGroup = group.isDirect ?? false
+                                    if isDirectGroup,
+                                       let friend = group.members.first(where: { $0.id != store.currentUser.id }) {
+                                        onFriendTap(friend)
+                                    } else {
+                                        onGroupTap(group)
+                                    }
+                                }) {
+                                    ModernGroupBalanceCard(group: group)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                         .padding(.horizontal, 12)
@@ -606,7 +725,8 @@ struct ModernGroupBalanceCard: View {
 
 struct HistoryView: View {
     @EnvironmentObject var store: AppStore
-    
+    let onExpenseTap: (Expense) -> Void
+
     var body: some View {
         let userExpenses = store.expensesInvolvingCurrentUser()
         
@@ -616,12 +736,12 @@ struct HistoryView: View {
         } else {
             List {
                 ForEach(userExpenses) { e in
-                    NavigationLink(value: e) {
+                    Button(action: { onExpenseTap(e) }) {
                         HStack(spacing: 12) {
                             GroupIcon(name: e.description)
                                 .opacity(e.isSettled ? 0.6 : 1.0)
                                 .frame(width: 40, height: 40)
-                            
+
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(spacing: 6) {
                                     Text(e.description)
@@ -629,7 +749,7 @@ struct HistoryView: View {
                                         .foregroundStyle(e.isSettled ? .secondary : .primary)
                                         .lineLimit(1)
                                         .minimumScaleFactor(0.9)
-                                    
+
                                     if e.isSettled {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundStyle(.green)
@@ -640,14 +760,14 @@ struct HistoryView: View {
                                             .font(.caption)
                                     }
                                 }
-                                
+
                                 Text(e.date, style: .date)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            
+
                             Text(e.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                                 .font(.headline)
                                 .foregroundStyle(e.isSettled ? .secondary : .primary)

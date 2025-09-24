@@ -4,166 +4,145 @@ struct ExpenseDetailView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let expense: Expense
-    
+    let onBack: (() -> Void)?
+
     @State private var showSettleSheet = false
     @State private var selectedSettleMethod = SettleMethod.markAsPaid
+
+    init(expense: Expense, onBack: (() -> Void)? = nil) {
+        self.expense = expense
+        self.onBack = onBack
+    }
     
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: 24) {
-                // Header card
-                VStack(spacing: 16) {
-                    GroupIcon(name: expense.description)
-                        .frame(width: 64, height: 64)
-                    
-                    Text(expense.description)
-                        .font(.system(.title2, design: .rounded, weight: .bold))
-                        .multilineTextAlignment(.center)
-                    
-                    Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
-                        .font(.system(.title, design: .rounded, weight: .bold))
-                        .foregroundStyle(AppTheme.brand)
-                    
-                    Text(expense.date, style: .date)
-                        .font(.system(.body, design: .rounded))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(24)
-                .background(AppTheme.card)
-                .clipShape(RoundedRectangle(cornerRadius: 20))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(
-                            LinearGradient(
-                                colors: [
-                                    AppTheme.brand.opacity(0.2),
-                                    AppTheme.brand.opacity(0.1),
-                                    AppTheme.brand.opacity(0.05)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 2
-                        )
-                )
-                .shadow(color: AppTheme.brand.opacity(0.1), radius: 12, x: 0, y: 6)
-                .padding(.horizontal, 16)
-                
-                // Payment details
-                VStack(spacing: 16) {
-                    HStack {
-                        Text("Payment Details")
-                            .font(.system(.headline, design: .rounded, weight: .semibold))
-                        Spacer()
-                    }
-                    .padding(.horizontal, 20)
-                    
-                    VStack(spacing: 12) {
-                        // Paid by
-                        PaymentDetailRow(
-                            title: "Paid by",
-                            value: memberName(for: expense.paidByMemberId),
-                            isHighlighted: expense.paidByMemberId == store.currentUser.id
-                        )
-                        
-                        // Splits
-                        ForEach(expense.splits) { split in
-                            HStack {
-                                PaymentDetailRow(
-                                    title: split.memberId == store.currentUser.id ? "You owe" : "\(memberName(for: split.memberId)) owes",
-                                    value: currency(split.amount),
-                                    isHighlighted: split.memberId == store.currentUser.id
-                                )
+        ZStack {
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 24) {
+                    // Header card
+                    VStack(spacing: 16) {
+                        GroupIcon(name: expense.description)
+                            .frame(width: 64, height: 64)
 
-                                // Settlement status icon
-                                if split.isSettled {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.green)
-                                        .font(.system(size: 16, weight: .semibold))
-                                } else {
-                                    Image(systemName: "clock.circle.fill")
-                                        .foregroundStyle(AppTheme.settlementOrange)
-                                        .font(.system(size: 16, weight: .semibold))
+                        Text(expense.description)
+                            .font(.system(.title2, design: .rounded, weight: .bold))
+                            .multilineTextAlignment(.center)
+
+                        Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                            .font(.system(.title, design: .rounded, weight: .bold))
+                            .foregroundStyle(AppTheme.brand)
+
+                        Text(expense.date, style: .date)
+                            .font(.system(.body, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(24)
+                    .background(AppTheme.card)
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [
+                                        AppTheme.brand.opacity(0.2),
+                                        AppTheme.brand.opacity(0.1),
+                                        AppTheme.brand.opacity(0.05)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 2
+                            )
+                    )
+                    .shadow(color: AppTheme.brand.opacity(0.1), radius: 12, x: 0, y: 6)
+                    .padding(.horizontal, 16)
+
+                    // Payment details
+                    VStack(spacing: 16) {
+                        HStack {
+                            Text("Payment Details")
+                                .font(.system(.headline, design: .rounded, weight: .semibold))
+                            Spacer()
+                        }
+                        .padding(.horizontal, 20)
+
+                        VStack(spacing: 12) {
+                            // Paid by
+                            PaymentDetailRow(
+                                title: "Paid by",
+                                value: memberName(for: expense.paidByMemberId),
+                                isHighlighted: expense.paidByMemberId == store.currentUser.id
+                            )
+
+                            // Splits
+                            ForEach(expense.splits) { split in
+                                HStack {
+                                    PaymentDetailRow(
+                                        title: split.memberId == store.currentUser.id ? "You owe" : "\(memberName(for: split.memberId)) owes",
+                                        value: currency(split.amount),
+                                        isHighlighted: split.memberId == store.currentUser.id
+                                    )
+
+                                    // Settlement status icon
+                                    if split.isSettled {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.green)
+                                            .font(.system(size: 16, weight: .semibold))
+                                    } else {
+                                        Image(systemName: "clock.circle.fill")
+                                            .foregroundStyle(AppTheme.settlementOrange)
+                                            .font(.system(size: 16, weight: .semibold))
+                                    }
                                 }
                             }
                         }
+                        .padding(.horizontal, 16)
                     }
-                    .padding(.horizontal, 16)
-                }
-                
-                // Settle button or settled status
-                if expense.isSettled {
-                    // Show settled status
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill")
-                        Text("Expense Settled")
-                    }
-                    .font(.system(.headline, design: .rounded, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(.green)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .padding(.horizontal, 16)
-                } else if shouldShowSettleButton {
-                    Button(action: { showSettleSheet = true }) {
+
+                    // Settle button or settled status
+                    if expense.isSettled {
+                        // Show settled status
                         HStack {
                             Image(systemName: "checkmark.circle.fill")
-                            Text("Settle Expense")
+                            Text("Expense Settled")
                         }
                         .font(.system(.headline, design: .rounded, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
-                        .background(AppTheme.brand)
+                        .background(.green)
                         .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .padding(.horizontal, 16)
+                    } else if shouldShowSettleButton {
+                        Button(action: { showSettleSheet = true }) {
+                            HStack {
+                                Image(systemName: "checkmark.circle.fill")
+                                Text("Settle Expense")
+                            }
+                            .font(.system(.headline, design: .rounded, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(AppTheme.brand)
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                        }
+                        .padding(.horizontal, 16)
                     }
-                    .padding(.horizontal, 16)
                 }
+                .padding(.vertical, 16)
+                .background(Color.clear)
             }
-            .padding(.vertical, 16)
         }
-        .safeAreaInset(edge: .top) {
-            HStack {
-                Button(action: { dismiss() }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .semibold))
-                        Text("Back")
-                            .font(.system(.body, design: .rounded, weight: .medium))
-                    }
-                    .foregroundStyle(AppTheme.navigationHeaderAccent)
-                    .frame(width: 80, alignment: .leading) // Fixed width for left button
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                Text("Expense Details")
-                    .font(.system(size: AppMetrics.Navigation.headerTitleFontSize, weight: AppMetrics.Navigation.headerTitleFontWeight, design: .rounded))
-                    .foregroundStyle(AppTheme.navigationHeaderAccent)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-
-                Spacer()
-
-                Button(action: {
-                    selectedSettleMethod = .markAsPaid
-                    showSettleSheet = true
-                }) {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(AppTheme.navigationHeaderAccent)
-                        .frame(width: 80, alignment: .trailing) // Fixed width for right button
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-            .background(AppTheme.navigationHeaderBackground)
-        }
-        .background(AppTheme.background)
+        .customNavigationHeaderWithAction(
+            title: "Expense Details",
+            onBack: handleBack,
+            rightAction: {
+                selectedSettleMethod = .markAsPaid
+                showSettleSheet = true
+            },
+            rightActionIcon: "ellipsis.circle"
+        )
         .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
         .sheet(isPresented: $showSettleSheet) {
             SettleExpenseSheet(expense: expense, settleMethod: $selectedSettleMethod)
         }
@@ -174,6 +153,14 @@ struct ExpenseDetailView: View {
         let isPaidByUser = expense.paidByMemberId == store.currentUser.id
         let isOwingUser = expense.splits.contains { $0.memberId == store.currentUser.id }
         return isPaidByUser || isOwingUser
+    }
+
+    private func handleBack() {
+        if let onBack {
+            onBack()
+        } else {
+            dismiss()
+        }
     }
 
     private func memberName(for id: UUID) -> String {

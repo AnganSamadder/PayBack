@@ -4,9 +4,16 @@ struct FriendDetailView: View {
     @EnvironmentObject var store: AppStore
     let friend: GroupMember
     let onBack: () -> Void
+    let onExpenseSelected: ((Expense) -> Void)?
     
     @State private var selectedTab: FriendDetailTab = .direct
     @State private var showAddExpense = false
+
+    init(friend: GroupMember, onBack: @escaping () -> Void, onExpenseSelected: ((Expense) -> Void)? = nil) {
+        self.friend = friend
+        self.onBack = onBack
+        self.onExpenseSelected = onExpenseSelected
+    }
     
     enum FriendDetailTab: String, CaseIterable, Identifiable {
         case direct = "Direct"
@@ -131,51 +138,30 @@ struct FriendDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: AppMetrics.FriendDetail.verticalStackSpacing) {
-            // Hero balance card with gradient
-            heroBalanceCard
-            
-            // Tab selector
-            tabSelector
-            
-            // Tab content
-            tabContent
-        }
-        .padding(.vertical, AppMetrics.FriendDetail.contentVerticalPadding)
-        .safeAreaInset(edge: .top) {
-            HStack {
-                Button(action: onBack) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .semibold))
-                        Text("Back")
-                            .font(.system(.body, design: .rounded, weight: .medium))
-                    }
-                    .foregroundStyle(AppTheme.navigationHeaderAccent)
+        ZStack {
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: AppMetrics.FriendDetail.verticalStackSpacing) {
+                    // Hero balance card with gradient
+                    heroBalanceCard
+
+                    // Tab selector
+                    tabSelector
+
+                    // Tab content
+                    tabContent
+                        .transition(.opacity)
+                        .animation(.easeInOut(duration: 0.25), value: selectedTab)
                 }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                Text("Friend Details")
-                    .font(.system(size: AppMetrics.Navigation.headerTitleFontSize, weight: AppMetrics.Navigation.headerTitleFontWeight, design: .rounded))
-                    .foregroundStyle(AppTheme.navigationHeaderAccent)
-
-                Spacer()
-
-                // Invisible spacer for balance
-                HStack(spacing: 8) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                    Text("Back")
-                        .font(.system(.body, design: .rounded, weight: .medium))
-                }
-                .opacity(0)
+                .padding(.vertical, AppMetrics.FriendDetail.contentVerticalPadding)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-            .background(AppTheme.navigationHeaderBackground)
+            .background(Color.clear)
         }
+        .customNavigationHeader(
+            title: "Friend Details",
+            onBack: onBack
+        )
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
         .sheet(isPresented: $showAddExpense) {
             if let directGroup = getDirectGroup() {
                 AddExpenseView(group: directGroup)
@@ -188,17 +174,6 @@ struct FriendDetailView: View {
         .onChange(of: friend.id) { _, _ in
             selectedTab = .direct
         }
-        .gesture(
-            DragGesture()
-                .onEnded { value in
-                    // Only trigger back gesture if swiping from the very edge and it's a significant horizontal swipe
-                    if value.translation.width > AppMetrics.FriendDetail.dragThreshold && 
-                       value.startLocation.x < 20 && 
-                       abs(value.translation.height) < abs(value.translation.width) {
-                        onBack()
-                    }
-                }
-        )
     }
     
 
@@ -320,16 +295,14 @@ struct FriendDetailView: View {
     
     // MARK: - Tab Content
     
+    @ViewBuilder
     private var tabContent: some View {
-        TabView(selection: $selectedTab) {
-            DirectExpensesView(friend: friend)
-                .tag(FriendDetailTab.direct)
-            
-            GroupExpensesView(friend: friend)
-                .tag(FriendDetailTab.groups)
+        switch selectedTab {
+        case .direct:
+            DirectExpensesView(friend: friend, onExpenseTap: onExpenseSelected)
+        case .groups:
+            GroupExpensesView(friend: friend, onExpenseTap: onExpenseSelected)
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        .animation(.easeInOut(duration: 0.3), value: selectedTab)
     }
     
         // MARK: - Helper Methods
@@ -349,6 +322,12 @@ struct FriendDetailView: View {
 struct DirectExpensesView: View {
     @EnvironmentObject var store: AppStore
     let friend: GroupMember
+    let onExpenseTap: ((Expense) -> Void)?
+
+    init(friend: GroupMember, onExpenseTap: ((Expense) -> Void)? = nil) {
+        self.friend = friend
+        self.onExpenseTap = onExpenseTap
+    }
     
     private var directExpenses: [Expense] {
         // TODO: DATABASE_INTEGRATION - Replace with database query
@@ -367,21 +346,20 @@ struct DirectExpensesView: View {
     }
     
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: AppMetrics.FriendDetail.contentSpacing) {
-                if directExpenses.isEmpty {
-                    EmptyStateView("No Direct Expenses", systemImage: "creditcard", description: "Add an expense to get started")
-                } else {
-                    LazyVStack(spacing: AppMetrics.FriendDetail.expenseCardSpacing) {
-                        ForEach(directExpenses) { expense in
-                            DirectExpenseCard(expense: expense, friend: friend)
-                        }
+        VStack(spacing: AppMetrics.FriendDetail.contentSpacing) {
+            if directExpenses.isEmpty {
+                EmptyStateView("No Direct Expenses", systemImage: "creditcard", description: "Add an expense to get started")
+            } else {
+                VStack(spacing: AppMetrics.FriendDetail.expenseCardSpacing) {
+                    ForEach(directExpenses) { expense in
+                        DirectExpenseCard(expense: expense, friend: friend, onTap: onExpenseTap)
                     }
                 }
             }
-            .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
-            .padding(.top, AppMetrics.FriendDetail.contentTopPadding)
         }
+        .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
+        .padding(.top, AppMetrics.FriendDetail.contentTopPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
     
     private func getDirectGroup() -> SpendingGroup? {
@@ -398,6 +376,12 @@ struct DirectExpensesView: View {
 struct GroupExpensesView: View {
     @EnvironmentObject var store: AppStore
     let friend: GroupMember
+    let onExpenseTap: ((Expense) -> Void)?
+
+    init(friend: GroupMember, onExpenseTap: ((Expense) -> Void)? = nil) {
+        self.friend = friend
+        self.onExpenseTap = onExpenseTap
+    }
     
     private var groupExpenses: [SpendingGroup: [Expense]] {
         var result: [SpendingGroup: [Expense]] = [:]
@@ -425,21 +409,25 @@ struct GroupExpensesView: View {
     }
     
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: AppMetrics.FriendDetail.contentSpacing) {
-                if groupExpenses.isEmpty {
-                    EmptyStateView("No Group Expenses", systemImage: "person.3", description: "No shared expenses in groups yet")
-                } else {
-                    LazyVStack(spacing: AppMetrics.FriendDetail.groupSectionSpacing) {
-                        ForEach(groupExpenses.keys.sorted(by: { $0.name < $1.name }), id: \.id) { group in
-                            GroupExpensesSection(group: group, expenses: groupExpenses[group] ?? [], friend: friend)
-                        }
+        VStack(spacing: AppMetrics.FriendDetail.contentSpacing) {
+            if groupExpenses.isEmpty {
+                EmptyStateView("No Group Expenses", systemImage: "person.3", description: "No shared expenses in groups yet")
+            } else {
+                VStack(spacing: AppMetrics.FriendDetail.groupSectionSpacing) {
+                    ForEach(groupExpenses.keys.sorted(by: { $0.name < $1.name }), id: \.id) { group in
+                        GroupExpensesSection(
+                            group: group,
+                            expenses: groupExpenses[group] ?? [],
+                            friend: friend,
+                            onExpenseTap: onExpenseTap
+                        )
                     }
                 }
             }
-            .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
-            .padding(.top, AppMetrics.FriendDetail.contentTopPadding)
         }
+        .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
+        .padding(.top, AppMetrics.FriendDetail.contentTopPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -449,74 +437,81 @@ struct DirectExpenseCard: View {
     @EnvironmentObject var store: AppStore
     let expense: Expense
     let friend: GroupMember
-    
-    var body: some View {
-                        NavigationLink(destination: ExpenseDetailView(expense: expense)) {
-            VStack(spacing: AppMetrics.FriendDetail.expenseCardInternalSpacing) {
-                HStack {
-                    GroupIcon(name: expense.description)
-                        .frame(width: AppMetrics.FriendDetail.expenseIconSize, height: AppMetrics.FriendDetail.expenseIconSize)
-                    
-                    VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.expenseTextSpacing) {
-                        Text(expense.description)
-                            .font(.system(.body, design: .rounded, weight: .medium))
-                            .foregroundStyle(.primary)
-                        
-                        Text(expense.date, style: .date)
-                            .font(.system(.caption, design: .rounded))
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    Spacer()
-                    
-                    VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.expenseAmountSpacing) {
-                        Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
-                            .font(.system(.body, design: .rounded, weight: .semibold))
-                            .foregroundStyle(.primary)
+    let onTap: ((Expense) -> Void)?
 
-                        if expense.paidByMemberId == store.currentUser.id {
-                        // Current user paid - friend owes current user
-                            if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
-                                HStack(spacing: 4) {
-                                    Text("\(friend.name) owes \(currency(friendSplit.amount))")
-                                        .font(.system(.caption, design: .rounded, weight: .medium))
+    var body: some View {
+        let content = VStack(spacing: AppMetrics.FriendDetail.expenseCardInternalSpacing) {
+            HStack {
+                GroupIcon(name: expense.description)
+                    .frame(width: AppMetrics.FriendDetail.expenseIconSize, height: AppMetrics.FriendDetail.expenseIconSize)
+
+                VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.expenseTextSpacing) {
+                    Text(expense.description)
+                        .font(.system(.body, design: .rounded, weight: .medium))
+                        .foregroundStyle(.primary)
+
+                    Text(expense.date, style: .date)
+                        .font(.system(.caption, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.expenseAmountSpacing) {
+                    Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                        .font(.system(.body, design: .rounded, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    if expense.paidByMemberId == store.currentUser.id {
+                        if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
+                            HStack(spacing: 4) {
+                                Text("\(friend.name) owes \(currency(friendSplit.amount))")
+                                    .font(.system(.caption, design: .rounded, weight: .medium))
+                                    .foregroundStyle(.green)
+
+                                if friendSplit.isSettled {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 12))
                                         .foregroundStyle(.green)
-                                    
-                                    if friendSplit.isSettled {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(.green)
-                                    }
                                 }
                             }
-                        } else {
-                            // Friend paid - current user owes friend
-                            if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
-                                HStack(spacing: 4) {
-                                    Text("You owe \(currencyPositive(userSplit.amount))")
-                                        .font(.system(.caption, design: .rounded, weight: .medium))
-                                        .foregroundStyle(.red)
-                                    
-                                    if userSplit.isSettled {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(.green)
-                                    }
-                                }
+                        }
+                    } else if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
+                        HStack(spacing: 4) {
+                            Text("You owe \(currencyPositive(userSplit.amount))")
+                                .font(.system(.caption, design: .rounded, weight: .medium))
+                                .foregroundStyle(.red)
+
+                            if userSplit.isSettled {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.green)
                             }
                         }
                     }
                 }
             }
-            .padding(AppMetrics.FriendDetail.expenseCardPadding)
-            .background(AppTheme.card)
-            .clipShape(RoundedRectangle(cornerRadius: AppMetrics.FriendDetail.expenseCardCornerRadius))
-            .overlay(
-                RoundedRectangle(cornerRadius: AppMetrics.FriendDetail.expenseCardCornerRadius)
-                    .strokeBorder(AppTheme.brand.opacity(0.1), lineWidth: 2.5)
-            )
         }
-        .buttonStyle(.plain)
+        .padding(AppMetrics.FriendDetail.expenseCardPadding)
+        .background(AppTheme.card)
+        .clipShape(RoundedRectangle(cornerRadius: AppMetrics.FriendDetail.expenseCardCornerRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppMetrics.FriendDetail.expenseCardCornerRadius)
+                .strokeBorder(AppTheme.brand.opacity(0.1), lineWidth: 2.5)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: AppMetrics.FriendDetail.expenseCardCornerRadius))
+
+        if let onTap {
+            Button(action: { onTap(expense) }) {
+                content
+            }
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink(destination: ExpenseDetailView(expense: expense)) {
+                content
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private func currency(_ amount: Double) -> String {
@@ -540,6 +535,7 @@ struct GroupExpensesSection: View {
     let group: SpendingGroup
     let expenses: [Expense]
     let friend: GroupMember
+    let onExpenseTap: ((Expense) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.groupSectionInternalSpacing) {
@@ -557,10 +553,17 @@ struct GroupExpensesSection: View {
 
             LazyVStack(spacing: AppMetrics.FriendDetail.groupExpenseSpacing) {
                 ForEach(expenses) { expense in
-                    NavigationLink(destination: ExpenseDetailView(expense: expense)) {
-                        GroupExpenseRow(expense: expense, friend: friend)
+                    if let onExpenseTap {
+                        Button(action: { onExpenseTap(expense) }) {
+                            GroupExpenseRow(expense: expense, friend: friend)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        NavigationLink(destination: ExpenseDetailView(expense: expense)) {
+                            GroupExpenseRow(expense: expense, friend: friend)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -654,3 +657,4 @@ struct GroupExpenseRow: View {
         return group.members.first { $0.id == id }?.name ?? "Unknown"
     }
 }
+

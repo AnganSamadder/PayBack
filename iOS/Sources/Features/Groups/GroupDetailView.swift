@@ -1,12 +1,73 @@
 import SwiftUI
 
+// Swipe back modifier for GroupDetailView
+struct GroupDetailSwipeBackModifier: ViewModifier {
+    let action: () -> Void
+    let dragThreshold: CGFloat
+
+    @State private var dragOffset: CGFloat = 0
+    @State private var isDragging = false
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: dragOffset)
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        // Only allow dragging from the left edge and significant horizontal movement
+                        if value.startLocation.x < 20 &&
+                           abs(value.translation.height) < abs(value.translation.width) &&
+                           value.translation.width >= 0 { // Only allow rightward movement
+
+                            isDragging = true
+                            dragOffset = value.translation.width
+                        }
+                    }
+                    .onEnded { value in
+                        if isDragging {
+                            isDragging = false
+
+                            // Check if swipe was successful
+                            if value.translation.width > dragThreshold &&
+                               value.startLocation.x < 20 &&
+                               abs(value.translation.height) < abs(value.translation.width) {
+
+                                // Successful swipe - complete the action with smooth transition
+                                action()
+                            } else {
+                                // Failed swipe - animate back to original position
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    dragOffset = 0
+                                }
+                            }
+                        }
+                    }
+            )
+            .animation(isDragging ? .interactiveSpring(response: 0.3, dampingFraction: 0.7) : .none, value: dragOffset)
+    }
+}
+
 struct GroupDetailView: View {
     @EnvironmentObject var store: AppStore
     let group: SpendingGroup
     let onBack: () -> Void
+    let onMemberTap: (GroupMember) -> Void
+    let onExpenseTap: (Expense) -> Void
     @State private var showAddExpense = false
     @State private var showSettleView = false
     @State private var refreshTrigger = UUID() // Force view updates
+
+    init(
+        group: SpendingGroup,
+        onBack: @escaping () -> Void,
+        onMemberTap: @escaping (GroupMember) -> Void = { _ in },
+        onExpenseTap: @escaping (Expense) -> Void = { _ in }
+    ) {
+        self.group = group
+        self.onBack = onBack
+        self.onMemberTap = onMemberTap
+        self.onExpenseTap = onExpenseTap
+    }
 
     var body: some View {
         ZStack {
@@ -27,43 +88,15 @@ struct GroupDetailView: View {
                 .padding(.vertical, AppMetrics.FriendDetail.contentVerticalPadding)
                 .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
             }
-            .background(AppTheme.background.ignoresSafeArea())
+            .background(Color.clear)
             .id(refreshTrigger) // Force re-render when refreshTrigger changes
         }
-        .safeAreaInset(edge: .top) {
-            HStack {
-                Button(action: onBack) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .semibold))
-                        Text("Back")
-                            .font(.system(.body, design: .rounded, weight: .medium))
-                    }
-                    .foregroundStyle(AppTheme.navigationHeaderAccent)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                Text("Group Details")
-                    .font(.system(size: AppMetrics.Navigation.headerTitleFontSize, weight: AppMetrics.Navigation.headerTitleFontWeight, design: .rounded))
-                    .foregroundStyle(AppTheme.navigationHeaderAccent)
-
-                Spacer()
-
-                // Invisible spacer for balance
-                HStack(spacing: 8) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                    Text("Back")
-                        .font(.system(.body, design: .rounded, weight: .medium))
-                }
-                .opacity(0)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-            .background(AppTheme.navigationHeaderBackground)
-        }
+        .customNavigationHeader(
+            title: "Group Details",
+            onBack: onBack
+        )
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
         .sheet(isPresented: $showAddExpense) {
             AddExpenseView(group: group)
                 .environmentObject(store)
@@ -77,18 +110,6 @@ struct GroupDetailView: View {
             print("🔄 Expenses changed, forcing view refresh")
             refreshTrigger = UUID()
         }
-
-        .gesture(
-            DragGesture()
-                .onEnded { value in
-                    // Only trigger back gesture if swiping from the very edge and it's a significant horizontal swipe
-                    if value.translation.width > AppMetrics.FriendDetail.dragThreshold && 
-                       value.startLocation.x < 20 && 
-                       abs(value.translation.height) < abs(value.translation.width) {
-                        onBack()
-                    }
-                }
-        )
     }
 
     private func expenseRow(_ exp: Expense) -> some View {
@@ -164,9 +185,23 @@ struct GroupDetailView: View {
         let items = store.expenses(in: group.id)
         return items.reduce(0) { $0 + $1.totalAmount }
     }
-    
 
-    
+    @ViewBuilder
+    private func memberCard(for member: GroupMember) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(member.name)
+                .font(.headline)
+            Text(balanceText(for: member))
+                .font(.subheadline)
+                .foregroundStyle(balanceColor(for: member))
+        }
+        .padding(12)
+        .background(AppTheme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+
     // MARK: - Group Info Card
     
     private var groupInfoCard: some View {
@@ -255,15 +290,14 @@ struct GroupDetailView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(group.members) { member in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(member.name).font(.headline)
-                            Text(balanceText(for: member))
-                                .font(.subheadline)
-                                .foregroundStyle(balanceColor(for: member))
+                        Button(action: {
+                            guard member.id != store.currentUser.id else { return }
+                            onMemberTap(member)
+                        }) {
+                            memberCard(for: member)
                         }
-                        .padding(12)
-                        .background(AppTheme.card)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .buttonStyle(.plain)
+                        .disabled(member.id == store.currentUser.id)
                     }
                 }
                 .padding(.horizontal, 4)
@@ -287,12 +321,17 @@ struct GroupDetailView: View {
             } else {
                 LazyVStack(spacing: 8) {
                     ForEach(items) { exp in
-                        expenseRow(exp)
-                            .padding(12)
-                            .background(AppTheme.card)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                        Button(action: {
+                            onExpenseTap(exp)
+                        }) {
+                            expenseRow(exp)
+                                .padding(12)
+                                .background(AppTheme.card)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .contentShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .onDelete { idx in store.deleteExpenses(groupId: group.id, at: idx) }
                 }
                 .id(items.map { $0.id.uuidString }.joined()) // Force re-render when expense list changes
             }
@@ -829,4 +868,3 @@ private struct SettleModal: View {
         print("🏁 Settlement process completed")
     }
 }
-

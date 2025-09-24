@@ -1,4 +1,5 @@
 import SwiftUI
+// DetailContainer is defined in DetailContainer.swift
 
 enum PeopleScope: String, CaseIterable, Identifiable {
     case friends = "Friends"
@@ -10,6 +11,7 @@ enum PeopleNavigationState: Equatable {
     case home
     case friendDetail(GroupMember)
     case groupDetail(SpendingGroup)
+    case expenseDetail(SpendingGroup, Expense)
 }
 
 struct PeopleHomeView: View {
@@ -23,36 +25,88 @@ struct PeopleHomeView: View {
     @State private var showCreateGroup = false
     @State private var showAddFriend = false
     @State private var dropdownSize: CGSize = .zero
+    @State private var lastGroupForFriendDetail: SpendingGroup?
     
     var body: some View {
         NavigationStack {
             ZStack {
-                switch navigationState {
-                case .home:
-                    homeContent
-                case .friendDetail(let friend):
+            switch navigationState {
+            case .home:
+                homeContent
+            case .friendDetail(let friend):
+                DetailContainer(
+                    action: {
+                        if let group = lastGroupForFriendDetail {
+                            navigationState = .groupDetail(group)
+                            lastGroupForFriendDetail = nil
+                        } else {
+                            navigationState = .home
+                        }
+                    },
+                    background: {
+                        homeContent
+                            .opacity(0.2)
+                            .scaleEffect(0.95)
+                            .offset(y: 50)
+                    }
+                ) {
                     FriendDetailView(friend: friend, onBack: {
-                        withAnimation(.easeInOut(duration: 0.35)) {
+                        if let group = lastGroupForFriendDetail {
+                            navigationState = .groupDetail(group)
+                            lastGroupForFriendDetail = nil
+                        } else {
                             navigationState = .home
                         }
                     })
                     .environmentObject(store)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .trailing).combined(with: .opacity)
-                    ))
-                case .groupDetail(let group):
-                    GroupDetailView(group: group, onBack: {
-                        withAnimation(.easeInOut(duration: 0.35)) {
-                            navigationState = .home
-                        }
-                    })
-                    .environmentObject(store)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .trailing).combined(with: .opacity)
-                    ))
                 }
+            case .groupDetail(let group):
+                DetailContainer(
+                    action: {
+                        navigationState = .home
+                        lastGroupForFriendDetail = nil
+                    },
+                    background: {
+                        homeContent
+                            .opacity(0.2)
+                            .scaleEffect(0.95)
+                            .offset(y: 50)
+                    }
+                ) {
+                    GroupDetailView(
+                        group: group,
+                        onBack: {
+                            navigationState = .home
+                            lastGroupForFriendDetail = nil
+                        },
+                        onMemberTap: { member in
+                            lastGroupForFriendDetail = group
+                            navigationState = .friendDetail(member)
+                        },
+                        onExpenseTap: { expense in
+                            navigationState = .expenseDetail(group, expense)
+                        }
+                    )
+                    .environmentObject(store)
+                }
+            case .expenseDetail(let group, let expense):
+                DetailContainer(
+                    action: {
+                        navigationState = .groupDetail(group)
+                    },
+                    background: {
+                        homeContent
+                            .opacity(0.2)
+                            .scaleEffect(0.95)
+                            .offset(y: 50)
+                    }
+                ) {
+                    ExpenseDetailView(expense: expense, onBack: {
+                        navigationState = .groupDetail(group)
+                    })
+                    .environmentObject(store)
+                }
+            }
             }
             .background(AppTheme.background.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
@@ -177,15 +231,13 @@ struct PeopleHomeView: View {
         switch scope {
         case .friends:
             FriendsList(onFriendSelected: { friend in
-                withAnimation(.easeInOut(duration: 0.35)) {
-                    navigationState = .friendDetail(friend)
-                }
+                lastGroupForFriendDetail = nil
+                navigationState = .friendDetail(friend)
             })
         case .groups:
             GroupsListView(onGroupSelected: { group in
-                withAnimation(.easeInOut(duration: 0.35)) {
-                    navigationState = .groupDetail(group)
-                }
+                lastGroupForFriendDetail = nil
+                navigationState = .groupDetail(group)
             })
         }
     }
