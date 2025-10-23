@@ -13,9 +13,9 @@ struct RootView: View {
     @State private var showPickerUI: Bool = false
     @State private var circleSize: CGFloat = 64
     @State private var showExpandingCircle: Bool = false
-    @State private var peopleScope: PeopleScope = .friends
     @State private var activityViewSelectedTab: Int = 0
-    @State private var peopleNavigationState: PeopleNavigationState = .home
+    @State private var friendsNavigationState: FriendsNavigationState = .home
+    @State private var groupsNavigationState: GroupsNavigationState = .home
     @State private var shouldResetActivityNavigation: Bool = false
 
     var body: some View {
@@ -23,17 +23,45 @@ struct RootView: View {
             VStack(spacing: 0) {
                 // Main content
                 TabView(selection: $selectedTab) {
-                    PeopleHomeView(scope: $peopleScope, navigationState: $peopleNavigationState)
+                    FriendsTabView(navigationState: $friendsNavigationState, selectedTab: $selectedTab)
                         .environmentObject(store)
                         .tag(0)
 
-                    ActivityView(selectedTab: $activityViewSelectedTab, shouldResetNavigation: $shouldResetActivityNavigation)
+                    GroupsTabView(navigationState: $groupsNavigationState, selectedTab: $selectedTab)
                         .environmentObject(store)
                         .tag(1)
+
+                    ActivityView(selectedTab: $activityViewSelectedTab, shouldResetNavigation: $shouldResetActivityNavigation)
+                        .environmentObject(store)
+                        .tag(2)
+
+                    ProfileView()
+                        .environmentObject(store)
+                        .tag(3)
+                }
+                .onChange(of: selectedTab) { oldValue, newValue in
+                    // Reset navigation states when switching tabs
+                    // This ensures each tab starts from home when navigated to
+                    if oldValue != newValue {
+                        withAnimation(.easeInOut(duration: 0.35)) {
+                            // Reset Friends navigation if switching away from Friends tab
+                            if oldValue == 0 && friendsNavigationState != .home {
+                                friendsNavigationState = .home
+                            }
+                            // Reset Groups navigation if switching away from Groups tab
+                            if oldValue == 1 && groupsNavigationState != .home {
+                                groupsNavigationState = .home
+                            }
+                            // Reset Activity navigation if switching to Activity tab
+                            if newValue == 2 {
+                                shouldResetActivityNavigation = true
+                            }
+                        }
+                    }
                 }
                 
                 // Custom tab bar
-                CustomTabBar(selectedTab: $selectedTab, peopleScope: $peopleScope, activityViewSelectedTab: $activityViewSelectedTab, peopleNavigationState: $peopleNavigationState, shouldResetActivityNavigation: $shouldResetActivityNavigation)
+                CustomTabBar(selectedTab: $selectedTab, activityViewSelectedTab: $activityViewSelectedTab, friendsNavigationState: $friendsNavigationState, groupsNavigationState: $groupsNavigationState, shouldResetActivityNavigation: $shouldResetActivityNavigation)
                     .offset(y: -40) // Compensate for safe area changes
             }
 
@@ -233,73 +261,93 @@ private struct AddFAB: View {
 
 private struct CustomTabBar: View {
     @Binding var selectedTab: Int
-    @Binding var peopleScope: PeopleScope
     @Binding var activityViewSelectedTab: Int
-    @Binding var peopleNavigationState: PeopleNavigationState
+    @Binding var friendsNavigationState: FriendsNavigationState
+    @Binding var groupsNavigationState: GroupsNavigationState
     @Binding var shouldResetActivityNavigation: Bool
     
     var body: some View {
         HStack(spacing: 0) {
-            // People tab
+            // Friends tab
             Button(action: {
                 selectedTab = 0
-                // Reset navigation state to home when switching to People tab
-                if peopleNavigationState != .home {
-                    withAnimation(.easeInOut(duration: 0.35)) {
-                        peopleNavigationState = .home
-                    }
-                }
             }) {
                 VStack(spacing: 4) {
                     Image(systemName: "person.2")
                         .font(.system(size: 24))
                         .foregroundStyle(selectedTab == 0 ? AppTheme.brand : .secondary)
-                    Text("People")
+                    Text("Friends")
                         .font(.caption)
                         .foregroundStyle(selectedTab == 0 ? AppTheme.brand : .secondary)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
             }
-            .simultaneousGesture(TapGesture(count: 2).onEnded { _ in
-                if selectedTab == 0 {
-                    peopleScope = (peopleScope == .friends ? .groups : .friends)
-                }
-            })
             .padding(.bottom, 8)
             
-            // Activity tab
+            // Groups tab
             Button(action: {
                 selectedTab = 1
-                // Reset navigation state to home when switching to Activity tab
-                if peopleNavigationState != .home {
-                    withAnimation(.easeInOut(duration: 0.35)) {
-                        peopleNavigationState = .home
-                    }
-                }
-                // Reset Activity navigation when switching to Activity tab
-                shouldResetActivityNavigation = true
             }) {
                 VStack(spacing: 4) {
-                    Image(systemName: "clock.arrow.circlepath")
+                    Image(systemName: "person.3")
                         .font(.system(size: 24))
                         .foregroundStyle(selectedTab == 1 ? AppTheme.brand : .secondary)
-                    Text("Activity")
+                    Text("Groups")
                         .font(.caption)
                         .foregroundStyle(selectedTab == 1 ? AppTheme.brand : .secondary)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
             }
+            .padding(.bottom, 8)
+            
+            // Spacer for FAB - accounts for the 64pt FAB plus padding
+            Spacer()
+                .frame(width: 80)
+            
+            // Activity tab
+            Button(action: {
+                selectedTab = 2
+            }) {
+                VStack(spacing: 4) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 24))
+                        .foregroundStyle(selectedTab == 2 ? AppTheme.brand : .secondary)
+                    Text("Activity")
+                        .font(.caption)
+                        .foregroundStyle(selectedTab == 2 ? AppTheme.brand : .secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
             .simultaneousGesture(TapGesture(count: 2).onEnded { _ in
-                if selectedTab == 1 {
+                if selectedTab == 2 {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                         activityViewSelectedTab = (activityViewSelectedTab == 0 ? 1 : 0)
                     }
                 }
             })
             .padding(.bottom, 8)
+            
+            // Profile tab
+            Button(action: {
+                selectedTab = 3
+            }) {
+                VStack(spacing: 4) {
+                    Image(systemName: "person.circle")
+                        .font(.system(size: 24))
+                        .foregroundStyle(selectedTab == 3 ? AppTheme.brand : .secondary)
+                    Text("Profile")
+                        .font(.caption)
+                        .foregroundStyle(selectedTab == 3 ? AppTheme.brand : .secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
+            .padding(.bottom, 8)
         }
+        .padding(.horizontal, 16)
         .frame(height: 0)
     }
 }

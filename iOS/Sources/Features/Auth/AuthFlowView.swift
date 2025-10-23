@@ -26,7 +26,7 @@ struct AuthFlowView: View {
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.82), value: coordinator.route)
         .onAppear { coordinator.start() }
-        .onChange(of: coordinator.route) { newValue in
+        .onChange(of: coordinator.route) { oldValue, newValue in
             if case .authenticated(let session) = newValue {
                 onAuthenticated(session)
             }

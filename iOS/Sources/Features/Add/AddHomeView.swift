@@ -105,16 +105,4 @@ struct ChooseTargetView: View {
     }
 }
 
-struct GroupIcon: View {
-    let name: String
-    var body: some View {
-        let icon = SmartIcon.icon(for: name)
-        ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(icon.background)
-            Image(systemName: icon.systemName)
-                .foregroundStyle(icon.foreground)
-        }
-        .frame(width: 32, height: 32)
-    }
-}
+

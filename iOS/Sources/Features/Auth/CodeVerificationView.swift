@@ -82,7 +82,7 @@ struct CodeVerificationView: View {
                             RoundedRectangle(cornerRadius: 18)
                                 .stroke(.white.opacity(isInputFocused ? 0.7 : 0.2), lineWidth: 1.5)
                         )
-                        .onChange(of: codeInput) { newValue in
+                        .onChange(of: codeInput) { oldValue, newValue in
                             let filtered = newValue.filter { $0.isNumber }
                             if filtered.count > codeLength {
                                 codeInput = String(filtered.prefix(codeLength))

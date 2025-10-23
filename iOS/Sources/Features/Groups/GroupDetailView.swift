@@ -105,7 +105,7 @@ struct GroupDetailView: View {
             SettleModal(group: group)
                 .environmentObject(store)
         }
-        .onChange(of: store.expenses(in: group.id)) { _ in
+        .onChange(of: store.expenses(in: group.id)) { oldValue, newValue in
             // Force view refresh when expenses change
             print("🔄 Expenses changed, forcing view refresh")
             refreshTrigger = UUID()
@@ -642,10 +642,10 @@ private struct SettleModal: View {
                         }
                         .padding(.vertical, 20)
                     }
-                    .onChange(of: unsettledExpenses) { _ in
+                    .onChange(of: unsettledExpenses) { oldValue, newValue in
                         // Remove any selected expenses that are no longer unsettled
                         selectedExpenseIds = selectedExpenseIds.filter { expenseId in
-                            unsettledExpenses.contains { $0.id == expenseId }
+                            newValue.contains { $0.id == expenseId }
                         }
                     }
                 }

@@ -107,6 +107,14 @@ final class AppStore: ObservableObject {
         expenses = []
         friends = []
         persistence.clear()
+        
+        // Sign out from Firebase Auth to clear the persistent session
+        let emailAuthService = EmailAuthServiceProvider.makeService()
+        try? emailAuthService.signOut()
+        
+        #if DEBUG
+        print("[AppStore] User signed out and session cleared")
+        #endif
     }
 
     private func applyDisplayName(_ name: String) {

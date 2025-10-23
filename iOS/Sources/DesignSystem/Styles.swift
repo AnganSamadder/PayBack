@@ -391,3 +391,67 @@ struct EmptyStateView: View {
 }
 
 
+
+// MARK: - Avatar View
+
+struct AvatarView: View {
+    let name: String
+    let size: CGFloat
+    
+    init(name: String, size: CGFloat = 40) {
+        self.name = name
+        self.size = size
+    }
+    
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(avatarColor)
+            
+            Text(initials)
+                .font(.system(size: size * 0.4, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+    }
+    
+    private var initials: String {
+        let components = name.components(separatedBy: .whitespaces)
+        let firstInitial = components.first?.first.map(String.init) ?? ""
+        let lastInitial = components.count > 1 ? components.last?.first.map(String.init) ?? "" : ""
+        return (firstInitial + lastInitial).uppercased()
+    }
+    
+    private var avatarColor: Color {
+        // Generate a consistent color based on the name
+        let hash = abs(name.hashValue)
+        let colors: [Color] = [
+            .blue, .green, .orange, .purple, .pink, .red, .indigo, .teal, .cyan, .mint
+        ]
+        return colors[hash % colors.count]
+    }
+}
+
+// MARK: - Group Icon
+
+struct GroupIcon: View {
+    let name: String
+    let size: CGFloat
+    
+    init(name: String, size: CGFloat = 40) {
+        self.name = name
+        self.size = size
+    }
+    
+    var body: some View {
+        let icon = SmartIcon.icon(for: name)
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                .fill(icon.background)
+            Image(systemName: icon.systemName)
+                .font(.system(size: size * 0.5, weight: .medium))
+                .foregroundStyle(icon.foreground)
+        }
+        .frame(width: size, height: size)
+    }
+}

@@ -166,8 +166,8 @@ struct ActivityView: View {
             }
         }
         .background(AppTheme.background.ignoresSafeArea())
-        .onChange(of: shouldResetNavigation) { shouldReset in
-            if shouldReset {
+        .onChange(of: shouldResetNavigation) { oldValue, newValue in
+            if newValue {
                 navigationState = .home
                 expenseDetailReturnState = nil
                 friendDetailReturnState = nil

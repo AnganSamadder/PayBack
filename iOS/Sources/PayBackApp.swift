@@ -65,10 +65,35 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
 struct RootViewWithStore: View {
     @StateObject private var store = AppStore()
+    @State private var isCheckingAuth = true
 
     var body: some View {
         Group {
-            if store.session != nil {
+            if isCheckingAuth {
+                // Show loading state while checking for existing session
+                ZStack {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.18, green: 0.22, blue: 0.56),
+                            Color(red: 0.41, green: 0.13, blue: 0.6),
+                            Color(red: 0.06, green: 0.55, blue: 0.7)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .ignoresSafeArea()
+                    
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(.white)
+                            .scaleEffect(1.2)
+                        Text("PayBack")
+                            .font(.system(size: 32, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                    }
+                }
+            } else if store.session != nil {
                 RootView()
             } else {
                 AuthFlowView { session in
@@ -78,6 +103,53 @@ struct RootViewWithStore: View {
         }
         .environmentObject(store)
         .animation(.easeInOut(duration: 0.25), value: store.session != nil)
+        .task {
+            await checkExistingSession()
+        }
+    }
+    
+    private func checkExistingSession() async {
+        // Check if user is already logged in with Firebase
+        guard let firebaseUser = Auth.auth().currentUser else {
+            isCheckingAuth = false
+            return
+        }
+        
+        #if DEBUG
+        print("[Auth] Found existing Firebase session for user: \(firebaseUser.uid)")
+        #endif
+        
+        // Try to restore the user's account
+        let accountService = AccountServiceProvider.makeAccountService()
+        
+        do {
+            // Look up account by email if available
+            if let email = firebaseUser.email {
+                if let account = try await accountService.lookupAccount(byEmail: email) {
+                    let session = UserSession(account: account)
+                    store.completeAuthentication(with: session)
+                    isCheckingAuth = false
+                    return
+                }
+            }
+            
+            // If no account found, create one with available info
+            let displayName = firebaseUser.displayName ?? firebaseUser.email?.split(separator: "@").first.map(String.init) ?? "User"
+            let email = firebaseUser.email ?? "\(firebaseUser.uid)@payback.local"
+            
+            let account = try await accountService.createAccount(email: email, displayName: displayName)
+            let session = UserSession(account: account)
+            store.completeAuthentication(with: session)
+            
+        } catch {
+            #if DEBUG
+            print("[Auth] Failed to restore session: \(error.localizedDescription)")
+            #endif
+            // Sign out on error to force fresh login
+            try? Auth.auth().signOut()
+        }
+        
+        isCheckingAuth = false
     }
 }
 

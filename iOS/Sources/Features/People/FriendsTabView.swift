@@ -1,112 +1,89 @@
 import SwiftUI
-// DetailContainer is defined in DetailContainer.swift
 
-enum PeopleScope: String, CaseIterable, Identifiable {
-    case friends = "Friends"
-    case groups = "Groups"
-    var id: String { rawValue }
-}
-
-enum PeopleNavigationState: Equatable {
+// Navigation state for Friends tab
+enum FriendsNavigationState: Equatable {
     case home
     case friendDetail(GroupMember)
-    case groupDetail(SpendingGroup)
     case expenseDetail(SpendingGroup, Expense)
 }
 
-struct PeopleHomeView: View {
+struct FriendsTabView: View {
     @EnvironmentObject var store: AppStore
-    @Binding var scope: PeopleScope
-    @Binding var navigationState: PeopleNavigationState
-    @State private var showMenu = false
-    @State private var titleRowHeight: CGFloat = 0
-    @State private var titleButtonWidth: CGFloat = 0
-    @State private var titleButtonHeight: CGFloat = 0
-    @State private var showCreateGroup = false
+    @Binding var navigationState: FriendsNavigationState
+    @Binding var selectedTab: Int
     @State private var showAddFriend = false
-    @State private var dropdownSize: CGSize = .zero
     @State private var lastGroupForFriendDetail: SpendingGroup?
     
     var body: some View {
         NavigationStack {
             ZStack {
-            switch navigationState {
-            case .home:
-                homeContent
-            case .friendDetail(let friend):
-                DetailContainer(
-                    action: {
-                        if let group = lastGroupForFriendDetail {
-                            navigationState = .groupDetail(group)
-                            lastGroupForFriendDetail = nil
-                        } else {
-                            navigationState = .home
-                        }
-                    },
-                    background: {
-                        homeContent
-                            .opacity(0.2)
-                            .scaleEffect(0.95)
-                            .offset(y: 50)
-                    }
-                ) {
-                    FriendDetailView(friend: friend, onBack: {
-                        if let group = lastGroupForFriendDetail {
-                            navigationState = .groupDetail(group)
-                            lastGroupForFriendDetail = nil
-                        } else {
-                            navigationState = .home
-                        }
-                    })
-                    .environmentObject(store)
-                }
-            case .groupDetail(let group):
-                DetailContainer(
-                    action: {
-                        navigationState = .home
-                        lastGroupForFriendDetail = nil
-                    },
-                    background: {
-                        homeContent
-                            .opacity(0.2)
-                            .scaleEffect(0.95)
-                            .offset(y: 50)
-                    }
-                ) {
-                    GroupDetailView(
-                        group: group,
-                        onBack: {
+                switch navigationState {
+                case .home:
+                    homeContent
+                case .friendDetail(let friend):
+                    DetailContainer(
+                        action: {
                             navigationState = .home
                             lastGroupForFriendDetail = nil
                         },
-                        onMemberTap: { member in
-                            lastGroupForFriendDetail = group
-                            navigationState = .friendDetail(member)
-                        },
-                        onExpenseTap: { expense in
-                            navigationState = .expenseDetail(group, expense)
+                        background: {
+                            homeContent
+                                .opacity(0.2)
+                                .scaleEffect(0.95)
+                                .offset(y: 50)
                         }
-                    )
-                    .environmentObject(store)
-                }
-            case .expenseDetail(let group, let expense):
-                DetailContainer(
-                    action: {
-                        navigationState = .groupDetail(group)
-                    },
-                    background: {
-                        homeContent
-                            .opacity(0.2)
-                            .scaleEffect(0.95)
-                            .offset(y: 50)
+                    ) {
+                        FriendDetailView(friend: friend, onBack: {
+                            navigationState = .home
+                            lastGroupForFriendDetail = nil
+                        }, onExpenseSelected: { expense in
+                            if let group = store.group(by: expense.groupId) {
+                                lastGroupForFriendDetail = group
+                                navigationState = .expenseDetail(group, expense)
+                            }
+                        })
+                        .environmentObject(store)
                     }
-                ) {
-                    ExpenseDetailView(expense: expense, onBack: {
-                        navigationState = .groupDetail(group)
-                    })
-                    .environmentObject(store)
+                case .expenseDetail(_, let expense):
+                    DetailContainer(
+                        action: {
+                            if let lastGroup = lastGroupForFriendDetail {
+                                // Return to friend detail if we came from there
+                                if let friend = lastGroup.members.first(where: { $0.id != store.currentUser.id }) {
+                                    navigationState = .friendDetail(friend)
+                                    lastGroupForFriendDetail = nil
+                                } else {
+                                    navigationState = .home
+                                    lastGroupForFriendDetail = nil
+                                }
+                            } else {
+                                navigationState = .home
+                            }
+                        },
+                        background: {
+                            homeContent
+                                .opacity(0.2)
+                                .scaleEffect(0.95)
+                                .offset(y: 50)
+                        }
+                    ) {
+                        ExpenseDetailView(expense: expense, onBack: {
+                            if let lastGroup = lastGroupForFriendDetail {
+                                // Return to friend detail if we came from there
+                                if let friend = lastGroup.members.first(where: { $0.id != store.currentUser.id }) {
+                                    navigationState = .friendDetail(friend)
+                                    lastGroupForFriendDetail = nil
+                                } else {
+                                    navigationState = .home
+                                    lastGroupForFriendDetail = nil
+                                }
+                            } else {
+                                navigationState = .home
+                            }
+                        })
+                        .environmentObject(store)
+                    }
                 }
-            }
             }
             .background(AppTheme.background.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
@@ -116,50 +93,27 @@ struct PeopleHomeView: View {
     @ViewBuilder
     private var homeContent: some View {
         ZStack(alignment: .topLeading) {
-            content
-                .padding(.horizontal)
+            FriendsList(onFriendSelected: { friend in
+                lastGroupForFriendDetail = nil
+                navigationState = .friendDetail(friend)
+            })
+            .padding(.horizontal)
         }
         .safeAreaInset(edge: .top) {
             VStack(spacing: 0) {
                 HStack {
-                    Text(scope.rawValue)
+                    Text("Friends")
                         .font(.system(size: AppMetrics.headerTitleFontSize, weight: .bold))
                         .foregroundStyle(AppTheme.brand)
                         .contentShape(Rectangle())
-                        .simultaneousGesture(
-                            TapGesture(count: 2)
-                                .onEnded {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        scope = (scope == .friends ? .groups : .friends)
-                                    }
-                                }
-                        )
-                        .simultaneousGesture(
-                            TapGesture()
-                                .onEnded {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        toggleScope()
-                                    }
-                                }
-                        )
-                        .background(
-                            GeometryReader { proxy in
-                                Color.clear
-                                    .onAppear {
-                                        titleButtonWidth = proxy.size.width
-                                        titleButtonHeight = proxy.size.height
-                                    }
-                                    .onChange(of: proxy.size.width) { newValue in titleButtonWidth = newValue }
-                                    .onChange(of: proxy.size.height) { newValue in titleButtonHeight = newValue }
-                            }
-                        )
+                        .onTapGesture(count: 2) {
+                            handleDoubleTap()
+                        }
 
                     Spacer()
+                    
                     Button(action: {
-                        switch scope {
-                        case .friends: showAddFriend = true
-                        case .groups: showCreateGroup = true
-                        }
+                        showAddFriend = true
                     }) {
                         Image(systemName: "plus")
                             .font(.headline)
@@ -169,53 +123,13 @@ struct PeopleHomeView: View {
                             .shadow(radius: 3)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(scope == .friends ? "Add Friend" : "Create Group")
+                    .accessibilityLabel("Add Friend")
                 }
                 .padding(.horizontal)
                 .padding(.top, AppMetrics.headerTopPadding)
                 .padding(.bottom, AppMetrics.headerBottomPadding)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .preference(key: TitleRowHeightKey.self, value: proxy.size.height)
-                    }
-                )
-                .onPreferenceChange(TitleRowHeightKey.self) { titleRowHeight = $0 }
-
-            }
-            .overlay {
-                if showMenu {
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            scope = (scope == .friends ? .groups : .friends)
-                            showMenu = false
-                        }
-                    }) {
-                        Text(scope == .friends ? PeopleScope.groups.rawValue : PeopleScope.friends.rawValue)
-                            .font(.system(size: AppMetrics.dropdownFontSize, weight: .bold))
-                            .foregroundStyle(AppTheme.brand)
-                            .padding(.horizontal, AppMetrics.dropdownTextHorizontalPadding)
-                            .padding(.vertical, AppMetrics.dropdownTextVerticalPadding)
-                            .background(
-                                GeometryReader { proxy in
-                                    Color.clear
-                                        .onAppear { dropdownSize = proxy.size }
-                                        .onChange(of: proxy.size) { newValue in dropdownSize = newValue }
-                                }
-                            )
-                    }
-                    .position(
-                        x: titleButtonWidth + AppMetrics.dropdownHorizontalGap,
-                        y: AppMetrics.headerTopPadding + (titleButtonHeight / 2)
-                    )
-                    .transition(.opacity)
-                }
             }
             .background(AppTheme.background)
-        }
-        .sheet(isPresented: $showCreateGroup) {
-            CreateGroupView()
-                .environmentObject(store)
         }
         .sheet(isPresented: $showAddFriend) {
             AddFriendSheet { name in
@@ -226,27 +140,16 @@ struct PeopleHomeView: View {
             }
         }
     }
-
-    @ViewBuilder
-    private var content: some View {
-        switch scope {
-        case .friends:
-            FriendsList(onFriendSelected: { friend in
-                lastGroupForFriendDetail = nil
-                navigationState = .friendDetail(friend)
-            })
-        case .groups:
-            GroupsListView(onGroupSelected: { group in
-                lastGroupForFriendDetail = nil
-                navigationState = .groupDetail(group)
-            })
+    
+    private func handleDoubleTap() {
+        // Double-tap on Friends title switches to Groups tab
+        withAnimation(.easeInOut(duration: 0.3)) {
+            selectedTab = 1
         }
     }
-
-    private func toggleScope() {
-        showMenu.toggle()
-    }
 }
+
+// MARK: - Friends List Component
 
 private struct FriendsList: View {
     @EnvironmentObject var store: AppStore
@@ -383,31 +286,6 @@ private struct FriendsList: View {
             }.map { $0.friend }
         }
     }
-
-    private func calculateBalance(for friend: GroupMember) -> Double {
-        var totalBalance: Double = 0
-        
-        for group in store.groups {
-            if group.members.contains(where: { $0.id == friend.id }) {
-                let groupExpenses = store.expenses(in: group.id)
-                var paidByUser: Double = 0
-                var owes: Double = 0
-                
-                for exp in groupExpenses where !exp.isSettled {
-                    if exp.paidByMemberId == store.currentUser.id {
-                        paidByUser += exp.totalAmount
-                    }
-                    if let split = exp.splits.first(where: { $0.memberId == store.currentUser.id }) {
-                        owes += split.amount
-                    }
-                }
-                
-                totalBalance += (paidByUser - owes)
-            }
-        }
-        
-        return totalBalance
-    }
     
     private func calculateBalanceForSorting(for friend: GroupMember) -> Double {
         // Use the same calculation as BalanceView for consistency and performance
@@ -437,6 +315,8 @@ private struct FriendsList: View {
     }
 }
 
+// MARK: - Balance View Component
+
 private struct BalanceView: View {
     @EnvironmentObject var store: AppStore
     let friend: GroupMember
@@ -450,17 +330,12 @@ private struct BalanceView: View {
             .foregroundStyle(balanceColor(for: balance))
     }
 
-    // TODO: DATABASE_INTEGRATION - Replace AppStore dependency with database queries when implementing persistent storage
     private func calculateBalance(with friend: GroupMember) -> Double {
         var totalBalance: Double = 0
 
-        // TODO: DATABASE_INTEGRATION - Replace store.groups with database query
-        // Example: SELECT * FROM groups WHERE member_ids CONTAINS friend.id
         for group in store.groups {
             guard group.members.contains(where: { $0.id == friend.id }) else { continue }
 
-            // TODO: DATABASE_INTEGRATION - Replace store.expenses(in:) with database query
-            // Example: SELECT * FROM expenses WHERE group_id = group.id AND settled = false
             let groupExpenses = store.expenses(in: group.id)
 
             for expense in groupExpenses where !expense.isSettled {
@@ -503,43 +378,7 @@ private struct BalanceView: View {
     }
 }
 
-struct AvatarView: View {
-    let name: String
-    let size: CGFloat
-    
-    init(name: String, size: CGFloat = 32) {
-        self.name = name
-        self.size = size
-    }
-    
-    var body: some View {
-        let color = deterministicColor(for: name)
-        ZStack {
-            Circle().fill(color.gradient)
-            Text(initials(from: name))
-                .font(.system(size: size * 0.4375, weight: .semibold)) // 14/32 = 0.4375 ratio
-                .foregroundStyle(.white)
-        }
-        .frame(width: size, height: size)
-        .shadow(color: color.opacity(0.2), radius: size * 0.0625, y: size * 0.03125) // Scale shadow proportionally
-    }
-
-    private func initials(from name: String) -> String {
-        name.split(separator: " ").prefix(2).map { $0.first.map(String.init) ?? "" }.joined()
-    }
-    private func deterministicColor(for seed: String) -> Color {
-        let hash = abs(seed.hashValue)
-        let hue = Double(hash % 256) / 256.0
-        return Color(hue: hue, saturation: 0.55, brightness: 0.85)
-    }
-}
-
-private struct TitleRowHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
+// MARK: - Add Friend Sheet
 
 private struct AddFriendSheet: View {
     @Environment(\.dismiss) private var dismiss

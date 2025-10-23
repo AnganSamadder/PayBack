@@ -171,7 +171,7 @@ struct FriendDetailView: View {
         .onAppear {
             selectedTab = .direct
         }
-        .onChange(of: friend.id) { _ in
+        .onChange(of: friend.id) { oldValue, newValue in
             selectedTab = .direct
         }
     }
