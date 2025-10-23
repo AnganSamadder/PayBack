@@ -171,7 +171,7 @@ struct FriendDetailView: View {
         .onAppear {
             selectedTab = .direct
         }
-        .onChange(of: friend.id) { _, _ in
+        .onChange(of: friend.id) { _ in
             selectedTab = .direct
         }
     }
@@ -657,4 +657,3 @@ struct GroupExpenseRow: View {
         return group.members.first { $0.id == id }?.name ?? "Unknown"
     }
 }
-

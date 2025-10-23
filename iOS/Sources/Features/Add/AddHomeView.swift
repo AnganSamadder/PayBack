@@ -56,7 +56,7 @@ struct ChooseTargetView: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach(store.groups.filter { !($0.isDirect ?? false) }) { g in
+                ForEach(availableGroups) { g in
                     Button {
                         selectedGroup = g
                     } label: {
@@ -70,7 +70,7 @@ struct ChooseTargetView: View {
                     }
                 }
                 Section("Friends") {
-                    ForEach(uniqueMembers) { m in
+                    ForEach(friendMembers) { m in
                         Button {
                             let g = store.directGroup(with: m)
                             selectedGroup = g
@@ -88,16 +88,20 @@ struct ChooseTargetView: View {
         }
     }
 
-    private var uniqueMembers: [GroupMember] {
-        var set: Set<UUID> = []
-        var out: [GroupMember] = []
-        for g in store.groups {
-            for m in g.members where !set.contains(m.id) {
-                set.insert(m.id)
-                out.append(m)
+    private var friendMembers: [GroupMember] {
+        // Double filter to ensure current user is never shown
+        return store.friendMembers
+            .filter { !store.isCurrentUser($0) }
+            .filter { $0.id != store.currentUser.id }
+    }
+
+    private var availableGroups: [SpendingGroup] {
+        store.groups
+            .filter { group in
+                guard !store.isDirectGroup(group) else { return false }
+                return store.hasNonCurrentUserMembers(group)
             }
-        }
-        return out
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 }
 
@@ -114,5 +118,3 @@ struct GroupIcon: View {
         .frame(width: 32, height: 32)
     }
 }
-
-

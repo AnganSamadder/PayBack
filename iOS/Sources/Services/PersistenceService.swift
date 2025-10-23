@@ -3,6 +3,7 @@ import Foundation
 protocol PersistenceServiceProtocol {
     func load() -> AppData
     func save(_ data: AppData)
+    func clear()
 }
 
 final class PersistenceService: PersistenceServiceProtocol {
@@ -31,6 +32,16 @@ final class PersistenceService: PersistenceServiceProtocol {
             try encoded.write(to: fileURL, options: .atomic)
         } catch {
             // noop for now
+        }
+    }
+
+    func clear() {
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+        } catch {
+            // noop
         }
     }
 }

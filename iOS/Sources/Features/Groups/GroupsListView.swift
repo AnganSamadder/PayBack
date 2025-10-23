@@ -7,7 +7,9 @@ struct GroupsListView: View {
 
     var body: some View {
         SwiftUI.Group {
-            if store.groups.isEmpty {
+            let displayableGroups = store.groups.filter { !store.isDirectGroup($0) && store.hasNonCurrentUserMembers($0) }
+
+            if displayableGroups.isEmpty {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
                         EmptyStateView("No Groups", systemImage: "person.3", description: "Create a group to start splitting")
@@ -19,7 +21,7 @@ struct GroupsListView: View {
                 }
             } else {
                 List {
-                    ForEach(store.groups.filter { !($0.isDirect ?? false) }) { group in
+                    ForEach(displayableGroups) { group in
                         Button {
                             onGroupSelected(group)
                         } label: {

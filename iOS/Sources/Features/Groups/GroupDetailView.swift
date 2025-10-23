@@ -105,7 +105,7 @@ struct GroupDetailView: View {
             SettleModal(group: group)
                 .environmentObject(store)
         }
-        .onChange(of: store.expenses(in: group.id)) { _, _ in
+        .onChange(of: store.expenses(in: group.id)) { _ in
             // Force view refresh when expenses change
             print("🔄 Expenses changed, forcing view refresh")
             refreshTrigger = UUID()
@@ -291,13 +291,13 @@ struct GroupDetailView: View {
                 HStack(spacing: 12) {
                     ForEach(group.members) { member in
                         Button(action: {
-                            guard member.id != store.currentUser.id else { return }
+                            guard !store.isCurrentUser(member) else { return }
                             onMemberTap(member)
                         }) {
                             memberCard(for: member)
                         }
                         .buttonStyle(.plain)
-                        .disabled(member.id == store.currentUser.id)
+                        .disabled(store.isCurrentUser(member))
                     }
                 }
                 .padding(.horizontal, 4)
@@ -372,6 +372,32 @@ private struct SettleConfirmationView: View {
     let paymentRecipients: [(member: GroupMember, amount: Double)]
     let onConfirm: () -> Void
     let onCancel: () -> Void
+    
+    private func memberName(for id: UUID, in expense: Expense) -> String {
+        // Try multiple sources for the name, in order of preference:
+        // 1. From the group members
+        // 2. From cached participantNames in the expense
+        // 3. From friends list
+        // 4. Check if it's the current user
+        // 5. Fallback to "Unknown"
+        if let member = group.members.first(where: { $0.id == id }) {
+            return member.name
+        }
+        
+        if let cachedName = expense.participantNames?[id] {
+            return cachedName
+        }
+        
+        if id == store.currentUser.id {
+            return store.currentUser.name
+        }
+        
+        if let friend = store.friends.first(where: { $0.memberId == id }) {
+            return friend.name
+        }
+        
+        return "Unknown"
+    }
 
     var body: some View {
         ZStack {
@@ -498,7 +524,7 @@ private struct SettleConfirmationView: View {
                                                 .lineLimit(2)
 
                                             HStack(spacing: 12) {
-                                                Text("Paid by \(group.members.first(where: { $0.id == expense.paidByMemberId })?.name ?? "Unknown")")
+                                                Text("Paid by \(memberName(for: expense.paidByMemberId, in: expense))")
                                                     .font(.system(.caption, design: .rounded))
                                                     .foregroundStyle(.secondary)
 
@@ -616,7 +642,7 @@ private struct SettleModal: View {
                         }
                         .padding(.vertical, 20)
                     }
-                    .onChange(of: unsettledExpenses) { _, _ in
+                    .onChange(of: unsettledExpenses) { _ in
                         // Remove any selected expenses that are no longer unsettled
                         selectedExpenseIds = selectedExpenseIds.filter { expenseId in
                             unsettledExpenses.contains { $0.id == expenseId }
@@ -634,8 +660,8 @@ private struct SettleModal: View {
                     .foregroundStyle(AppTheme.navigationHeaderAccent)
                 }
 
-                if !selectedExpenseIds.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if !selectedExpenseIds.isEmpty {
                         Button("Settle") {
                             showConfirmationPage = true
                         }

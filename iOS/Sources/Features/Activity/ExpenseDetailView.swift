@@ -164,8 +164,30 @@ struct ExpenseDetailView: View {
     }
 
     private func memberName(for id: UUID) -> String {
-        guard let group = store.group(by: expense.groupId) else { return "Unknown" }
-        return group.members.first { $0.id == id }?.name ?? "Unknown"
+        // Try multiple sources for the name, in order of preference:
+        // 1. From the group members
+        // 2. From cached participantNames in the expense
+        // 3. From friends list
+        // 4. Check if it's the current user
+        // 5. Fallback to "Unknown"
+        if let group = store.group(by: expense.groupId),
+           let member = group.members.first(where: { $0.id == id }) {
+            return member.name
+        }
+        
+        if let cachedName = expense.participantNames?[id] {
+            return cachedName
+        }
+        
+        if id == store.currentUser.id {
+            return store.currentUser.name
+        }
+        
+        if let friend = store.friends.first(where: { $0.memberId == id }) {
+            return friend.name
+        }
+        
+        return "Unknown"
     }
 
     private func currency(_ amount: Double) -> String {

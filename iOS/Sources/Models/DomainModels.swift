@@ -26,11 +26,17 @@ struct SpendingGroup: Identifiable, Codable, Hashable {
     // Direct person-to-person group if true; hidden from regular Groups list
     var isDirect: Bool?
 
-    init(id: UUID = UUID(), name: String, members: [GroupMember], isDirect: Bool? = false) {
+    init(
+        id: UUID = UUID(),
+        name: String,
+        members: [GroupMember],
+        createdAt: Date = Date(),
+        isDirect: Bool? = false
+    ) {
         self.id = id
         self.name = name
         self.members = members
-        self.createdAt = Date()
+        self.createdAt = createdAt
         self.isDirect = isDirect
     }
 }
@@ -59,6 +65,7 @@ struct Expense: Identifiable, Codable, Hashable {
     var involvedMemberIds: [UUID]
     var splits: [ExpenseSplit] // amounts owed per member with individual settlement status
     var isSettled: Bool // Overall settlement status (all splits settled)
+    var participantNames: [UUID: String]? // Optional cache of participant display names from remote payload
 
     init(
         id: UUID = UUID(),
@@ -69,7 +76,8 @@ struct Expense: Identifiable, Codable, Hashable {
         paidByMemberId: UUID,
         involvedMemberIds: [UUID],
         splits: [ExpenseSplit],
-        isSettled: Bool = false
+        isSettled: Bool = false,
+        participantNames: [UUID: String]? = nil
     ) {
         self.id = id
         self.groupId = groupId
@@ -80,6 +88,7 @@ struct Expense: Identifiable, Codable, Hashable {
         self.involvedMemberIds = involvedMemberIds
         self.splits = splits
         self.isSettled = isSettled
+        self.participantNames = participantNames
     }
     
     // Computed property to check if all splits are settled
@@ -112,5 +121,3 @@ struct AppData: Codable {
     var groups: [SpendingGroup]
     var expenses: [Expense]
 }
-
-

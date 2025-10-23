@@ -2,6 +2,10 @@ name: PayBack
 options:
   deploymentTarget:
     iOS: "16.0"
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk.git
+    from: 10.24.0
 settings:
   base:
     SWIFT_VERSION: 5.10
@@ -12,6 +16,13 @@ targets:
     platform: iOS
     sources:
       - path: iOS/Sources
+      - path: iOS/GoogleService-Info.plist
+        type: resource
+    dependencies:
+      - package: Firebase
+        product: FirebaseFirestore
+      - package: Firebase
+        product: FirebaseAuth
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.angansamadder.PayBack

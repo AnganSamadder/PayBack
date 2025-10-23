@@ -74,12 +74,24 @@ playground.xcworkspace
 .env.*
 *.key
 *.pem
+*.secret
+*.secrets
+secrets/
+secrets.json
+config/secrets/
+credentials/
+*.credentials
 
 # SPM artifacts
 Artifacts/
 
 # Firebase / GoogleService files (if any)
 GoogleService-Info.plist
+
+# Kiro IDE
+.kiro/
+.kiro-cache/
+*.kiro
 
 # Editor directories and files
 .idea/

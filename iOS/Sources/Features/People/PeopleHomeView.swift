@@ -149,8 +149,8 @@ struct PeopleHomeView: View {
                                         titleButtonWidth = proxy.size.width
                                         titleButtonHeight = proxy.size.height
                                     }
-                                    .onChange(of: proxy.size.width) { _, newValue in titleButtonWidth = newValue }
-                                    .onChange(of: proxy.size.height) { _, newValue in titleButtonHeight = newValue }
+                                    .onChange(of: proxy.size.width) { newValue in titleButtonWidth = newValue }
+                                    .onChange(of: proxy.size.height) { newValue in titleButtonHeight = newValue }
                             }
                         )
 
@@ -200,7 +200,7 @@ struct PeopleHomeView: View {
                                 GeometryReader { proxy in
                                     Color.clear
                                         .onAppear { dropdownSize = proxy.size }
-                                        .onChange(of: proxy.size) { _, newValue in dropdownSize = newValue }
+                                        .onChange(of: proxy.size) { newValue in dropdownSize = newValue }
                                 }
                             )
                     }
@@ -220,7 +220,8 @@ struct PeopleHomeView: View {
         .sheet(isPresented: $showAddFriend) {
             AddFriendSheet { name in
                 let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
+                let candidate = GroupMember(name: trimmed)
+                guard !trimmed.isEmpty, !store.isCurrentUser(candidate) else { return }
                 _ = store.directGroup(with: GroupMember(name: trimmed))
             }
         }
@@ -358,7 +359,10 @@ private struct FriendsList: View {
     }
 
     private var sortedFriends: [GroupMember] {
-        let friends = uniqueMembers.filter { $0.id != store.currentUser.id }
+        // Double filter to ensure current user is never shown
+        let friends = store.friendMembers
+            .filter { !store.isCurrentUser($0) }
+            .filter { $0.id != store.currentUser.id }
         
         switch sortOrder {
         case .alphabetical:
@@ -380,18 +384,6 @@ private struct FriendsList: View {
         }
     }
 
-    private var uniqueMembers: [GroupMember] {
-        var set: Set<UUID> = []
-        var out: [GroupMember] = []
-        for g in store.groups {
-            for m in g.members where !set.contains(m.id) {
-                set.insert(m.id)
-                out.append(m)
-            }
-        }
-        return out
-    }
-    
     private func calculateBalance(for friend: GroupMember) -> Double {
         var totalBalance: Double = 0
         

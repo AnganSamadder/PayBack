@@ -166,7 +166,7 @@ struct ActivityView: View {
             }
         }
         .background(AppTheme.background.ignoresSafeArea())
-        .onChange(of: shouldResetNavigation) { _, shouldReset in
+        .onChange(of: shouldResetNavigation) { shouldReset in
             if shouldReset {
                 navigationState = .home
                 expenseDetailReturnState = nil
@@ -180,204 +180,203 @@ struct ActivityView: View {
         // Clear all groups and expenses
         store.clearAllData()
     }
-    
-    private func addTestData() {
-        // Add sample groups with current user included
-        let group1 = SpendingGroup(name: "Roommates", members: [
-            store.currentUser, // Include current user
-            GroupMember(name: "Alex"),
-            GroupMember(name: "Sam"),
-            GroupMember(name: "Jordan")
-        ])
-        
-        let group2 = SpendingGroup(name: "Work Team", members: [
-            store.currentUser, // Include current user
-            GroupMember(name: "Mike"),
-            GroupMember(name: "Sarah"),
-            GroupMember(name: "David"),
-            GroupMember(name: "Emma")
-        ])
-        
-        let friend1 = GroupMember(name: "Chris")
-        let friend2 = GroupMember(name: "Taylor")
-        
-        // Add groups to store
-        store.addExistingGroup(group1)
-        store.addExistingGroup(group2)
-        
-        // Add direct friend groups
-        let directGroup1 = store.directGroup(with: friend1)
-        let directGroup2 = store.directGroup(with: friend2)
-        
-        // Add sample expenses for Roommates group
-        let expense1 = Expense(
-            groupId: group1.id,
+
+
+private func addTestData() {
+    let current = GroupMember(id: store.currentUser.id, name: store.currentUser.name)
+
+    let members: [String: UUID] = [
+        "Alex": UUID(uuidString: "E8A7F4E2-2FAD-4F29-A46D-7C6C44B7B52F")!,
+        "Sam": UUID(uuidString: "D146F064-46F0-4F5F-8D94-2F8CCB77D2D4")!,
+        "Jordan": UUID(uuidString: "5A1B92F6-5F4F-4E2D-8E0B-254B30F8F9B1")!,
+        "Mike": UUID(uuidString: "6B6EAD5C-43E9-4A5A-9C4F-34F7AB265D1F")!,
+        "Sarah": UUID(uuidString: "A2FE5ED3-60A0-44D8-82BC-2E7EFDD6F4D9")!,
+        "David": UUID(uuidString: "BFBF4E46-82ED-4D2A-9BD9-4A5C9E88BD3F")!,
+        "Emma": UUID(uuidString: "945E7D2A-4CA6-46DA-A0B1-1C4C2D5BB6AE")!,
+        "Chris": UUID(uuidString: "CCF8AA41-3BC0-4D3F-939E-FA5F2AEADBBE")!,
+        "Taylor": UUID(uuidString: "3B9B1709-95D8-471A-9048-561B41E3D93A")!
+    ]
+
+    let groups: [SpendingGroup] = [
+        SpendingGroup(
+            id: UUID(uuidString: "8AA2F5A1-78F2-4E33-8E5C-1E22B8B577C5")!,
+            name: "Roommates",
+            members: [current, GroupMember(id: members["Alex"]!, name: "Alex"), GroupMember(id: members["Sam"]!, name: "Sam"), GroupMember(id: members["Jordan"]!, name: "Jordan")],
+            createdAt: Date().addingTimeInterval(-86400 * 120)
+        ),
+        SpendingGroup(
+            id: UUID(uuidString: "1C9F8F94-36F2-4F8F-B1E6-28B1A1D9F476")!,
+            name: "Work Team",
+            members: [
+                current,
+                GroupMember(id: members["Mike"]!, name: "Mike"),
+                GroupMember(id: members["Sarah"]!, name: "Sarah"),
+                GroupMember(id: members["David"]!, name: "David"),
+                GroupMember(id: members["Emma"]!, name: "Emma")
+            ],
+            createdAt: Date().addingTimeInterval(-86400 * 90)
+        ),
+        SpendingGroup(
+            id: UUID(uuidString: "EBFF1345-87D8-4401-B7E3-D77AEF6E2567")!,
+            name: "Chris",
+            members: [current, GroupMember(id: members["Chris"]!, name: "Chris")],
+            createdAt: Date().addingTimeInterval(-86400 * 75),
+            isDirect: true
+        ),
+        SpendingGroup(
+            id: UUID(uuidString: "2154C595-A5D2-4F70-85A1-BA2FD0569F89")!,
+            name: "Taylor",
+            members: [current, GroupMember(id: members["Taylor"]!, name: "Taylor")],
+            createdAt: Date().addingTimeInterval(-86400 * 60),
+            isDirect: true
+        )
+    ]
+
+    func upsertGroup(_ group: SpendingGroup) {
+        if let existing = store.group(by: group.id) {
+            if existing != group { store.updateGroup(group) }
+        } else {
+            store.addExistingGroup(group)
+        }
+    }
+
+    for group in groups { upsertGroup(group) }
+
+    let expenses: [Expense] = [
+        Expense(
+            id: UUID(uuidString: "15F1F3F0-7D21-4B19-9B6E-2540C9A48193")!,
+            groupId: groups[0].id,
             description: "Groceries",
-            date: Date().addingTimeInterval(-86400 * 2), // 2 days ago
+            date: Date().addingTimeInterval(-86400 * 2),
             totalAmount: 85.50,
-            paidByMemberId: store.currentUser.id,
-            involvedMemberIds: [store.currentUser.id, group1.members[1].id, group1.members[2].id], // Use indices 1,2 since 0 is current user
+            paidByMemberId: current.id,
+            involvedMemberIds: [current.id, members["Alex"]!, members["Sam"]!, members["Jordan"]!],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 28.50, isSettled: true),
-                ExpenseSplit(memberId: group1.members[1].id, amount: 28.50, isSettled: true),
-                ExpenseSplit(memberId: group1.members[2].id, amount: 28.50, isSettled: false)
+                ExpenseSplit(memberId: current.id, amount: 21.38, isSettled: true),
+                ExpenseSplit(memberId: members["Alex"]!, amount: 21.38, isSettled: true),
+                ExpenseSplit(memberId: members["Sam"]!, amount: 21.37, isSettled: false),
+                ExpenseSplit(memberId: members["Jordan"]!, amount: 21.37, isSettled: false)
             ],
             isSettled: false
-        )
-        
-        let expense2 = Expense(
-            groupId: group1.id,
+        ),
+        Expense(
+            id: UUID(uuidString: "4E65F6B4-94CE-420D-BBBF-58F041C3B4E2")!,
+            groupId: groups[0].id,
             description: "Electric Bill",
-            date: Date().addingTimeInterval(-86400 * 5), // 5 days ago
+            date: Date().addingTimeInterval(-86400 * 5),
             totalAmount: 120.00,
-            paidByMemberId: group1.members[1].id, // Alex paid
-            involvedMemberIds: [store.currentUser.id, group1.members[1].id, group1.members[2].id, group1.members[3].id],
+            paidByMemberId: members["Alex"]!,
+            involvedMemberIds: [current.id, members["Alex"]!, members["Sam"]!, members["Jordan"]!],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 30.00, isSettled: false),
-                ExpenseSplit(memberId: group1.members[1].id, amount: 30.00, isSettled: true),
-                ExpenseSplit(memberId: group1.members[2].id, amount: 30.00, isSettled: true),
-                ExpenseSplit(memberId: group1.members[3].id, amount: 30.00, isSettled: false)
+                ExpenseSplit(memberId: current.id, amount: 30.00, isSettled: false),
+                ExpenseSplit(memberId: members["Alex"]!, amount: 30.00, isSettled: true),
+                ExpenseSplit(memberId: members["Sam"]!, amount: 30.00, isSettled: true),
+                ExpenseSplit(memberId: members["Jordan"]!, amount: 30.00, isSettled: false)
             ],
             isSettled: false
-        )
-        
-        // Add sample expenses for Work Team group
-        let expense3 = Expense(
-            groupId: group2.id,
+        ),
+        Expense(
+            id: UUID(uuidString: "A4F215A8-6E0C-4F94-B46F-68E7B081AD87")!,
+            groupId: groups[1].id,
             description: "Team Lunch",
-            date: Date().addingTimeInterval(-86400 * 1), // 1 day ago
+            date: Date().addingTimeInterval(-86400 * 1),
             totalAmount: 65.25,
-            paidByMemberId: store.currentUser.id,
-            involvedMemberIds: [store.currentUser.id, group2.members[1].id, group2.members[2].id],
+            paidByMemberId: current.id,
+            involvedMemberIds: [current.id, members["Mike"]!, members["Sarah"]!],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 21.75, isSettled: true),
-                ExpenseSplit(memberId: group2.members[1].id, amount: 21.75, isSettled: false),
-                ExpenseSplit(memberId: group2.members[2].id, amount: 21.75, isSettled: true)
+                ExpenseSplit(memberId: current.id, amount: 21.75, isSettled: true),
+                ExpenseSplit(memberId: members["Mike"]!, amount: 21.75, isSettled: false),
+                ExpenseSplit(memberId: members["Sarah"]!, amount: 21.75, isSettled: true)
             ],
             isSettled: false
-        )
-        
-        let expense4 = Expense(
-            groupId: group2.id,
+        ),
+        Expense(
+            id: UUID(uuidString: "D46A318C-2200-43AF-9D4A-0E744541E3FC")!,
+            groupId: groups[1].id,
             description: "Office Supplies",
-            date: Date().addingTimeInterval(-86400 * 3), // 3 days ago
+            date: Date().addingTimeInterval(-86400 * 3),
             totalAmount: 45.00,
-            paidByMemberId: group2.members[3].id, // David paid
-            involvedMemberIds: [store.currentUser.id, group2.members[3].id, group2.members[4].id],
+            paidByMemberId: members["David"]!,
+            involvedMemberIds: [current.id, members["David"]!, members["Emma"]!],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 15.00, isSettled: true),
-                ExpenseSplit(memberId: group2.members[3].id, amount: 15.00, isSettled: true),
-                ExpenseSplit(memberId: group2.members[4].id, amount: 15.00, isSettled: false)
+                ExpenseSplit(memberId: current.id, amount: 15.00, isSettled: true),
+                ExpenseSplit(memberId: members["David"]!, amount: 15.00, isSettled: true),
+                ExpenseSplit(memberId: members["Emma"]!, amount: 15.00, isSettled: false)
             ],
             isSettled: false
-        )
-        
-        // Add sample expenses for direct friends
-        let expense5 = Expense(
-            groupId: directGroup1.id,
-            description: "Coffee",
-            date: Date().addingTimeInterval(-86400 * 4), // 4 days ago
+        ),
+        Expense(
+            id: UUID(uuidString: "1B8A46F3-3F0E-4AD3-9A83-9AD50C6D25A9")!,
+            groupId: groups[2].id,
+            description: "Coffee with Chris",
+            date: Date().addingTimeInterval(-86400 * 4),
             totalAmount: 12.50,
-            paidByMemberId: store.currentUser.id,
-            involvedMemberIds: [store.currentUser.id, friend1.id],
+            paidByMemberId: current.id,
+            involvedMemberIds: [current.id, members["Chris"]!],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 6.25, isSettled: true),
-                ExpenseSplit(memberId: friend1.id, amount: 6.25, isSettled: false)
+                ExpenseSplit(memberId: current.id, amount: 6.25, isSettled: true),
+                ExpenseSplit(memberId: members["Chris"]!, amount: 6.25, isSettled: false)
             ],
             isSettled: false
-        )
-        
-        let expense6 = Expense(
-            groupId: directGroup2.id,
+        ),
+        Expense(
+            id: UUID(uuidString: "0C6F8A5A-1B31-4F45-9B03-87CECE2B8B6C")!,
+            groupId: groups[3].id,
             description: "Movie Tickets",
-            date: Date().addingTimeInterval(-86400 * 6), // 6 days ago
-            totalAmount: 32.00,
-            paidByMemberId: friend2.id,
-            involvedMemberIds: [store.currentUser.id, friend2.id],
+            date: Date().addingTimeInterval(-86400 * 6),
+            totalAmount: 34.00,
+            paidByMemberId: members["Taylor"]!,
+            involvedMemberIds: [current.id, members["Taylor"]!],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 16.00, isSettled: false),
-                ExpenseSplit(memberId: friend2.id, amount: 16.00, isSettled: true)
+                ExpenseSplit(memberId: current.id, amount: 17.00, isSettled: false),
+                ExpenseSplit(memberId: members["Taylor"]!, amount: 17.00, isSettled: true)
             ],
             isSettled: false
-        )
-        
-        // Add one fully settled expense
-        let expense7 = Expense(
-            groupId: group1.id,
+        ),
+        Expense(
+            id: UUID(uuidString: "9F1E5B77-4477-4E7C-9198-08ABDF15D1F1")!,
+            groupId: groups[0].id,
             description: "Pizza Night",
-            date: Date().addingTimeInterval(-86400 * 10), // 10 days ago
+            date: Date().addingTimeInterval(-86400 * 10),
             totalAmount: 28.00,
-            paidByMemberId: store.currentUser.id,
-            involvedMemberIds: [store.currentUser.id, group1.members[1].id],
+            paidByMemberId: current.id,
+            involvedMemberIds: [current.id, members["Alex"]!],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 14.00, isSettled: true),
-                ExpenseSplit(memberId: group1.members[1].id, amount: 14.00, isSettled: true)
+                ExpenseSplit(memberId: current.id, amount: 14.00, isSettled: true),
+                ExpenseSplit(memberId: members["Alex"]!, amount: 14.00, isSettled: true)
             ],
             isSettled: true
-        )
-        
-        // Add one partially settled expense
-        let expense8 = Expense(
-            groupId: group2.id,
-            description: "Team Dinner",
-            date: Date().addingTimeInterval(-86400 * 7), // 7 days ago
-            totalAmount: 120.00,
-            paidByMemberId: store.currentUser.id,
-            involvedMemberIds: [store.currentUser.id, group2.members[1].id, group2.members[2].id, group2.members[3].id],
+        ),
+        Expense(
+            id: UUID(uuidString: "F7A9037C-21BC-4C2F-9D23-8B0EDC9EAE56")!,
+            groupId: groups[1].id,
+            description: "Book Club Snacks",
+            date: Date().addingTimeInterval(-86400 * 7),
+            totalAmount: 24.30,
+            paidByMemberId: current.id,
+            involvedMemberIds: [current.id, members["Sarah"]!, members["Emma"]!],
             splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 30.00, isSettled: true),
-                ExpenseSplit(memberId: group2.members[1].id, amount: 30.00, isSettled: true),
-                ExpenseSplit(memberId: group2.members[2].id, amount: 30.00, isSettled: false),
-                ExpenseSplit(memberId: group2.members[3].id, amount: 30.00, isSettled: false)
+                ExpenseSplit(memberId: current.id, amount: 8.10, isSettled: false),
+                ExpenseSplit(memberId: members["Sarah"]!, amount: 8.10, isSettled: true),
+                ExpenseSplit(memberId: members["Emma"]!, amount: 8.10, isSettled: false)
             ],
             isSettled: false
         )
-        
-        // Add another expense with different settlement pattern
-        let expense9 = Expense(
-            groupId: group1.id,
-            description: "Internet Bill",
-            date: Date().addingTimeInterval(-86400 * 8), // 8 days ago
-            totalAmount: 80.00,
-            paidByMemberId: group1.members[2].id, // Jordan paid
-            involvedMemberIds: [store.currentUser.id, group1.members[1].id, group1.members[2].id, group1.members[3].id],
-            splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 20.00, isSettled: false),
-                ExpenseSplit(memberId: group1.members[1].id, amount: 20.00, isSettled: true),
-                ExpenseSplit(memberId: group1.members[2].id, amount: 20.00, isSettled: true),
-                ExpenseSplit(memberId: group1.members[3].id, amount: 20.00, isSettled: false)
-            ],
-            isSettled: false
-        )
-        
-        // Add a fully unsettled expense
-        let expense10 = Expense(
-            groupId: group2.id,
-            description: "Conference Tickets",
-            date: Date().addingTimeInterval(-86400 * 9), // 9 days ago
-            totalAmount: 200.00,
-            paidByMemberId: group2.members[4].id, // Emma paid
-            involvedMemberIds: [store.currentUser.id, group2.members[1].id, group2.members[4].id],
-            splits: [
-                ExpenseSplit(memberId: store.currentUser.id, amount: 66.67, isSettled: false),
-                ExpenseSplit(memberId: group2.members[1].id, amount: 66.67, isSettled: false),
-                ExpenseSplit(memberId: group2.members[4].id, amount: 66.66, isSettled: true)
-            ],
-            isSettled: false
-        )
-        
-        // Add all expenses to store
-        store.addExpense(expense1)
-        store.addExpense(expense2)
-        store.addExpense(expense3)
-        store.addExpense(expense4)
-        store.addExpense(expense5)
-        store.addExpense(expense6)
-        store.addExpense(expense7)
-        store.addExpense(expense8)
-        store.addExpense(expense9)
-        store.addExpense(expense10)
+    ]
+
+    for expense in expenses {
+        if store.expenses.contains(where: { $0.id == expense.id }) {
+            store.updateExpense(expense)
+        } else {
+            store.addExpense(expense)
+        }
     }
+
+    store.purgeCurrentUserFriendRecords()
+    store.pruneSelfOnlyDirectGroups()
+    store.normalizeDirectGroupFlags()
+}
+
 }
 
 struct TabButton: View {
@@ -475,11 +474,11 @@ struct DashboardView: View {
                         .padding(.horizontal, 20)
                         
                         LazyVStack(spacing: 12) {
-                            ForEach(store.groups) { group in
+                            ForEach(store.groups.filter { store.hasNonCurrentUserMembers($0) && !store.isDirectGroup($0) }) { group in
                                 Button(action: {
                                     let isDirectGroup = group.isDirect ?? false
                                     if isDirectGroup,
-                                       let friend = group.members.first(where: { $0.id != store.currentUser.id }) {
+                                       let friend = group.members.first(where: { !store.isCurrentUser($0) }) {
                                         onFriendTap(friend)
                                     } else {
                                         onGroupTap(group)
@@ -558,7 +557,7 @@ struct DashboardView: View {
 
         // TODO: DATABASE_INTEGRATION - Replace with efficient database query
         // Example: SELECT SUM(amount) FROM balances WHERE user_id = currentUser.id
-        for group in store.groups {
+        for group in store.groups where store.hasNonCurrentUserMembers(group) {
             for expense in store.expenses(in: group.id) {
                 if expense.paidByMemberId == store.currentUser.id {
                     // Current user paid - others owe current user (only unsettled splits)

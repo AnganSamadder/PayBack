@@ -387,12 +387,20 @@ private struct TargetPicker: View {
     private var uniqueMembers: [GroupMember] {
         var seen: Set<UUID> = []
         var out: [GroupMember] = []
+        
         for g in store.groups {
             for m in g.members where !seen.contains(m.id) {
+                // CRITICAL: Never include the current user
+                guard !store.isCurrentUser(m) else { continue }
+                
+                // Extra safety: check ID directly
+                guard m.id != store.currentUser.id else { continue }
+                
                 seen.insert(m.id)
                 out.append(m)
             }
         }
+        
         return out
     }
 }

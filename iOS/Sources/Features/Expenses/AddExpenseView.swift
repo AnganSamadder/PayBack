@@ -88,7 +88,8 @@ struct AddExpenseView: View {
         guard !descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               totalAmount > 0,
               !participants.isEmpty,
-              !splits.isEmpty else { return }
+              !splits.isEmpty,
+              participants.contains(where: { !store.isCurrentUser($0) }) else { return }
 
         let expense = Expense(
             groupId: group.id,
@@ -931,5 +932,4 @@ private struct ManualSplitView: View {
         }
     }
 }
-
 

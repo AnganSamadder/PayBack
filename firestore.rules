@@ -1,0 +1,98 @@
+rules_version = '2';
+service cloud.firestore {
+  function isSignedIn() {
+    return request.auth != null && request.auth.token.email != null;
+  }
+
+  function userEmail() {
+    return request.auth.token.email.lower();
+  }
+
+  function userUid() {
+    return request.auth.uid;
+  }
+
+  match /databases/{database}/documents {
+    match /users/{emailDocId} {
+      allow read, write: if isSignedIn() && userEmail() == emailDocId;
+
+      match /friends/{friendId} {
+        allow read, write: if isSignedIn() && userEmail() == emailDocId;
+      }
+    }
+
+    match /expenses/{expenseId} {
+      allow create: if isSignedIn()
+        && request.resource.data.ownerEmail == userEmail()
+        && request.resource.data.ownerAccountId == userUid();
+
+      allow read: if isSignedIn()
+        && (
+            (
+              ('ownerEmail' in resource.data)
+              && resource.data.ownerEmail == userEmail()
+              && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
+            )
+            || !('ownerEmail' in resource.data)
+        );
+
+      allow update: if isSignedIn()
+        && request.resource.data.ownerEmail == userEmail()
+        && request.resource.data.ownerAccountId == userUid()
+        && (
+            !('ownerEmail' in resource.data)
+            || (
+                resource.data.ownerEmail == userEmail()
+                && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
+            )
+        );
+
+      allow delete: if isSignedIn()
+        && (
+            (
+              ('ownerEmail' in resource.data)
+              && resource.data.ownerEmail == userEmail()
+              && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
+            )
+            || !('ownerEmail' in resource.data)
+        );
+    }
+
+    match /groups/{groupId} {
+      allow create: if isSignedIn()
+        && request.resource.data.ownerEmail == userEmail()
+        && request.resource.data.ownerAccountId == userUid();
+
+      allow read: if isSignedIn()
+        && (
+            (
+              ('ownerEmail' in resource.data)
+              && resource.data.ownerEmail == userEmail()
+              && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
+            )
+            || !('ownerEmail' in resource.data)
+        );
+
+      allow update: if isSignedIn()
+        && request.resource.data.ownerEmail == userEmail()
+        && request.resource.data.ownerAccountId == userUid()
+        && (
+            !('ownerEmail' in resource.data)
+            || (
+                resource.data.ownerEmail == userEmail()
+                && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
+            )
+        );
+
+      allow delete: if isSignedIn()
+        && (
+            (
+              ('ownerEmail' in resource.data)
+              && resource.data.ownerEmail == userEmail()
+              && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
+            )
+            || !('ownerEmail' in resource.data)
+        );
+    }
+  }
+}
