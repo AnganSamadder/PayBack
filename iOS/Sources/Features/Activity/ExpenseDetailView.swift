@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ExpenseDetailView: View {
     @EnvironmentObject var store: AppStore
+    @AppStorage("showRealNames") private var showRealNames: Bool = true
     @Environment(\.dismiss) private var dismiss
     let expense: Expense
     let onBack: (() -> Void)?
@@ -164,27 +165,25 @@ struct ExpenseDetailView: View {
     }
 
     private func memberName(for id: UUID) -> String {
-        // Try multiple sources for the name, in order of preference:
-        // 1. From the group members
-        // 2. From cached participantNames in the expense
-        // 3. From friends list
-        // 4. Check if it's the current user
-        // 5. Fallback to "Unknown"
+        // Current user always shows their name
+        if id == store.currentUser.id {
+            return store.currentUser.name
+        }
+        
+        // Try to find in friends list first (respects display preference)
+        if let friend = store.friends.first(where: { $0.memberId == id }) {
+            return friend.displayName(showRealNames: showRealNames)
+        }
+        
+        // Try from the group members
         if let group = store.group(by: expense.groupId),
            let member = group.members.first(where: { $0.id == id }) {
             return member.name
         }
         
+        // Try from cached participantNames in the expense
         if let cachedName = expense.participantNames?[id] {
             return cachedName
-        }
-        
-        if id == store.currentUser.id {
-            return store.currentUser.name
-        }
-        
-        if let friend = store.friends.first(where: { $0.memberId == id }) {
-            return friend.name
         }
         
         return "Unknown"

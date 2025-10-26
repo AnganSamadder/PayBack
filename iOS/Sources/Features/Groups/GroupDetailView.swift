@@ -49,6 +49,7 @@ struct GroupDetailSwipeBackModifier: ViewModifier {
 
 struct GroupDetailView: View {
     @EnvironmentObject var store: AppStore
+    @AppStorage("showRealNames") private var showRealNames: Bool = true
     let group: SpendingGroup
     let onBack: () -> Void
     let onMemberTap: (GroupMember) -> Void
@@ -189,8 +190,13 @@ struct GroupDetailView: View {
     @ViewBuilder
     private func memberCard(for member: GroupMember) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(member.name)
+            Text(memberDisplayName(member))
                 .font(.headline)
+            if let secondaryName = memberSecondaryName(member) {
+                Text(secondaryName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Text(balanceText(for: member))
                 .font(.subheadline)
                 .foregroundStyle(balanceColor(for: member))
@@ -199,6 +205,32 @@ struct GroupDetailView: View {
         .background(AppTheme.card)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .contentShape(RoundedRectangle(cornerRadius: 12))
+    }
+    
+    private func memberDisplayName(_ member: GroupMember) -> String {
+        // Current user always shows their name
+        if store.isCurrentUser(member) {
+            return member.name
+        }
+        
+        // Find the AccountFriend for this member
+        if let accountFriend = store.friends.first(where: { $0.memberId == member.id }) {
+            return accountFriend.displayName(showRealNames: showRealNames)
+        }
+        return member.name
+    }
+    
+    private func memberSecondaryName(_ member: GroupMember) -> String? {
+        // Current user has no secondary name
+        if store.isCurrentUser(member) {
+            return nil
+        }
+        
+        // Find the AccountFriend for this member
+        if let accountFriend = store.friends.first(where: { $0.memberId == member.id }) {
+            return accountFriend.secondaryDisplayName(showRealNames: showRealNames)
+        }
+        return nil
     }
 
 
@@ -366,6 +398,7 @@ private struct GroupIconView: View {
 // MARK: - Settle Confirmation View
 private struct SettleConfirmationView: View {
     @EnvironmentObject var store: AppStore
+    @AppStorage("showRealNames") private var showRealNames: Bool = true
     let group: SpendingGroup
     let selectedExpenseIds: Set<UUID>
     let selectedExpenses: [Expense]
@@ -374,29 +407,53 @@ private struct SettleConfirmationView: View {
     let onCancel: () -> Void
     
     private func memberName(for id: UUID, in expense: Expense) -> String {
-        // Try multiple sources for the name, in order of preference:
-        // 1. From the group members
-        // 2. From cached participantNames in the expense
-        // 3. From friends list
-        // 4. Check if it's the current user
-        // 5. Fallback to "Unknown"
-        if let member = group.members.first(where: { $0.id == id }) {
-            return member.name
-        }
-        
-        if let cachedName = expense.participantNames?[id] {
-            return cachedName
-        }
-        
+        // Current user always shows their name
         if id == store.currentUser.id {
             return store.currentUser.name
         }
         
+        // Try to find in friends list first (respects display preference)
         if let friend = store.friends.first(where: { $0.memberId == id }) {
-            return friend.name
+            return friend.displayName(showRealNames: showRealNames)
+        }
+        
+        // Try from the group members
+        if let member = group.members.first(where: { $0.id == id }) {
+            return member.name
+        }
+        
+        // Try from cached participantNames in the expense
+        if let cachedName = expense.participantNames?[id] {
+            return cachedName
         }
         
         return "Unknown"
+    }
+    
+    private func recipientDisplayName(_ member: GroupMember) -> String {
+        // Current user always shows their name
+        if store.isCurrentUser(member) {
+            return member.name
+        }
+        
+        // Find the AccountFriend for this member
+        if let accountFriend = store.friends.first(where: { $0.memberId == member.id }) {
+            return accountFriend.displayName(showRealNames: showRealNames)
+        }
+        return member.name
+    }
+    
+    private func recipientSecondaryName(_ member: GroupMember) -> String? {
+        // Current user has no secondary name
+        if store.isCurrentUser(member) {
+            return nil
+        }
+        
+        // Find the AccountFriend for this member
+        if let accountFriend = store.friends.first(where: { $0.memberId == member.id }) {
+            return accountFriend.secondaryDisplayName(showRealNames: showRealNames)
+        }
+        return nil
     }
 
     var body: some View {
@@ -473,17 +530,23 @@ private struct SettleConfirmationView: View {
                             VStack(spacing: 8) {
                                 ForEach(paymentRecipients, id: \.member.id) { recipient in
                                     HStack(spacing: 12) {
-                                        AvatarView(name: recipient.member.name)
+                                        AvatarView(name: recipientDisplayName(recipient.member))
                                             .frame(width: 40, height: 40)
 
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text(recipient.member.name)
+                                            Text(recipientDisplayName(recipient.member))
                                                 .font(.system(.body, design: .rounded, weight: .medium))
                                                 .foregroundStyle(.primary)
-
-                                            Text("Receive payment")
-                                                .font(.system(.caption, design: .rounded))
-                                                .foregroundStyle(.secondary)
+                                            
+                                            if let secondaryName = recipientSecondaryName(recipient.member) {
+                                                Text(secondaryName)
+                                                    .font(.system(.caption, design: .rounded))
+                                                    .foregroundStyle(.secondary)
+                                            } else {
+                                                Text("Receive payment")
+                                                    .font(.system(.caption, design: .rounded))
+                                                    .foregroundStyle(.secondary)
+                                            }
                                         }
 
                                         Spacer()

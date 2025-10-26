@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import FirebaseCore
 import FirebaseAuth
+import Network
 
 enum FirebaseConfigurator {
     static func configureIfNeeded() {
@@ -16,7 +17,7 @@ enum FirebaseConfigurator {
 
         guard let resolvedOptions = options else {
             #if DEBUG
-            print("[Firebase] GoogleService-Info.plist is missing or invalid – authentication flow will be disabled.")
+            print("[Firebase] GoogleService-Info.plist is missing or invalid - authentication flow will be disabled.")
             #endif
             return
         }
@@ -25,7 +26,7 @@ enum FirebaseConfigurator {
 
         guard let app = FirebaseApp.app() else {
             #if DEBUG
-            print("[Firebase] Configuration still missing – check GoogleService-Info.plist bundle settings.")
+            print("[Firebase] Configuration still missing - check GoogleService-Info.plist bundle settings.")
             #endif
             return
         }
@@ -66,6 +67,9 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 struct RootViewWithStore: View {
     @StateObject private var store = AppStore()
     @State private var isCheckingAuth = true
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var networkMonitor = NetworkMonitor()
+    @State private var pendingInviteToken: UUID?
 
     var body: some View {
         Group {
@@ -94,7 +98,7 @@ struct RootViewWithStore: View {
                     }
                 }
             } else if store.session != nil {
-                RootView()
+                RootView(pendingInviteToken: $pendingInviteToken)
             } else {
                 AuthFlowView { session in
                     store.completeAuthentication(with: session)
@@ -105,6 +109,15 @@ struct RootViewWithStore: View {
         .animation(.easeInOut(duration: 0.25), value: store.session != nil)
         .task {
             await checkExistingSession()
+        }
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            handleScenePhaseChange(oldPhase: oldPhase, newPhase: newPhase)
+        }
+        .onChange(of: networkMonitor.isConnected) { wasConnected, isConnected in
+            handleNetworkChange(wasConnected: wasConnected, isConnected: isConnected)
+        }
+        .onOpenURL { url in
+            handleDeepLink(url)
         }
     }
     
@@ -151,9 +164,123 @@ struct RootViewWithStore: View {
         
         isCheckingAuth = false
     }
+    
+    private func handleScenePhaseChange(oldPhase: ScenePhase, newPhase: ScenePhase) {
+        // Trigger reconciliation when app becomes active
+        if oldPhase != .active && newPhase == .active {
+            #if DEBUG
+            print("[App] App became active - triggering link state reconciliation")
+            #endif
+            
+            Task {
+                await store.reconcileAfterNetworkRecovery()
+            }
+        }
+    }
+    
+    private func handleNetworkChange(wasConnected: Bool, isConnected: Bool) {
+        // Trigger reconciliation when network is restored
+        if !wasConnected && isConnected {
+            #if DEBUG
+            print("[App] Network connection restored - triggering link state reconciliation")
+            #endif
+            
+            Task {
+                await store.reconcileAfterNetworkRecovery()
+            }
+        }
+    }
+    
+    private func handleDeepLink(_ url: URL) {
+        #if DEBUG
+        print("[DeepLink] Received URL: \(url.absoluteString)")
+        #endif
+        
+        // Parse the URL: payback://link/claim?token=<uuid>
+        guard url.scheme == "payback" else {
+            #if DEBUG
+            print("[DeepLink] Invalid scheme: \(url.scheme ?? "nil")")
+            #endif
+            return
+        }
+        
+        guard url.host == "link" else {
+            #if DEBUG
+            print("[DeepLink] Invalid host: \(url.host ?? "nil")")
+            #endif
+            return
+        }
+        
+        guard url.path == "/claim" else {
+            #if DEBUG
+            print("[DeepLink] Invalid path: \(url.path)")
+            #endif
+            return
+        }
+        
+        // Extract token parameter
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let queryItems = components.queryItems,
+              let tokenString = queryItems.first(where: { $0.name == "token" })?.value,
+              let tokenId = UUID(uuidString: tokenString) else {
+            #if DEBUG
+            print("[DeepLink] Failed to extract token from URL")
+            #endif
+            return
+        }
+        
+        #if DEBUG
+        print("[DeepLink] Extracted token: \(tokenId)")
+        #endif
+        
+        // Store the token to be handled by RootView
+        pendingInviteToken = tokenId
+    }
 }
 
+/// Monitors network connectivity status
+class NetworkMonitor: ObservableObject {
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "NetworkMonitor")
+    
+    @Published var isConnected: Bool = true
+    @Published var connectionType: NWInterface.InterfaceType?
+    
+    init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                self?.isConnected = path.status == .satisfied
+                self?.connectionType = path.availableInterfaces.first?.type
+                
+                #if DEBUG
+                if path.status == .satisfied {
+                    print("[Network] Connection available: \(path.availableInterfaces.first?.type.debugDescription ?? "unknown")")
+                } else {
+                    print("[Network] Connection unavailable")
+                }
+                #endif
+            }
+        }
+        monitor.start(queue: queue)
+    }
+    
+    deinit {
+        monitor.cancel()
+    }
+}
 
+extension NWInterface.InterfaceType {
+    var debugDescription: String {
+        switch self {
+        case .wifi: return "WiFi"
+        case .cellular: return "Cellular"
+        case .wiredEthernet: return "Ethernet"
+        case .loopback: return "Loopback"
+        case .other: return "Other"
+        @unknown default: return "Unknown"
+        }
+    }
+}
 
 @main
 struct PayBackApp: App {

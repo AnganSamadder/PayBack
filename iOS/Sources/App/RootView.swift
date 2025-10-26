@@ -3,6 +3,8 @@ import UIKit
 
 struct RootView: View {
     @EnvironmentObject var store: AppStore
+    @Binding var pendingInviteToken: UUID?
+    
     @State private var selectedTab: Int = 0
     @State private var showAddOverlay: Bool = false
     @State private var expandCircle: Bool = false
@@ -17,6 +19,8 @@ struct RootView: View {
     @State private var friendsNavigationState: FriendsNavigationState = .home
     @State private var groupsNavigationState: GroupsNavigationState = .home
     @State private var shouldResetActivityNavigation: Bool = false
+    @State private var showInviteClaim: Bool = false
+    @State private var inviteTokenToShow: UUID?
 
     var body: some View {
         ZStack {
@@ -197,6 +201,38 @@ struct RootView: View {
         .statusBarHidden(true)
         .ignoresSafeArea(.container, edges: showAddOverlay ? [] : .bottom)
         // keep preference available; circle rendered inside ZStack above
+        .sheet(isPresented: $showInviteClaim) {
+            if let tokenId = inviteTokenToShow {
+                InviteLinkClaimView(tokenId: tokenId)
+                    .environmentObject(store)
+            }
+        }
+        .onChange(of: pendingInviteToken) { oldValue, newValue in
+            if let tokenId = newValue {
+                #if DEBUG
+                print("[RootView] Handling pending invite token: \(tokenId)")
+                #endif
+                
+                // Set the token to show and present the sheet
+                inviteTokenToShow = tokenId
+                showInviteClaim = true
+                
+                // Clear the pending token
+                pendingInviteToken = nil
+            }
+        }
+        .onAppear {
+            // Handle any pending token when view appears
+            if let tokenId = pendingInviteToken {
+                #if DEBUG
+                print("[RootView] Handling pending invite token on appear: \(tokenId)")
+                #endif
+                
+                inviteTokenToShow = tokenId
+                showInviteClaim = true
+                pendingInviteToken = nil
+            }
+        }
     }
 
     private func openAdd() {

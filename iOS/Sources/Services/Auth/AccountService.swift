@@ -26,14 +26,6 @@ enum AccountServiceError: LocalizedError {
     }
 }
 
-struct AccountFriend: Hashable {
-    let memberId: UUID
-    var name: String
-    var hasLinkedAccount: Bool
-    var linkedAccountId: String?
-    var linkedAccountEmail: String?
-}
-
 protocol AccountService {
     func normalizedEmail(from rawValue: String) throws -> String
     func lookupAccount(byEmail email: String) async throws -> UserAccount?
@@ -41,6 +33,12 @@ protocol AccountService {
     func updateLinkedMember(accountId: String, memberId: UUID?) async throws
     func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws
     func fetchFriends(accountEmail: String) async throws -> [AccountFriend]
+    func updateFriendLinkStatus(
+        accountEmail: String,
+        memberId: UUID,
+        linkedAccountId: String,
+        linkedAccountEmail: String
+    ) async throws
 }
 
 final class MockAccountService: AccountService {
@@ -88,5 +86,23 @@ final class MockAccountService: AccountService {
 
     func fetchFriends(accountEmail: String) async throws -> [AccountFriend] {
         Self.friends[accountEmail] ?? []
+    }
+    
+    func updateFriendLinkStatus(
+        accountEmail: String,
+        memberId: UUID,
+        linkedAccountId: String,
+        linkedAccountEmail: String
+    ) async throws {
+        // Mock implementation - update in-memory storage
+        var currentFriends = Self.friends[accountEmail] ?? []
+        if let index = currentFriends.firstIndex(where: { $0.memberId == memberId }) {
+            var updatedFriend = currentFriends[index]
+            updatedFriend.hasLinkedAccount = true
+            updatedFriend.linkedAccountId = linkedAccountId
+            updatedFriend.linkedAccountEmail = linkedAccountEmail
+            currentFriends[index] = updatedFriend
+            Self.friends[accountEmail] = currentFriends
+        }
     }
 }

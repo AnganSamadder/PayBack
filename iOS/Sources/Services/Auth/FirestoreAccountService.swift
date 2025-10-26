@@ -117,6 +117,7 @@ final class FirestoreAccountService: AccountService {
                 ]
                 data["linkedAccountEmail"] = linkedEmail ?? NSNull()
                 data["linkedAccountId"] = linkedAccountId ?? NSNull()
+                data["nickname"] = friend.nickname ?? NSNull()
                 batch.setData(data, forDocument: friendRef, merge: true)
             }
 
@@ -127,6 +128,76 @@ final class FirestoreAccountService: AccountService {
 
             try await batch.commit()
         } catch {
+            throw mapError(error)
+        }
+    }
+    
+    func updateFriendLinkStatus(
+        accountEmail: String,
+        memberId: UUID,
+        linkedAccountId: String,
+        linkedAccountEmail: String
+    ) async throws {
+        do {
+            try ensureFirebaseConfigured()
+            
+            let friendRef = database.collection(collectionName)
+                .document(accountEmail)
+                .collection("friends")
+                .document(memberId.uuidString)
+            
+            // Use transaction to prevent race conditions
+            _ = try await database.runTransaction({ (transaction, errorPointer) -> Any? in
+                let snapshot: DocumentSnapshot
+                do {
+                    snapshot = try transaction.getDocument(friendRef)
+                } catch let fetchError as NSError {
+                    errorPointer?.pointee = fetchError
+                    return nil
+                }
+                
+                // Check if member is already linked to a different account
+                if snapshot.exists,
+                   let data = snapshot.data(),
+                   let existingLinkedId = data["linkedAccountId"] as? String,
+                   !existingLinkedId.isEmpty,
+                   existingLinkedId != linkedAccountId {
+                    // Member is already linked to a different account - fail gracefully
+                    let error = NSError(
+                        domain: "FirestoreAccountService",
+                        code: -2,
+                        userInfo: [NSLocalizedDescriptionKey: "Member is already linked to another account"]
+                    )
+                    errorPointer?.pointee = error
+                    return nil
+                }
+                
+                // Update the friend link status
+                let now = Date()
+                let updateData: [String: Any] = [
+                    "hasLinkedAccount": true,
+                    "linkedAccountId": linkedAccountId,
+                    "linkedAccountEmail": linkedAccountEmail.lowercased(),
+                    "updatedAt": Timestamp(date: now)
+                ]
+                
+                transaction.setData(updateData, forDocument: friendRef, merge: true)
+                return nil
+            })
+            
+        } catch {
+            // Check if this is our custom "already linked" error
+            if let nsError = error as NSError?,
+               nsError.domain == "FirestoreAccountService",
+               nsError.code == -2 {
+                throw AccountServiceError.underlying(
+                    NSError(
+                        domain: "AccountService",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "This participant is already linked to another account."]
+                    )
+                )
+            }
             throw mapError(error)
         }
     }
@@ -149,7 +220,8 @@ final class FirestoreAccountService: AccountService {
                     return nil
                 }
 
-                let hasLinked = data["hasLinkedAccount"] as? Bool ?? false
+                // Determine if account is linked based on multiple indicators
+                let hasLinkedFromField = data["hasLinkedAccount"] as? Bool ?? false
                 let linkedEmail: String?
                 if let email = data["linkedAccountEmail"] as? String, !email.isEmpty {
                     linkedEmail = email
@@ -162,10 +234,21 @@ final class FirestoreAccountService: AccountService {
                 } else {
                     linkedId = nil
                 }
+                
+                let nickname: String?
+                if let nick = data["nickname"] as? String, !nick.isEmpty {
+                    nickname = nick
+                } else {
+                    nickname = nil
+                }
+                
+                // A friend is considered linked if any of these are true
+                let hasLinked = hasLinkedFromField || linkedEmail != nil || linkedId != nil
 
                 return AccountFriend(
                     memberId: memberId,
                     name: name,
+                    nickname: nickname,
                     hasLinkedAccount: hasLinked,
                     linkedAccountId: linkedId,
                     linkedAccountEmail: linkedEmail

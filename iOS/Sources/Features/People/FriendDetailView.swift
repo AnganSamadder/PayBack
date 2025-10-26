@@ -8,6 +8,15 @@ struct FriendDetailView: View {
     
     @State private var selectedTab: FriendDetailTab = .direct
     @State private var showAddExpense = false
+    @State private var isGeneratingInviteLink = false
+    @State private var showShareSheet = false
+    @State private var inviteLinkToShare: InviteLink?
+    @State private var linkError: LinkingError?
+    @State private var showErrorAlert = false
+    @State private var showSuccessMessage = false
+    @State private var isEditingNickname = false
+    @State private var nicknameText = ""
+    @State private var isSavingNickname = false
 
     init(friend: GroupMember, onBack: @escaping () -> Void, onExpenseSelected: ((Expense) -> Void)? = nil) {
         self.friend = friend
@@ -99,6 +108,48 @@ struct FriendDetailView: View {
         }
     }
     
+    // MARK: - Link Status Properties
+    
+    private var isLinked: Bool {
+        store.friendHasLinkedAccount(friend)
+    }
+    
+    private var linkedEmail: String? {
+        store.linkedAccountEmail(for: friend)
+    }
+    
+    private var hasPendingOutgoingRequest: Bool {
+        store.outgoingLinkRequests.contains { request in
+            request.targetMemberId == friend.id && request.status == .pending
+        }
+    }
+    
+    // MARK: - Nickname Properties
+    
+    private var accountFriend: AccountFriend? {
+        store.friends.first { $0.memberId == friend.id }
+    }
+    
+    private var currentNickname: String? {
+        accountFriend?.nickname
+    }
+    
+    private var displayName: String {
+        if isLinked {
+            // For linked friends, show nickname if available, otherwise show account name
+            return currentNickname ?? friend.name
+        } else {
+            // For unlinked friends, always show the name (which is the nickname)
+            return friend.name
+        }
+    }
+    
+    private var realName: String? {
+        // Only return real name if linked and different from nickname
+        guard isLinked else { return nil }
+        return friend.name
+    }
+    
     private var gradientColors: [Color] {
         if isSettled {
             return [
@@ -124,6 +175,230 @@ struct FriendDetailView: View {
         }
     }
 
+    // MARK: - Invite Link Button
+    
+    private var inviteLinkButton: some View {
+        Button(action: {
+            Haptics.selection()
+            Task {
+                await generateInviteLink()
+            }
+        }) {
+            HStack(spacing: 8) {
+                if isGeneratingInviteLink {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(0.8)
+                } else {
+                    Image(systemName: "link.badge.plus")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                
+                Text(isGeneratingInviteLink ? "Generating Link..." : "Send Invite Link")
+                    .font(.system(.body, design: .rounded, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(AppTheme.brand)
+            )
+        }
+        .disabled(isGeneratingInviteLink)
+        .buttonStyle(.plain)
+        .scaleEffect(isGeneratingInviteLink ? 0.98 : 1.0)
+        .animation(AppAnimation.quick, value: isGeneratingInviteLink)
+    }
+    
+    private var cancelRequestButton: some View {
+        Button(action: {
+            Haptics.selection()
+            Task {
+                await cancelLinkRequest()
+            }
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "xmark.circle")
+                    .font(.system(size: 16, weight: .semibold))
+                
+                Text("Cancel Link Request")
+                    .font(.system(.body, design: .rounded, weight: .semibold))
+            }
+            .foregroundStyle(.red)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(AppTheme.card)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(Color.red.opacity(0.3), lineWidth: 1.5)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+    
+    private var successMessageView: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.green)
+            
+            Text("Invite link ready to share!")
+                .font(.system(.body, design: .rounded, weight: .medium))
+                .foregroundStyle(.primary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.green.opacity(0.1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Color.green.opacity(0.3), lineWidth: 1.5)
+                )
+        )
+        .transition(.scale.combined(with: .opacity))
+    }
+    
+    // MARK: - Link Status Badge
+    
+    private var linkStatusBadge: some View {
+        HStack(spacing: 6) {
+            if isLinked {
+                Image(systemName: "link.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.green)
+                
+                if let email = linkedEmail {
+                    Text(email)
+                        .font(.system(.caption, design: .rounded, weight: .medium))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Linked Account")
+                        .font(.system(.caption, design: .rounded, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            } else if hasPendingOutgoingRequest {
+                Image(systemName: "clock.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.orange)
+                
+                Text("Link Request Sent")
+                    .font(.system(.caption, design: .rounded, weight: .medium))
+                    .foregroundStyle(.secondary)
+            } else {
+                Image(systemName: "person.crop.circle.badge.questionmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.gray)
+                
+                Text("Unlinked")
+                    .font(.system(.caption, design: .rounded, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(AppTheme.card)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(
+                            isLinked ? Color.green.opacity(0.3) : 
+                            hasPendingOutgoingRequest ? Color.orange.opacity(0.3) :
+                            Color.gray.opacity(0.2),
+                            lineWidth: 1.5
+                        )
+                )
+        )
+    }
+    
+    // MARK: - Nickname Edit Sheet
+    
+    private var nicknameEditSheet: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(isLinked ? "Nickname" : "Name")
+                        .font(.system(.headline, design: .rounded, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    
+                    if isLinked {
+                        Text("Set a custom nickname for \(friend.name)")
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Edit the name for this friend")
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                
+                TextField(isLinked ? "Enter nickname" : "Enter name", text: $nicknameText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .rounded))
+                
+                if isLinked && currentNickname != nil {
+                    Button(action: {
+                        Haptics.selection()
+                        Task {
+                            await saveNickname(nil)
+                        }
+                    }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "xmark.circle")
+                                .font(.system(size: 16, weight: .semibold))
+                            
+                            Text("Remove Nickname")
+                                .font(.system(.body, design: .rounded, weight: .semibold))
+                        }
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(AppTheme.card)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .strokeBorder(Color.red.opacity(0.3), lineWidth: 1.5)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSavingNickname)
+                }
+                
+                Spacer()
+            }
+            .padding()
+            .navigationTitle(isLinked ? "Edit Nickname" : "Edit Name")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        isEditingNickname = false
+                    }
+                    .disabled(isSavingNickname)
+                }
+                
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        Haptics.selection()
+                        Task {
+                            let trimmed = nicknameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            await saveNickname(trimmed.isEmpty ? nil : trimmed)
+                        }
+                    }
+                    .disabled(isSavingNickname)
+                }
+            }
+        }
+    }
+    
     // MARK: - Helper Functions
 
     private func currency(_ amount: Double) -> String {
@@ -135,6 +410,31 @@ struct FriendDetailView: View {
         let id = Locale.current.currency?.identifier ?? "USD"
         let positiveAmount = abs(amount)
         return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
+    }
+    
+    private func saveNickname(_ nickname: String?) async {
+        isSavingNickname = true
+        
+        do {
+            try await store.updateFriendNickname(memberId: friend.id, nickname: nickname)
+            
+            await MainActor.run {
+                // Trigger success haptic
+                Haptics.notify(.success)
+                
+                isSavingNickname = false
+                isEditingNickname = false
+            }
+        } catch {
+            await MainActor.run {
+                // Trigger error haptic
+                Haptics.notify(.error)
+                
+                self.linkError = .networkUnavailable
+                self.showErrorAlert = true
+                self.isSavingNickname = false
+            }
+        }
     }
 
     var body: some View {
@@ -174,6 +474,106 @@ struct FriendDetailView: View {
         .onChange(of: friend.id) { oldValue, newValue in
             selectedTab = .direct
         }
+        .sheet(isPresented: $showShareSheet) {
+            if let inviteLink = inviteLinkToShare {
+                ShareSheet(items: [inviteLink.shareText, inviteLink.url])
+            }
+        }
+        .sheet(isPresented: $isEditingNickname) {
+            nicknameEditSheet
+        }
+        .alert("Error", isPresented: $showErrorAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            if let error = linkError {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(error.errorDescription ?? "An error occurred")
+                    if let suggestion = error.recoverySuggestion {
+                        Text(suggestion)
+                            .font(.caption)
+                    }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Invite Link Methods
+    
+    private func generateInviteLink() async {
+        isGeneratingInviteLink = true
+        showSuccessMessage = false
+        
+        do {
+            let inviteLink = try await store.generateInviteLink(forFriend: friend)
+            
+            await MainActor.run {
+                // Trigger success haptic
+                Haptics.notify(.success)
+                
+                self.inviteLinkToShare = inviteLink
+                self.isGeneratingInviteLink = false
+                
+                withAnimation(AppAnimation.springy) {
+                    self.showSuccessMessage = true
+                }
+                
+                self.showShareSheet = true
+                
+                // Hide success message after 3 seconds
+                Task {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    await MainActor.run {
+                        withAnimation(AppAnimation.fade) {
+                            self.showSuccessMessage = false
+                        }
+                    }
+                }
+            }
+        } catch let error as LinkingError {
+            await MainActor.run {
+                // Trigger error haptic
+                Haptics.notify(.error)
+                
+                self.linkError = error
+                self.showErrorAlert = true
+                self.isGeneratingInviteLink = false
+            }
+        } catch {
+            await MainActor.run {
+                // Trigger error haptic
+                Haptics.notify(.error)
+                
+                self.linkError = .networkUnavailable
+                self.showErrorAlert = true
+                self.isGeneratingInviteLink = false
+            }
+        }
+    }
+    
+    private func cancelLinkRequest() async {
+        // Find the pending request for this friend
+        guard let request = store.outgoingLinkRequests.first(where: {
+            $0.targetMemberId == friend.id && $0.status == .pending
+        }) else {
+            return
+        }
+        
+        do {
+            try await store.cancelLinkRequest(request)
+            
+            await MainActor.run {
+                // Trigger selection haptic
+                Haptics.selection()
+            }
+        } catch {
+            await MainActor.run {
+                // Trigger error haptic
+                Haptics.notify(.error)
+                
+                self.linkError = .networkUnavailable
+                self.showErrorAlert = true
+            }
+        }
     }
     
 
@@ -186,9 +586,50 @@ struct FriendDetailView: View {
             VStack(spacing: AppMetrics.FriendDetail.avatarNameSpacing) {
                 AvatarView(name: friend.name, size: AppMetrics.FriendDetail.avatarSize)
                 
-                Text(friend.name)
-                    .font(.system(.title2, design: .rounded, weight: .bold))
-                    .foregroundStyle(.primary)
+                // Name display with nickname support
+                VStack(spacing: 4) {
+                    if isLinked && currentNickname != nil {
+                        // Show real name prominently
+                        Text(friend.name)
+                            .font(.system(.title2, design: .rounded, weight: .bold))
+                            .foregroundStyle(.primary)
+                        
+                        // Show nickname smaller underneath
+                        Text("aka \"\(currentNickname!)\"")
+                            .font(.system(.subheadline, design: .rounded, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        // Show single name
+                        Text(displayName)
+                            .font(.system(.title2, design: .rounded, weight: .bold))
+                            .foregroundStyle(.primary)
+                    }
+                }
+                
+                // Nickname edit button
+                Button(action: {
+                    Haptics.selection()
+                    nicknameText = currentNickname ?? ""
+                    isEditingNickname = true
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(isLinked ? "Edit Nickname" : "Edit Name")
+                            .font(.system(.caption, design: .rounded, weight: .medium))
+                    }
+                    .foregroundStyle(AppTheme.brand)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(AppTheme.brand.opacity(0.1))
+                    )
+                }
+                .buttonStyle(.plain)
+                
+                // Link status indicator
+                linkStatusBadge
             }
             
                          // Balance display with gradient background
@@ -239,6 +680,21 @@ struct FriendDetailView: View {
                              )
                      )
              )
+             
+             // Invite link button for unlinked friends
+             if !isLinked && !hasPendingOutgoingRequest {
+                 inviteLinkButton
+             }
+             
+             // Cancel request button for pending requests
+             if hasPendingOutgoingRequest {
+                 cancelRequestButton
+             }
+             
+             // Success message
+             if showSuccessMessage {
+                 successMessageView
+             }
         }
         .padding(AppMetrics.FriendDetail.heroCardPadding)
         .background(
@@ -265,7 +721,8 @@ struct FriendDetailView: View {
     private var tabSelector: some View {
         HStack(spacing: 8) {
             ForEach(FriendDetailTab.allCases) { tab in
-                Button(action: { 
+                Button(action: {
+                    Haptics.selection()
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                         selectedTab = tab
                     }
@@ -300,8 +757,16 @@ struct FriendDetailView: View {
         switch selectedTab {
         case .direct:
             DirectExpensesView(friend: friend, onExpenseTap: onExpenseSelected)
+                .transition(.asymmetric(
+                    insertion: .move(edge: .leading).combined(with: .opacity),
+                    removal: .move(edge: .trailing).combined(with: .opacity)
+                ))
         case .groups:
             GroupExpensesView(friend: friend, onExpenseTap: onExpenseSelected)
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity)
+                ))
         }
     }
     
@@ -655,5 +1120,20 @@ struct GroupExpenseRow: View {
     private func memberName(for id: UUID) -> String {
         guard let group = store.group(by: expense.groupId) else { return "Unknown" }
         return group.members.first { $0.id == id }?.name ?? "Unknown"
+    }
+}
+
+// MARK: - Share Sheet
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {
+        // No update needed
     }
 }

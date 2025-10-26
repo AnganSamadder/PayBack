@@ -14,25 +14,37 @@ final class AppStore: ObservableObject {
     @Published private(set) var currentUser: GroupMember
     @Published private(set) var session: UserSession?
     @Published private(set) var friends: [AccountFriend]
+    @Published private(set) var incomingLinkRequests: [LinkRequest] = []
+    @Published private(set) var outgoingLinkRequests: [LinkRequest] = []
+    @Published private(set) var previousLinkRequests: [LinkRequest] = []
 
     private let persistence: PersistenceServiceProtocol
     private let accountService: AccountService
     private let expenseCloudService: ExpenseCloudService
     private let groupCloudService: GroupCloudService
+    private let linkRequestService: LinkRequestService
+    private let inviteLinkService: InviteLinkService
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
+    private let retryPolicy: RetryPolicy = .linkingDefault
+    private let stateReconciliation = LinkStateReconciliation()
+    private let failureTracker = LinkFailureTracker()
 
     init(
         persistence: PersistenceServiceProtocol = PersistenceService.shared,
         accountService: AccountService = AccountServiceProvider.makeAccountService(),
         expenseCloudService: ExpenseCloudService = ExpenseCloudServiceProvider.makeService(),
-        groupCloudService: GroupCloudService = GroupCloudServiceProvider.makeService()
+        groupCloudService: GroupCloudService = GroupCloudServiceProvider.makeService(),
+        linkRequestService: LinkRequestService = LinkRequestServiceProvider.makeLinkRequestService(),
+        inviteLinkService: InviteLinkService = InviteLinkServiceProvider.makeInviteLinkService()
     ) {
         self.persistence = persistence
         self.accountService = accountService
         self.expenseCloudService = expenseCloudService
         self.groupCloudService = groupCloudService
+        self.linkRequestService = linkRequestService
+        self.inviteLinkService = inviteLinkService
         
         // Load local data first (don't clear it!)
         let localData = persistence.load()
@@ -67,6 +79,9 @@ final class AppStore: ObservableObject {
             }
             // Load remote data after setting session
             await loadRemoteData()
+            
+            // Perform initial link state reconciliation on app launch
+            await reconcileLinkState()
         }
     }
 
@@ -361,6 +376,9 @@ final class AppStore: ObservableObject {
                 self.pruneSelfOnlyDirectGroups()
                 return merged
             }
+            
+            // Perform state reconciliation to verify link status
+            await reconcileLinkState()
 
             // Push dirty records back to cloud
             Task { [weak self] in
@@ -986,6 +1004,7 @@ final class AppStore: ObservableObject {
                     results.append(AccountFriend(
                         memberId: member.id,
                         name: member.name,
+                        nickname: nil,
                         hasLinkedAccount: false,
                         linkedAccountId: nil,
                         linkedAccountEmail: nil
@@ -1139,5 +1158,709 @@ final class AppStore: ObservableObject {
             }
         }
         scheduleFriendSync()
+    }
+    
+    // MARK: - Link Requests
+    
+    /// Sends a link request to an email address for a specific friend with retry logic
+    func sendLinkRequest(toEmail email: String, forFriend friend: GroupMember) async throws {
+        guard let session = session else {
+            throw LinkingError.unauthorized
+        }
+        
+        // Prevent self-linking: check if recipient email matches current user's email
+        let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
+        let currentUserEmail = session.account.email.lowercased()
+        if normalizedEmail == currentUserEmail {
+            throw LinkingError.selfLinkingNotAllowed
+        }
+        
+        // Prevent self-linking: check if target member is current user's linked member
+        if friend.id == currentUser.id {
+            throw LinkingError.selfLinkingNotAllowed
+        }
+        
+        // Also check if the target member is the current user's linked member ID
+        if let linkedMemberId = session.account.linkedMemberId, friend.id == linkedMemberId {
+            throw LinkingError.selfLinkingNotAllowed
+        }
+        
+        // Check if this specific member (by ID) is already linked
+        if isMemberAlreadyLinked(friend.id) {
+            throw LinkingError.memberAlreadyLinked
+        }
+        
+        // Lookup account by email with retry
+        let account = try await retryPolicy.execute {
+            guard let acc = try? await self.accountService.lookupAccount(byEmail: normalizedEmail) else {
+                throw LinkingError.accountNotFound
+            }
+            return acc
+        }
+        
+        // Additional self-linking check: verify the found account is not the current user
+        if account.id == session.account.id {
+            throw LinkingError.selfLinkingNotAllowed
+        }
+        
+        // Check if this account is already linked to a different member
+        if isAccountAlreadyLinked(accountId: account.id) {
+            throw LinkingError.accountAlreadyLinked
+        }
+        
+        // Check for existing pending request for this member
+        let hasPendingRequest = await MainActor.run {
+            outgoingLinkRequests.contains { request in
+                request.targetMemberId == friend.id && request.status == .pending
+            }
+        }
+        
+        if hasPendingRequest {
+            throw LinkingError.duplicateRequest
+        }
+        
+        // Create link request with retry
+        let request = try await retryPolicy.execute {
+            try await self.linkRequestService.createLinkRequest(
+                recipientEmail: account.email,
+                targetMemberId: friend.id,
+                targetMemberName: friend.name
+            )
+        }
+        
+        // Add to outgoing requests
+        await MainActor.run {
+            if !outgoingLinkRequests.contains(where: { $0.id == request.id }) {
+                outgoingLinkRequests.append(request)
+            }
+        }
+    }
+    
+    /// Fetches all incoming and outgoing link requests with retry logic
+    func fetchLinkRequests() async throws {
+        guard session != nil else {
+            throw LinkingError.unauthorized
+        }
+        
+        let incoming = try await retryPolicy.execute {
+            try await self.linkRequestService.fetchIncomingRequests()
+        }
+        
+        let outgoing = try await retryPolicy.execute {
+            try await self.linkRequestService.fetchOutgoingRequests()
+        }
+        
+        await MainActor.run {
+            self.incomingLinkRequests = incoming
+            self.outgoingLinkRequests = outgoing
+        }
+    }
+    
+    /// Fetches previous (accepted/rejected) link requests with retry logic
+    func fetchPreviousRequests() async throws {
+        guard session != nil else {
+            throw LinkingError.unauthorized
+        }
+        
+        let previous = try await retryPolicy.execute {
+            try await self.linkRequestService.fetchPreviousRequests()
+        }
+        
+        await MainActor.run {
+            self.previousLinkRequests = previous
+        }
+    }
+    
+    /// Accepts a link request and links the account with retry logic
+    func acceptLinkRequest(_ request: LinkRequest) async throws {
+        guard session != nil else {
+            throw LinkingError.unauthorized
+        }
+        
+        // Check if this request was previously rejected
+        let wasPreviouslyRejected = await MainActor.run {
+            previousLinkRequests.contains { previousRequest in
+                previousRequest.targetMemberId == request.targetMemberId &&
+                previousRequest.requesterEmail == request.requesterEmail &&
+                (previousRequest.status == .rejected || previousRequest.status == .declined) &&
+                previousRequest.rejectedAt != nil
+            }
+        }
+        
+        #if DEBUG
+        if wasPreviouslyRejected {
+            print("[AppStore] ⚠️ Re-accepting a previously rejected request for member \(request.targetMemberId)")
+        }
+        #endif
+        
+        // Accept the request via service with retry
+        let result = try await retryPolicy.execute {
+            try await self.linkRequestService.acceptLinkRequest(request.id)
+        }
+        
+        // Link the account (includes its own retry logic)
+        try await linkAccount(
+            memberId: result.linkedMemberId,
+            accountId: result.linkedAccountId,
+            accountEmail: result.linkedAccountEmail
+        )
+        
+        // Remove from incoming requests
+        await MainActor.run {
+            incomingLinkRequests.removeAll { $0.id == request.id }
+        }
+    }
+    
+    /// Checks if a link request was previously rejected
+    func wasPreviouslyRejected(_ request: LinkRequest) -> Bool {
+        return previousLinkRequests.contains { previousRequest in
+            previousRequest.targetMemberId == request.targetMemberId &&
+            previousRequest.requesterEmail == request.requesterEmail &&
+            (previousRequest.status == .rejected || previousRequest.status == .declined) &&
+            previousRequest.rejectedAt != nil
+        }
+    }
+    
+    /// Declines a link request
+    func declineLinkRequest(_ request: LinkRequest) async throws {
+        guard session != nil else {
+            throw LinkingError.unauthorized
+        }
+        
+        // Decline the request via service
+        try await linkRequestService.declineLinkRequest(request.id)
+        
+        // Remove from incoming requests
+        await MainActor.run {
+            incomingLinkRequests.removeAll { $0.id == request.id }
+        }
+    }
+    
+    /// Cancels an outgoing link request
+    func cancelLinkRequest(_ request: LinkRequest) async throws {
+        guard session != nil else {
+            throw LinkingError.unauthorized
+        }
+        
+        // Cancel the request via service
+        try await linkRequestService.cancelLinkRequest(request.id)
+        
+        // Remove from outgoing requests
+        await MainActor.run {
+            outgoingLinkRequests.removeAll { $0.id == request.id }
+        }
+    }
+    
+    // MARK: - Invite Links
+    
+    /// Generates an invite link for an unlinked friend
+    func generateInviteLink(forFriend friend: GroupMember) async throws -> InviteLink {
+        guard session != nil else {
+            throw LinkingError.unauthorized
+        }
+        
+        // Check if this specific member (by ID) is already linked
+        if isMemberAlreadyLinked(friend.id) {
+            throw LinkingError.memberAlreadyLinked
+        }
+        
+        // Generate invite link via service
+        let inviteLink = try await inviteLinkService.generateInviteLink(
+            targetMemberId: friend.id,
+            targetMemberName: friend.name
+        )
+        
+        return inviteLink
+    }
+    
+    /// Validates an invite token and generates expense preview
+    func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation {
+        guard session != nil else {
+            throw LinkingError.unauthorized
+        }
+        
+        // Validate token via service
+        var validation = try await inviteLinkService.validateInviteToken(tokenId)
+        
+        // If valid, generate expense preview
+        if validation.isValid, let token = validation.token {
+            let preview = await MainActor.run {
+                generateExpensePreview(forMemberId: token.targetMemberId)
+            }
+            validation = InviteTokenValidation(
+                isValid: validation.isValid,
+                token: validation.token,
+                expensePreview: preview,
+                errorMessage: validation.errorMessage
+            )
+        }
+        
+        return validation
+    }
+    
+    /// Claims an invite token and links the account with retry logic
+    func claimInviteToken(_ tokenId: UUID) async throws {
+        guard session != nil else {
+            throw LinkingError.unauthorized
+        }
+        
+        // Claim token via service with retry
+        let result = try await retryPolicy.execute {
+            try await self.inviteLinkService.claimInviteToken(tokenId)
+        }
+        
+        // Link the account (includes its own retry logic)
+        try await linkAccount(
+            memberId: result.linkedMemberId,
+            accountId: result.linkedAccountId,
+            accountEmail: result.linkedAccountEmail
+        )
+    }
+    
+    /// Generates an expense preview for a member
+    func generateExpensePreview(forMemberId memberId: UUID) -> ExpensePreview {
+        // Find all expenses involving this member
+        let memberExpenses = expenses.filter { expense in
+            expense.involvedMemberIds.contains(memberId) || expense.paidByMemberId == memberId
+        }
+        
+        // Separate personal (direct) and group expenses
+        let personalExpenses = memberExpenses.filter { expense in
+            if let group = group(by: expense.groupId) {
+                return isDirectGroup(group)
+            }
+            return false
+        }
+        
+        let groupExpenses = memberExpenses.filter { expense in
+            if let group = group(by: expense.groupId) {
+                return !isDirectGroup(group)
+            }
+            return false
+        }
+        
+        // Calculate total balance for this member
+        var totalBalance: Double = 0.0
+        for expense in memberExpenses {
+            if expense.paidByMemberId == memberId {
+                // They paid, so others owe them
+                let othersOwe = expense.splits
+                    .filter { $0.memberId != memberId }
+                    .reduce(0.0) { $0 + $1.amount }
+                totalBalance += othersOwe
+            } else if let split = expense.split(for: memberId) {
+                // They owe someone
+                totalBalance -= split.amount
+            }
+        }
+        
+        // Get unique group names
+        let groupIds = Set(memberExpenses.map { $0.groupId })
+        let groupNames = groupIds.compactMap { groupId in
+            group(by: groupId)?.name
+        }
+        
+        return ExpensePreview(
+            personalExpenses: personalExpenses,
+            groupExpenses: groupExpenses,
+            totalBalance: totalBalance,
+            groupNames: groupNames
+        )
+    }
+    
+    // MARK: - Friend Management
+    
+    /// Updates the nickname for a friend
+    func updateFriendNickname(memberId: UUID, nickname: String?) async throws {
+        guard session != nil else {
+            throw LinkingError.unauthorized
+        }
+        
+        // Update nickname in local state
+        await MainActor.run {
+            if let index = friends.firstIndex(where: { $0.memberId == memberId }) {
+                var updatedFriend = friends[index]
+                updatedFriend.nickname = nickname
+                friends[index] = updatedFriend
+            }
+        }
+        
+        // Sync to Firestore
+        guard let session = session else {
+            throw LinkingError.unauthorized
+        }
+        
+        let currentFriends = await MainActor.run { friends }
+        try await accountService.syncFriends(accountEmail: session.account.email, friends: currentFriends)
+    }
+    
+    // MARK: - Account Linking Helpers
+    
+    /// Links a member ID to an account with retry logic and failure handling
+    private func linkAccount(
+        memberId: UUID,
+        accountId: String,
+        accountEmail: String
+    ) async throws {
+        // Update friend link status in local state
+        await MainActor.run {
+            updateFriendLinkStatus(
+                memberId: memberId,
+                linkedAccountId: accountId,
+                linkedAccountEmail: accountEmail
+            )
+        }
+        
+        // Sync updated friends to Firestore with transaction-based retry logic
+        guard let session = session else {
+            throw LinkingError.unauthorized
+        }
+        
+        do {
+            // Use transaction-based update to prevent race conditions
+            try await retryPolicy.execute {
+                try await self.accountService.updateFriendLinkStatus(
+                    accountEmail: session.account.email.lowercased(),
+                    memberId: memberId,
+                    linkedAccountId: accountId,
+                    linkedAccountEmail: accountEmail
+                )
+            }
+            
+            #if DEBUG
+            print("[AppStore] Successfully synced friend link status to Firestore with transaction")
+            #endif
+        } catch {
+            // Record partial failure for later recovery
+            await failureTracker.recordFailure(
+                memberId: memberId,
+                accountId: accountId,
+                accountEmail: accountEmail,
+                reason: "Failed to sync friends: \(error.localizedDescription)"
+            )
+            
+            #if DEBUG
+            print("[AppStore] Failed to sync friends after linking: \(error.localizedDescription)")
+            #endif
+            
+            // Don't throw - continue with data sync
+        }
+        
+        // Trigger cloud sync for affected groups and expenses with retry logic
+        do {
+            try await retryPolicy.execute {
+                try await self.syncAffectedDataWithRetry(forMemberId: memberId)
+            }
+            
+            // Mark as resolved if successful
+            await failureTracker.markResolved(memberId: memberId)
+            
+            #if DEBUG
+            print("[AppStore] Successfully linked member \(memberId) to account \(accountEmail)")
+            #endif
+        } catch {
+            // Record partial failure
+            await failureTracker.recordFailure(
+                memberId: memberId,
+                accountId: accountId,
+                accountEmail: accountEmail,
+                reason: "Failed to sync affected data: \(error.localizedDescription)"
+            )
+            
+            #if DEBUG
+            print("[AppStore] Failed to sync affected data after linking: \(error.localizedDescription)")
+            #endif
+            
+            // Throw error to indicate partial failure
+            throw LinkingError.networkUnavailable
+        }
+    }
+    
+    /// Updates the link status for a friend in local state
+    private func updateFriendLinkStatus(
+        memberId: UUID,
+        linkedAccountId: String,
+        linkedAccountEmail: String
+    ) {
+        // Find and update the friend record
+        if let index = friends.firstIndex(where: { $0.memberId == memberId }) {
+            var updatedFriend = friends[index]
+            updatedFriend.hasLinkedAccount = true
+            updatedFriend.linkedAccountId = linkedAccountId
+            updatedFriend.linkedAccountEmail = linkedAccountEmail
+            friends[index] = updatedFriend
+        } else {
+            // Create new friend record if it doesn't exist
+            let newFriend = AccountFriend(
+                memberId: memberId,
+                name: group(by: groups.first(where: { $0.members.contains(where: { $0.id == memberId }) })?.id ?? UUID())?.members.first(where: { $0.id == memberId })?.name ?? "Friend",
+                nickname: nil,
+                hasLinkedAccount: true,
+                linkedAccountId: linkedAccountId,
+                linkedAccountEmail: linkedAccountEmail
+            )
+            friends.append(newFriend)
+        }
+    }
+    
+    /// Syncs groups and expenses affected by account linking (legacy method without retry)
+    private func syncAffectedData(forMemberId memberId: UUID) async {
+        // Find all groups containing this member
+        let affectedGroups = await MainActor.run {
+            groups.filter { group in
+                group.members.contains(where: { $0.id == memberId })
+            }
+        }
+        
+        // Sync affected groups
+        for group in affectedGroups {
+            do {
+                try await groupCloudService.upsertGroup(group)
+            } catch {
+                #if DEBUG
+                print("[AppStore] Failed to sync group \(group.id): \(error.localizedDescription)")
+                #endif
+            }
+        }
+        
+        // Find all expenses involving this member
+        let affectedExpenses = await MainActor.run {
+            expenses.filter { expense in
+                expense.involvedMemberIds.contains(memberId) || expense.paidByMemberId == memberId
+            }
+        }
+        
+        // Sync affected expenses
+        for expense in affectedExpenses {
+            do {
+                let participants = await MainActor.run { makeParticipants(for: expense) }
+                try await expenseCloudService.upsertExpense(expense, participants: participants)
+            } catch {
+                #if DEBUG
+                print("[AppStore] Failed to sync expense \(expense.id): \(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+    
+    /// Syncs groups and expenses affected by account linking with error propagation for retry
+    private func syncAffectedDataWithRetry(forMemberId memberId: UUID) async throws {
+        // Find all groups containing this member
+        let affectedGroups = await MainActor.run {
+            groups.filter { group in
+                group.members.contains(where: { $0.id == memberId })
+            }
+        }
+        
+        // Sync affected groups - collect errors
+        var groupErrors: [Error] = []
+        for group in affectedGroups {
+            do {
+                try await groupCloudService.upsertGroup(group)
+            } catch {
+                groupErrors.append(error)
+                #if DEBUG
+                print("[AppStore] Failed to sync group \(group.id): \(error.localizedDescription)")
+                #endif
+            }
+        }
+        
+        // Find all expenses involving this member
+        let affectedExpenses = await MainActor.run {
+            expenses.filter { expense in
+                expense.involvedMemberIds.contains(memberId) || expense.paidByMemberId == memberId
+            }
+        }
+        
+        // Sync affected expenses - collect errors
+        var expenseErrors: [Error] = []
+        for expense in affectedExpenses {
+            do {
+                let participants = await MainActor.run { makeParticipants(for: expense) }
+                try await expenseCloudService.upsertExpense(expense, participants: participants)
+            } catch {
+                expenseErrors.append(error)
+                #if DEBUG
+                print("[AppStore] Failed to sync expense \(expense.id): \(error.localizedDescription)")
+                #endif
+            }
+        }
+        
+        // If any errors occurred, throw to trigger retry
+        if !groupErrors.isEmpty || !expenseErrors.isEmpty {
+            throw LinkingError.networkUnavailable
+        }
+    }
+    
+    /// Reconciles link state between local and remote data
+    private func reconcileLinkState() async {
+        guard let session = session else { return }
+        
+        // Check if reconciliation is needed
+        let shouldReconcile = await stateReconciliation.shouldReconcile()
+        guard shouldReconcile else {
+            #if DEBUG
+            print("[AppStore] Skipping reconciliation - too soon since last check")
+            #endif
+            return
+        }
+        
+        #if DEBUG
+        print("[AppStore] Starting link state reconciliation...")
+        #endif
+        
+        do {
+            // Fetch fresh friend data from Firestore
+            let remoteFriends = try await accountService.fetchFriends(
+                accountEmail: session.account.email.lowercased()
+            )
+            
+            // Reconcile with local state
+            let localFriends = await MainActor.run { self.friends }
+            let reconciledFriends = await stateReconciliation.reconcile(
+                localFriends: localFriends,
+                remoteFriends: remoteFriends
+            )
+            
+            // Update local state if changes were made
+            await MainActor.run {
+                if self.friends != reconciledFriends {
+                    #if DEBUG
+                    print("[AppStore] Reconciliation updated \(reconciledFriends.count) friends")
+                    #endif
+                    self.friends = reconciledFriends
+                }
+            }
+            
+            // Retry any failed operations
+            await retryFailedLinkOperations()
+            
+        } catch {
+            #if DEBUG
+            print("[AppStore] Failed to reconcile link state: \(error.localizedDescription)")
+            #endif
+        }
+    }
+    
+    /// Retries failed link operations
+    private func retryFailedLinkOperations() async {
+        let failures = await failureTracker.getPendingFailures()
+        
+        guard !failures.isEmpty else { return }
+        
+        #if DEBUG
+        print("[AppStore] Retrying \(failures.count) failed link operation(s)...")
+        #endif
+        
+        for failure in failures {
+            // Only retry if not too many attempts
+            guard failure.retryCount < 5 else {
+                #if DEBUG
+                print("[AppStore] Skipping retry for member \(failure.memberId) - too many attempts")
+                #endif
+                continue
+            }
+            
+            do {
+                // Verify the link is still in local state
+                let friends = await MainActor.run { self.friends }
+                let isValid = await stateReconciliation.validateLinkCompletion(
+                    memberId: failure.memberId,
+                    accountId: failure.accountId,
+                    in: friends
+                )
+                
+                if !isValid {
+                    #if DEBUG
+                    print("[AppStore] Link no longer valid for member \(failure.memberId) - skipping retry")
+                    #endif
+                    await failureTracker.markResolved(memberId: failure.memberId)
+                    continue
+                }
+                
+                // Retry syncing affected data
+                try await retryPolicy.execute {
+                    try await self.syncAffectedDataWithRetry(forMemberId: failure.memberId)
+                }
+                
+                // Mark as resolved
+                await failureTracker.markResolved(memberId: failure.memberId)
+                
+                #if DEBUG
+                print("[AppStore] Successfully retried link operation for member \(failure.memberId)")
+                #endif
+            } catch {
+                #if DEBUG
+                print("[AppStore] Retry failed for member \(failure.memberId): \(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+    
+    /// Triggers reconciliation after network recovery
+    func reconcileAfterNetworkRecovery() async {
+        #if DEBUG
+        print("[AppStore] Network recovered - triggering link state reconciliation")
+        #endif
+        
+        // Invalidate reconciliation timer to force immediate check
+        await stateReconciliation.invalidate()
+        
+        // Perform reconciliation
+        await reconcileLinkState()
+    }
+    
+    // MARK: - Friend Status Visibility Helpers
+    
+    /// Checks if a friend has a linked account
+    func friendHasLinkedAccount(_ friend: GroupMember) -> Bool {
+        guard let accountFriend = friends.first(where: { $0.memberId == friend.id }) else {
+            return false
+        }
+        return accountFriend.hasLinkedAccount
+    }
+    
+    /// Gets the linked account email for a friend
+    func linkedAccountEmail(for friend: GroupMember) -> String? {
+        guard let accountFriend = friends.first(where: { $0.memberId == friend.id }) else {
+            return nil
+        }
+        return accountFriend.linkedAccountEmail
+    }
+    
+    /// Gets the linked account ID for a friend
+    func linkedAccountId(for friend: GroupMember) -> String? {
+        guard let accountFriend = friends.first(where: { $0.memberId == friend.id }) else {
+            return nil
+        }
+        return accountFriend.linkedAccountId
+    }
+    
+    // MARK: - Duplicate Prevention
+    
+    /// Checks if a member ID is already linked to an account
+    /// This prevents linking the same person (member ID) to multiple accounts
+    func isMemberAlreadyLinked(_ memberId: UUID) -> Bool {
+        guard let friend = friends.first(where: { $0.memberId == memberId }) else {
+            return false
+        }
+        return friend.hasLinkedAccount
+    }
+    
+    /// Checks if an account is already linked to a different member
+    /// This prevents one account from being linked to multiple member IDs
+    func isAccountAlreadyLinked(accountId: String) -> Bool {
+        return friends.contains { friend in
+            friend.linkedAccountId == accountId
+        }
+    }
+    
+    /// Checks if an account email is already linked to a different member
+    func isAccountEmailAlreadyLinked(email: String) -> Bool {
+        let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
+        return friends.contains { friend in
+            guard let linkedEmail = friend.linkedAccountEmail else { return false }
+            return linkedEmail.lowercased() == normalizedEmail
+        }
     }
 }

@@ -12,6 +12,7 @@ struct FriendsTabView: View {
     @Binding var navigationState: FriendsNavigationState
     @Binding var selectedTab: Int
     @State private var showAddFriend = false
+    @State private var showLinkRequests = false
     @State private var lastGroupForFriendDetail: SpendingGroup?
     
     var body: some View {
@@ -112,6 +113,30 @@ struct FriendsTabView: View {
 
                     Spacer()
                     
+                    // Link requests button with badge
+                    Button(action: {
+                        showLinkRequests = true
+                    }) {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "link.circle")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.brand)
+                                .frame(width: AppMetrics.smallIconButtonSize, height: AppMetrics.smallIconButtonSize)
+                            
+                            // Badge for pending requests
+                            if pendingRequestCount > 0 {
+                                Text("\(pendingRequestCount)")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .padding(4)
+                                    .background(Circle().fill(.red))
+                                    .offset(x: 8, y: -8)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Link Requests")
+                    
                     Button(action: {
                         showAddFriend = true
                     }) {
@@ -132,12 +157,16 @@ struct FriendsTabView: View {
             .background(AppTheme.background)
         }
         .sheet(isPresented: $showAddFriend) {
-            AddFriendSheet { name in
-                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                let candidate = GroupMember(name: trimmed)
-                guard !trimmed.isEmpty, !store.isCurrentUser(candidate) else { return }
-                _ = store.directGroup(with: GroupMember(name: trimmed))
-            }
+            AddFriendSheet()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showLinkRequests) {
+            LinkRequestListView()
+                .environmentObject(store)
+        }
+        .task {
+            // Fetch link requests when view appears
+            try? await store.fetchLinkRequests()
         }
     }
     
@@ -147,12 +176,17 @@ struct FriendsTabView: View {
             selectedTab = 1
         }
     }
+    
+    private var pendingRequestCount: Int {
+        store.incomingLinkRequests.filter { $0.status == .pending }.count
+    }
 }
 
 // MARK: - Friends List Component
 
 private struct FriendsList: View {
     @EnvironmentObject var store: AppStore
+    @AppStorage("showRealNames") private var showRealNames: Bool = true
     @State private var sortOrder: SortOrder = .alphabetical
     @State private var isAscending: Bool = true
     let onFriendSelected: (GroupMember) -> Void
@@ -235,12 +269,19 @@ private struct FriendsList: View {
                             onFriendSelected(friend)
                         }) {
                             HStack(spacing: 12) {
-                                AvatarView(name: friend.name)
-                                VStack(alignment: .leading) {
-                                    Text(friend.name).font(.headline)
-                                    Text("Tap to view activity")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                AvatarView(name: friendDisplayName(friend))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(friendDisplayName(friend))
+                                        .font(.headline)
+                                    if let secondaryName = friendSecondaryName(friend) {
+                                        Text(secondaryName)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    } else {
+                                        Text("Tap to view activity")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                                 Spacer(minLength: 0)
                                 BalanceView(friend: friend)
@@ -313,6 +354,22 @@ private struct FriendsList: View {
         
         return totalBalance
     }
+    
+    private func friendDisplayName(_ friend: GroupMember) -> String {
+        // Find the AccountFriend for this member
+        if let accountFriend = store.friends.first(where: { $0.memberId == friend.id }) {
+            return accountFriend.displayName(showRealNames: showRealNames)
+        }
+        return friend.name
+    }
+    
+    private func friendSecondaryName(_ friend: GroupMember) -> String? {
+        // Find the AccountFriend for this member
+        if let accountFriend = store.friends.first(where: { $0.memberId == friend.id }) {
+            return accountFriend.secondaryDisplayName(showRealNames: showRealNames)
+        }
+        return nil
+    }
 }
 
 // MARK: - Balance View Component
@@ -378,32 +435,4 @@ private struct BalanceView: View {
     }
 }
 
-// MARK: - Add Friend Sheet
 
-private struct AddFriendSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var name: String = ""
-    let onAdd: (String) -> Void
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Friend") {
-                    TextField("Name", text: $name)
-                }
-            }
-            .navigationTitle("New Friend")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Add") {
-                        onAdd(name)
-                        dismiss()
-                    }
-                }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-        }
-    }
-}

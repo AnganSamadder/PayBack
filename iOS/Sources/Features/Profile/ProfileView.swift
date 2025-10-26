@@ -3,6 +3,7 @@ import SwiftUI
 struct ProfileView: View {
     @EnvironmentObject var store: AppStore
     @State private var showLogoutConfirmation = false
+    @State private var showSettings = false
     
     var body: some View {
         NavigationStack {
@@ -31,6 +32,18 @@ struct ProfileView: View {
                             .foregroundStyle(AppTheme.brand)
                         
                         Spacer()
+                        
+                        // Settings button
+                        Button(action: {
+                            showSettings = true
+                        }) {
+                            Image(systemName: "gearshape.fill")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.brand)
+                                .frame(width: AppMetrics.smallIconButtonSize, height: AppMetrics.smallIconButtonSize)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Settings")
                     }
                     .padding(.horizontal)
                     .padding(.top, AppMetrics.headerTopPadding)
@@ -46,6 +59,10 @@ struct ProfileView: View {
             }
         } message: {
             Text("Are you sure you want to log out?")
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+                .environmentObject(store)
         }
     }
     

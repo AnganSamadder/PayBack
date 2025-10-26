@@ -225,6 +225,6 @@ struct SettleView: View {
         GroupMember(name: "Bob")
     ])
 
-    return SettleView(group: group)
+    SettleView(group: group)
         .environmentObject(store)
 }
