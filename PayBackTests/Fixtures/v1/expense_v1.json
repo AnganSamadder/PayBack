@@ -1,0 +1,34 @@
+{
+  "id": "A1B2C3D4-E5F6-4789-A1B2-C3D4E5F67890",
+  "groupId": "11111111-2222-3333-4444-555555555555",
+  "description": "Dinner at Italian Restaurant",
+  "date": 1700000000.0,
+  "totalAmount": 120.50,
+  "paidByMemberId": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+  "involvedMemberIds": [
+    "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+    "BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF",
+    "CCCCCCCC-DDDD-EEEE-FFFF-000000000000"
+  ],
+  "splits": [
+    {
+      "id": "00000001-0000-0000-0000-000000000001",
+      "memberId": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+      "amount": 40.17,
+      "isSettled": true
+    },
+    {
+      "id": "00000002-0000-0000-0000-000000000002",
+      "memberId": "BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF",
+      "amount": 40.17,
+      "isSettled": false
+    },
+    {
+      "id": "00000003-0000-0000-0000-000000000003",
+      "memberId": "CCCCCCCC-DDDD-EEEE-FFFF-000000000000",
+      "amount": 40.16,
+      "isSettled": false
+    }
+  ],
+  "isSettled": false
+}

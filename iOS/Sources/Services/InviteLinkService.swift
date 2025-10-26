@@ -36,8 +36,15 @@ protocol InviteLinkService {
 }
 
 /// Mock implementation for testing and when Firebase is not configured
-final class MockInviteLinkService: InviteLinkService {
-    private static var tokens: [UUID: InviteToken] = [:]
+actor MockInviteLinkService: InviteLinkService {
+    static let shared = MockInviteLinkService()
+    
+    private var tokens: [UUID: InviteToken] = [:]
+    private var claimedTokenIds: Set<UUID> = []
+    private let mockAccountId = "mock-account-id"
+    private let mockAccountEmail = "mock@example.com"
+    private let mockCreatorId = "mock-user-id"
+    private let mockCreatorEmail = "mock@example.com"
     
     func generateInviteLink(
         targetMemberId: UUID,
@@ -48,15 +55,16 @@ final class MockInviteLinkService: InviteLinkService {
         
         let token = InviteToken(
             id: UUID(),
-            creatorId: "mock-user-id",
-            creatorEmail: "mock@example.com",
+            creatorId: mockCreatorId,
+            creatorEmail: mockCreatorEmail,
             targetMemberId: targetMemberId,
             targetMemberName: targetMemberName,
             createdAt: createdAt,
             expiresAt: expiresAt
         )
         
-        Self.tokens[token.id] = token
+        tokens[token.id] = token
+        claimedTokenIds.remove(token.id)
         
         let url = URL(string: "payback://link/claim?token=\(token.id.uuidString)")!
         let shareText = """
@@ -72,7 +80,7 @@ final class MockInviteLinkService: InviteLinkService {
     }
     
     func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation {
-        guard let token = Self.tokens[tokenId] else {
+        guard let token = tokens[tokenId] else {
             return InviteTokenValidation(
                 isValid: false,
                 token: nil,
@@ -81,7 +89,6 @@ final class MockInviteLinkService: InviteLinkService {
             )
         }
         
-        // Check if expired
         if token.expiresAt <= Date() {
             return InviteTokenValidation(
                 isValid: false,
@@ -91,8 +98,7 @@ final class MockInviteLinkService: InviteLinkService {
             )
         }
         
-        // Check if already claimed
-        if token.claimedBy != nil {
+        if claimedTokenIds.contains(tokenId) || token.claimedBy != nil {
             return InviteTokenValidation(
                 isValid: false,
                 token: token,
@@ -101,7 +107,6 @@ final class MockInviteLinkService: InviteLinkService {
             )
         }
         
-        // Mock expense preview
         let preview = ExpensePreview(
             personalExpenses: [],
             groupExpenses: [],
@@ -118,41 +123,41 @@ final class MockInviteLinkService: InviteLinkService {
     }
     
     func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
-        guard var token = Self.tokens[tokenId] else {
+        guard var token = tokens[tokenId] else {
             throw LinkingError.tokenInvalid
         }
         
-        // Check if expired
         if token.expiresAt <= Date() {
             throw LinkingError.tokenExpired
         }
         
-        // Check if already claimed
-        if token.claimedBy != nil {
+        if claimedTokenIds.contains(tokenId) || token.claimedBy != nil {
             throw LinkingError.tokenAlreadyClaimed
         }
         
-        // Mark as claimed
-        token.claimedBy = "mock-account-id"
-        token.claimedAt = Date()
-        Self.tokens[tokenId] = token
+        let now = Date()
+        token.claimedBy = mockAccountId
+        token.claimedAt = now
+        tokens[tokenId] = token
+        claimedTokenIds.insert(tokenId)
         
         return LinkAcceptResult(
             linkedMemberId: token.targetMemberId,
-            linkedAccountId: "mock-account-id",
-            linkedAccountEmail: "mock@example.com"
+            linkedAccountId: mockAccountId,
+            linkedAccountEmail: mockAccountEmail
         )
     }
     
     func fetchActiveInvites() async throws -> [InviteToken] {
         let now = Date()
-        return Self.tokens.values.filter { token in
-            token.claimedBy == nil && token.expiresAt > now
+        return tokens.values.filter { token in
+            !claimedTokenIds.contains(token.id) && token.claimedBy == nil && token.expiresAt > now
         }
     }
     
     func revokeInvite(_ tokenId: UUID) async throws {
-        Self.tokens.removeValue(forKey: tokenId)
+        tokens.removeValue(forKey: tokenId)
+        claimedTokenIds.remove(tokenId)
     }
 }
 
@@ -518,6 +523,6 @@ enum InviteLinkServiceProvider {
         #if DEBUG
         print("[InviteLink] Firebase not configured – falling back to MockInviteLinkService.")
         #endif
-        return MockInviteLinkService()
+        return MockInviteLinkService.shared
     }
 }

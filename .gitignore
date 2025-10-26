@@ -52,6 +52,13 @@ playground.xcworkspace
 # Code Coverage
 *.xccovreport
 *.xccovarchive
+coverage.json
+coverage-report.txt
+
+# Test Results
+*.xcresult
+TestResults.xcresult/
+local_TestResults.xcresult/
 
 # Archives
 *.xcarchive

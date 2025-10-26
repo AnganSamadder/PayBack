@@ -67,6 +67,42 @@ struct Expense: Identifiable, Codable, Hashable {
     var isSettled: Bool // Overall settlement status (all splits settled)
     var participantNames: [UUID: String]? // Optional cache of participant display names from remote payload
 
+    enum CodingKeys: String, CodingKey {
+        case id, groupId, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        groupId = try container.decode(UUID.self, forKey: .groupId)
+        description = try container.decode(String.self, forKey: .description)
+        date = try container.decode(Date.self, forKey: .date)
+        totalAmount = try container.decode(Double.self, forKey: .totalAmount)
+        paidByMemberId = try container.decode(UUID.self, forKey: .paidByMemberId)
+        involvedMemberIds = try container.decode([UUID].self, forKey: .involvedMemberIds)
+        splits = try container.decode([ExpenseSplit].self, forKey: .splits)
+        isSettled = try container.decode(Bool.self, forKey: .isSettled)
+        // participantNames is optional - decode if present, otherwise nil
+        participantNames = try container.decodeIfPresent([UUID: String].self, forKey: .participantNames)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(groupId, forKey: .groupId)
+        try container.encode(description, forKey: .description)
+        try container.encode(date, forKey: .date)
+        try container.encode(totalAmount, forKey: .totalAmount)
+        try container.encode(paidByMemberId, forKey: .paidByMemberId)
+        try container.encode(involvedMemberIds, forKey: .involvedMemberIds)
+        try container.encode(splits, forKey: .splits)
+        try container.encode(isSettled, forKey: .isSettled)
+        // Only encode participantNames if it's not nil (backward compatibility)
+        if let participantNames = participantNames {
+            try container.encode(participantNames, forKey: .participantNames)
+        }
+    }
+
     init(
         id: UUID = UUID(),
         groupId: UUID,

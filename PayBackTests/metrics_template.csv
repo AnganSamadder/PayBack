@@ -1,0 +1,2 @@
+Date,TotalTests,ModelsTests,ServicesTests,BusinessLogicTests,PropertyBasedTests,PerformanceTests,ConcurrencyTests,ValidationTests,SerializationTests,ErrorHandlingTests,TimeBasedTests,TotalTime,Coverage,FlakyTests,FlakinessRate
+2024-01-15,230,30,40,50,15,10,15,25,20,15,10,8.5,87%,0,0%

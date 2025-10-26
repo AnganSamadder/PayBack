@@ -137,7 +137,7 @@ struct FirebaseEmailAuthService: EmailAuthService {
 
     private func mapError(_ error: Error) -> Error {
         let nsError = error as NSError
-        guard nsError.domain == AuthErrorDomain, let code = AuthErrorCode.Code(rawValue: nsError.code) else {
+        guard nsError.domain == AuthErrorDomain, let code = AuthErrorCode(rawValue: nsError.code) else {
             return EmailAuthServiceError.underlying(error)
         }
 

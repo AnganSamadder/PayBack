@@ -1,21 +1,22 @@
 import SwiftUI
 import UIKit
+import Foundation
 import FirebaseCore
 import FirebaseAuth
 import Network
 
+private enum FirebaseConfiguratorLock {
+    static let lock = NSLock()
+}
+
 enum FirebaseConfigurator {
     static func configureIfNeeded() {
+        FirebaseConfiguratorLock.lock.lock()
+        defer { FirebaseConfiguratorLock.lock.unlock() }
+
         guard FirebaseApp.app() == nil else { return }
 
-        let options: FirebaseOptions?
-        if let plistPath = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") {
-            options = FirebaseOptions(contentsOfFile: plistPath)
-        } else {
-            options = FirebaseOptions.defaultOptions()
-        }
-
-        guard let resolvedOptions = options else {
+        guard let resolvedOptions = resolveFirebaseOptions() else {
             #if DEBUG
             print("[Firebase] GoogleService-Info.plist is missing or invalid - authentication flow will be disabled.")
             #endif
@@ -37,6 +38,75 @@ enum FirebaseConfigurator {
         #endif
         print("[Firebase] Configured: \(app.name) (AppID: \(app.options.googleAppID))")
         #endif
+    }
+
+    private static func resolveFirebaseOptions() -> FirebaseOptions? {
+        let bundledOptions = loadBundledOptions()
+
+        if let bundled = bundledOptions, bundled.hasUsableIdentifiers {
+            return bundled
+        }
+
+        guard isRunningUnitTests else { return nil }
+
+        #if DEBUG
+        if bundledOptions != nil {
+            print("[Firebase] Bundled Firebase options are missing identifiers - substituting stub options for tests.")
+        } else {
+            print("[Firebase] GoogleService-Info.plist not bundled - substituting stub options for tests.")
+        }
+        #endif
+
+        let stub = FirebaseOptions(googleAppID: fallbackGoogleAppID, gcmSenderID: fallbackGCMSenderID)
+        stub.apiKey = fallbackAPIKey
+        stub.projectID = "payback-unit-tests"
+        stub.storageBucket = "payback-unit-tests.appspot.com"
+        return stub
+    }
+
+    private static func loadBundledOptions() -> FirebaseOptions? {
+        guard let plistPath = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") else {
+            return FirebaseOptions.defaultOptions()
+        }
+        return FirebaseOptions(contentsOfFile: plistPath)
+    }
+
+    private static var isRunningUnitTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    private static let fallbackGoogleAppID = "1:000000000000:ios:000000000000000000000000"
+    private static let fallbackGCMSenderID = "000000000000"
+    private static let fallbackAPIKey = "AIzaSyCITestStubApiKeyDontUse"
+
+    fileprivate static let googleAppIDPattern: NSRegularExpression = {
+        let pattern = #"^[0-9]+:[0-9]+:ios:[0-9a-f]{12,}$"#
+        return try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }()
+}
+
+private extension FirebaseOptions {
+    var hasUsableIdentifiers: Bool {
+        let trimmedAppID = googleAppID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAppID.isEmpty else { return false }
+
+        let appIDRange = NSRange(location: 0, length: trimmedAppID.utf16.count)
+        guard FirebaseConfigurator.googleAppIDPattern.firstMatch(in: trimmedAppID, options: [], range: appIDRange) != nil else {
+            return false
+        }
+
+        let cleanedSenderID = gcmSenderID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanedSenderID.count >= 10, cleanedSenderID.allSatisfy({ $0.isNumber }) else {
+            return false
+        }
+
+        guard let resolvedAPIKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+              resolvedAPIKey.count >= 20,
+              resolvedAPIKey.hasPrefix("AIza") else {
+            return false
+        }
+
+        return true
     }
 }
 

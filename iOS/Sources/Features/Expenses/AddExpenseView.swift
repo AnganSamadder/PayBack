@@ -212,44 +212,52 @@ struct AddExpenseView: View {
 
 private struct AmountField: View {
     @Binding var text: String
+    @State private var displayText: String = "0.00"
 
     var body: some View {
         VStack(spacing: AppMetrics.AddExpense.paidSplitRowSpacing) {
             Text("Amount")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            TextField("0.00", text: Binding(
-                get: { formatted(text) },
-                set: { newVal in text = sanitize(newVal) }
-            ))
-            .multilineTextAlignment(.center)
-            .font(.system(size: AppMetrics.AddExpense.amountFontSize, weight: .bold, design: .rounded))
-            .keyboardType(.decimalPad)
-        }
-    }
-
-    private func sanitize(_ val: String) -> String {
-        // Allow only digits and a single decimal separator
-        let decimalSeparator = Locale.current.decimalSeparator ?? "."
-        var filtered = val.filter { $0.isNumber || String($0) == decimalSeparator }
-        // Collapse multiple separators to one
-        if filtered.filter({ String($0) == decimalSeparator }).count > 1 {
-            // Keep first separator
-            var seen = false
-            filtered = filtered.reduce(into: "") { acc, ch in
-                if String(ch) == decimalSeparator {
-                    if !seen { acc.append(ch); seen = true }
-                } else {
-                    acc.append(ch)
+            TextField("0.00", text: $displayText)
+                .multilineTextAlignment(.center)
+                .font(.system(size: AppMetrics.AddExpense.amountFontSize, weight: .bold, design: .rounded))
+                .keyboardType(.numberPad)
+                .onChange(of: displayText) { oldValue, newValue in
+                    updateAmount(newValue)
                 }
-            }
+                .onAppear {
+                    // Initialize display from existing text
+                    if let value = Double(text), value > 0 {
+                        let cents = Int(value * 100)
+                        displayText = formatCents(cents)
+                    } else {
+                        displayText = "0.00"
+                    }
+                }
         }
-        return filtered
     }
 
-    private func formatted(_ raw: String) -> String {
-        // Avoid aggressive reformatting while typing; just return raw
-        raw
+    private func updateAmount(_ newValue: String) {
+        // Extract only digits
+        let digits = newValue.filter { $0.isNumber }
+        
+        // Convert to integer (cents)
+        guard let cents = Int(digits) else {
+            displayText = "0.00"
+            text = "0"
+            return
+        }
+        
+        // Format and update
+        displayText = formatCents(cents)
+        text = String(format: "%.2f", Double(cents) / 100.0)
+    }
+    
+    private func formatCents(_ cents: Int) -> String {
+        let dollars = cents / 100
+        let remainingCents = cents % 100
+        return String(format: "%d.%02d", dollars, remainingCents)
     }
 }
 

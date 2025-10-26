@@ -529,21 +529,16 @@ struct FriendDetailView: View {
                     }
                 }
             }
-        } catch let error as LinkingError {
-            await MainActor.run {
-                // Trigger error haptic
-                Haptics.notify(.error)
-                
-                self.linkError = error
-                self.showErrorAlert = true
-                self.isGeneratingInviteLink = false
-            }
         } catch {
             await MainActor.run {
                 // Trigger error haptic
                 Haptics.notify(.error)
-                
-                self.linkError = .networkUnavailable
+
+                if let linkingError = error as? LinkingError {
+                    self.linkError = linkingError
+                } else {
+                    self.linkError = .networkUnavailable
+                }
                 self.showErrorAlert = true
                 self.isGeneratingInviteLink = false
             }

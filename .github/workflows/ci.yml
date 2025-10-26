@@ -6,6 +6,43 @@ on:
   pull_request:
     branches: ["main"]
 
+env:
+  GOOGLE_SERVICE_PLIST: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+      <key>CLIENT_ID</key>
+      <string>dummy-client-id</string>
+      <key>REVERSED_CLIENT_ID</key>
+      <string>com.googleusercontent.apps.dummy</string>
+      <key>API_KEY</key>
+      <string>dummy-api-key</string>
+      <key>GCM_SENDER_ID</key>
+      <string>123456789</string>
+      <key>PLIST_VERSION</key>
+      <string>1</string>
+      <key>BUNDLE_ID</key>
+      <string>com.angansamadder.PayBack</string>
+      <key>PROJECT_ID</key>
+      <string>dummy-project-id</string>
+      <key>STORAGE_BUCKET</key>
+      <string>dummy-bucket.appspot.com</string>
+      <key>IS_ADS_ENABLED</key>
+      <false/>
+      <key>IS_ANALYTICS_ENABLED</key>
+      <false/>
+      <key>IS_APPINVITE_ENABLED</key>
+      <false/>
+      <key>IS_GCM_ENABLED</key>
+      <true/>
+      <key>IS_SIGNIN_ENABLED</key>
+      <true/>
+      <key>GOOGLE_APP_ID</key>
+      <string>1:123456789:ios:dummy</string>
+    </dict>
+    </plist>
+
 jobs:
   build-and-test:
     runs-on: macos-15
@@ -15,6 +52,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Create GoogleService-Info.plist
+        run: |
+          cat <<EOF > iOS/GoogleService-Info.plist
+          ${GOOGLE_SERVICE_PLIST}
+          EOF
+          echo "Created GoogleService-Info.plist for CI"
+
+      - name: Verify GoogleService-Info.plist
+        run: |
+          ls -la iOS/GoogleService-Info.plist
+          plutil -p iOS/GoogleService-Info.plist | head
+
       - name: Set up Xcode (latest stable)
         uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -22,6 +71,14 @@ jobs:
 
       - name: Show Xcode version
         run: xcodebuild -version
+
+      - name: List Available iOS Runtimes
+        run: |
+          echo "Available iOS runtimes:"
+          xcrun simctl runtime list | grep -E "iOS" || echo "No iOS runtimes found"
+
+      - name: Remove unavailable simulators
+        run: xcrun simctl delete unavailable || true
 
       - name: Cache SPM
         uses: actions/cache@v4
@@ -40,27 +97,128 @@ jobs:
         run: |
           xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj -scheme PayBack
 
+      - name: List Available Simulators (iPhone)
+        run: xcrun simctl list devices iPhone available
+
+      - name: Select iPhone Simulator
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          def parse_runtime(runtime: str):
+            if ".iOS-" not in runtime:
+              return (), ""
+            version_raw = runtime.split(".iOS-")[-1].replace("-", ".")
+            parts = []
+            for token in version_raw.split('.'):
+              token = ''.join(ch for ch in token if ch.isdigit()) or '0'
+              parts.append(int(token))
+            return tuple(parts), version_raw
+
+          def get_device_priority(name: str):
+            # Higher number = better device (prefer latest, non-SE models)
+            if "Pro Max" in name:
+              return 100
+            if "Pro" in name:
+              return 90
+            if "Plus" in name:
+              return 80
+            if "Air" in name:
+              return 70
+            if name.startswith("iPhone ") and name.split()[1].isdigit():
+              return 60  # iPhone 17, iPhone 16, etc.
+            if "SE" in name:
+              return 10  # Lowest priority
+            return 50
+
+          def pick_preferred(candidates):
+            # Sort by: 1) iOS version (highest first), 2) device priority, 3) name
+            def sorter(entry):
+              version_tuple, name, udid, version_str = entry
+              return (version_tuple, get_device_priority(name), name)
+            
+            sorted_candidates = sorted(candidates, key=sorter, reverse=True)
+            return sorted_candidates[0]
+
+          try:
+            result = subprocess.check_output([
+              "xcrun",
+              "simctl",
+              "list",
+              "devices",
+              "available",
+              "--json",
+            ])
+          except subprocess.CalledProcessError as exc:
+            print(f"Failed to list simulators: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+          data = json.loads(result)
+          candidates = []
+          for runtime, devices in data.get("devices", {}).items():
+            version_tuple, version_str = parse_runtime(runtime)
+            if not version_tuple:
+              continue
+            for device in devices:
+              if not device.get("isAvailable"):
+                continue
+              name = device.get("name", "")
+              if "iPhone" not in name:
+                continue
+              udid = device.get("udid")
+              if not udid:
+                continue
+              candidates.append((version_tuple, name, udid, version_str))
+
+          if not candidates:
+            print("No available iPhone simulator found", file=sys.stderr)
+            sys.exit(1)
+
+          version_tuple, name, udid, version_str = pick_preferred(candidates)
+          print(f"Selected simulator: {name} (iOS {version_str}) [{udid}]")
+
+          env_path = os.environ.get("GITHUB_ENV")
+          if not env_path:
+            print("GITHUB_ENV not set", file=sys.stderr)
+            sys.exit(1)
+
+          with open(env_path, "a", encoding="utf-8") as env_file:
+            env_file.write(f"SIMULATOR_UDID={udid}\n")
+            env_file.write(f"SIMULATOR_NAME={name}\n")
+            env_file.write(f"SIMULATOR_OS={version_str}\n")
+            env_file.write(f"SIMULATOR_DESTINATION=platform=iOS Simulator,id={udid}\n")
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.write(f"\n- Using simulator **{name}** (iOS {version_str})\n")
+          PY
+
+      - name: Boot Selected Simulator
+        run: |
+          echo "Booting simulator ${SIMULATOR_NAME:-unknown} (${SIMULATOR_UDID:-unset})"
+          open -a Simulator || true
+          xcrun simctl boot "$SIMULATOR_UDID" || echo "Simulator already booted or boot failed"
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b || true
+          xcrun simctl list devices iPhone | grep -A1 "${SIMULATOR_UDID}"
+          sleep 5
+
       - name: Build
         run: |
           xcodebuild \
             -project PayBack.xcodeproj \
             -scheme PayBack \
             -configuration Debug \
-            -destination 'platform=iOS Simulator,OS=latest,name=iPhone 15' \
+            -destination "$SIMULATOR_DESTINATION" \
             clean build | xcpretty
         env:
           NSUnbufferedIO: "YES"
 
-      - name: Test
-        run: |
-          xcodebuild \
-            -project PayBack.xcodeproj \
-            -scheme PayBack \
-            -configuration Debug \
-            -destination 'platform=iOS Simulator,OS=latest,name=iPhone 15' \
-            test | xcpretty
-        env:
-          NSUnbufferedIO: "YES"
+      - name: Test (skipped)
+        run: echo "Skipping xcodebuild test for PayBack scheme; tests run in unit-tests job"
 
       - name: Install SwiftLint
         run: |
@@ -70,3 +228,280 @@ jobs:
       - name: Run SwiftLint (non-failing)
         run: swiftlint lint || true
 
+  unit-tests:
+    name: Unit Tests (${{ matrix.sanitizer }})
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [none, thread, address]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create GoogleService-Info.plist
+        run: |
+          cat <<EOF > iOS/GoogleService-Info.plist
+          ${GOOGLE_SERVICE_PLIST}
+          EOF
+          echo "Created GoogleService-Info.plist for CI"
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: List Available iOS Runtimes
+        run: |
+          echo "Available iOS runtimes:"
+          xcrun simctl runtime list | grep -E "iOS" || echo "No iOS runtimes found"
+
+      - name: Remove unavailable simulators
+        run: xcrun simctl delete unavailable || true
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Developer/Xcode/DerivedData
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Install xcpretty
+        run: sudo gem install xcpretty --no-document
+
+      - name: Resolve dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj -scheme PayBackTests
+
+      - name: List Available Simulators
+        run: |
+          echo "Xcode version:"
+          xcodebuild -version
+          echo ""
+          echo "Available iOS Simulators:"
+          xcrun simctl list devices iPhone available
+
+      - name: Select iPhone Simulator
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          def parse_runtime(runtime: str):
+            if ".iOS-" not in runtime:
+              return (), ""
+            version_raw = runtime.split(".iOS-")[-1].replace("-", ".")
+            parts = []
+            for token in version_raw.split('.'):  # prefer numeric tokens only
+              token = ''.join(ch for ch in token if ch.isdigit()) or '0'
+              parts.append(int(token))
+            return tuple(parts), version_raw
+
+          def get_device_priority(name: str):
+            # Higher number = better device (prefer latest, non-SE models)
+            if "Pro Max" in name:
+              return 100
+            if "Pro" in name:
+              return 90
+            if "Plus" in name:
+              return 80
+            if "Air" in name:
+              return 70
+            if name.startswith("iPhone ") and name.split()[1].isdigit():
+              return 60  # iPhone 17, iPhone 16, etc.
+            if "SE" in name:
+              return 10  # Lowest priority
+            return 50
+
+          def pick_preferred(candidates):
+            # Sort by: 1) iOS version (highest first), 2) device priority, 3) name
+            def sorter(entry):
+              version_tuple, name, udid, version_str = entry
+              return (version_tuple, get_device_priority(name), name)
+            
+            sorted_candidates = sorted(candidates, key=sorter, reverse=True)
+            return sorted_candidates[0]
+
+          try:
+            result = subprocess.check_output([
+              "xcrun",
+              "simctl",
+              "list",
+              "devices",
+              "available",
+              "--json",
+            ])
+          except subprocess.CalledProcessError as exc:
+            print(f"Failed to list simulators: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+          data = json.loads(result)
+          candidates = []
+          for runtime, devices in data.get("devices", {}).items():
+            version_tuple, version_str = parse_runtime(runtime)
+            if not version_tuple:
+              continue
+            for device in devices:
+              if not device.get("isAvailable"):
+                continue
+              name = device.get("name", "")
+              if "iPhone" not in name:
+                continue
+              udid = device.get("udid")
+              if not udid:
+                continue
+              candidates.append((version_tuple, name, udid, version_str))
+
+          if not candidates:
+            print("No available iPhone simulator found", file=sys.stderr)
+            sys.exit(1)
+
+          version_tuple, name, udid, version_str = pick_preferred(candidates)
+          print(f"Selected simulator: {name} (iOS {version_str}) [{udid}]")
+
+          env_path = os.environ.get("GITHUB_ENV")
+          if not env_path:
+            print("GITHUB_ENV not set", file=sys.stderr)
+            sys.exit(1)
+
+          with open(env_path, "a", encoding="utf-8") as env_file:
+            env_file.write(f"SIMULATOR_UDID={udid}\n")
+            env_file.write(f"SIMULATOR_NAME={name}\n")
+            env_file.write(f"SIMULATOR_OS={version_str}\n")
+            env_file.write(f"SIMULATOR_DESTINATION=platform=iOS Simulator,id={udid}\n")
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.write(f"\n- Using simulator **{name}** (iOS {version_str})\n")
+          PY
+
+      - name: Boot Selected Simulator
+        run: |
+          set -e
+          if [ -z "$SIMULATOR_UDID" ]; then
+            echo "ERROR: SIMULATOR_UDID not set"
+            exit 1
+          fi
+          echo "Booting simulator ${SIMULATOR_NAME:-unknown} (${SIMULATOR_UDID})"
+          open -a Simulator || true
+          xcrun simctl boot "$SIMULATOR_UDID" || echo "Simulator already booted or boot failed"
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b || true
+          xcrun simctl list devices iPhone | grep -A1 "${SIMULATOR_UDID}"
+          sleep 5
+          echo "Simulator ready"
+
+      - name: Clean Previous Test Results
+        run: |
+          rm -rf TestResults.xcresult coverage.json coverage-report.txt || true
+          echo "Cleaned previous test artifacts"
+
+      - name: Run Unit Tests (No Sanitizer)
+        if: matrix.sanitizer == 'none'
+        run: |
+          xcodebuild test \
+            -project PayBack.xcodeproj \
+            -scheme PayBackTests \
+            -configuration Debug \
+            -destination "$SIMULATOR_DESTINATION" \
+            -enableCodeCoverage YES \
+            -resultBundlePath TestResults.xcresult \
+            | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Run Unit Tests (Thread Sanitizer)
+        if: matrix.sanitizer == 'thread'
+        run: |
+          xcodebuild test \
+            -project PayBack.xcodeproj \
+            -scheme PayBackTests \
+            -configuration Debug \
+            -destination "$SIMULATOR_DESTINATION" \
+            -enableThreadSanitizer YES \
+            -resultBundlePath TestResults.xcresult \
+            | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Run Unit Tests (Address Sanitizer)
+        if: matrix.sanitizer == 'address'
+        run: |
+          xcodebuild test \
+            -project PayBack.xcodeproj \
+            -scheme PayBackTests \
+            -configuration Debug \
+            -destination "$SIMULATOR_DESTINATION" \
+            -enableAddressSanitizer YES \
+            -resultBundlePath TestResults.xcresult \
+            | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Generate Coverage Report
+        if: matrix.sanitizer == 'none'
+        run: |
+          if [ ! -d TestResults.xcresult ]; then
+            echo "ERROR: TestResults.xcresult not found - tests likely did not run"
+            exit 1
+          fi
+          if xcrun xccov view --report --json TestResults.xcresult > coverage.json 2>&1; then
+            COVERAGE=$(python3 -c "import json; data=json.load(open('coverage.json')); print(f\"{data['lineCoverage']*100:.2f}\")")
+            echo "Code Coverage: ${COVERAGE}%"
+            echo "COVERAGE=${COVERAGE}" >> $GITHUB_ENV
+            xcrun xccov view --report TestResults.xcresult > coverage-report.txt
+            echo "## Code Coverage Report" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Overall Coverage: ${COVERAGE}%**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -n 50 coverage-report.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ERROR: No coverage data in TestResults.xcresult"
+            echo "This usually means tests did not run successfully."
+            echo "Check the test execution logs above."
+            exit 1
+          fi
+
+      - name: Check Coverage Threshold
+        if: matrix.sanitizer == 'none'
+        run: |
+          THRESHOLD=5.0
+          COVERAGE=${{ env.COVERAGE }}
+          echo "Coverage: ${COVERAGE}%"
+          echo "Threshold: ${THRESHOLD}%"
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "❌ Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+            exit 1
+          else
+            echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+          fi
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.sanitizer }}
+          path: TestResults.xcresult
+          retention-days: 30
+
+      - name: Upload Coverage Report
+        if: matrix.sanitizer == 'none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.json
+            coverage-report.txt
+          retention-days: 30

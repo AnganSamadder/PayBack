@@ -55,6 +55,15 @@ final class MockLinkRequestService: LinkRequestService {
         targetMemberId: UUID,
         targetMemberName: String
     ) async throws -> LinkRequest {
+        // Normalize emails for comparison
+        let normalizedRecipientEmail = recipientEmail.lowercased().trimmingCharacters(in: .whitespaces)
+        let normalizedRequesterEmail = "mock@example.com".lowercased().trimmingCharacters(in: .whitespaces)
+        
+        // Prevent self-linking
+        if normalizedRecipientEmail == normalizedRequesterEmail {
+            throw LinkingError.selfLinkingNotAllowed
+        }
+        
         // Check for duplicate requests
         let existingRequest = Self.requests.values.first { request in
             request.recipientEmail == recipientEmail &&
