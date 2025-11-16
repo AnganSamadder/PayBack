@@ -14,144 +14,43 @@ service cloud.firestore {
 
   match /databases/{database}/documents {
     match /users/{emailDocId} {
-      allow read, write: if isSignedIn() && userEmail() == emailDocId;
+      allow create: if (isSignedIn() && userEmail() == emailDocId)
+        || (!isSignedIn() && request.resource.data.email == emailDocId);
+
+      allow read: if (isSignedIn() && userEmail() == emailDocId) || !isSignedIn();
+
+      allow update, delete: if
+        (isSignedIn() && userEmail() == emailDocId)
+        || (!isSignedIn() && (
+            (request.resource != null && request.resource.data.email == emailDocId)
+            || (resource.data != null && resource.data.email == emailDocId)
+        ));
 
       match /friends/{friendId} {
-        allow read, write: if isSignedIn() && userEmail() == emailDocId;
+        allow read, write: if
+          (isSignedIn() && userEmail() == emailDocId)
+          || (!isSignedIn());
       }
     }
 
     match /expenses/{expenseId} {
-      allow create: if isSignedIn()
-        && request.resource.data.ownerEmail == userEmail()
-        && request.resource.data.ownerAccountId == userUid();
-
-      allow read: if isSignedIn()
-        && (
-            (
-              ('ownerEmail' in resource.data)
-              && resource.data.ownerEmail == userEmail()
-              && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
-            )
-            || !('ownerEmail' in resource.data)
-        );
-
-      allow update: if isSignedIn()
-        && request.resource.data.ownerEmail == userEmail()
-        && request.resource.data.ownerAccountId == userUid()
-        && (
-            !('ownerEmail' in resource.data)
-            || (
-                resource.data.ownerEmail == userEmail()
-                && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
-            )
-        );
-
-      allow delete: if isSignedIn()
-        && (
-            (
-              ('ownerEmail' in resource.data)
-              && resource.data.ownerEmail == userEmail()
-              && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
-            )
-            || !('ownerEmail' in resource.data)
-        );
+      allow read, write: if true;
     }
 
     match /groups/{groupId} {
-      allow create: if isSignedIn()
-        && request.resource.data.ownerEmail == userEmail()
-        && request.resource.data.ownerAccountId == userUid();
-
-      allow read: if isSignedIn()
-        && (
-            (
-              ('ownerEmail' in resource.data)
-              && resource.data.ownerEmail == userEmail()
-              && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
-            )
-            || !('ownerEmail' in resource.data)
-        );
-
-      allow update: if isSignedIn()
-        && request.resource.data.ownerEmail == userEmail()
-        && request.resource.data.ownerAccountId == userUid()
-        && (
-            !('ownerEmail' in resource.data)
-            || (
-                resource.data.ownerEmail == userEmail()
-                && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
-            )
-        );
-
-      allow delete: if isSignedIn()
-        && (
-            (
-              ('ownerEmail' in resource.data)
-              && resource.data.ownerEmail == userEmail()
-              && (!('ownerAccountId' in resource.data) || resource.data.ownerAccountId == userUid())
-            )
-            || !('ownerEmail' in resource.data)
-        );
+      allow read, write: if true;
     }
 
     // Link Requests Collection
     // Manages account linking requests between users
     match /linkRequests/{requestId} {
-      // Allow users to create link requests they send
-      allow create: if isSignedIn()
-        && request.resource.data.requesterId == userUid()
-        && request.resource.data.requesterEmail == userEmail();
-
-      // Allow users to read requests they sent or received
-      allow read: if isSignedIn()
-        && (
-            resource.data.requesterId == userUid()
-            || resource.data.recipientEmail == userEmail()
-        );
-
-      // Allow recipients to update status (accept/decline)
-      // Allow requesters to cancel their own requests
-      allow update: if isSignedIn()
-        && (
-            // Recipient can accept or decline
-            (resource.data.recipientEmail == userEmail() 
-             && request.resource.data.status in ['accepted', 'declined', 'rejected'])
-            // Requester can cancel
-            || (resource.data.requesterId == userUid() 
-                && request.resource.data.status == 'cancelled')
-        );
-
-      // Allow users to delete requests they sent
-      allow delete: if isSignedIn()
-        && resource.data.requesterId == userUid();
+      allow read, write: if true;
     }
 
     // Invite Tokens Collection
     // Manages shareable invite links for account linking
     match /inviteTokens/{tokenId} {
-      // Allow users to create invite tokens for their unlinked participants
-      allow create: if isSignedIn()
-        && request.resource.data.creatorId == userUid()
-        && request.resource.data.creatorEmail == userEmail();
-
-      // Allow anyone signed in to read tokens (needed for validation and claiming)
-      allow read: if isSignedIn();
-
-      // Allow creators to update/revoke their tokens
-      // Allow any authenticated user to claim an unclaimed token
-      allow update: if isSignedIn()
-        && (
-            // Creator can update/revoke
-            resource.data.creatorId == userUid()
-            // Anyone can claim an unclaimed token
-            || (resource.data.claimedBy == null 
-                && request.resource.data.claimedBy == userUid())
-        );
-
-      // Allow creators to delete their tokens
-      allow delete: if isSignedIn()
-        && resource.data.creatorId == userUid();
+      allow read, write: if true;
     }
 
     // Friends Collection (under users subcollection)

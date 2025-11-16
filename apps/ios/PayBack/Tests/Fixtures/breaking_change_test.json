@@ -1,0 +1,22 @@
+{
+  "id": "B0000000-0000-4000-8000-000000000001",
+  "groupId": "11111111-2222-3333-4444-555555555555",
+  "description": "Test Expense",
+  "date": 1700000000.0,
+  "totalAmount": 100.0,
+  "paidByMemberId": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+  "involvedMemberIds": [
+    "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+  ],
+  "splits": [
+    {
+      "id": "B0000000-0000-4000-8000-000000000002",
+      "memberId": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+      "amount": 100.0,
+      "isSettled": false
+    }
+  ],
+  "isSettled": false,
+  "futureFieldThatDoesNotExist": "This field should be ignored by the decoder",
+  "anotherUnknownField": 12345
+}

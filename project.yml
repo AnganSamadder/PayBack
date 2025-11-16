@@ -15,8 +15,10 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: iOS/Sources
-      - path: iOS/GoogleService-Info.plist
+      - path: apps/ios/PayBack/Sources
+      - path: apps/ios/PayBack/GoogleService-Info.plist
+        type: resource
+      - path: apps/ios/PayBack/Assets.xcassets
         type: resource
     dependencies:
       - package: Firebase
@@ -29,7 +31,7 @@ targets:
         DEVELOPMENT_TEAM: ""
         ENABLE_TESTABILITY: YES
     info:
-      path: iOS/Info.plist
+      path: apps/ios/PayBack/Info.plist
       properties:
         CFBundleDisplayName: PayBack
         UILaunchScreen: {}
@@ -40,7 +42,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: PayBackTests
+      - path: apps/ios/PayBack/Tests
     dependencies:
       - target: PayBack
     settings:
@@ -49,7 +51,7 @@ targets:
         DEVELOPMENT_TEAM: ""
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/PayBack.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PayBack"
     info:
-      path: PayBackTests/Info.plist
+      path: apps/ios/PayBack/Tests/Info.plist
     scheme:
       testTargets:
         - name: PayBackTests
