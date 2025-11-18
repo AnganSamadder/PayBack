@@ -4,6 +4,52 @@ import FirebaseCore
 
 @MainActor
 final class AccountServiceProviderTests: XCTestCase {
+    private static var hasCheckedEmulator = false
+    private static var isEmulatorAvailable = false
+    
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        
+        // Xcode Cloud does not run the Firebase emulators; bail out fast so we
+        // don't spend minutes waiting on network timeouts.
+        if !Self.hasCheckedEmulator {
+            Self.hasCheckedEmulator = true
+            Self.isEmulatorAvailable = Self.checkEmulatorAvailability()
+        }
+        
+        guard Self.isEmulatorAvailable else {
+            throw XCTSkip("Firebase emulators are not running (localhost:8080/9099). Skipping AccountServiceProvider integration-style tests in this environment.")
+        }
+    }
+    
+    private static func checkEmulatorAvailability() -> Bool {
+        guard let url = URL(string: "http://localhost:8080") else { return false }
+        
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 1.0
+        config.timeoutIntervalForResource = 2.0
+        
+        let session = URLSession(configuration: config)
+        let semaphore = DispatchSemaphore(value: 0)
+        var reachable = false
+        
+        let task = session.dataTask(with: url) { _, response, error in
+            defer { semaphore.signal() }
+            if let http = response as? HTTPURLResponse {
+                reachable = (200..<600).contains(http.statusCode)
+            } else {
+                reachable = (error == nil)
+            }
+        }
+        
+        task.resume()
+        let result = semaphore.wait(timeout: .now() + .seconds(1))
+        if result == .timedOut {
+            task.cancel()
+            return false
+        }
+        return reachable
+    }
     
     // MARK: - Make Account Service Tests
     
