@@ -109,6 +109,8 @@ Artifacts/
 
 # Firebase / GoogleService files (if any)
 GoogleService-Info.plist
+# CI backup of Firebase config created by test-ci-locally.sh
+apps/ios/PayBack/GoogleService-Info.plist.ci-backup
 
 # Kiro IDE
 .kiro/

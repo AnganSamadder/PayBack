@@ -25,6 +25,11 @@ SANITIZER="${SANITIZER:-none}"
 # Will automatically select latest iOS version available
 REQUIRED_IOS_VERSION=""
 
+# Firebase config paths (preserve real config, use dummy for tests)
+GOOGLE_PLIST_PATH="${PROJECT_ROOT}/apps/ios/PayBack/GoogleService-Info.plist"
+GOOGLE_PLIST_BACKUP="${PROJECT_ROOT}/apps/ios/PayBack/GoogleService-Info.plist.ci-backup"
+GOOGLE_PLIST_CREATED_FOR_TESTS=false
+
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}  Ultimate CI Test - Complete GitHub Actions Simulation${NC}"
 echo -e "${BLUE}  Unit Tests + Firebase Integration + Coverage Analysis${NC}"
@@ -32,8 +37,18 @@ echo -e "${BLUE}═════════════════════�
 echo ""
 
 # Step 1: Create GoogleService-Info.plist
-echo -e "${YELLOW}[1/9] Creating GoogleService-Info.plist for testing...${NC}"
-cat > "${PROJECT_ROOT}/apps/ios/PayBack/GoogleService-Info.plist" <<'EOF'
+echo -e "${YELLOW}[1/9] Preparing GoogleService-Info.plist for testing...${NC}"
+
+# If a real plist exists, back it up so we can restore it later.
+if [ -f "$GOOGLE_PLIST_PATH" ]; then
+  echo "Backing up existing GoogleService-Info.plist to temporary CI backup"
+  cp "$GOOGLE_PLIST_PATH" "$GOOGLE_PLIST_BACKUP"
+else
+  GOOGLE_PLIST_CREATED_FOR_TESTS=true
+fi
+
+# Write dummy config for tests without losing the original
+cat > "$GOOGLE_PLIST_PATH" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -69,7 +84,7 @@ cat > "${PROJECT_ROOT}/apps/ios/PayBack/GoogleService-Info.plist" <<'EOF'
 </dict>
 </plist>
 EOF
-echo -e "${GREEN}✓ GoogleService-Info.plist created${NC}"
+echo -e "${GREEN}✓ GoogleService-Info.plist dummy created for tests${NC}"
 echo ""
 
 # Step 2: Show Xcode version
@@ -282,27 +297,36 @@ EMULATORS_STARTED=false
 EMULATOR_PID=""
 EMULATOR_LOG_FILE="/tmp/firebase-emulator-ci-$$.log"
 
-# Function to cleanup Firebase emulator
+# Function to cleanup Firebase emulator and restore Firebase plist
 cleanup_emulator() {
-    if [[ "$EMULATORS_STARTED" == true ]]; then
-        echo ""
-        echo -e "${YELLOW}Stopping Firebase emulators...${NC}"
+  if [[ "$EMULATORS_STARTED" == true ]]; then
+    echo ""
+    echo -e "${YELLOW}Stopping Firebase emulators...${NC}"
         
-        # Kill the main process
-        if [[ -n "$EMULATOR_PID" ]]; then
-            kill $EMULATOR_PID 2>/dev/null || true
-            sleep 2
-        fi
-        
-        # Force kill any remaining Firebase processes
-        pkill -f "firebase.*emulators" 2>/dev/null || true
-        pkill -f "java.*firestore" 2>/dev/null || true
-        
-        # Clean up log file
-        rm -f "$EMULATOR_LOG_FILE" 2>/dev/null || true
-        
-        echo -e "${GREEN}✓ Emulators stopped${NC}"
+    # Kill the main process
+    if [[ -n "$EMULATOR_PID" ]]; then
+      kill $EMULATOR_PID 2>/dev/null || true
+      sleep 2
     fi
+        
+    # Force kill any remaining Firebase processes
+    pkill -f "firebase.*emulators" 2>/dev/null || true
+    pkill -f "java.*firestore" 2>/dev/null || true
+        
+    # Clean up log file
+    rm -f "$EMULATOR_LOG_FILE" 2>/dev/null || true
+        
+    echo -e "${GREEN}✓ Emulators stopped${NC}"
+  fi
+
+  # Restore original GoogleService-Info.plist if we backed it up
+  if [ -f "$GOOGLE_PLIST_BACKUP" ]; then
+    echo "Restoring original GoogleService-Info.plist from CI backup"
+    mv -f "$GOOGLE_PLIST_BACKUP" "$GOOGLE_PLIST_PATH" 2>/dev/null || true
+  elif [ "$GOOGLE_PLIST_CREATED_FOR_TESTS" = true ]; then
+    # No original existed; remove the dummy file so we don't leave test config lying around
+    rm -f "$GOOGLE_PLIST_PATH" 2>/dev/null || true
+  fi
 }
 
 # Set trap to cleanup on exit
