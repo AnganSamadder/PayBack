@@ -126,7 +126,7 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
     
     /// Cancels an outgoing link request
     func cancelLinkRequest(_ requestId: UUID) async throws {
-        guard var request = requests[requestId] else {
+        guard requests[requestId] != nil else {
             throw LinkingError.tokenInvalid
         }
         
@@ -197,4 +197,3 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
         requests[request.id] = request
     }
 }
-

@@ -186,7 +186,7 @@ final class CurrencyServiceTests: XCTestCase {
             XCTAssertFalse(rates.isEmpty, "Should return rates for valid currency")
             XCTAssertTrue(rates.keys.contains("EUR"), "Should contain common currencies")
         } catch {
-            XCTSkip("Network unavailable: \(error)")
+            throw XCTSkip("Network unavailable: \(error)")
         }
     }
     
@@ -479,7 +479,7 @@ final class CurrencyServiceTests: XCTestCase {
             XCTAssertFalse(rates1.isEmpty)
             XCTAssertFalse(rates2.isEmpty)
         } catch {
-            XCTSkip("Network unavailable: \(error)")
+            throw XCTSkip("Network unavailable: \(error)")
         }
     }
     
@@ -495,7 +495,7 @@ final class CurrencyServiceTests: XCTestCase {
                 XCTAssertTrue(product > 0.95 && product < 1.05, "Rates should be approximately inverse")
             }
         } catch {
-            XCTSkip("Network unavailable: \(error)")
+            throw XCTSkip("Network unavailable: \(error)")
         }
     }
     
@@ -510,7 +510,7 @@ final class CurrencyServiceTests: XCTestCase {
                 XCTAssertEqual(usdToUsd, 1.0, accuracy: 0.0001)
             }
         } catch {
-            XCTSkip("Network unavailable: \(error)")
+            throw XCTSkip("Network unavailable: \(error)")
         }
     }
     
@@ -617,7 +617,7 @@ final class CurrencyServiceTests: XCTestCase {
                 XCTAssertFalse(result.isEmpty, "Each request should return rates")
             }
         } catch {
-            XCTSkip("Network unavailable: \(error)")
+            throw XCTSkip("Network unavailable: \(error)")
         }
     }
     
@@ -642,7 +642,7 @@ final class CurrencyServiceTests: XCTestCase {
                 XCTAssertFalse(result.isEmpty)
             }
         } catch {
-            XCTSkip("Network unavailable: \(error)")
+            throw XCTSkip("Network unavailable: \(error)")
         }
     }
     
@@ -682,9 +682,9 @@ final class CurrencyServiceTests: XCTestCase {
         
         do {
             let rates = try await protocolService.fetchRates(base: "USD")
-            XCTAssertTrue(rates is [String: Double])
+            XCTAssertFalse(rates.isEmpty, "Should return at least one rate for USD when network is available")
         } catch {
-            XCTSkip("Network unavailable: \(error)")
+            throw XCTSkip("Network unavailable: \(error)")
         }
     }
     

@@ -160,7 +160,7 @@ final class FirebaseEmulatorDemoTests: FirebaseEmulatorTestCase {
         )
         
         // Create user document in Firestore
-        let docRef = try await createDocument(
+        _ = try await createDocument(
             collection: "users",
             documentId: authResult.user.email!,
             data: [

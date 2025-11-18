@@ -28,7 +28,7 @@ final class AccountServiceTests: XCTestCase {
         XCTAssertEqual(normalized, "test@example.com")
     }
     
-    func test_normalizedEmail_alreadyNormalized_returnsSame() async throws {
+    func test_normalizedEmail_alreadyNormalized_returnsSame() throws {
         // Given
         let rawEmail = "test@example.com"
         
@@ -39,13 +39,13 @@ final class AccountServiceTests: XCTestCase {
         XCTAssertEqual(normalized, "test@example.com")
     }
     
-    func test_normalizedEmail_invalidEmail_throwsError() async {
+    func test_normalizedEmail_invalidEmail_throwsError() {
         // Given
         let invalidEmail = "not-an-email"
         
         // When/Then
         do {
-            _ = try await sut.normalizedEmail(from: invalidEmail)
+            _ = try sut.normalizedEmail(from: invalidEmail)
             XCTFail("Expected error to be thrown")
         } catch let error as AccountServiceError {
             if case AccountServiceError.invalidEmail = error {
@@ -58,39 +58,39 @@ final class AccountServiceTests: XCTestCase {
         }
     }
     
-    func test_normalizedEmail_emptyString_throwsError() async {
+    func test_normalizedEmail_emptyString_throwsError() {
         // Given
         let emptyEmail = ""
         
         // When/Then
         do {
-            _ = try await sut.normalizedEmail(from: emptyEmail)
+            _ = try sut.normalizedEmail(from: emptyEmail)
             XCTFail("Expected error to be thrown")
         } catch {
             XCTAssertTrue(error is AccountServiceError)
         }
     }
     
-    func test_normalizedEmail_missingAtSign_throwsError() async {
+    func test_normalizedEmail_missingAtSign_throwsError() {
         // Given
         let invalidEmail = "testexample.com"
         
         // When/Then
         do {
-            _ = try await sut.normalizedEmail(from: invalidEmail)
+            _ = try sut.normalizedEmail(from: invalidEmail)
             XCTFail("Expected error to be thrown")
         } catch {
             XCTAssertTrue(error is AccountServiceError)
         }
     }
     
-    func test_normalizedEmail_missingDomain_throwsError() async {
+    func test_normalizedEmail_missingDomain_throwsError() {
         // Given
         let invalidEmail = "test@"
         
         // When/Then
         do {
-            _ = try await sut.normalizedEmail(from: invalidEmail)
+            _ = try sut.normalizedEmail(from: invalidEmail)
             XCTFail("Expected error to be thrown")
         } catch {
             XCTAssertTrue(error is AccountServiceError)
@@ -874,7 +874,7 @@ final class AccountServiceTests: XCTestCase {
             // Create accounts
             for i in 0..<5 {
                 group.addTask {
-                    try? await self.sut.createAccount(
+                    _ = try? await self.sut.createAccount(
                         email: "user\(i)@example.com",
                         displayName: "User \(i)"
                     )

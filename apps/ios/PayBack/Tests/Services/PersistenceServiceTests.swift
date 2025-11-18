@@ -428,7 +428,7 @@ final class PersistenceServiceTests: XCTestCase {
         let loaded = sut.load()
         
         XCTAssertEqual(loaded.groups.count, unicodeNames.count)
-        for (index, name) in unicodeNames.enumerated() {
+        for name in unicodeNames {
             XCTAssertTrue(loaded.groups.contains(where: { $0.name == name }))
         }
     }

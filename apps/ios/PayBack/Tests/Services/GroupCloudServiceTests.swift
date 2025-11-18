@@ -118,9 +118,9 @@ final class GroupCloudServiceTests: XCTestCase {
         let group3 = createTestGroup(name: "Group 3")
         
         // When - Execute concurrent upserts
-        async let upsert1 = service.upsertGroup(group1)
-        async let upsert2 = service.upsertGroup(group2)
-        async let upsert3 = service.upsertGroup(group3)
+        async let upsert1: Void = service.upsertGroup(group1)
+        async let upsert2: Void = service.upsertGroup(group2)
+        async let upsert3: Void = service.upsertGroup(group3)
         
         // Then - All should complete without throwing
         try await upsert1
@@ -277,9 +277,9 @@ final class GroupCloudServiceTests: XCTestCase {
         let groupIds3 = [UUID(), UUID()]
         
         // When - Execute concurrent deletes
-        async let delete1 = service.deleteGroups(groupIds1)
-        async let delete2 = service.deleteGroups(groupIds2)
-        async let delete3 = service.deleteGroups(groupIds3)
+        async let delete1: Void = service.deleteGroups(groupIds1)
+        async let delete2: Void = service.deleteGroups(groupIds2)
+        async let delete3: Void = service.deleteGroups(groupIds3)
         
         // Then - All should complete without throwing
         try await delete1
@@ -663,7 +663,7 @@ final class GroupCloudServiceTests: XCTestCase {
         let group = createTestGroup()
         
         // When/Then - Should work without authentication
-        try await service.fetchGroups()
+        _ = try await service.fetchGroups()
         try await service.upsertGroup(group)
         try await service.deleteGroups([group.id])
     }
@@ -693,9 +693,9 @@ final class GroupCloudServiceTests: XCTestCase {
         let groupId = UUID()
         
         // When - Perform concurrent updates to the same group
-        async let update1 = service.upsertGroup(createTestGroup(id: groupId, name: "Version 1"))
-        async let update2 = service.upsertGroup(createTestGroup(id: groupId, name: "Version 2"))
-        async let update3 = service.upsertGroup(createTestGroup(id: groupId, name: "Version 3"))
+        async let update1: Void = service.upsertGroup(createTestGroup(id: groupId, name: "Version 1"))
+        async let update2: Void = service.upsertGroup(createTestGroup(id: groupId, name: "Version 2"))
+        async let update3: Void = service.upsertGroup(createTestGroup(id: groupId, name: "Version 3"))
         
         // Then - All should complete without throwing
         try await update1
@@ -712,9 +712,9 @@ final class GroupCloudServiceTests: XCTestCase {
         
         // When - Perform concurrent mixed operations
         async let fetch = service.fetchGroups()
-        async let upsert1 = service.upsertGroup(group1)
-        async let upsert2 = service.upsertGroup(group2)
-        async let delete = service.deleteGroups([group3.id])
+        async let upsert1: Void = service.upsertGroup(group1)
+        async let upsert2: Void = service.upsertGroup(group2)
+        async let delete: Void = service.deleteGroups([group3.id])
         
         // Then - All should complete without throwing
         let groups = try await fetch
@@ -799,9 +799,9 @@ final class GroupCloudServiceTests: XCTestCase {
         let groupId = UUID()
         
         // When - Perform concurrent deletes of the same group
-        async let delete1 = service.deleteGroups([groupId])
-        async let delete2 = service.deleteGroups([groupId])
-        async let delete3 = service.deleteGroups([groupId])
+        async let delete1: Void = service.deleteGroups([groupId])
+        async let delete2: Void = service.deleteGroups([groupId])
+        async let delete3: Void = service.deleteGroups([groupId])
         
         // Then - All should complete without throwing
         try await delete1
@@ -853,7 +853,7 @@ final class GroupCloudServiceTests: XCTestCase {
     
     // MARK: - Firebase Production Coverage Tests
     
-    func testFirebaseService_ensureAuthenticated_checksCurrentUser() async {
+    func testFirebaseService_ensureAuthenticated_checksCurrentUser() async throws {
         let service = FirestoreGroupCloudService()
         
         do {
@@ -865,50 +865,50 @@ final class GroupCloudServiceTests: XCTestCase {
         }
     }
     
-    func testFirebaseService_fetchGroups_usesCurrentUserUid() async {
+    func testFirebaseService_fetchGroups_usesCurrentUserUid() async throws {
         let service = FirestoreGroupCloudService()
         
         do {
             _ = try await service.fetchGroups()
         } catch GroupCloudServiceError.userNotAuthenticated {
-            XCTSkip("No user authenticated")
+            throw XCTSkip("No user authenticated")
         } catch {
             // Firebase errors expected
         }
     }
     
-    func testFirebaseService_fetchGroups_primaryQuery() async {
+    func testFirebaseService_fetchGroups_primaryQuery() async throws {
         let service = FirestoreGroupCloudService()
         
         do {
             _ = try await service.fetchGroups()
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
-    func testFirebaseService_fetchGroups_secondaryQuery() async {
+    func testFirebaseService_fetchGroups_secondaryQuery() async throws {
         let service = FirestoreGroupCloudService()
         
         do {
             let groups = try await service.fetchGroups()
             _ = groups.count
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
-    func testFirebaseService_fetchGroups_fallbackQuery() async {
+    func testFirebaseService_fetchGroups_fallbackQuery() async throws {
         let service = FirestoreGroupCloudService()
         
         do {
             _ = try await service.fetchGroups()
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
-    func testFirebaseService_fetchGroups_parsesDocuments() async {
+    func testFirebaseService_fetchGroups_parsesDocuments() async throws {
         let service = FirestoreGroupCloudService()
         
         do {
@@ -917,11 +917,11 @@ final class GroupCloudServiceTests: XCTestCase {
                 XCTAssertFalse(group.id.uuidString.isEmpty)
             }
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
-    func testFirebaseService_upsertGroup_checksAuthentication() async {
+    func testFirebaseService_upsertGroup_checksAuthentication() async throws {
         let service = FirestoreGroupCloudService()
         let group = createTestGroup()
         
@@ -941,7 +941,7 @@ final class GroupCloudServiceTests: XCTestCase {
         do {
             try await service.upsertGroup(group)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -952,7 +952,7 @@ final class GroupCloudServiceTests: XCTestCase {
         do {
             try await service.upsertGroup(group)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -976,7 +976,7 @@ final class GroupCloudServiceTests: XCTestCase {
         do {
             try await service.deleteGroups(groupIds)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -987,7 +987,7 @@ final class GroupCloudServiceTests: XCTestCase {
         do {
             try await service.deleteGroups(groupIds)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -1008,7 +1008,7 @@ final class GroupCloudServiceTests: XCTestCase {
                 XCTAssertNotNil(group.createdAt)
             }
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -1021,7 +1021,7 @@ final class GroupCloudServiceTests: XCTestCase {
                 XCTAssertFalse(group.members.isEmpty)
             }
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -1034,7 +1034,7 @@ final class GroupCloudServiceTests: XCTestCase {
                 _ = group.isDirect
             }
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     

@@ -577,19 +577,19 @@ final class EmailAuthServiceCoverageTests: XCTestCase {
         }
     }
     
-    func testFirebaseService_signUp_usesAuthCreateUser() async {
+    func testFirebaseService_signUp_usesAuthCreateUser() async throws {
         let service = FirebaseEmailAuthService()
         
         do {
             _ = try await service.signUp(email: "new@test.com", password: "password123", displayName: "Test")
         } catch EmailAuthServiceError.configurationMissing {
-            XCTSkip("Firebase not configured")
+            throw XCTSkip("Firebase not configured")
         } catch {
             // Firebase errors expected without proper setup
         }
     }
     
-    func testFirebaseService_signUp_updatesDisplayName() async {
+    func testFirebaseService_signUp_updatesDisplayName() async throws {
         let service = FirebaseEmailAuthService()
         
         do {
@@ -597,29 +597,29 @@ final class EmailAuthServiceCoverageTests: XCTestCase {
             // If successful, displayName should be set
             XCTAssertEqual(result.displayName, "Test User")
         } catch {
-            XCTSkip("Firebase operations not available in test environment")
+            throw XCTSkip("Firebase operations not available in test environment")
         }
     }
     
-    func testFirebaseService_signIn_usesAuthSignIn() async {
+    func testFirebaseService_signIn_usesAuthSignIn() async throws {
         let service = FirebaseEmailAuthService()
         
         do {
             _ = try await service.signIn(email: "existing@test.com", password: "password")
         } catch EmailAuthServiceError.configurationMissing {
-            XCTSkip("Firebase not configured")
+            throw XCTSkip("Firebase not configured")
         } catch {
             // Expected without valid credentials
         }
     }
     
-    func testFirebaseService_sendPasswordReset_usesAuthSendReset() async {
+    func testFirebaseService_sendPasswordReset_usesAuthSendReset() async throws {
         let service = FirebaseEmailAuthService()
         
         do {
             try await service.sendPasswordReset(email: "reset@test.com")
         } catch EmailAuthServiceError.configurationMissing {
-            XCTSkip("Firebase not configured")
+            throw XCTSkip("Firebase not configured")
         } catch {
             // Expected without valid setup
         }
@@ -735,7 +735,7 @@ final class EmailAuthServiceCoverageTests: XCTestCase {
         }
     }
     
-    func testFirebaseService_profileUpdate_createsChangeRequest() async {
+    func testFirebaseService_profileUpdate_createsChangeRequest() async throws {
         let service = FirebaseEmailAuthService()
         
         do {
@@ -743,18 +743,18 @@ final class EmailAuthServiceCoverageTests: XCTestCase {
             // The createProfileChangeRequest and commitChanges path is exercised during signUp
             XCTAssertEqual(result.displayName, "Original Name")
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
-    func testFirebaseService_profileUpdate_commitsChanges() async {
+    func testFirebaseService_profileUpdate_commitsChanges() async throws {
         let service = FirebaseEmailAuthService()
         
         do {
             _ = try await service.signUp(email: "commit@test.com", password: "password123", displayName: "Committed Name")
             // commitChanges() is called as part of profile update
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     

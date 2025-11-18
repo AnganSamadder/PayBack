@@ -141,7 +141,8 @@ final class LoginViewTests: XCTestCase {
         )
         
         XCTAssertNotNil(view)
-        // Note: We can't actually trigger the callbacks without UI interaction
-        // but we verify the view can be created with them
+        XCTAssertFalse(loginCalled)
+        XCTAssertFalse(forgotPasswordCalled)
+        XCTAssertFalse(signupCalled)
     }
 }

@@ -36,41 +36,18 @@ class FirebaseEmulatorTestCase: XCTestCase {
     /// Track created Firestore documents for cleanup
     private var createdDocumentPaths: [String] = []
     
-    /// Cache emulator availability check so we don't probe repeatedly
-    private static var hasCheckedEmulatorAvailability = false
-    private static var isEmulatorAvailable = false
-    
-    /// Static flag to ensure emulator configuration happens only once
-    private static var isEmulatorConfigured = false
-    private static let configurationLock = NSLock()
+    /// Track whether the emulator was available during setUp so we can skip teardown work when skipped.
+    private var emulatorAvailable = false
     
     // MARK: - Setup & Teardown
     
     override func setUp() async throws {
         try await super.setUp()
         
-        // Fast‑fail on environments (like Xcode Cloud) where the emulators
-        // are not running, to avoid very long Firebase network timeouts.
-        if !FirebaseEmulatorTestCase.hasCheckedEmulatorAvailability {
-            FirebaseEmulatorTestCase.hasCheckedEmulatorAvailability = true
-            FirebaseEmulatorTestCase.isEmulatorAvailable = await FirebaseEmulatorTestCase.checkEmulatorAvailability()
-        }
-        
-        guard FirebaseEmulatorTestCase.isEmulatorAvailable else {
-            throw XCTSkip("Firebase emulators are not running on localhost – skipping emulator‑dependent tests. Make sure to start them (e.g. ./scripts/start-emulators.sh) when running locally or in CI.")
-        }
-        
-        // Configure Firebase if not already configured
-        // (Emulator configuration is handled automatically in PayBackApp.swift for test environment)
-        FirebaseEmulatorTestCase.configurationLock.lock()
-        defer { FirebaseEmulatorTestCase.configurationLock.unlock() }
-        
-        if !FirebaseEmulatorTestCase.isEmulatorConfigured {
-            if FirebaseApp.app() == nil {
-                FirebaseApp.configure()
-            }
-            FirebaseEmulatorTestCase.isEmulatorConfigured = true
-        }
+        try await requireFirebaseEmulator(
+            message: "Firebase emulators are not running on localhost – skipping emulator‑dependent tests. Make sure to start them (e.g. ./scripts/start-emulators.sh) when running locally or in CI."
+        )
+        emulatorAvailable = true
         
         // Get Auth and Firestore instances (already configured for emulator)
         auth = Auth.auth()
@@ -92,7 +69,7 @@ class FirebaseEmulatorTestCase: XCTestCase {
     
     override func tearDown() async throws {
         // If we skipped because emulators are unavailable, there is nothing to clean up.
-        guard FirebaseEmulatorTestCase.isEmulatorAvailable else {
+        guard emulatorAvailable else {
             try await super.tearDown()
             return
         }
@@ -111,36 +88,6 @@ class FirebaseEmulatorTestCase: XCTestCase {
         try await super.tearDown()
     }
     
-    // MARK: - Emulator Availability
-
-    /// Quickly checks whether the Firebase emulators are reachable on localhost.
-    /// We intentionally keep the timeout very small so unavailable emulators
-    /// cause tests to be skipped immediately instead of hanging for minutes.
-    private static func checkEmulatorAvailability() async -> Bool {
-        guard let url = URL(string: "http://localhost:8080") else {
-            return false
-        }
-        
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 1.0
-        
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 1.0
-        config.timeoutIntervalForResource = 2.0
-        
-        let session = URLSession(configuration: config)
-        
-        do {
-            let (_, response) = try await session.data(for: request)
-            if let http = response as? HTTPURLResponse {
-                return (200..<600).contains(http.statusCode)
-            }
-            return true
-        } catch {
-            return false
-        }
-    }
-
     private func clearCollection(_ name: String) async {
         let snapshot = try? await firestore.collection(name).getDocuments()
         for document in snapshot?.documents ?? [] {

@@ -462,6 +462,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         // Add local group (creates derived friend)
         sut.addGroup(name: "Local", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
+        XCTAssertEqual(alice.name, "Alice")
         
         // Add remote friend
         let remoteFriend = AccountFriend(

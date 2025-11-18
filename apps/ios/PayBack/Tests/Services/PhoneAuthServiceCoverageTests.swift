@@ -223,7 +223,7 @@ final class PhoneAuthServiceCoverageTests: XCTestCase {
             _ = try await service.requestVerificationCode(for: "+15551234567")
             // Should either succeed or throw a Firebase error
         } catch PhoneAuthServiceError.configurationMissing {
-            XCTSkip("Firebase not configured in test environment")
+            throw XCTSkip("Firebase not configured in test environment")
         } catch {
             // Firebase errors are expected without proper setup
             XCTAssertTrue(error is PhoneAuthServiceError)
@@ -285,7 +285,7 @@ final class PhoneAuthServiceCoverageTests: XCTestCase {
             _ = try await service.requestVerificationCode(for: "+15551111111")
             _ = try await service.requestVerificationCode(for: "+15552222222")
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -353,7 +353,7 @@ final class PhoneAuthServiceCoverageTests: XCTestCase {
         do {
             _ = try await service.signIn(verificationID: "test-id", smsCode: "123456")
         } catch PhoneAuthServiceError.configurationMissing {
-            XCTSkip("Firebase not configured")
+            throw XCTSkip("Firebase not configured")
         } catch {
             // Firebase errors expected
         }
@@ -413,7 +413,7 @@ final class PhoneAuthServiceCoverageTests: XCTestCase {
             let result = try await service.signIn(verificationID: "test-id", smsCode: "123456")
             XCTAssertFalse(result.uid.isEmpty)
         } catch {
-            XCTSkip("Cannot test without valid Firebase credentials")
+            throw XCTSkip("Cannot test without valid Firebase credentials")
         }
     }
     
@@ -519,7 +519,7 @@ final class PhoneAuthServiceCoverageTests: XCTestCase {
         XCTAssertLessThan(duration, 1.0, "Sign out should be fast")
     }
     
-    func test_firebaseService_signOut_afterSignIn() async {
+    func test_firebaseService_signOut_afterSignIn() async throws {
         let service = FirebasePhoneAuthService()
         
         do {
@@ -527,7 +527,7 @@ final class PhoneAuthServiceCoverageTests: XCTestCase {
             _ = try await service.signIn(verificationID: verificationID, smsCode: "123456")
             try service.signOut()
         } catch {
-            XCTSkip("Cannot test without Firebase")
+            throw XCTSkip("Cannot test without Firebase")
         }
     }
     

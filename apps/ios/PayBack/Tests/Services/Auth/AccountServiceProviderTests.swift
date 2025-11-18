@@ -4,51 +4,12 @@ import FirebaseCore
 
 @MainActor
 final class AccountServiceProviderTests: XCTestCase {
-    private static var hasCheckedEmulator = false
-    private static var isEmulatorAvailable = false
-    
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        
-        // Xcode Cloud does not run the Firebase emulators; bail out fast so we
-        // don't spend minutes waiting on network timeouts.
-        if !Self.hasCheckedEmulator {
-            Self.hasCheckedEmulator = true
-            Self.isEmulatorAvailable = Self.checkEmulatorAvailability()
-        }
-        
-        guard Self.isEmulatorAvailable else {
-            throw XCTSkip("Firebase emulators are not running (localhost:8080/9099). Skipping AccountServiceProvider integration-style tests in this environment.")
-        }
-    }
-    
-    private static func checkEmulatorAvailability() -> Bool {
-        guard let url = URL(string: "http://localhost:8080") else { return false }
-        
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 1.0
-        config.timeoutIntervalForResource = 2.0
-        
-        let session = URLSession(configuration: config)
-        let semaphore = DispatchSemaphore(value: 0)
-        var reachable = false
-        
-        let task = session.dataTask(with: url) { _, response, error in
-            defer { semaphore.signal() }
-            if let http = response as? HTTPURLResponse {
-                reachable = (200..<600).contains(http.statusCode)
-            } else {
-                reachable = (error == nil)
-            }
-        }
-        
-        task.resume()
-        let result = semaphore.wait(timeout: .now() + .seconds(1))
-        if result == .timedOut {
-            task.cancel()
-            return false
-        }
-        return reachable
+
+    override func setUp() async throws {
+        try await super.setUp()
+        try await requireFirebaseEmulator(
+            message: "Firebase emulators are not running (localhost:8080/9099). Skipping AccountServiceProvider integration-style tests in this environment."
+        )
     }
     
     // MARK: - Make Account Service Tests
@@ -71,14 +32,9 @@ final class AccountServiceProviderTests: XCTestCase {
         // When - call makeAccountService
         let service = AccountServiceProvider.makeAccountService()
         
-        // Then - verify it returns a valid AccountService
+        // Then - verify it returns a usable service
         XCTAssertNotNil(service)
-        XCTAssertTrue(service is AccountService)
-        
-        // Verify the service can be used (this exercises the MockAccountService path in some scenarios)
-        let result = try? await service.lookupAccount(byEmail: "test@example.com")
-        // Result can be nil or an account, both are valid
-        XCTAssertTrue(result == nil || result != nil)
+        XCTAssertNoThrow(try await service.lookupAccount(byEmail: "test@example.com"))
     }
     
     func testMakeAccountService_ReturnsValidService() async throws {
@@ -91,8 +47,8 @@ final class AccountServiceProviderTests: XCTestCase {
         // Then - should return valid services each time
         XCTAssertNotNil(service1)
         XCTAssertNotNil(service2)
-        XCTAssertTrue(service1 is AccountService)
-        XCTAssertTrue(service2 is AccountService)
+        XCTAssertNoThrow(try await service1.lookupAccount(byEmail: "first@example.com"))
+        XCTAssertNoThrow(try await service2.lookupAccount(byEmail: "second@example.com"))
     }
     
     // MARK: - Service Type Tests
@@ -131,7 +87,7 @@ final class AccountServiceProviderTests: XCTestCase {
         // Test that the service can handle basic operations
         // This exercises the service interface regardless of implementation
         do {
-            let _ = try await service.lookupAccount(byEmail: "nonexistent@example.com")
+            _ = try await service.lookupAccount(byEmail: "nonexistent@example.com")
         } catch {
             // Errors are acceptable - we're just verifying the method exists
         }
@@ -169,12 +125,9 @@ final class AccountServiceProviderTests: XCTestCase {
         // Given
         let service = AccountServiceProvider.makeAccountService()
         
-        // When/Then - should conform to AccountService protocol
-        XCTAssertTrue(service is AccountService, "Returned service must conform to AccountService protocol")
-        
         // Verify the service has the expected methods by calling them
         // This ensures both FirestoreAccountService and MockAccountService implement the protocol
-        let _ = try? await service.lookupAccount(byEmail: "test@example.com")
+        _ = try? await service.lookupAccount(byEmail: "test@example.com")
     }
     
     func testMakeAccountService_DebugLoggingPath() async throws {
@@ -188,7 +141,6 @@ final class AccountServiceProviderTests: XCTestCase {
         
         // Then - verify service is created successfully
         XCTAssertNotNil(service, "Service should be created regardless of debug logging")
-        XCTAssertTrue(service is AccountService, "Service should conform to AccountService protocol")
         
         // Verify the service is functional
         let isFirestore = service is FirestoreAccountService

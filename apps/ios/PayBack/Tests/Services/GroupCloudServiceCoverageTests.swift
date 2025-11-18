@@ -110,7 +110,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
             XCTAssertTrue(true)
         } catch {
             // Other Firebase errors are acceptable in test environment
-            XCTSkip("Firebase not available: \(error)")
+            throw XCTSkip("Firebase not available: \(error)")
         }
     }
     
@@ -127,7 +127,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
             XCTAssertTrue(true)
         } catch {
             // Other Firebase errors are acceptable
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -140,7 +140,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -153,7 +153,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -166,7 +166,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -183,7 +183,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -198,7 +198,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -214,7 +214,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -231,7 +231,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -252,7 +252,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -273,7 +273,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -289,7 +289,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -306,7 +306,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -328,7 +328,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
             // Expected when no user is authenticated
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -349,7 +349,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -367,7 +367,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -385,7 +385,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -403,7 +403,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -420,7 +420,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -434,7 +434,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -450,7 +450,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -465,7 +465,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -479,7 +479,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -493,7 +493,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -510,7 +510,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
             XCTAssertTrue(true)
         } catch {
             // Other errors mean Firebase might not be configured
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -532,7 +532,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
             // Expected - but the code paths were still exercised
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -548,7 +548,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
     
@@ -565,7 +565,7 @@ final class GroupCloudServiceCoverageTests: XCTestCase {
         } catch GroupCloudServiceError.userNotAuthenticated {
             XCTAssertTrue(true)
         } catch {
-            XCTSkip("Firebase not available")
+            throw XCTSkip("Firebase not available")
         }
     }
 }

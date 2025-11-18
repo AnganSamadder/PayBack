@@ -985,7 +985,7 @@ final class ExpenseCloudServiceIntegrationTests: FirebaseEmulatorTestCase {
     func testFetchExpenses_filtersOtherUsersInFallback() async throws {
         _ = try await createTestUser(email: "filter@test.com", password: "password123")
         
-        let authUser = auth.currentUser!
+        let authUser = try XCTUnwrap(auth.currentUser)
         
         // Create expense for current user (no owner fields, should be in fallback)
         let myExpenseId = UUID()
@@ -995,8 +995,8 @@ final class ExpenseCloudServiceIntegrationTests: FirebaseEmulatorTestCase {
             "description": "My Fallback",
             "date": Timestamp(date: Date()),
             "totalAmount": 100.0,
-            "paidByMemberId": UUID().uuidString,
-            "involvedMemberIds": [UUID().uuidString],
+            "paidByMemberId": authUser.uid,
+            "involvedMemberIds": [authUser.uid],
             "splits": [],
             "isSettled": false
         ])

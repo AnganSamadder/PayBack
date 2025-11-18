@@ -290,8 +290,9 @@ final class InviteLinkServiceFirestoreTests: FirebaseEmulatorTestCase {
             return false
         }
         
-        // Allow eventual consistency; ensure at least one success
-        XCTAssertGreaterThanOrEqual(successes.count, 1, "At least one claim should succeed")
+        XCTAssertEqual(results.count, 2, "Both claim attempts should complete")
+        XCTAssertEqual(successes.count, 1, "Exactly one claim should succeed")
+        XCTAssertEqual(failures.count, 1, "Second claim should fail once the token is claimed")
     }
     
     func testFirestore_claimInviteToken_nonExistentToken_throws() async throws {
@@ -336,13 +337,14 @@ final class InviteLinkServiceFirestoreTests: FirebaseEmulatorTestCase {
         _ = try await service.claimInviteToken(invite1.token.id)
         
         // Re-authenticate as original creator
-        try await auth.signOut()
+        try auth.signOut()
         _ = try await auth.signIn(withEmail: creatorEmail, password: creatorPassword)
         
         let activeInvites = try await service.fetchActiveInvites()
         
         XCTAssertEqual(activeInvites.count, 1)
         XCTAssertNotEqual(activeInvites[0].id, invite1.token.id)
+        XCTAssertTrue(activeInvites.allSatisfy { $0.creatorId == creator.user.uid })
     }
     
     func testFirestore_fetchActiveInvites_excludesExpired() async throws {
