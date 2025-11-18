@@ -85,7 +85,7 @@ options:
 packages:
   Firebase:
     url: https://github.com/firebase/firebase-ios-sdk.git
-    exactVersion: 11.5.0
+    from: 11.5.0
   
   # Other package dependency types:
   
@@ -122,13 +122,15 @@ settings:
     # VERSIONING_SYSTEM: apple-generic
     
   # Configuration-specific settings
-  # configs:
-  #   Debug:
-  #     GCC_OPTIMIZATION_LEVEL: 0
-  #     SWIFT_OPTIMIZATION_LEVEL: -Onone
-  #   Release:
-  #     GCC_OPTIMIZATION_LEVEL: s
-  #     SWIFT_OPTIMIZATION_LEVEL: -O
+  configs:
+    Debug:
+      GCC_OPTIMIZATION_LEVEL: 0
+      SWIFT_OPTIMIZATION_LEVEL: -Onone
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+    Release:
+      GCC_OPTIMIZATION_LEVEL: s
+      SWIFT_OPTIMIZATION_LEVEL: -O
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
 
 # ----------------------------------------------------------------------------
 # Build Configurations
