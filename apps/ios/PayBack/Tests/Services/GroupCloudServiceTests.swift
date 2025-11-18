@@ -934,7 +934,7 @@ final class GroupCloudServiceTests: XCTestCase {
         }
     }
     
-    func testFirebaseService_upsertGroup_createsPayload() async {
+    func testFirebaseService_upsertGroup_createsPayload() async throws {
         let service = FirestoreGroupCloudService()
         let group = createTestGroup()
         
@@ -945,7 +945,7 @@ final class GroupCloudServiceTests: XCTestCase {
         }
     }
     
-    func testFirebaseService_upsertGroup_setsDocument() async {
+    func testFirebaseService_upsertGroup_setsDocument() async throws {
         let service = FirestoreGroupCloudService()
         let group = createTestGroup()
         
@@ -969,7 +969,7 @@ final class GroupCloudServiceTests: XCTestCase {
         }
     }
     
-    func testFirebaseService_deleteGroups_deletesDocuments() async {
+    func testFirebaseService_deleteGroups_deletesDocuments() async throws {
         let service = FirestoreGroupCloudService()
         let groupIds = [UUID()]
         
@@ -980,7 +980,7 @@ final class GroupCloudServiceTests: XCTestCase {
         }
     }
     
-    func testFirebaseService_deleteGroups_batchDelete() async {
+    func testFirebaseService_deleteGroups_batchDelete() async throws {
         let service = FirestoreGroupCloudService()
         let groupIds = [UUID(), UUID(), UUID()]
         
@@ -999,7 +999,7 @@ final class GroupCloudServiceTests: XCTestCase {
         XCTAssertFalse(group.members.isEmpty)
     }
     
-    func testFirebaseService_groupFromDocument_parsesTimestamp() async {
+    func testFirebaseService_groupFromDocument_parsesTimestamp() async throws {
         let service = FirestoreGroupCloudService()
         
         do {
@@ -1012,7 +1012,7 @@ final class GroupCloudServiceTests: XCTestCase {
         }
     }
     
-    func testFirebaseService_groupFromDocument_parsesMembers() async {
+    func testFirebaseService_groupFromDocument_parsesMembers() async throws {
         let service = FirestoreGroupCloudService()
         
         do {
@@ -1025,7 +1025,7 @@ final class GroupCloudServiceTests: XCTestCase {
         }
     }
     
-    func testFirebaseService_groupFromDocument_parsesIsDirect() async {
+    func testFirebaseService_groupFromDocument_parsesIsDirect() async throws {
         let service = FirestoreGroupCloudService()
         
         do {

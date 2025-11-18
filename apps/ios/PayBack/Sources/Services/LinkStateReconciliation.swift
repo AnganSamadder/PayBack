@@ -104,6 +104,11 @@ actor LinkStateReconciliation {
 actor LinkFailureTracker {
     private var failedOperations: [UUID: LinkFailureRecord] = [:]
     private let maxRetentionTime: TimeInterval = 3600 // 1 hour
+    /// Members that have recently been resolved; used to suppress
+    /// immediately re-recording failures for the same member due to
+    /// races between recordFailure and markResolved.
+    private var recentlyResolved: [UUID: Date] = [:]
+    private let suppressionWindow: TimeInterval = 5 // seconds
     
     struct LinkFailureRecord {
         let memberId: UUID
@@ -121,6 +126,13 @@ actor LinkFailureTracker {
         accountEmail: String,
         reason: String
     ) {
+        // If this member was just marked resolved, suppress re-recording
+        // for a brief window to avoid flapping under concurrent operations.
+        if let resolvedAt = recentlyResolved[memberId],
+           Date().timeIntervalSince(resolvedAt) < suppressionWindow {
+            return
+        }
+        
         if var existing = failedOperations[memberId] {
             existing.retryCount += 1
             failedOperations[memberId] = existing
@@ -145,6 +157,7 @@ actor LinkFailureTracker {
         // Clean up old records
         let cutoffDate = Date().addingTimeInterval(-maxRetentionTime)
         failedOperations = failedOperations.filter { $0.value.failureDate > cutoffDate }
+        recentlyResolved = recentlyResolved.filter { $0.value > cutoffDate }
         
         return Array(failedOperations.values)
     }
@@ -152,6 +165,7 @@ actor LinkFailureTracker {
     /// Marks a failure as resolved
     func markResolved(memberId: UUID) {
         failedOperations.removeValue(forKey: memberId)
+        recentlyResolved[memberId] = Date()
         
         #if DEBUG
         print("[LinkFailure] Marked failure as resolved for member \(memberId)")
@@ -161,5 +175,6 @@ actor LinkFailureTracker {
     /// Clears all failure records
     func clearAll() {
         failedOperations.removeAll()
+        recentlyResolved.removeAll()
     }
 }

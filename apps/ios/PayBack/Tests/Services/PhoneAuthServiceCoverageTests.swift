@@ -347,7 +347,7 @@ final class PhoneAuthServiceCoverageTests: XCTestCase {
         }
     }
     
-    func test_firebaseService_signIn_callsAuthSignIn() async {
+    func test_firebaseService_signIn_callsAuthSignIn() async throws {
         let service = FirebasePhoneAuthService()
         
         do {

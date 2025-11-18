@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 63;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -153,6 +153,7 @@
 		ED43B10D1C3C98D14502AA84 /* AppStoreQueryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 718969A0234C03DA6E147746 /* AppStoreQueryTests.swift */; };
 		EDBAA2DEB72C1EBBDC3B774C /* StylesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00569602A1A9FF6F43EFCB6A /* StylesTests.swift */; };
 		EFC2EA243E86A75584A3CC6B /* FirestoreAccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5A69FF8B612F47203F27E63 /* FirestoreAccountService.swift */; };
+		F097FBCCB38BD344C2B7BB0B /* FirebaseEmulatorEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90DC176EA38AFCBAD99A85CC /* FirebaseEmulatorEnvironment.swift */; };
 		F20BFB29562BA2ED99D7886B /* ExpenseCloudServiceCoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71DCF04C3C753EA3B7830492 /* ExpenseCloudServiceCoverageTests.swift */; };
 		F2A0CC1125DE5EFF472C3BFF /* DateExtensionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB5543CCD24E2C842D2C96E9 /* DateExtensionTests.swift */; };
 		F4C84D117CD32AEBE012A8BF /* InputValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C63B226EE1B46A9D730D385 /* InputValidationTests.swift */; };
@@ -185,7 +186,7 @@
 		00569602A1A9FF6F43EFCB6A /* StylesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StylesTests.swift; sourceTree = "<group>"; };
 		023E904F1698DC350103251D /* MemoryUsageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryUsageTests.swift; sourceTree = "<group>"; };
 		0340193934C27016C59EBF49 /* ExpenseSplitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpenseSplitTests.swift; sourceTree = "<group>"; };
-		08040FD2CC9AF53159B646E3 /* AppStoreDataNormalizationTests.swift.backup */ = {isa = PBXFileReference; lastKnownFileType = text; path = AppStoreDataNormalizationTests.swift.backup; sourceTree = "<group>"; };
+		08040FD2CC9AF53159B646E3 /* AppStoreDataNormalizationTests.swift.backup */ = {isa = PBXFileReference; path = AppStoreDataNormalizationTests.swift.backup; sourceTree = "<group>"; };
 		09A856A1D477A3C5963BC10F /* MockFirestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockFirestoreTests.swift; sourceTree = "<group>"; };
 		0A02BD49B654854E28F0A38E /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		0BDA8B0A8AF582C2E1CBE990 /* FriendsTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsTabView.swift; sourceTree = "<group>"; };
@@ -224,7 +225,7 @@
 		42F862170756D13FB945F76F /* MockClockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockClockTests.swift; sourceTree = "<group>"; };
 		431D1F5551B376FA40E3C8CD /* AnimationsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimationsTests.swift; sourceTree = "<group>"; };
 		439C93064BA5C8A4E2A5F847 /* EmailAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailAuthService.swift; sourceTree = "<group>"; };
-		44DC8C435AB86C92B1C7D259 /* PayBack.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PayBack.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		44DC8C435AB86C92B1C7D259 /* PayBack.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PayBack.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		456EBFF34CFB76014B0AB3BD /* PhoneAuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAuthServiceTests.swift; sourceTree = "<group>"; };
 		4619114BBBC6F2F215EB0321 /* ErrorPropagationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorPropagationTests.swift; sourceTree = "<group>"; };
 		470EEC7D42D40A275EF2B960 /* AuthFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthFlowView.swift; sourceTree = "<group>"; };
@@ -232,10 +233,9 @@
 		49D7C53DAB1E7F54FE02BDCC /* DetailContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailContainer.swift; sourceTree = "<group>"; };
 		4BFEFD97F3240D6B253DEDEE /* GroupDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupDetailView.swift; sourceTree = "<group>"; };
 		4C63B226EE1B46A9D730D385 /* InputValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputValidationTests.swift; sourceTree = "<group>"; };
-		4D1EB6F6C491A423A4B98BAD /* PayBackTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PayBackTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		4D1EB6F6C491A423A4B98BAD /* PayBackTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PayBackTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4D83EF2DA691DA54273EF53A /* PhoneAuthServiceCoverageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAuthServiceCoverageTests.swift; sourceTree = "<group>"; };
 		4E2250695D4B911B5C06F64D /* AuthCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthCoordinatorTests.swift; sourceTree = "<group>"; };
-		522E83232ECC8707003657B1 /* PayBack.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; name = PayBack.xctestplan; path = apps/ios/PayBack/PayBack.xctestplan; sourceTree = "<group>"; };
 		52AEFA92954396252469BB8A /* NavigationTransitionSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationTransitionSettings.swift; sourceTree = "<group>"; };
 		544B8CFB04B6998262B21A87 /* PersistenceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceService.swift; sourceTree = "<group>"; };
 		552929851A5AD547D2879FBA /* TEST_REQUIREMENTS_MAPPING.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TEST_REQUIREMENTS_MAPPING.md; sourceTree = "<group>"; };
@@ -272,6 +272,7 @@
 		88A0438AC4158FCF7A173108 /* ExpenseCloudServiceIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpenseCloudServiceIntegrationTests.swift; sourceTree = "<group>"; };
 		89ECF25EDEBE04BAF990F308 /* SignupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignupView.swift; sourceTree = "<group>"; };
 		8B43B476095288FA3B239E09 /* LinkStateReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkStateReconciliation.swift; sourceTree = "<group>"; };
+		90DC176EA38AFCBAD99A85CC /* FirebaseEmulatorEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseEmulatorEnvironment.swift; sourceTree = "<group>"; };
 		9175F61C871481362B859487 /* GroupCloudServiceFirestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupCloudServiceFirestoreTests.swift; sourceTree = "<group>"; };
 		9381E2946264FDDE9155F32E /* TEST_MONITORING.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TEST_MONITORING.md; sourceTree = "<group>"; };
 		96259FD127215099B28FCC7D /* ExpenseCalculationIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpenseCalculationIntegrationTests.swift; sourceTree = "<group>"; };
@@ -300,7 +301,7 @@
 		AEC794F53CA3D9FF5A554036 /* ExpenseDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpenseDetailView.swift; sourceTree = "<group>"; };
 		AEFFE57072BB0BC814F143BE /* ValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValidationTests.swift; sourceTree = "<group>"; };
 		AF1FC9D96C48BDEB7D0BA172 /* AppStoreRemoteDataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreRemoteDataTests.swift; sourceTree = "<group>"; };
-		AFAED94382E80DC702F256BE /* metrics_template.csv */ = {isa = PBXFileReference; lastKnownFileType = text; path = metrics_template.csv; sourceTree = "<group>"; };
+		AFAED94382E80DC702F256BE /* metrics_template.csv */ = {isa = PBXFileReference; path = metrics_template.csv; sourceTree = "<group>"; };
 		B08F8B9F73C7C5C4CEF99E7E /* RetryPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetryPolicyTests.swift; sourceTree = "<group>"; };
 		B10ACD56E9DD56E730AB44DC /* FirebaseEmulatorDemoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseEmulatorDemoTests.swift; sourceTree = "<group>"; };
 		B19D72F7DE714661ACFBE95C /* GroupMemberExtensionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupMemberExtensionTests.swift; sourceTree = "<group>"; };
@@ -426,6 +427,7 @@
 			isa = PBXGroup;
 			children = (
 				79B960C8E7DBE3D555716AE1 /* ExpenseBuilder.swift */,
+				90DC176EA38AFCBAD99A85CC /* FirebaseEmulatorEnvironment.swift */,
 				24BEAB63EC0AF16C55A6CC84 /* FirebaseEmulatorTestCase.swift */,
 				8394D3CAB8B80195DB4C6A89 /* TestHelpers.swift */,
 			);
@@ -812,7 +814,6 @@
 		EABDDCA7533394043009A7CC = {
 			isa = PBXGroup;
 			children = (
-				522E83232ECC8707003657B1 /* PayBack.xctestplan */,
 				6C7B814B1B9CDF36E4B59297 /* PayBack */,
 				81E42A1CD3BDC991DB92A63B /* Sources */,
 				DF52C387C39077DEA47F0DBB /* Tests */,
@@ -896,7 +897,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 2600;
+				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					093E9F3EF3319A7C18C3E0D0 = {
 						DevelopmentTeam = 39YTAJZTZ6;
@@ -920,6 +921,7 @@
 			packageReferences = (
 				7D3D414386285D6CE31CDCE2 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 			);
+			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -1002,6 +1004,7 @@
 				317F71AC4885C58ACF382357 /* ExpenseValidationTests.swift in Sources */,
 				3E508CE1912ED2C1F54D236D /* FilteringPerformanceTests.swift in Sources */,
 				A964F99C2C9AE9F8743F496E /* FirebaseEmulatorDemoTests.swift in Sources */,
+				F097FBCCB38BD344C2B7BB0B /* FirebaseEmulatorEnvironment.swift in Sources */,
 				91A091F0B18C0B47C9099F3D /* FirebaseEmulatorTestCase.swift in Sources */,
 				D3C4E8BE1BED7755033C57FF /* FirestoreAccountServiceIntegrationTests.swift in Sources */,
 				E824985E7D70EA598522A005 /* FirestoreAccountServiceTests.swift in Sources */,
@@ -1168,10 +1171,8 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -1193,7 +1194,6 @@
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.1;
@@ -1236,10 +1236,8 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = s;
@@ -1255,7 +1253,6 @@
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.1;
@@ -1268,6 +1265,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = apps/ios/PayBack/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1286,6 +1284,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = apps/ios/PayBack/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1302,6 +1301,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				INFOPLIST_FILE = apps/ios/PayBack/Tests/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1319,6 +1319,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				INFOPLIST_FILE = apps/ios/PayBack/Tests/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

@@ -354,17 +354,26 @@ jobs:
 
       - name: Install Firebase CLI
         run: |
-          curl -sL https://firebase.tools | bash
+          npm install -g firebase-tools
           firebase --version
 
       - name: Start Firebase Emulators
         run: |
           firebase emulators:start --only auth,firestore --project demo-test &
           echo "Waiting for emulators to start..."
-          sleep 15
-          curl -s http://localhost:9099/ || echo "Auth emulator not ready"
-          curl -s http://localhost:8080/ || echo "Firestore emulator not ready"
-          echo "Firebase emulators started"
+          timeout=60
+          elapsed=0
+          while [ $elapsed -lt $timeout ]; do
+            if curl -s http://localhost:9099/ > /dev/null && curl -s http://localhost:8080/ > /dev/null; then
+              echo "Firebase emulators started successfully."
+              exit 0
+            fi
+            sleep 2
+            elapsed=$((elapsed + 2))
+            echo "Waiting... ($elapsed/$timeout seconds)"
+          done
+          echo "Timed out waiting for emulators to start."
+          exit 1
 
       - name: Resolve dependencies
         run: |

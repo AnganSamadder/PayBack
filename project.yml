@@ -16,44 +16,44 @@ options:
     # watchOS: "10.0"
     # tvOS: "18.0"
     # visionOS: "1.0"
-  
+
   # Bundle ID prefix (optional)
   bundleIdPrefix: com.angansamadder
-  
+
   # Development region/language
   developmentLanguage: en
-  
+
   # Use base internationalization
   # usesTabs: false
   # indentWidth: 4
   # tabWidth: 4
-  
+
   # Create intermediate groups for source folders
   # createIntermediateGroups: true
-  
+
   # Generate empty directories as groups
   # generateEmptyDirectories: false
-  
+
   # Default configuration name
   # defaultConfig: Debug
-  
+
   # Transitively link dependencies
   # transitivelyLinkDependencies: false
-  
+
   # Automatically generate schemes
   # generateSchemes: true
-  
+
   # Scheme generation mode: all, none
   # schemeGenerationMode: all
-  
+
   # Minimize project regeneration
   # minimizeDiffOutput: true
-  
+
   # Group sorting: name, none
   # groupOrdering:
   #   - pattern: Sources
   #     order: 1
-  
+
   # File sorting: name, none
   # fileOrdering:
   #   - pattern: "*.swift"
@@ -86,26 +86,26 @@ packages:
   Firebase:
     url: https://github.com/firebase/firebase-ios-sdk.git
     from: 11.5.0
-  
+
   # Other package dependency types:
-  
+
   # Version range
   # Alamofire:
   #   url: https://github.com/Alamofire/Alamofire.git
   #   from: 5.8.0
   #   # minorVersion: 5.8.0
   #   # majorVersion: 5.0.0
-  
+
   # Branch
   # MyPackage:
   #   url: https://github.com/user/package.git
   #   branch: develop
-  
+
   # Revision
   # MyPackage:
   #   url: https://github.com/user/package.git
   #   revision: abc123def
-  
+
   # Local path
   # LocalPackage:
   #   path: ../LocalPackage
@@ -120,7 +120,7 @@ settings:
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1
     # VERSIONING_SYSTEM: apple-generic
-    
+
   # Configuration-specific settings
   configs:
     Debug:
@@ -175,30 +175,25 @@ settings:
 # ----------------------------------------------------------------------------
 # Schemes (build schemes for the project)
 # ----------------------------------------------------------------------------
-# schemes:
-#   PayBack-Dev:
-#     build:
-#       targets:
-#         PayBack: all
-#     run:
-#       config: Debug
-#       commandLineArguments:
-#         "-com.apple.CoreData.SQLDebug": 1
-#       environmentVariables:
-#         - variable: API_ENV
-#           value: development
-#           isEnabled: true
-#     test:
-#       config: Debug
-#       gatherCoverageData: true
-#       targets:
-#         - PayBackTests
-#     profile:
-#       config: Release
-#     analyze:
-#       config: Debug
-#     archive:
-#       config: Release
+schemes:
+  PayBack:
+    build:
+      targets:
+        PayBack: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      testPlans:
+        - path: apps/ios/PayBack/TestPlans/PayBack.xctestplan
+          default: true
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
 
 # ----------------------------------------------------------------------------
 # Targets
@@ -210,13 +205,13 @@ targets:
   PayBack:
     type: application
     platform: iOS
-    
+
     # Product name
     productName: "PayBack"
-    
+
     # Deployment target (overrides project-level)
     # deploymentTarget: "18.0"
-    
+
     # Sources to include
     sources:
       - path: apps/ios/PayBack/Sources
@@ -232,46 +227,46 @@ targets:
         # compilerFlags: []
         # resourceTags: []
         # attributes: []
-      
+
       - path: apps/ios/PayBack/GoogleService-Info.plist
         type: resource
         # optional: true
-      
+
       - path: apps/ios/PayBack/Assets.xcassets
         type: resource
-    
+
     # Dependencies
     dependencies:
       - package: Firebase
         product: FirebaseFirestore
         # link: true
         # embed: false
-      
+
       - package: Firebase
         product: FirebaseAuth
-      
+
       # Other dependency types:
-      
+
       # Framework (system)
       # - framework: UIKit.framework
       #   link: true
       #   embed: false
-      
+
       # SDK (tbd)
       # - sdk: CloudKit.framework
-      
+
       # Target dependency
       # - target: SharedFramework
       #   link: true
       #   embed: true
-      
+
       # Carthage
       # - carthage: Alamofire
       #   linkType: dynamic
-      
+
       # CocoaPods
       # - pod: AFNetworking
-    
+
     # Pre/Post build scripts
     # preBuildScripts:
     #   - script: echo "Pre-build script"
@@ -288,17 +283,17 @@ targets:
     #     showEnvVars: true
     #     runOnlyWhenInstalling: false
     #     basedOnDependencyAnalysis: true
-    
+
     # postCompileScripts:
     #   - script: swiftlint
     #     name: SwiftLint
     #     runOnlyWhenInstalling: false
-    
+
     # postBuildScripts:
     #   - script: |
     #       echo "Post-build script"
     #     name: Post-build
-    
+
     # Build settings
     settings:
       base:
@@ -308,7 +303,7 @@ targets:
         CODE_SIGN_STYLE: Automatic
         # CODE_SIGN_IDENTITY: "Apple Development"
         # PROVISIONING_PROFILE_SPECIFIER: ""
-        TARGETED_DEVICE_FAMILY: "1"  # 1=iPhone, 2=iPad
+        TARGETED_DEVICE_FAMILY: "1" # 1=iPhone, 2=iPad
         # SUPPORTS_MACCATALYST: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
@@ -318,7 +313,7 @@ targets:
         # ENABLE_PREVIEWS: YES
         # SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
         # GCC_PREPROCESSOR_DEFINITIONS: "DEBUG=1"
-      
+
       # configs:
       #   Debug:
       #     SWIFT_OPTIMIZATION_LEVEL: -Onone
@@ -326,7 +321,7 @@ targets:
       #   Release:
       #     SWIFT_OPTIMIZATION_LEVEL: -O
       #     SWIFT_COMPILATION_MODE: wholemodule
-    
+
     # Info.plist configuration
     info:
       path: apps/ios/PayBack/Info.plist
@@ -355,7 +350,7 @@ targets:
         # NSLocationWhenInUseUsageDescription: "We need location access"
         # UIApplicationSupportsIndirectInputEvents: true
         # ITSAppUsesNonExemptEncryption: false
-    
+
     # Entitlements
     # entitlements:
     #   path: PayBack.entitlements
@@ -367,7 +362,7 @@ targets:
     #     com.apple.developer.ubiquity-kvstore-identifier: $(AppIdentifierPrefix)com.angansamadder.PayBack
     #     keychain-access-groups:
     #       - $(AppIdentifierPrefix)com.angansamadder.PayBack
-    
+
     # Scheme (target-specific)
     # scheme:
     #   environmentVariables:
@@ -381,44 +376,44 @@ targets:
     #       parallelizable: true
     #       randomExecutionOrder: true
     #   gatherCoverageData: true
-    
+
     # Legacy target attributes
     # attributes:
     #   ProvisioningStyle: Automatic
     #   DevelopmentTeam: YOUR_TEAM_ID
-    
+
     # Templates to inherit from
     # templates:
     #   - BaseApp
-  
+
   # --------------------------------------------------------------------------
   # Unit Test Target
   # --------------------------------------------------------------------------
   PayBackTests:
     type: bundle.unit-test
     platform: iOS
-    
+
     # Test target type
     # type: bundle.unit-test     # Unit tests
     # type: bundle.ui-testing    # UI tests
-    
+
     sources:
       - path: apps/ios/PayBack/Tests
-    
+
     dependencies:
       - target: PayBack
         # embed: false
         # link: true
-      
+
       # Additional test frameworks
       # - package: SnapshotTesting
       #   product: SnapshotTesting
-    
+
     # Test-specific scripts
     # preBuildScripts:
     #   - script: echo "Preparing test environment"
     #     name: Prepare Tests
-    
+
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.angansamadder.PayBackTests
@@ -428,22 +423,16 @@ targets:
         # ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
         # CLANG_ENABLE_MODULES: YES
         # LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks @loader_path/Frameworks"
-    
+
     info:
       path: apps/ios/PayBack/Tests/Info.plist
       # properties:
       #   CFBundleDevelopmentRegion: en
-    
+
     scheme:
-      testTargets:
-        - name: PayBackTests
-          parallelizable: true
-          randomExecutionOrder: true
-          # skipped: false
-          # skippedTests:
-          #   - PerformanceTests
-          # parallelizable: true
-          # randomExecutionOrder: true
+      testPlans:
+        - path: apps/ios/PayBack/TestPlans/PayBack.xctestplan
+          default: true
       gatherCoverageData: true
       # coverageTargets:
       #   - PayBack
@@ -457,7 +446,6 @@ targets:
       # region: US
       # disableMainThreadChecker: false
       # stopOnEveryMainThreadCheckerIssue: false
-
 # ----------------------------------------------------------------------------
 # Additional Target Types Examples
 # ----------------------------------------------------------------------------
@@ -478,7 +466,7 @@ targets:
 #       DEFINES_MODULE: YES
 #       SKIP_INSTALL: YES
 
-# Static Library Target  
+# Static Library Target
 # MyStaticLib:
 #   type: library.static
 #   platform: iOS

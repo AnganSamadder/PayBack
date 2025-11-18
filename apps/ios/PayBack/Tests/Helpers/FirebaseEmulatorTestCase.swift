@@ -87,6 +87,12 @@ class FirebaseEmulatorTestCase: XCTestCase {
         
         try await super.tearDown()
     }
+
+    /// Lightweight wrapper to ensure emulator availability from within this base class.
+    /// Duplicated here to avoid linkage issues if the helper extension is not compiled.
+    private func requireFirebaseEmulator(message: String) async throws {
+        try await FirebaseEmulatorEnvironment.shared.prepareEmulatorForTests(skipMessage: message)
+    }
     
     private func clearCollection(_ name: String) async {
         let snapshot = try? await firestore.collection(name).getDocuments()

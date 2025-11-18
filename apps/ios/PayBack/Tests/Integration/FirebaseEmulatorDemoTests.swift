@@ -181,7 +181,7 @@ final class FirebaseEmulatorDemoTests: FirebaseEmulatorTestCase {
     
     func testEmulatorSubcollection() async throws {
         // Create user
-        let user = try await createTestUser(email: "parent@test.com", password: "password123")
+        let _ = try await createTestUser(email: "parent@test.com", password: "password123")
         
         // Create subcollection document  
         let subDocRef = try await createSubcollectionDocument(

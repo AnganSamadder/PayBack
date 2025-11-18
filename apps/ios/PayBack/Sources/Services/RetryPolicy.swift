@@ -13,10 +13,20 @@ struct RetryPolicy {
         maxDelay: TimeInterval = 10.0,
         multiplier: Double = 2.0
     ) {
-        self.maxAttempts = maxAttempts
-        self.baseDelay = baseDelay
-        self.maxDelay = maxDelay
-        self.multiplier = multiplier
+        // Normalize configuration to avoid invalid ranges and align with tests' expectations.
+        // - maxAttempts is clamped to at least 1 so we always attempt the operation once.
+        // - baseDelay is clamped to >= 0.
+        // - maxDelay is at least baseDelay to avoid negative or inverted ranges.
+        // - multiplier <= 0 falls back to 1.0 (constant backoff).
+        let normalizedMaxAttempts = max(1, maxAttempts)
+        let normalizedBaseDelay = max(0.0, baseDelay)
+        let normalizedMaxDelay = max(normalizedBaseDelay, maxDelay)
+        let normalizedMultiplier = multiplier <= 0 ? 1.0 : multiplier
+        
+        self.maxAttempts = normalizedMaxAttempts
+        self.baseDelay = normalizedBaseDelay
+        self.maxDelay = normalizedMaxDelay
+        self.multiplier = normalizedMultiplier
     }
     
     /// Executes an async operation with exponential backoff retry logic

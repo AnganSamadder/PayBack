@@ -12,9 +12,17 @@ actor FirebaseEmulatorEnvironment {
     /// Ensures the emulator is reachable and configures Firebase once. Throws an XCTSkip when unavailable.
     func prepareEmulatorForTests(skipMessage: String) async throws {
         guard await isEmulatorAvailable() else {
+            // On GitHub Actions, we expect emulators to be running.
+            // If they are not, it's a configuration error, so we should fail instead of skip.
+            if ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true" {
+                struct EmulatorError: Error, LocalizedError {
+                    let errorDescription: String?
+                }
+                throw EmulatorError(errorDescription: "Firebase emulators are required but not running. On GitHub Actions, this is a failure.")
+            }
             throw XCTSkip(skipMessage)
         }
-        await configureIfNeeded()
+        configureIfNeeded()
     }
 
     /// Cached availability check to avoid repeated probes.

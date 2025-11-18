@@ -34,7 +34,11 @@ final class AccountServiceProviderTests: XCTestCase {
         
         // Then - verify it returns a usable service
         XCTAssertNotNil(service)
-        XCTAssertNoThrow(try await service.lookupAccount(byEmail: "test@example.com"))
+        do {
+            _ = try await service.lookupAccount(byEmail: "test@example.com")
+        } catch {
+            XCTFail("Lookup should not throw: \(error)")
+        }
     }
     
     func testMakeAccountService_ReturnsValidService() async throws {
@@ -47,8 +51,12 @@ final class AccountServiceProviderTests: XCTestCase {
         // Then - should return valid services each time
         XCTAssertNotNil(service1)
         XCTAssertNotNil(service2)
-        XCTAssertNoThrow(try await service1.lookupAccount(byEmail: "first@example.com"))
-        XCTAssertNoThrow(try await service2.lookupAccount(byEmail: "second@example.com"))
+        do {
+            _ = try await service1.lookupAccount(byEmail: "first@example.com")
+            _ = try await service2.lookupAccount(byEmail: "second@example.com")
+        } catch {
+            XCTFail("Lookup should not throw: \(error)")
+        }
     }
     
     // MARK: - Service Type Tests
