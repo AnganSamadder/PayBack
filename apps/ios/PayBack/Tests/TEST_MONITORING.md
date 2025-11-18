@@ -38,10 +38,10 @@ Track the number of tests in each category to ensure balanced coverage:
 xcodebuild test -project PayBack.xcodeproj -scheme PayBack -dry-run 2>&1 | grep "Test Case" | wc -l
 
 # Count tests by directory
-find PayBackTests -name "*Tests.swift" -exec grep -c "func test_" {} + | awk '{s+=$1} END {print s}'
+find apps/ios/PayBack/Tests -name "*Tests.swift" -exec grep -c "func test_" {} + | awk '{s+=$1} END {print s}'
 
 # Count tests per file
-find PayBackTests -name "*Tests.swift" -exec sh -c 'echo "$1: $(grep -c "func test_" "$1")"' _ {} \;
+find apps/ios/PayBack/Tests -name "*Tests.swift" -exec sh -c 'echo "$1: $(grep -c "func test_" "$1")"' _ {} \;
 ```
 
 #### Tracking Over Time

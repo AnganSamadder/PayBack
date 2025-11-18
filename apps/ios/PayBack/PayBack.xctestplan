@@ -1,31 +1,15 @@
 {
   "configurations" : [
     {
-      "id" : "E3C0C8C0-4C0C-4EAB-9D7C-FAE9F3A1C001",
-      "name" : "Default",
+      "id" : "FDE79F0F-BCE8-49E1-B0D0-8411C74B1334",
+      "name" : "Configuration 1",
       "options" : {
-        "coverage" : {
-          "enabled" : true,
-          "targetNames" : [
-            "PayBack"
-          ]
-        },
-        "targetForVariableExpansion" : {
-          "containerPath" : "container:PayBack.xcodeproj",
-          "identifier" : "8A87A393B132A8E10E64FD91",
-          "name" : "PayBack"
-        }
+
       }
     }
   ],
   "defaultOptions" : {
-    "testTimeoutsEnabled" : true,
-    "maximumTestExecutionTimeAllowance" : 600,
-    "targetForVariableExpansion" : {
-      "containerPath" : "container:PayBack.xcodeproj",
-      "identifier" : "8A87A393B132A8E10E64FD91",
-      "name" : "PayBack"
-    }
+
   },
   "testTargets" : [
     {

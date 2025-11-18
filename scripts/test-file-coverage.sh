@@ -8,22 +8,22 @@
 #
 # USAGE:
 #   Basic usage:
-#     ./scripts/test-file-coverage.sh PayBack/Services/AppStore.swift
+#     ./scripts/test-file-coverage.sh apps/ios/PayBack/Sources/Services/AppStore.swift
 #
 #   Verbose mode (shows covered lines, execution counts, build output):
-#     ./scripts/test-file-coverage.sh PayBack/Services/AppStore.swift -v
+#     ./scripts/test-file-coverage.sh apps/ios/PayBack/Sources/Services/AppStore.swift -v
 #
 #   Run only specific test file (faster iteration):
-#     ./scripts/test-file-coverage.sh PayBack/Services/AppStore.swift --test-file AppStoreTests
+#     ./scripts/test-file-coverage.sh apps/ios/PayBack/Sources/Services/AppStore.swift --test-file AppStoreTests
 #
 #   Run all tests matching a pattern (use wildcards):
 #     ./scripts/test-file-coverage.sh apps/ios/PayBack/Sources/Services/AppStore.swift --test-file "AppStore*"
 #
 #   Generate HTML report with syntax highlighting:
-#     ./scripts/test-file-coverage.sh PayBack/Services/AppStore.swift --html
+#     ./scripts/test-file-coverage.sh apps/ios/PayBack/Sources/Services/AppStore.swift --html
 #
 #   Combine options:
-#     ./scripts/test-file-coverage.sh PayBack/Services/AppStore.swift -v --test-file AppStoreTests --html
+#     ./scripts/test-file-coverage.sh apps/ios/PayBack/Sources/Services/AppStore.swift -v --test-file AppStoreTests --html
 #
 # REQUIREMENTS:
 #   - Xcode command line tools installed
@@ -86,7 +86,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -h, --help             Show this help message"
             echo ""
             echo "Example:"
-            echo "  $0 PayBack/Services/AppStore.swift -v --test-file AppStoreTests"
+            echo "  $0 apps/ios/PayBack/Sources/Services/AppStore.swift -v --test-file AppStoreTests"
             exit 0
             ;;
         *)
@@ -107,12 +107,12 @@ if [[ -z "$SOURCE_FILE" ]]; then
     echo "Usage: $0 <source-file-path> [-v|--verbose] [--test-file <test-file-name>] [--html]"
     echo ""
     echo "Example:"
-    echo "  $0 PayBack/Services/AppStore.swift"
+    echo "  $0 apps/ios/PayBack/Sources/Services/AppStore.swift"
     echo ""
     echo "Suggested paths:"
-    echo "  PayBack/Services/AppStore.swift"
-    echo "  PayBack/Services/Auth/AccountServiceProvider.swift"
-    echo "  PayBack/Services/GroupCloudService.swift"
+    echo "  apps/ios/PayBack/Sources/Services/AppStore.swift"
+    echo "  apps/ios/PayBack/Sources/Services/Auth/AccountServiceProvider.swift"
+    echo "  apps/ios/PayBack/Sources/Services/GroupCloudService.swift"
     exit 1
 fi
 
@@ -388,7 +388,7 @@ if [[ -n "$TEST_FILE_FILTER" ]]; then
     if [[ "$TEST_FILE_FILTER" == *"*"* ]]; then
         # Find all matching test classes
         PATTERN=$(echo "$TEST_FILE_FILTER" | sed 's/\*/.*/')
-        MATCHING_TESTS=$(find PayBackTests -name "*.swift" -type f -exec basename {} .swift \; | grep -E "^${PATTERN}$" | sort || true)
+        MATCHING_TESTS=$(find apps/ios/PayBack/Tests -name "*.swift" -type f -exec basename {} .swift \; | grep -E "^${PATTERN}$" | sort || true)
         
         if [[ -n "$MATCHING_TESTS" ]]; then
             TEST_COUNT=$(echo "$MATCHING_TESTS" | wc -l | xargs)
