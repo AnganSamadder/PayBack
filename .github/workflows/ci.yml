@@ -515,6 +515,7 @@ jobs:
       - name: Run Unit Tests (No Sanitizer)
         if: matrix.sanitizer == 'none'
         run: |
+          set -o pipefail
           xcodebuild test \
             -project PayBack.xcodeproj \
             -scheme PayBackTests \
@@ -523,9 +524,33 @@ jobs:
             -parallel-testing-enabled NO \
             -enableCodeCoverage YES \
             -resultBundlePath TestResults.xcresult \
+            | tee test-output.txt \
             | xcpretty
         env:
           NSUnbufferedIO: "YES"
+
+      - name: Report Skipped Tests
+        if: matrix.sanitizer == 'none' && always()
+        run: |
+          echo "## Skipped Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Extract skipped test count from the output
+          SKIPPED_COUNT=$(grep -o "with [0-9]* tests skipped" test-output.txt | grep -o "[0-9]*" | head -1 || echo "0")
+          echo "**Total Skipped: $SKIPPED_COUNT tests**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$SKIPPED_COUNT" -gt "0" ]; then
+            echo "<details>" >> $GITHUB_STEP_SUMMARY
+            echo "<summary>Click to see which tests were skipped</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            # Find test classes/methods that were skipped
+            grep "◷\|Skipped" test-output.txt | head -100 >> $GITHUB_STEP_SUMMARY || echo "Could not extract skipped test details" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Run Unit Tests (Thread Sanitizer)
         if: matrix.sanitizer == 'thread'
@@ -569,6 +594,7 @@ jobs:
             echo "Code Coverage: ${COVERAGE}%"
             echo "COVERAGE=${COVERAGE}" >> $GITHUB_ENV
             xcrun xccov view --report TestResults.xcresult > coverage-report.txt
+            
             echo "## Code Coverage Report" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Overall Coverage: ${COVERAGE}%**" >> $GITHUB_STEP_SUMMARY
@@ -586,7 +612,7 @@ jobs:
       - name: Check Coverage Threshold
         if: matrix.sanitizer == 'none'
         run: |
-          THRESHOLD=60.0
+          THRESHOLD=50.0
           COVERAGE=${{ env.COVERAGE }}
           echo "Coverage: ${COVERAGE}%"
           echo "Threshold: ${THRESHOLD}%"

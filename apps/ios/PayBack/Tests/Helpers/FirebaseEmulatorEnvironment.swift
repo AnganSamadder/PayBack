@@ -47,7 +47,8 @@ actor FirebaseEmulatorEnvironment {
     }
 
     private func probeEmulator() async -> Bool {
-        guard let url = URL(string: "http://localhost:8080") else {
+        // Use 127.0.0.1 to avoid potential IPv6 resolution issues with localhost
+        guard let url = URL(string: "http://127.0.0.1:8080") else {
             return false
         }
 

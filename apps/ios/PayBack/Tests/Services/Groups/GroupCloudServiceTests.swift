@@ -891,10 +891,12 @@ final class GroupCloudServiceTests: XCTestCase {
         let service = FirestoreGroupCloudService()
         
         do {
-            let groups = try await service.fetchGroups()
-            _ = groups.count
-        } catch {
-            throw XCTSkip("Firebase not available")
+           		let groups = try await service.fetchGroups()
+		// If we get here, one of the queries worked
+		_ = groups.count
+        } catch GroupCloudServiceError.userNotAuthenticated {
+            // Skip if Firebase Auth not available (Xcode Cloud)
+            throw XCTSkip("Firebase Auth not available")
         }
     }
     
@@ -903,6 +905,9 @@ final class GroupCloudServiceTests: XCTestCase {
         
         do {
             _ = try await service.fetchGroups()
+        } catch GroupCloudServiceError.userNotAuthenticated {
+            // Skip if Firebase Auth not available (Xcode Cloud)
+            throw XCTSkip("Firebase Auth not available")
         } catch {
             throw XCTSkip("Firebase not available")
         }
@@ -912,12 +917,13 @@ final class GroupCloudServiceTests: XCTestCase {
         let service = FirestoreGroupCloudService()
         
         do {
-            let groups = try await service.fetchGroups()
-            for group in groups {
-                XCTAssertFalse(group.id.uuidString.isEmpty)
-            }
-        } catch {
-            throw XCTSkip("Firebase not available")
+           		let groups = try await service.fetchGroups()
+		for group in groups {
+			XCTAssertFalse(group.id.uuidString.isEmpty)
+		}
+        } catch GroupCloudServiceError.userNotAuthenticated {
+            // Skip if Firebase Auth not available (Xcode Cloud)
+            throw XCTSkip("Firebase Auth not available")
         }
     }
     
@@ -1003,22 +1009,31 @@ final class GroupCloudServiceTests: XCTestCase {
         let service = FirestoreGroupCloudService()
         
         do {
-            let groups = try await service.fetchGroups()
-            for group in groups {
-                XCTAssertNotNil(group.createdAt)
-            }
-        } catch {
-            throw XCTSkip("Firebase not available")
+           		let groups = try await service.fetchGroups()
+		for group in groups {
+			XCTAssertNotNil(group.createdAt)
+		}
+        } catch GroupCloudServiceError.userNotAuthenticated {
+            // Skip if Firebase Auth not available (Xcode Cloud)
+            throw XCTSkip("Firebase Auth not available")
         }
     }
     
     func testFirebaseService_groupFromDocument_parsesMembers() async throws {
         let service = FirestoreGroupCloudService()
+        let expectedMemberCount = 2
+        let group = createTestGroup(members: (0..<expectedMemberCount).map { GroupMember(id: UUID(), name: "Member \($0)") })
         
         do {
+            try await service.upsertGroup(group)
             let groups = try await service.fetchGroups()
-            for group in groups {
-                XCTAssertFalse(group.members.isEmpty)
+            
+            // Find our group
+            if let fetchedGroup = groups.first(where: { $0.id == group.id }) {
+                XCTAssertFalse(fetchedGroup.members.isEmpty)
+                XCTAssertEqual(fetchedGroup.members.count, expectedMemberCount)
+            } else {
+                XCTFail("Could not find the group we just inserted")
             }
         } catch {
             throw XCTSkip("Firebase not available")
