@@ -108,7 +108,10 @@ credentials/
 Artifacts/
 
 # Firebase / GoogleService files (if any)
-GoogleService-Info.plist
+# The committed apps/ios/PayBack/GoogleService-Info.plist is a dummy placeholder.
+# Real Firebase configs must use a .real.plist suffix to avoid accidental commits:
+*.real.plist
+GoogleService-Info.real.plist
 # CI backup of Firebase config created by test-ci-locally.sh
 apps/ios/PayBack/GoogleService-Info.plist.ci-backup
 

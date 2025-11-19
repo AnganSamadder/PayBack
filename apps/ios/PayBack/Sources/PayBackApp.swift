@@ -139,6 +139,7 @@ private extension FirebaseOptions {
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        guard FirebaseApp.app() != nil else { return }
         Auth.auth().setAPNSToken(deviceToken, type: .prod)
     }
 
@@ -149,6 +150,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable : Any]) {
+        guard FirebaseApp.app() != nil else { return }
         if Auth.auth().canHandleNotification(userInfo) {
             return
         }
@@ -219,6 +221,13 @@ struct RootViewWithStore: View {
     }
     
     private func checkExistingSession() async {
+        // If Firebase isn't configured (e.g. running with dummy config), skip
+        // touching Auth entirely and fall back to showing the login flow.
+        guard FirebaseApp.app() != nil else {
+            isCheckingAuth = false
+            return
+        }
+
         // Check if user is already logged in with Firebase
         guard let firebaseUser = Auth.auth().currentUser else {
             isCheckingAuth = false
@@ -256,7 +265,9 @@ struct RootViewWithStore: View {
             print("[Auth] Failed to restore session: \(error.localizedDescription)")
             #endif
             // Sign out on error to force fresh login
-            try? Auth.auth().signOut()
+            if FirebaseApp.app() != nil {
+                try? Auth.auth().signOut()
+            }
         }
         
         isCheckingAuth = false

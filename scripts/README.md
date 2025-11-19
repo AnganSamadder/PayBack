@@ -14,13 +14,15 @@ The comprehensive test script that replicates the GitHub Actions CI environment 
 ```
 
 **Features:**
-- ✅ Automatically generates Firebase config for testing
+- ✅ Automatically generates Firebase config for testing (uses dummy plist + emulators)
 - ✅ Selects the best available iOS simulator
 - ✅ Runs complete test suite with coverage
 - ✅ Separates functional code coverage from UI code coverage
 - ✅ Generates detailed coverage reports
 - ✅ Color-coded output showing test results
 - ✅ Identifies files needing coverage improvement
+
+**Note:** This script uses the dummy `GoogleService-Info.plist` and Firebase emulators. It does not require production Firebase credentials.
 
 **Output:**
 - `test_output.log` - Full test output
