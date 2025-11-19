@@ -195,8 +195,7 @@ final class CurrencyServiceTests: XCTestCase {
     // MARK: - Protocol Conformance Test
     
     func test_service_conformsToProtocol() {
-        let service: CurrencyServiceProtocol = CurrencyService.shared
-        XCTAssertNotNil(service)
+        let _: CurrencyServiceProtocol = CurrencyService.shared
     }
     
     // MARK: - Error Handling Tests
@@ -218,8 +217,6 @@ final class CurrencyServiceTests: XCTestCase {
     func test_fetchRates_validCurrency_decodesSuccessfully() async throws {
         // This will exercise the actual network call and JSON decoding
         // Note: Requires network access or mocking URLSession
-        let service = CurrencyService.shared
-        
         let rates = try await mockService.fetchRates(base: "USD")
         XCTAssertFalse(rates.isEmpty, "Should return rates for valid currency")
         XCTAssertTrue(rates.keys.contains("EUR"), "Should contain common currencies")
@@ -694,7 +691,7 @@ final class CurrencyServiceTests: XCTestCase {
     // MARK: - Protocol Method Tests
     
     func testProtocol_fetchRatesSignature_matchesImplementation() async throws {
-        let protocolService: CurrencyServiceProtocol = CurrencyService.shared
+        let _: CurrencyServiceProtocol = CurrencyService.shared
         
         // Use mock to test protocol conformance
         let protocolMock: CurrencyServiceProtocol = mockService
