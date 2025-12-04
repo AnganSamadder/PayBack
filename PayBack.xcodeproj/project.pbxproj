@@ -954,10 +954,10 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 5486292E50B0184693EDA028 /* Build configuration list for PBXNativeTarget "PayBack" */;
 			buildPhases = (
-				24EF073DE02DEADC6FD2C817 /* Swap GoogleService-Info.plist */,
 				FD6789580A3E8EDAAE310C64 /* Sources */,
 				9ACAE8BECA3453CD10028C45 /* Resources */,
 				572599C142221C7074DEF8F6 /* Frameworks */,
+				24EF073DE02DEADC6FD2C817 /* Swap GoogleService-Info.plist */,
 			);
 			buildRules = (
 			);

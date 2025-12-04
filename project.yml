@@ -272,7 +272,7 @@ targets:
       # - pod: AFNetworking
 
     # Pre/Post build scripts
-    preBuildScripts:
+    postBuildScripts:
       - script: |
           "${SRCROOT}/scripts/swap_google_plist.sh"
         name: Swap GoogleService-Info.plist
@@ -284,11 +284,6 @@ targets:
     #   - script: swiftlint
     #     name: SwiftLint
     #     runOnlyWhenInstalling: false
-
-    # postBuildScripts:
-    #   - script: |
-    #       echo "Post-build script"
-    #     name: Post-build
 
     # Build settings
     settings:
