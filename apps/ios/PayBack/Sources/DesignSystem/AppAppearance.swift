@@ -30,10 +30,10 @@ enum AppAppearance {
 		UINavigationBar.appearance().shadowImage = UIImage()
 		UINavigationBar.appearance().setBackgroundImage(UIImage(), for: .default)
 
-		// Tab Bar: opaque system background; brand selected tint
+		// Native Tab Bar: liquid glass appearance with brand tint
+		// Note: RootView uses a 5-tab TabView where tab 2 is an empty spacer for the FAB
 		let tab = UITabBarAppearance()
-		tab.configureWithOpaqueBackground()
-		tab.backgroundColor = .systemBackground
+		tab.configureWithDefaultBackground() // Uses system's liquid glass effect
 		tab.shadowColor = .clear
 		tab.stackedLayoutAppearance.selected.iconColor = brand
 		tab.stackedLayoutAppearance.selected.titleTextAttributes = [.foregroundColor: brand]
