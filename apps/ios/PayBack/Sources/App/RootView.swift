@@ -25,48 +25,73 @@ struct RootView: View {
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                // Main content
+                // Main content with native 5-tab TabView
                 TabView(selection: $selectedTab) {
+                    // Tab 0: Friends
                     FriendsTabView(navigationState: $friendsNavigationState, selectedTab: $selectedTab)
                         .environmentObject(store)
+                        .tabItem {
+                            Image(systemName: "person.2")
+                            Text("Friends")
+                        }
                         .tag(0)
 
+                    // Tab 1: Groups
                     GroupsTabView(navigationState: $groupsNavigationState, selectedTab: $selectedTab)
                         .environmentObject(store)
+                        .tabItem {
+                            Image(systemName: "person.3")
+                            Text("Groups")
+                        }
                         .tag(1)
-
-                    ActivityView(selectedTab: $activityViewSelectedTab, shouldResetNavigation: $shouldResetActivityNavigation)
-                        .environmentObject(store)
+                    
+                    // Tab 2: Empty spacer for FAB (invisible but takes space)
+                    Color.clear
+                        .tabItem {
+                            // Empty - no icon or text, FAB covers this
+                            Text("")
+                        }
                         .tag(2)
 
+                    // Tab 3: Activity
+                    ActivityView(selectedTab: $activityViewSelectedTab, shouldResetNavigation: $shouldResetActivityNavigation)
+                        .environmentObject(store)
+                        .tabItem {
+                            Image(systemName: "clock.arrow.circlepath")
+                            Text("Activity")
+                        }
+                        .tag(3)
+
+                    // Tab 4: Profile
                     ProfileView()
                         .environmentObject(store)
-                        .tag(3)
+                        .tabItem {
+                            Image(systemName: "person.circle")
+                            Text("Profile")
+                        }
+                        .tag(4)
                 }
                 .onChange(of: selectedTab) { oldValue, newValue in
+                    // Prevent tab 2 from being selected (it's the FAB spacer)
+                    if newValue == 2 {
+                        selectedTab = oldValue
+                        return
+                    }
                     // Reset navigation states when switching tabs
-                    // This ensures each tab starts from home when navigated to
                     if oldValue != newValue {
                         withAnimation(.easeInOut(duration: 0.35)) {
-                            // Reset Friends navigation if switching away from Friends tab
                             if oldValue == 0 && friendsNavigationState != .home {
                                 friendsNavigationState = .home
                             }
-                            // Reset Groups navigation if switching away from Groups tab
                             if oldValue == 1 && groupsNavigationState != .home {
                                 groupsNavigationState = .home
                             }
-                            // Reset Activity navigation if switching to Activity tab
-                            if newValue == 2 {
+                            if newValue == 3 {
                                 shouldResetActivityNavigation = true
                             }
                         }
                     }
                 }
-                
-                // Custom tab bar
-                CustomTabBar(selectedTab: $selectedTab, activityViewSelectedTab: $activityViewSelectedTab, friendsNavigationState: $friendsNavigationState, groupsNavigationState: $groupsNavigationState, shouldResetActivityNavigation: $shouldResetActivityNavigation)
-                    .offset(y: -40) // Compensate for safe area changes
             }
 
             // Center FAB overlay; expose bounds via preference for precise circle origin
@@ -80,7 +105,7 @@ struct RootView: View {
                     Spacer()
                 }
             }
-            .padding(.bottom, 40) // Compensate for safe area changes
+            .padding(.bottom, 50) // Aligns FAB with center of tab bar
 
             // Teal background + picker are attached via overlay on the ZStack below
 
@@ -295,98 +320,6 @@ private struct AddFAB: View {
     }
 }
 
-private struct CustomTabBar: View {
-    @Binding var selectedTab: Int
-    @Binding var activityViewSelectedTab: Int
-    @Binding var friendsNavigationState: FriendsNavigationState
-    @Binding var groupsNavigationState: GroupsNavigationState
-    @Binding var shouldResetActivityNavigation: Bool
-    
-    var body: some View {
-        HStack(spacing: 0) {
-            // Friends tab
-            Button(action: {
-                selectedTab = 0
-            }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "person.2")
-                        .font(.system(size: 24))
-                        .foregroundStyle(selectedTab == 0 ? AppTheme.brand : .secondary)
-                    Text("Friends")
-                        .font(.caption)
-                        .foregroundStyle(selectedTab == 0 ? AppTheme.brand : .secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-            }
-            .padding(.bottom, 8)
-            
-            // Groups tab
-            Button(action: {
-                selectedTab = 1
-            }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "person.3")
-                        .font(.system(size: 24))
-                        .foregroundStyle(selectedTab == 1 ? AppTheme.brand : .secondary)
-                    Text("Groups")
-                        .font(.caption)
-                        .foregroundStyle(selectedTab == 1 ? AppTheme.brand : .secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-            }
-            .padding(.bottom, 8)
-            
-            // Spacer for FAB - accounts for the 64pt FAB plus padding
-            Spacer()
-                .frame(width: 80)
-            
-            // Activity tab
-            Button(action: {
-                selectedTab = 2
-            }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 24))
-                        .foregroundStyle(selectedTab == 2 ? AppTheme.brand : .secondary)
-                    Text("Activity")
-                        .font(.caption)
-                        .foregroundStyle(selectedTab == 2 ? AppTheme.brand : .secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-            }
-            .simultaneousGesture(TapGesture(count: 2).onEnded { _ in
-                if selectedTab == 2 {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        activityViewSelectedTab = (activityViewSelectedTab == 0 ? 1 : 0)
-                    }
-                }
-            })
-            .padding(.bottom, 8)
-            
-            // Profile tab
-            Button(action: {
-                selectedTab = 3
-            }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "person.circle")
-                        .font(.system(size: 24))
-                        .foregroundStyle(selectedTab == 3 ? AppTheme.brand : .secondary)
-                    Text("Profile")
-                        .font(.caption)
-                        .foregroundStyle(selectedTab == 3 ? AppTheme.brand : .secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-            }
-            .padding(.bottom, 8)
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 0)
-    }
-}
 
 private struct TargetPicker: View {
     @EnvironmentObject var store: AppStore

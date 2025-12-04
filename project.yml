@@ -118,7 +118,7 @@ settings:
     SWIFT_VERSION: 5.10
     IPHONEOS_DEPLOYMENT_TARGET: "18.0"
     MARKETING_VERSION: 0.1.0
-    CURRENT_PROJECT_VERSION: 2
+    CURRENT_PROJECT_VERSION: 3
     DEVELOPMENT_TEAM: "39YTAJZTZ6"
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -272,31 +272,18 @@ targets:
       # - pod: AFNetworking
 
     # Pre/Post build scripts
-    # preBuildScripts:
-    #   - script: echo "Pre-build script"
-    #     name: Pre-build
-    #     inputFiles:
-    #       - $(SRCROOT)/input.txt
-    #     outputFiles:
-    #       - $(DERIVED_FILE_DIR)/output.txt
-    #     inputFileLists:
-    #       - $(SRCROOT)/input-files.xcfilelist
-    #     outputFileLists:
-    #       - $(SRCROOT)/output-files.xcfilelist
-    #     shell: /bin/sh
-    #     showEnvVars: true
-    #     runOnlyWhenInstalling: false
-    #     basedOnDependencyAnalysis: true
+    postBuildScripts:
+      - script: |
+          "${SRCROOT}/scripts/swap_google_plist.sh"
+        name: Swap GoogleService-Info.plist
+        shell: /bin/sh
+        showEnvVars: false
+        basedOnDependencyAnalysis: false
 
     # postCompileScripts:
     #   - script: swiftlint
     #     name: SwiftLint
     #     runOnlyWhenInstalling: false
-
-    # postBuildScripts:
-    #   - script: |
-    #       echo "Post-build script"
-    #     name: Post-build
 
     # Build settings
     settings:
