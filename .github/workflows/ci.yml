@@ -115,7 +115,7 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/Developer/Xcode/DerivedData
-          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
+          key: ${{ runner.os }}-spm-${{ hashFiles('PayBack.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'PayBack.xcodeproj/project.pbxproj') }}
           restore-keys: |
             ${{ runner.os }}-spm-
 
@@ -298,7 +298,6 @@ jobs:
             exit 1
           fi
           echo "version=$LATEST_STABLE" >> $GITHUB_OUTPUT
-          echo "Using Xcode $LATEST_STABLE"$GITHUB_OUTPUT
           echo "Using Xcode $LATEST_STABLE"
 
       - name: Set up Xcode
@@ -337,7 +336,7 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/Developer/Xcode/DerivedData
-          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
+          key: ${{ runner.os }}-spm-${{ hashFiles('PayBack.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'PayBack.xcodeproj/project.pbxproj') }}
           restore-keys: |
             ${{ runner.os }}-spm-
 
