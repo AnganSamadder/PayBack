@@ -37,6 +37,7 @@
 		30F3A5AEE70DE1F5AB9F11DE /* PhoneAuthServiceFirebaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6D6A80EFE069FFD83C0A519 /* PhoneAuthServiceFirebaseTests.swift */; };
 		317F71AC4885C58ACF382357 /* ExpenseValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 704EDFE7EDD8245499170ED4 /* ExpenseValidationTests.swift */; };
 		322C24BA4E47FACDF055D60F /* GroupDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BFEFD97F3240D6B253DEDEE /* GroupDetailView.swift */; };
+		340D7AC16DE2663CC069B866 /* TabBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2655061A8DC6428A76F311E7 /* TabBarTests.swift */; };
 		3500DE27E8395241102F0A8F /* AccountLinkingSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6D2BCF45BC9BAFEC4111C75 /* AccountLinkingSecurityTests.swift */; };
 		3640F819553618E9B914C75F /* CodableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B78598B0EB26D57FD34A9D /* CodableTests.swift */; };
 		3B60AA9B6E1FA05B49D3E5C7 /* AnimationsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 431D1F5551B376FA40E3C8CD /* AnimationsTests.swift */; };
@@ -208,6 +209,7 @@
 		2316FD3F64BA77CF6AE264AB /* LinkStateReconciliationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkStateReconciliationTests.swift; sourceTree = "<group>"; };
 		24BEAB63EC0AF16C55A6CC84 /* FirebaseEmulatorTestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseEmulatorTestCase.swift; sourceTree = "<group>"; };
 		251525EBCD9286300851844F /* AuthCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthCoordinator.swift; sourceTree = "<group>"; };
+		2655061A8DC6428A76F311E7 /* TabBarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarTests.swift; sourceTree = "<group>"; };
 		27DC865991DE806047491A0F /* SwipeBackModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwipeBackModifier.swift; sourceTree = "<group>"; };
 		29A8B642930616D624DFF4D8 /* AccountServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountServiceTests.swift; sourceTree = "<group>"; };
 		2A242E800C5D09A343BB5B46 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -696,6 +698,7 @@
 			isa = PBXGroup;
 			children = (
 				4E2250695D4B911B5C06F64D /* AuthCoordinatorTests.swift */,
+				2655061A8DC6428A76F311E7 /* TabBarTests.swift */,
 				9E4BA859040FC8BA2482C2CA /* UIModelsAndEnumsTests.swift */,
 				36C05FF334774CA8BD616DCB /* UIViewsMinimalTests.swift */,
 				575BAA8D9BE2C1184747370D /* Auth */,
@@ -951,6 +954,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 5486292E50B0184693EDA028 /* Build configuration list for PBXNativeTarget "PayBack" */;
 			buildPhases = (
+				24EF073DE02DEADC6FD2C817 /* Swap GoogleService-Info.plist */,
 				FD6789580A3E8EDAAE310C64 /* Sources */,
 				9ACAE8BECA3453CD10028C45 /* Resources */,
 				572599C142221C7074DEF8F6 /* Frameworks */,
@@ -1037,6 +1041,29 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		24EF073DE02DEADC6FD2C817 /* Swap GoogleService-Info.plist */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Swap GoogleService-Info.plist";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${SRCROOT}/scripts/swap_google_plist.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		9B903DF83EB878005793C975 /* Sources */ = {
@@ -1136,6 +1163,7 @@
 				2D04A34E469AAD6679A9088B /* SplitInvariantsTests.swift in Sources */,
 				EDBAA2DEB72C1EBBDC3B774C /* StylesTests.swift in Sources */,
 				EB628C7BA2674F2CFAC629D3 /* SwipeBackModifierTests.swift in Sources */,
+				340D7AC16DE2663CC069B866 /* TabBarTests.swift in Sources */,
 				4E4A0EB92A6530BB1A81DE03 /* TestHelpers.swift in Sources */,
 				F5DABD7F63F1E9D0FD986780 /* TimeBasedLogicTests.swift in Sources */,
 				E78463489700BE4C4E2105C4 /* UIModelsAndEnumsTests.swift in Sources */,
@@ -1250,7 +1278,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -1319,7 +1347,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_NS_ASSERTIONS = NO;
