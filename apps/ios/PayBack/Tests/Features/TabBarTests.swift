@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import UIKit
 @testable import PayBack
 
 /// Tests for the 5-tab TabView implementation in RootView
