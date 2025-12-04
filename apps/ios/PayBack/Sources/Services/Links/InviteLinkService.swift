@@ -1,4 +1,5 @@
 import Foundation
+import Supabase
 
 protocol InviteLinkService {
     /// Generates an invite link for an unlinked participant
@@ -35,7 +36,7 @@ protocol InviteLinkService {
     func revokeInvite(_ tokenId: UUID) async throws
 }
 
-/// Mock implementation for testing and when Firebase is not configured
+/// Mock implementation for testing and when Supabase is not configured
 actor MockInviteLinkService: InviteLinkService {
     static let shared = MockInviteLinkService()
     
@@ -161,354 +162,260 @@ actor MockInviteLinkService: InviteLinkService {
     }
 }
 
-import FirebaseCore
-import FirebaseFirestore
-import FirebaseAuth
+private struct InviteTokenRow: Codable {
+    let id: UUID
+    let creatorId: String
+    let creatorEmail: String
+    let targetMemberId: UUID
+    let targetMemberName: String
+    let createdAt: Date
+    let expiresAt: Date
+    let claimedBy: String?
+    let claimedAt: Date?
 
-/// Firestore implementation of InviteLinkService
-final class FirestoreInviteLinkService: InviteLinkService {
-    private let database: Firestore
-    private let collectionName = "inviteTokens"
+    enum CodingKeys: String, CodingKey {
+        case id
+        case creatorId = "creator_id"
+        case creatorEmail = "creator_email"
+        case targetMemberId = "target_member_id"
+        case targetMemberName = "target_member_name"
+        case createdAt = "created_at"
+        case expiresAt = "expires_at"
+        case claimedBy = "claimed_by"
+        case claimedAt = "claimed_at"
+    }
+}
+
+private struct SupabaseUserContext {
+    let id: String
+    let email: String
+}
+
+/// Supabase implementation of InviteLinkService
+final class SupabaseInviteLinkService: InviteLinkService {
+    private let client: SupabaseClient
+    private let table = "invite_tokens"
     
-    init(database: Firestore = Firestore.firestore()) {
-        self.database = database
+    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+        self.client = client
     }
     
     func generateInviteLink(
         targetMemberId: UUID,
         targetMemberName: String
     ) async throws -> InviteLink {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser else {
-                throw LinkingError.unauthorized
-            }
-            
-            let tokenId = UUID()
-            let createdAt = Date()
-            let expiresAt = Calendar.current.date(byAdding: .day, value: 30, to: createdAt) ?? Date()
-            
-            let token = InviteToken(
-                id: tokenId,
-                creatorId: currentUser.uid,
-                creatorEmail: currentUser.email ?? "",
-                targetMemberId: targetMemberId,
-                targetMemberName: targetMemberName,
-                createdAt: createdAt,
-                expiresAt: expiresAt
-            )
-            
-            let data: [String: Any] = [
-                "id": token.id.uuidString,
-                "creatorId": token.creatorId,
-                "creatorEmail": token.creatorEmail,
-                "targetMemberId": token.targetMemberId.uuidString,
-                "targetMemberName": token.targetMemberName,
-                "createdAt": Timestamp(date: token.createdAt),
-                "expiresAt": Timestamp(date: token.expiresAt)
-            ]
-            
-            try await database
-                .collection(collectionName)
-                .document(token.id.uuidString)
-                .setData(data)
-            
-            // Generate deep link URL
-            let url = URL(string: "payback://link/claim?token=\(token.id.uuidString)")!
-            
-            // Create shareable text
-            let shareText = """
-            Hi! I've added you to PayBack for tracking shared expenses.
-            
-            Tap this link to claim your account and see our expense history:
-            \(url.absoluteString)
-            
-            - \(targetMemberName)
-            """
-            
-            return InviteLink(token: token, url: url, shareText: shareText)
-        } catch {
-            throw mapError(error)
-        }
-    }
-    
-    func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation {
-        do {
-            try ensureFirebaseConfigured()
-            
-            let documentRef = database.collection(collectionName).document(tokenId.uuidString)
-            let document = try await documentRef.getDocument()
-            
-            guard document.exists, let data = document.data() else {
-                return InviteTokenValidation(
-                    isValid: false,
-                    token: nil,
-                    expensePreview: nil,
-                    errorMessage: LinkingError.tokenInvalid.errorDescription
-                )
-            }
-            
-            let token = try parseInviteToken(from: data)
-            
-            // Check if expired
-            if token.expiresAt <= Date() {
-                return InviteTokenValidation(
-                    isValid: false,
-                    token: token,
-                    expensePreview: nil,
-                    errorMessage: LinkingError.tokenExpired.errorDescription
-                )
-            }
-            
-            // Check if already claimed
-            if token.claimedBy != nil {
-                return InviteTokenValidation(
-                    isValid: false,
-                    token: token,
-                    expensePreview: nil,
-                    errorMessage: LinkingError.tokenAlreadyClaimed.errorDescription
-                )
-            }
-            
-            // Note: Expense preview generation will be handled by AppStore
-            // as it requires access to local expense data
-            return InviteTokenValidation(
-                isValid: true,
-                token: token,
-                expensePreview: nil,
-                errorMessage: nil
-            )
-        } catch {
-            throw mapError(error)
-        }
-    }
-    
-    func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser,
-                  let email = currentUser.email else {
-                throw LinkingError.unauthorized
-            }
-            
-            let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
-            let documentRef = database.collection(collectionName).document(tokenId.uuidString)
-            
-            // Use a transaction to prevent race conditions
-            let result = try await database.runTransaction({ (transaction, errorPointer) -> Any? in
-                let document: DocumentSnapshot
-                do {
-                    document = try transaction.getDocument(documentRef)
-                } catch let fetchError as NSError {
-                    errorPointer?.pointee = fetchError
-                    return nil
-                }
-                
-                guard document.exists, let data = document.data() else {
-                    errorPointer?.pointee = NSError(
-                        domain: "InviteLinkService",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Token not found"]
-                    )
-                    return nil
-                }
-                
-                let token: InviteToken
-                do {
-                    token = try self.parseInviteToken(from: data)
-                } catch {
-                    errorPointer?.pointee = error as NSError
-                    return nil
-                }
-                
-                // Check if expired
-                if token.expiresAt <= Date() {
-                    errorPointer?.pointee = NSError(
-                        domain: "InviteLinkService",
-                        code: -2,
-                        userInfo: [NSLocalizedDescriptionKey: "Token expired"]
-                    )
-                    return nil
-                }
-                
-                // Check if already claimed - this is the critical race condition check
-                if token.claimedBy != nil {
-                    errorPointer?.pointee = NSError(
-                        domain: "InviteLinkService",
-                        code: -3,
-                        userInfo: [NSLocalizedDescriptionKey: "Token already claimed"]
-                    )
-                    return nil
-                }
-                
-                // Mark token as claimed within the transaction
-                transaction.updateData([
-                    "claimedBy": currentUser.uid,
-                    "claimedAt": Timestamp(date: Date())
-                ], forDocument: documentRef)
-                
-                return LinkAcceptResult(
-                    linkedMemberId: token.targetMemberId,
-                    linkedAccountId: currentUser.uid,
-                    linkedAccountEmail: normalizedEmail
-                ) as Any
-            })
-            
-            guard let linkResult = result as? LinkAcceptResult else {
-                throw LinkingError.tokenInvalid
-            }
-            
-            return linkResult
-        } catch {
-            throw mapError(error)
-        }
-    }
-    
-    func fetchActiveInvites() async throws -> [InviteToken] {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser else {
-                throw LinkingError.unauthorized
-            }
-            
-            let now = Date()
-            
-            let snapshot = try await database
-                .collection(collectionName)
-                .whereField("creatorId", isEqualTo: currentUser.uid)
-                .getDocuments()
-            
-            return snapshot.documents.compactMap { document in
-                try? parseInviteToken(from: document.data())
-            }.filter { token in
-                // Filter to only unclaimed and unexpired tokens
-                token.claimedBy == nil && token.expiresAt > now
-            }
-        } catch {
-            throw mapError(error)
-        }
-    }
-    
-    func revokeInvite(_ tokenId: UUID) async throws {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser else {
-                throw LinkingError.unauthorized
-            }
-            
-            let documentRef = database.collection(collectionName).document(tokenId.uuidString)
-            let document = try await documentRef.getDocument()
-            
-            guard document.exists, let data = document.data() else {
-                throw LinkingError.tokenInvalid
-            }
-            
-            let token = try parseInviteToken(from: data)
-            
-            // Verify the current user is the creator
-            guard token.creatorId == currentUser.uid else {
-                throw LinkingError.unauthorized
-            }
-            
-            // Delete the token
-            try await documentRef.delete()
-        } catch {
-            throw mapError(error)
-        }
-    }
-    
-    // MARK: - Private Helpers
-    
-    private func ensureFirebaseConfigured() throws {
-        guard FirebaseApp.app() != nil else {
-            throw LinkingError.unauthorized
-        }
-    }
-    
-    private func parseInviteToken(from data: [String: Any]) throws -> InviteToken {
-        guard let idString = data["id"] as? String,
-              let id = UUID(uuidString: idString),
-              let creatorId = data["creatorId"] as? String,
-              let creatorEmail = data["creatorEmail"] as? String,
-              let targetMemberIdString = data["targetMemberId"] as? String,
-              let targetMemberId = UUID(uuidString: targetMemberIdString),
-              let targetMemberName = data["targetMemberName"] as? String else {
-            throw LinkingError.tokenInvalid
-        }
+        let context = try await userContext()
         
-        let createdAt: Date
-        if let timestamp = data["createdAt"] as? Timestamp {
-            createdAt = timestamp.dateValue()
-        } else {
-            createdAt = Date()
-        }
+        let createdAt = Date()
+        let expiresAt = Calendar.current.date(byAdding: .day, value: 30, to: createdAt) ?? Date()
         
-        let expiresAt: Date
-        if let timestamp = data["expiresAt"] as? Timestamp {
-            expiresAt = timestamp.dateValue()
-        } else {
-            expiresAt = Calendar.current.date(byAdding: .day, value: 30, to: createdAt) ?? Date()
-        }
-        
-        let claimedBy = data["claimedBy"] as? String
-        
-        let claimedAt: Date?
-        if let timestamp = data["claimedAt"] as? Timestamp {
-            claimedAt = timestamp.dateValue()
-        } else {
-            claimedAt = nil
-        }
-        
-        return InviteToken(
-            id: id,
-            creatorId: creatorId,
-            creatorEmail: creatorEmail,
+        let token = InviteToken(
+            id: UUID(),
+            creatorId: context.id,
+            creatorEmail: context.email,
             targetMemberId: targetMemberId,
             targetMemberName: targetMemberName,
             createdAt: createdAt,
+            expiresAt: expiresAt
+        )
+        
+        let row = InviteTokenRow(
+            id: token.id,
+            creatorId: token.creatorId,
+            creatorEmail: token.creatorEmail,
+            targetMemberId: token.targetMemberId,
+            targetMemberName: token.targetMemberName,
+            createdAt: createdAt,
             expiresAt: expiresAt,
-            claimedBy: claimedBy,
-            claimedAt: claimedAt
+            claimedBy: nil,
+            claimedAt: nil
+        )
+        
+        _ = try await client
+            .from(table)
+            .insert([row], returning: .minimal)
+            .execute() as PostgrestResponse<Void>
+        
+        let url = URL(string: "payback://link/claim?token=\(token.id.uuidString)")!
+        let shareText = """
+        Hi! I've added you to PayBack for tracking shared expenses.
+        
+        Tap this link to claim your account and see our expense history:
+        \(url.absoluteString)
+        
+        - \(targetMemberName)
+        """
+        
+        return InviteLink(token: token, url: url, shareText: shareText)
+    }
+    
+    func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation {
+        guard SupabaseClientProvider.isConfigured else {
+            throw LinkingError.unauthorized
+        }
+        
+        let response: PostgrestResponse<[InviteTokenRow]> = try await client
+            .from(table)
+            .select()
+            .eq("id", value: tokenId)
+            .limit(1)
+            .execute()
+        
+        guard let row = response.value.first else {
+            return InviteTokenValidation(
+                isValid: false,
+                token: nil,
+                expensePreview: nil,
+                errorMessage: LinkingError.tokenInvalid.errorDescription
+            )
+        }
+        
+        let token = inviteToken(from: row)
+        
+        if token.expiresAt <= Date() {
+            return InviteTokenValidation(
+                isValid: false,
+                token: token,
+                expensePreview: nil,
+                errorMessage: LinkingError.tokenExpired.errorDescription
+            )
+        }
+        
+        if token.claimedBy != nil {
+            return InviteTokenValidation(
+                isValid: false,
+                token: token,
+                expensePreview: nil,
+                errorMessage: LinkingError.tokenAlreadyClaimed.errorDescription
+            )
+        }
+        
+        return InviteTokenValidation(
+            isValid: true,
+            token: token,
+            expensePreview: nil,
+            errorMessage: nil
         )
     }
     
-    private func mapError(_ error: Error) -> LinkingError {
-        if let linkingError = error as? LinkingError {
-            return linkingError
+    func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
+        let context = try await userContext()
+        
+        let response: PostgrestResponse<[InviteTokenRow]> = try await client
+            .from(table)
+            .select()
+            .eq("id", value: tokenId)
+            .limit(1)
+            .execute()
+        
+        guard let row = response.value.first else {
+            throw LinkingError.tokenInvalid
         }
         
-        let nsError = error as NSError
+        guard row.expiresAt > Date() else {
+            throw LinkingError.tokenExpired
+        }
         
-        // Handle custom transaction errors
-        if nsError.domain == "InviteLinkService" {
-            switch nsError.code {
-            case -1:
-                return .tokenInvalid
-            case -2:
-                return .tokenExpired
-            case -3:
-                return .tokenAlreadyClaimed
-            default:
-                return .tokenInvalid
+        if let claimedBy = row.claimedBy, !claimedBy.isEmpty {
+            throw LinkingError.tokenAlreadyClaimed
+        }
+        
+        struct ClaimPayload: Encodable {
+            let claimedBy: String
+            let claimedAt: Date
+            
+            enum CodingKeys: String, CodingKey {
+                case claimedBy = "claimed_by"
+                case claimedAt = "claimed_at"
             }
         }
         
-        if nsError.domain == FirestoreErrorDomain, let code = FirestoreErrorCode.Code(rawValue: nsError.code) {
-            switch code {
-            case .unavailable, .deadlineExceeded:
-                return .networkUnavailable
-            case .permissionDenied, .unauthenticated:
-                return .unauthorized
-            default:
-                return .networkUnavailable
+        let payload = ClaimPayload(claimedBy: context.id, claimedAt: Date())
+        
+        _ = try await client
+            .from(table)
+            .update(payload, returning: .minimal)
+            .eq("id", value: tokenId)
+            .`is`("claimed_by", value: nil as Bool?)
+            .execute() as PostgrestResponse<Void>
+        
+        return LinkAcceptResult(
+            linkedMemberId: row.targetMemberId,
+            linkedAccountId: context.id,
+            linkedAccountEmail: context.email
+        )
+    }
+    
+    func fetchActiveInvites() async throws -> [InviteToken] {
+        let context = try await userContext()
+        let now = Date()
+        
+        let snapshot: PostgrestResponse<[InviteTokenRow]> = try await client
+            .from(table)
+            .select()
+            .eq("creator_id", value: context.id)
+            .gt("expires_at", value: now)
+            .`is`("claimed_by", value: nil as Bool?)
+            .execute()
+        
+        return snapshot.value.map(inviteToken(from:))
+    }
+    
+    func revokeInvite(_ tokenId: UUID) async throws {
+        let context = try await userContext()
+        
+        let snapshot: PostgrestResponse<[InviteTokenRow]> = try await client
+            .from(table)
+            .select()
+            .eq("id", value: tokenId)
+            .limit(1)
+            .execute()
+        
+        guard let row = snapshot.value.first else {
+            throw LinkingError.tokenInvalid
+        }
+        
+        guard row.creatorId == context.id else {
+            throw LinkingError.unauthorized
+        }
+        
+        _ = try await client
+            .from(table)
+            .delete(returning: .minimal)
+            .eq("id", value: tokenId)
+            .execute() as PostgrestResponse<Void>
+    }
+    
+    // MARK: - Helpers
+    
+    private func inviteToken(from row: InviteTokenRow) -> InviteToken {
+        InviteToken(
+            id: row.id,
+            creatorId: row.creatorId,
+            creatorEmail: row.creatorEmail,
+            targetMemberId: row.targetMemberId,
+            targetMemberName: row.targetMemberName,
+            createdAt: row.createdAt,
+            expiresAt: row.expiresAt,
+            claimedBy: row.claimedBy,
+            claimedAt: row.claimedAt
+        )
+    }
+    
+    private func userContext() async throws -> SupabaseUserContext {
+        guard SupabaseClientProvider.isConfigured else {
+            throw LinkingError.unauthorized
+        }
+        
+        do {
+            let session = try await client.auth.session
+            guard let email = session.user.email?.lowercased() else {
+                throw LinkingError.unauthorized
             }
+            return SupabaseUserContext(id: session.user.id.uuidString, email: email)
+        } catch {
+            throw LinkingError.unauthorized
         }
-        
-        if nsError.domain == NSURLErrorDomain {
-            return .networkUnavailable
-        }
-        
-        return .networkUnavailable
     }
 }
 
@@ -516,12 +423,12 @@ final class FirestoreInviteLinkService: InviteLinkService {
 /// Provider for InviteLinkService that returns appropriate implementation
 enum InviteLinkServiceProvider {
     static func makeInviteLinkService() -> InviteLinkService {
-        if FirebaseApp.app() != nil {
-            return FirestoreInviteLinkService()
+        if let client = SupabaseClientProvider.client {
+            return SupabaseInviteLinkService(client: client)
         }
         
         #if DEBUG
-        print("[InviteLink] Firebase not configured – falling back to MockInviteLinkService.")
+        print("[InviteLink] Supabase not configured – falling back to MockInviteLinkService.")
         #endif
         return MockInviteLinkService.shared
     }

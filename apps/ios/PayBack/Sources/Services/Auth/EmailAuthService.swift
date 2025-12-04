@@ -1,6 +1,5 @@
 import Foundation
-import FirebaseAuth
-import FirebaseCore
+import Supabase
 
 enum EmailAuthServiceError: LocalizedError, Equatable, Sendable {
     case configurationMissing
@@ -30,7 +29,7 @@ enum EmailAuthServiceError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .configurationMissing:
-            return "Email sign-in is unavailable. Check your Firebase configuration and try again."
+            return "Email sign-in is unavailable. Check your Supabase configuration and try again."
         case .invalidCredentials:
             return "That email and password didn’t match our records."
         case .emailAlreadyInUse:
@@ -60,117 +59,126 @@ protocol EmailAuthService {
     func signOut() throws
 }
 
-struct FirebaseEmailAuthService: EmailAuthService {
+struct SupabaseEmailAuthService: EmailAuthService {
+    private let client: SupabaseClient
+
+    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+        self.client = client
+    }
+
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
         try ensureConfigured()
 
-        let result = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AuthDataResult, Error>) in
-            Auth.auth().signIn(withEmail: email, password: password) { authResult, error in
-                if let error {
-                    continuation.resume(throwing: mapError(error))
-                    return
-                }
-
-                guard let authResult else {
-                    continuation.resume(throwing: EmailAuthServiceError.invalidCredentials)
-                    return
-                }
-
-                continuation.resume(returning: authResult)
-            }
+        do {
+            let session = try await client.auth.signIn(email: email, password: password)
+            let displayName = resolvedDisplayName(from: session.user, fallback: nil)
+            return EmailAuthSignInResult(
+                uid: session.user.id.uuidString,
+                email: session.user.email ?? email,
+                displayName: displayName
+            )
+        } catch {
+            throw mapError(error)
         }
-
-        return EmailAuthSignInResult(
-            uid: result.user.uid,
-            email: result.user.email ?? email,
-            displayName: result.user.displayName
-        )
     }
 
     func signUp(email: String, password: String, displayName: String) async throws -> EmailAuthSignInResult {
         try ensureConfigured()
 
-        let result = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AuthDataResult, Error>) in
-            Auth.auth().createUser(withEmail: email, password: password) { authResult, error in
-                if let error {
-                    continuation.resume(throwing: mapError(error))
-                    return
-                }
+        do {
+            let response = try await client.auth.signUp(
+                email: email,
+                password: password,
+                data: ["display_name": .string(displayName)]
+            )
 
-                guard let authResult else {
-                    continuation.resume(throwing: EmailAuthServiceError.underlying(NSError(domain: "EmailAuthService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unknown Firebase response."])))
-                    return
-                }
+            let user = response.user
+            let resolvedName = resolvedDisplayName(from: user, fallback: displayName)
 
-                continuation.resume(returning: authResult)
-            }
+            return EmailAuthSignInResult(
+                uid: user.id.uuidString,
+                email: user.email ?? email,
+                displayName: resolvedName
+            )
+        } catch {
+            throw mapError(error)
         }
-
-        if result.user.displayName != displayName {
-            let changeRequest = result.user.createProfileChangeRequest()
-            changeRequest.displayName = displayName
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                changeRequest.commitChanges { error in
-                    if let error {
-                        continuation.resume(throwing: EmailAuthServiceError.underlying(error))
-                    } else {
-                        continuation.resume()
-                    }
-                }
-            }
-        }
-
-        return EmailAuthSignInResult(
-            uid: result.user.uid,
-            email: result.user.email ?? email,
-            displayName: result.user.displayName ?? displayName
-        )
     }
 
     func sendPasswordReset(email: String) async throws {
         try ensureConfigured()
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            Auth.auth().sendPasswordReset(withEmail: email) { error in
-                if let error {
-                    continuation.resume(throwing: mapError(error))
-                } else {
-                    continuation.resume()
-                }
-            }
+        do {
+            try await client.auth.resetPasswordForEmail(email)
+        } catch {
+            throw mapError(error)
         }
     }
 
     func signOut() throws {
-        try Auth.auth().signOut()
+        try ensureConfigured()
+        let semaphore = DispatchSemaphore(value: 0)
+        var capturedError: Error?
+
+        Task {
+            do {
+                try await client.auth.signOut()
+            } catch {
+                capturedError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+        if let capturedError {
+            throw mapError(capturedError)
+        }
+    }
+
+    private func resolvedDisplayName(from user: User, fallback: String?) -> String {
+        if let name = user.userMetadata["display_name"], case let .string(value) = name {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        if let email = user.email, let prefix = email.split(separator: "@").first {
+            return String(prefix)
+        }
+        return fallback ?? "User"
     }
 
     private func ensureConfigured() throws {
-        guard FirebaseApp.app() != nil else {
+        guard SupabaseClientProvider.isConfigured else {
             throw EmailAuthServiceError.configurationMissing
         }
     }
 
     private func mapError(_ error: Error) -> Error {
-        let nsError = error as NSError
-        guard nsError.domain == AuthErrorDomain, let code = AuthErrorCode(rawValue: nsError.code) else {
-            return EmailAuthServiceError.underlying(error)
+        if let authError = error as? AuthError {
+            switch authError {
+            case .weakPassword:
+                return EmailAuthServiceError.weakPassword
+            case .sessionMissing:
+                return EmailAuthServiceError.invalidCredentials
+            case let .api(_, errorCode, _, _):
+                switch errorCode {
+                case .invalidCredentials:
+                    return EmailAuthServiceError.invalidCredentials
+                case .emailExists, .userAlreadyExists:
+                    return EmailAuthServiceError.emailAlreadyInUse
+                case .weakPassword:
+                    return EmailAuthServiceError.weakPassword
+                case .userBanned:
+                    return EmailAuthServiceError.userDisabled
+                case .overRequestRateLimit, .overEmailSendRateLimit, .overSMSSendRateLimit:
+                    return EmailAuthServiceError.tooManyRequests
+                default:
+                    return EmailAuthServiceError.underlying(authError)
+                }
+            default:
+                return EmailAuthServiceError.underlying(authError)
+            }
         }
 
-        switch code {
-        case .invalidEmail, .wrongPassword, .userNotFound:
-            return EmailAuthServiceError.invalidCredentials
-        case .emailAlreadyInUse:
-            return EmailAuthServiceError.emailAlreadyInUse
-        case .weakPassword:
-            return EmailAuthServiceError.weakPassword
-        case .userDisabled:
-            return EmailAuthServiceError.userDisabled
-        case .tooManyRequests:
-            return EmailAuthServiceError.tooManyRequests
-        default:
-            return EmailAuthServiceError.underlying(error)
-        }
+        return EmailAuthServiceError.underlying(error)
     }
 }
 
@@ -251,12 +259,12 @@ final class MockEmailAuthService: EmailAuthService, @unchecked Sendable {
 
 enum EmailAuthServiceProvider {
     static func makeService() -> EmailAuthService {
-        if FirebaseApp.app() != nil {
-            return FirebaseEmailAuthService()
+        if let client = SupabaseClientProvider.client {
+            return SupabaseEmailAuthService(client: client)
         }
 
         #if DEBUG
-        print("[Auth] Firebase not configured – using MockEmailAuthService.")
+        print("[Auth] Supabase not configured – using MockEmailAuthService.")
         #endif
         return MockEmailAuthService()
     }

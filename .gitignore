@@ -94,6 +94,8 @@ PHASE_*.md
 # Environment & Secrets
 .env
 .env.*
+.env.supabase.local
+.env.supabase
 *.key
 *.pem
 *.secret
@@ -106,14 +108,8 @@ credentials/
 
 # SPM artifacts
 Artifacts/
-
-# Firebase / GoogleService files (if any)
-# The committed apps/ios/PayBack/GoogleService-Info.plist is a dummy placeholder.
-# Real Firebase configs must use a .real.plist suffix to avoid accidental commits:
-*.real.plist
-GoogleService-Info.real.plist
-# CI backup of Firebase config created by test-ci-locally.sh
-apps/ios/PayBack/GoogleService-Info.plist.ci-backup
+SupabaseConfig.plist
+apps/ios/PayBack/SupabaseConfig.plist
 
 # Kiro IDE
 .kiro/

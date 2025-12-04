@@ -1,7 +1,5 @@
 import Foundation
-import FirebaseAuth
-import FirebaseCore
-import FirebaseFirestore
+import Supabase
 
 struct ExpenseParticipant {
     let memberId: UUID
@@ -23,127 +21,172 @@ enum ExpenseCloudServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .userNotAuthenticated:
-            return "Please sign in before syncing expenses with the cloud."
+            return "Please sign in before syncing expenses with Supabase."
         }
     }
 }
 
-struct FirestoreExpenseCloudService: ExpenseCloudService {
-    private let database: Firestore
-    private let collectionName = "expenses"
+private struct ExpenseRow: Codable {
+    let id: UUID
+    let groupId: UUID
+    let description: String
+    let date: Date
+    let totalAmount: Double
+    let paidByMemberId: UUID
+    let involvedMemberIds: [UUID]
+    let splits: [ExpenseSplitRow]
+    let isSettled: Bool
+    let ownerEmail: String
+    let ownerAccountId: String
+    let participantMemberIds: [UUID]
+    let participants: [ExpenseParticipantRow]
+    let linkedParticipants: [ExpenseParticipantRow]?
+    let createdAt: Date
+    let updatedAt: Date
+    let isPayBackGeneratedMockData: Bool?
 
-    init(database: Firestore = Firestore.firestore()) {
-        self.database = database
+    enum CodingKeys: String, CodingKey {
+        case id
+        case groupId = "group_id"
+        case description
+        case date
+        case totalAmount = "total_amount"
+        case paidByMemberId = "paid_by_member_id"
+        case involvedMemberIds = "involved_member_ids"
+        case splits
+        case isSettled = "is_settled"
+        case ownerEmail = "owner_email"
+        case ownerAccountId = "owner_account_id"
+        case participantMemberIds = "participant_member_ids"
+        case participants
+        case linkedParticipants = "linked_participants"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case isPayBackGeneratedMockData = "is_payback_generated_mock_data"
+    }
+}
+
+private struct ExpenseSplitRow: Codable {
+    let id: UUID
+    let memberId: UUID
+    let amount: Double
+    let isSettled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case memberId = "member_id"
+        case amount
+        case isSettled = "is_settled"
+    }
+}
+
+private struct ExpenseParticipantRow: Codable {
+    let memberId: UUID
+    let name: String
+    let linkedAccountId: String?
+    let linkedAccountEmail: String?
+
+    enum CodingKeys: String, CodingKey {
+        case memberId = "member_id"
+        case name
+        case linkedAccountId = "linked_account_id"
+        case linkedAccountEmail = "linked_account_email"
+    }
+}
+
+private struct SupabaseUserContext {
+    let id: String
+    let email: String
+}
+
+struct SupabaseExpenseCloudService: ExpenseCloudService {
+    private let client: SupabaseClient
+    private let table = "expenses"
+
+    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+        self.client = client
     }
 
     func fetchExpenses() async throws -> [Expense] {
-        try ensureFirebaseConfigured()
+        let context = try await userContext()
 
-        guard let currentUser = Auth.auth().currentUser,
-              let email = currentUser.email?.lowercased() else {
-            throw ExpenseCloudServiceError.userNotAuthenticated
+        let primary: PostgrestResponse<[ExpenseRow]> = try await client
+            .from(table)
+            .select()
+            .eq("owner_account_id", value: context.id)
+            .execute()
+
+        if !primary.value.isEmpty {
+            return primary.value.compactMap(expense(from:))
         }
 
-        let collection = database.collection(collectionName)
-        
-        // Fetch all expenses and filter locally to ensure we get all matching expenses
-        // regardless of which ownership field is populated
-        let allSnapshot = try await collection.getDocuments()
-        
-        return allSnapshot.documents
-            .filter { document in
-                let data = document.data()
-                // Match by ownerAccountId
-                if let owner = data["ownerAccountId"] as? String, owner == currentUser.uid {
-                    return true
-                }
-                // Match by ownerEmail
-                if let ownerEmail = data["ownerEmail"] as? String, ownerEmail.lowercased() == email {
-                    return true
-                }
-                // Match if no owner fields (legacy data)
-                if data["ownerAccountId"] == nil && data["ownerEmail"] == nil {
-                    return true
-                }
-                return false
+        let secondary: PostgrestResponse<[ExpenseRow]> = try await client
+            .from(table)
+            .select()
+            .eq("owner_email", value: context.email)
+            .execute()
+
+        if !secondary.value.isEmpty {
+            return secondary.value.compactMap(expense(from:))
+        }
+
+        let fallback: PostgrestResponse<[ExpenseRow]> = try await client
+            .from(table)
+            .select()
+            .execute()
+
+        return fallback.value
+            .filter { row in
+                row.ownerAccountId == context.id ||
+                row.ownerEmail.lowercased() == context.email ||
+                (row.ownerAccountId.isEmpty && row.ownerEmail.isEmpty)
             }
-            .compactMap { expense(from: $0) }
+            .compactMap(expense(from:))
     }
 
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
-        try ensureFirebaseConfigured()
-
-        guard let currentUser = Auth.auth().currentUser,
-              let email = currentUser.email?.lowercased() else {
-            throw ExpenseCloudServiceError.userNotAuthenticated
-        }
-
-        let document = database.collection(collectionName).document(expense.id.uuidString)
-        try await document.setData(
-            expensePayload(
-                expense,
-                participants: participants,
-                ownerEmail: email,
-                ownerAccountId: currentUser.uid
-            ),
-            merge: true
+        let context = try await userContext()
+        let row = expensePayload(
+            expense,
+            participants: participants,
+            ownerEmail: context.email,
+            ownerAccountId: context.id
         )
+
+        _ = try await client
+            .from(table)
+            .upsert([row], onConflict: "id", returning: .minimal)
+            .execute() as PostgrestResponse<Void>
     }
 
     func deleteExpense(_ id: UUID) async throws {
-        try ensureFirebaseConfigured()
-
-        guard Auth.auth().currentUser != nil else {
+        guard SupabaseClientProvider.isConfigured else {
             throw ExpenseCloudServiceError.userNotAuthenticated
         }
 
-        try await database
-            .collection(collectionName)
-            .document(id.uuidString)
-            .delete()
+        _ = try await client
+            .from(table)
+            .delete(returning: .minimal)
+            .eq("id", value: id)
+            .execute() as PostgrestResponse<Void>
     }
 
     func clearLegacyMockExpenses() async throws {
-        try ensureFirebaseConfigured()
-        guard let currentUser = Auth.auth().currentUser else {
-            throw ExpenseCloudServiceError.userNotAuthenticated
-        }
+        let context = try await userContext()
 
-        let snapshot = try await database
-            .collection(collectionName)
-            .whereField("ownerAccountId", isEqualTo: currentUser.uid)
-            .getDocuments()
-        let mockSnapshot = try await database
-            .collection(collectionName)
-            .whereField("isPayBackGeneratedMockData", isEqualTo: true)
-            .getDocuments()
+        _ = try await client
+            .from(table)
+            .delete(returning: .minimal)
+            .eq("owner_account_id", value: context.id)
+            .`is`("owner_email", value: nil as Bool?)
+            .execute() as PostgrestResponse<Void>
 
-        var referencesToDelete: [DocumentReference] = []
-
-        for document in snapshot.documents {
-            let data = document.data()
-            if data["ownerEmail"] == nil || data["ownerEmail"] is NSNull {
-                referencesToDelete.append(document.reference)
-            }
-        }
-
-        for document in mockSnapshot.documents {
-            if !referencesToDelete.contains(where: { $0.path == document.reference.path }) {
-                referencesToDelete.append(document.reference)
-            }
-        }
-
-        guard !referencesToDelete.isEmpty else { return }
-
-        let batch = database.batch()
-        referencesToDelete.forEach { batch.deleteDocument($0) }
-        try await batch.commit()
-    }
-
-    private func ensureFirebaseConfigured() throws {
-        guard FirebaseApp.app() != nil else {
-            throw AccountServiceError.configurationMissing
-        }
+        _ = try await client
+            .from(table)
+            .delete(returning: .minimal)
+            .eq("owner_account_id", value: context.id)
+            .eq("is_payback_generated_mock_data", value: true)
+            .execute() as PostgrestResponse<Void>
     }
 
     private func expensePayload(
@@ -151,117 +194,96 @@ struct FirestoreExpenseCloudService: ExpenseCloudService {
         participants: [ExpenseParticipant],
         ownerEmail: String,
         ownerAccountId: String
-    ) -> [String: Any] {
-        var payload: [String: Any] = [:]
-        payload["id"] = expense.id.uuidString
-        payload["groupId"] = expense.groupId.uuidString
-        payload["description"] = expense.description
-        payload["date"] = Timestamp(date: expense.date)
-        payload["totalAmount"] = expense.totalAmount
-        payload["paidByMemberId"] = expense.paidByMemberId.uuidString
-        payload["involvedMemberIds"] = expense.involvedMemberIds.map { $0.uuidString }
-        payload["splits"] = expense.splits.map { split in
-            return [
-                "id": split.id.uuidString,
-                "memberId": split.memberId.uuidString,
-                "amount": split.amount,
-                "isSettled": split.isSettled
-            ]
-        }
-        payload["isSettled"] = expense.isSettled
-        payload["ownerEmail"] = ownerEmail
-        payload["ownerAccountId"] = ownerAccountId
-        payload["participantMemberIds"] = expense.involvedMemberIds.map { $0.uuidString }
-        payload["participants"] = participants.map { participant in
-            var data: [String: Any] = [
-                "memberId": participant.memberId.uuidString,
-                "name": participant.name
-            ]
-            data["linkedAccountId"] = participant.linkedAccountId ?? NSNull()
-            data["linkedAccountEmail"] = participant.linkedAccountEmail?.lowercased() ?? NSNull()
-            return data
-        }
-        let linkedParticipants: [[String: Any]] = participants.compactMap { participant in
+    ) -> ExpenseRow {
+        let linkedParticipants: [ExpenseParticipantRow] = participants.compactMap { participant in
             guard participant.linkedAccountId != nil || participant.linkedAccountEmail != nil else {
                 return nil
             }
-            return [
-                "memberId": participant.memberId.uuidString,
-                "linkedAccountId": participant.linkedAccountId as Any? ?? NSNull(),
-                "linkedAccountEmail": participant.linkedAccountEmail?.lowercased() as Any? ?? NSNull(),
-                "name": participant.name
-            ]
+            return ExpenseParticipantRow(
+                memberId: participant.memberId,
+                name: participant.name,
+                linkedAccountId: participant.linkedAccountId,
+                linkedAccountEmail: participant.linkedAccountEmail?.lowercased()
+            )
         }
-        payload["linkedParticipants"] = linkedParticipants
-        payload["createdAt"] = Timestamp(date: expense.date)
-        payload["updatedAt"] = Timestamp(date: Date())
-        return payload
+
+        return ExpenseRow(
+            id: expense.id,
+            groupId: expense.groupId,
+            description: expense.description,
+            date: expense.date,
+            totalAmount: expense.totalAmount,
+            paidByMemberId: expense.paidByMemberId,
+            involvedMemberIds: expense.involvedMemberIds,
+            splits: expense.splits.map { split in
+                ExpenseSplitRow(
+                    id: split.id,
+                    memberId: split.memberId,
+                    amount: split.amount,
+                    isSettled: split.isSettled
+                )
+            },
+            isSettled: expense.isSettled,
+            ownerEmail: ownerEmail,
+            ownerAccountId: ownerAccountId,
+            participantMemberIds: expense.involvedMemberIds,
+            participants: participants.map { participant in
+                ExpenseParticipantRow(
+                    memberId: participant.memberId,
+                    name: participant.name,
+                    linkedAccountId: participant.linkedAccountId,
+                    linkedAccountEmail: participant.linkedAccountEmail?.lowercased()
+                )
+            },
+            linkedParticipants: linkedParticipants.isEmpty ? nil : linkedParticipants,
+            createdAt: expense.date,
+            updatedAt: Date(),
+            isPayBackGeneratedMockData: nil
+        )
     }
 
-    private func expense(from document: DocumentSnapshot) -> Expense? {
-        guard let data = document.data(),
-              let groupIdString = data["groupId"] as? String,
-              let description = data["description"] as? String,
-              let dateValue = data["date"],
-              let totalAmount = data["totalAmount"] as? Double,
-              let paidByString = data["paidByMemberId"] as? String,
-              let involved = data["involvedMemberIds"] as? [String],
-              let splitsArray = data["splits"] as? [[String: Any]]
-        else {
-            return nil
+    private func expense(from row: ExpenseRow) -> Expense? {
+        let splits: [ExpenseSplit] = row.splits.map { split in
+            ExpenseSplit(id: split.id, memberId: split.memberId, amount: split.amount, isSettled: split.isSettled)
         }
 
-        let date: Date
-        if let timestamp = dateValue as? Timestamp {
-            date = timestamp.dateValue()
-        } else {
-            date = Date()
-        }
-
-        let groupId = UUID(uuidString: groupIdString) ?? UUID()
-        let paidBy = UUID(uuidString: paidByString) ?? UUID()
-        let involvedIds = involved.compactMap { UUID(uuidString: $0) }
-
-        let splits: [ExpenseSplit] = splitsArray.compactMap { item in
-            guard let idString = item["id"] as? String,
-                  let memberIdString = item["memberId"] as? String,
-                  let amount = item["amount"] as? Double,
-                  let isSettled = item["isSettled"] as? Bool,
-                  let splitId = UUID(uuidString: idString),
-                  let memberId = UUID(uuidString: memberIdString) else {
-                return nil
-            }
-            return ExpenseSplit(id: splitId, memberId: memberId, amount: amount, isSettled: isSettled)
-        }
-
-        let isSettled = data["isSettled"] as? Bool ?? splits.allSatisfy { $0.isSettled }
+        let isSettled = row.isSettled || splits.allSatisfy { $0.isSettled }
 
         var participantNames: [UUID: String] = [:]
-        if let participantsArray = data["participants"] as? [[String: Any]] {
-            for participant in participantsArray {
-                guard let idString = participant["memberId"] as? String,
-                      let memberId = UUID(uuidString: idString),
-                      let rawName = participant["name"] as? String else {
-                    continue
-                }
-                let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { continue }
-                participantNames[memberId] = trimmed
-            }
+        for participant in row.participants {
+            let trimmed = participant.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            participantNames[participant.memberId] = trimmed
         }
 
         return Expense(
-            id: UUID(uuidString: document.documentID) ?? UUID(),
-            groupId: groupId,
-            description: description,
-            date: date,
-            totalAmount: totalAmount,
-            paidByMemberId: paidBy,
-            involvedMemberIds: involvedIds,
+            id: row.id,
+            groupId: row.groupId,
+            description: row.description,
+            date: row.date,
+            totalAmount: row.totalAmount,
+            paidByMemberId: row.paidByMemberId,
+            involvedMemberIds: row.involvedMemberIds,
             splits: splits,
             isSettled: isSettled,
             participantNames: participantNames.isEmpty ? nil : participantNames
         )
+    }
+
+    private func userContext() async throws -> SupabaseUserContext {
+        guard SupabaseClientProvider.isConfigured else {
+            throw ExpenseCloudServiceError.userNotAuthenticated
+        }
+
+        do {
+            let session = try await client.auth.session
+            guard let email = session.user.email?.lowercased() else {
+                throw ExpenseCloudServiceError.userNotAuthenticated
+            }
+            return SupabaseUserContext(id: session.user.id.uuidString, email: email)
+        } catch {
+            throw ExpenseCloudServiceError.userNotAuthenticated
+        }
     }
 }
 
@@ -274,12 +296,12 @@ struct NoopExpenseCloudService: ExpenseCloudService {
 
 enum ExpenseCloudServiceProvider {
     static func makeService() -> ExpenseCloudService {
-        if FirebaseApp.app() != nil {
-            return FirestoreExpenseCloudService()
+        if let client = SupabaseClientProvider.client {
+            return SupabaseExpenseCloudService(client: client)
         }
 
         #if DEBUG
-        print("[Expenses] Firebase not configured – using NoopExpenseCloudService.")
+        print("[Expenses] Supabase not configured – using NoopExpenseCloudService.")
         #endif
         return NoopExpenseCloudService()
     }

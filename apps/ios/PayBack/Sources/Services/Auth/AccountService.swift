@@ -11,7 +11,7 @@ enum AccountServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .configurationMissing:
-            return "Authentication is not configured yet. Please add a Firebase configuration file."
+            return "Authentication is not configured yet. Provide Supabase credentials to continue."
         case .userNotFound:
             return "We couldn't find an account with that email address."
         case .duplicateAccount:

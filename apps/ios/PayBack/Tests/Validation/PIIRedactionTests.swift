@@ -174,18 +174,17 @@ final class PIIRedactionTests: XCTestCase {
                       "Second token should be redacted")
     }
     
-    func test_tokenRedaction_redactsFirebaseUIDs() {
+    func test_tokenRedaction_redactsSupabaseUserIds() {
         // Arrange
-        let firebaseUID = "abc123def456ghi789"
-        let logMessage = "User ID: \(firebaseUID)"
+        let supabaseUserId = UUID().uuidString
+        let logMessage = "User ID: \(supabaseUserId)"
         
         // Act
         let redacted = redactPII(logMessage)
         
         // Assert
-        // Firebase UIDs should be redacted if they look like identifiers
-        XCTAssertFalse(redacted.contains(firebaseUID), 
-                      "Firebase UID should be redacted")
+        XCTAssertFalse(redacted.contains(supabaseUserId),
+                      "Supabase user id should be redacted")
     }
     
     // MARK: - Error Message PII Tests
@@ -419,8 +418,7 @@ func redactPII(_ message: String) -> String {
         )
     }
     
-    // Redact Firebase UIDs (alphanumeric strings that look like identifiers)
-    // Firebase UIDs are typically 28 characters long, alphanumeric
+    // Redact Supabase user IDs (UUID strings that look like identifiers)
     // Match standalone alphanumeric strings between 18-30 characters
     let firebaseUIDPattern = "\\b[a-zA-Z0-9]{18,30}\\b"
     redacted = redacted.replacingOccurrences(

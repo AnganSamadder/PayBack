@@ -1,6 +1,5 @@
 import Foundation
-import FirebaseAuth
-import FirebaseCore
+import Supabase
 
 enum PhoneAuthServiceError: LocalizedError {
     case configurationMissing
@@ -11,7 +10,7 @@ enum PhoneAuthServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .configurationMissing:
-            return "Phone verification is not available. Check your Firebase setup and try again."
+            return "Phone verification is not available. Check your Supabase setup and try again."
         case .invalidCode:
             return "That code didn't match. Double-check the digits and try again."
         case .verificationFailed:
@@ -38,82 +37,100 @@ protocol PhoneAuthService {
     func signOut() throws
 }
 
-struct FirebasePhoneAuthService: PhoneAuthService {
+struct SupabasePhoneAuthService: PhoneAuthService {
+    private let client: SupabaseClient
+
+    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+        self.client = client
+    }
+
     func requestVerificationCode(for phoneNumber: String) async throws -> String {
-        guard FirebaseApp.app() != nil else {
+        guard SupabaseClientProvider.isConfigured else {
             throw PhoneAuthServiceError.configurationMissing
         }
-        #if DEV || DEBUG
-        // When running in environments without a phone auth emulator, fall back to mock behavior
+
+        #if DEBUG
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return try await MockPhoneAuthService().requestVerificationCode(for: phoneNumber)
         }
         #endif
 
-#if DEBUG
-        print("[PhoneAuthService] Requesting verification code for: \(phoneNumber)")
-#endif
-        return try await withCheckedThrowingContinuation { continuation in
-            PhoneAuthProvider.provider().verifyPhoneNumber(phoneNumber, uiDelegate: nil) { verificationID, error in
-                if let error {
-#if DEBUG
-                    print("[PhoneAuthService] verifyPhoneNumber failed: \(error.localizedDescription)")
-#endif
-                    continuation.resume(throwing: PhoneAuthServiceError.underlying(error))
-                    return
-                }
-
-                guard let verificationID else {
-                    continuation.resume(throwing: PhoneAuthServiceError.verificationFailed)
-                    return
-                }
-
-                continuation.resume(returning: verificationID)
-            }
+        do {
+            try await client.auth.signInWithOTP(phone: phoneNumber)
+            return phoneNumber
+        } catch {
+            throw mapError(error)
         }
     }
 
     func signIn(verificationID: String, smsCode: String) async throws -> PhoneVerificationSignInResult {
-        guard FirebaseApp.app() != nil else {
+        guard SupabaseClientProvider.isConfigured else {
             throw PhoneAuthServiceError.configurationMissing
         }
-        #if DEV || DEBUG
+
+        #if DEBUG
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return try await MockPhoneAuthService().signIn(verificationID: verificationID, smsCode: smsCode)
         }
         #endif
 
-        let credential = PhoneAuthProvider.provider().credential(withVerificationID: verificationID, verificationCode: smsCode)
-
-        let result: AuthDataResult = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AuthDataResult, Error>) in
-            Auth.auth().signIn(with: credential) { authResult, error in
-                if let error {
-                    let nsError = error as NSError
-                    if nsError.code == AuthErrorCode.invalidVerificationCode.rawValue {
-                        continuation.resume(throwing: PhoneAuthServiceError.invalidCode)
-                    } else {
-                        continuation.resume(throwing: PhoneAuthServiceError.underlying(error))
-                    }
-                    return
-                }
-
-                guard let authResult else {
-                    continuation.resume(throwing: PhoneAuthServiceError.verificationFailed)
-                    return
-                }
-
-                continuation.resume(returning: authResult)
-            }
+        do {
+            let response = try await client.auth.verifyOTP(
+                phone: verificationID,
+                token: smsCode,
+                type: .sms
+            )
+            let user = response.user
+            return PhoneVerificationSignInResult(
+                uid: user.id.uuidString,
+                phoneNumber: user.phone ?? verificationID
+            )
+        } catch {
+            throw mapError(error)
         }
-
-        return PhoneVerificationSignInResult(
-            uid: result.user.uid,
-            phoneNumber: result.user.phoneNumber
-        )
     }
 
     func signOut() throws {
-        try Auth.auth().signOut()
+        guard SupabaseClientProvider.isConfigured else { return }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var capturedError: Error?
+
+        Task {
+            do {
+                try await client.auth.signOut()
+            } catch {
+                capturedError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+        if let capturedError {
+            throw mapError(capturedError)
+        }
+    }
+
+    private func mapError(_ error: Error) -> Error {
+        if let authError = error as? AuthError {
+            switch authError {
+            case .sessionMissing:
+                return PhoneAuthServiceError.verificationFailed
+            case let .api(_, errorCode, _, _):
+                switch errorCode {
+                case .invalidCredentials, .otpExpired:
+                    return PhoneAuthServiceError.invalidCode
+                case .overRequestRateLimit, .overSMSSendRateLimit:
+                    return PhoneAuthServiceError.verificationFailed
+                default:
+                    return PhoneAuthServiceError.underlying(authError)
+                }
+            default:
+                return PhoneAuthServiceError.underlying(authError)
+            }
+        }
+
+        return PhoneAuthServiceError.underlying(error)
     }
 }
 
@@ -175,12 +192,12 @@ enum PhoneAuthServiceProvider {
     static func makeService() -> PhoneAuthService {
         // In test environments, prefer the mock to avoid hitting real phone auth
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
-           FirebaseApp.app() != nil {
-            return FirebasePhoneAuthService()
+           let client = SupabaseClientProvider.client {
+            return SupabasePhoneAuthService(client: client)
         }
 
 #if DEBUG
-        print("[Auth] Firebase not configured – using MockPhoneAuthService.")
+        print("[Auth] Supabase not configured – using MockPhoneAuthService.")
 #endif
         return MockPhoneAuthService()
     }

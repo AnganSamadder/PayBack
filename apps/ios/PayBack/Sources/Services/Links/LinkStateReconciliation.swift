@@ -8,7 +8,7 @@ actor LinkStateReconciliation {
     /// Reconciles link state for all friends
     /// - Parameters:
     ///   - localFriends: Current local friend list
-    ///   - remoteFriends: Friend list from Firestore
+    ///   - remoteFriends: Friend list from Supabase
     /// - Returns: Reconciled friend list with corrected link status
     func reconcile(
         localFriends: [AccountFriend],
