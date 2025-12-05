@@ -99,19 +99,21 @@ final class TabBarTests: XCTestCase {
     func test_tabSelection_guardPreventsTab2Selection() {
         // Test the guard logic for various starting tabs
         let startingTabs = [0, 1, 3, 4]
+        let fabSpacerTab = 2
         
         for startTab in startingTabs {
             var selectedTab = startTab
-            let attemptedTab = 2 // FAB spacer
+            let attemptedTab = fabSpacerTab
             
             // Guard logic from RootView - only update if NOT the FAB spacer
-            if attemptedTab != 2 {
-                selectedTab = attemptedTab
+            guard attemptedTab != fabSpacerTab else {
+                // If attemptedTab == FAB spacer, selectedTab stays the same (don't update)
+                XCTAssertEqual(selectedTab, startTab, 
+                    "Attempting to select tab 2 from tab \(startTab) should keep tab \(startTab)")
+                continue
             }
-            // If attemptedTab == 2, selectedTab stays the same (don't update)
-            
-            XCTAssertEqual(selectedTab, startTab, 
-                "Attempting to select tab 2 from tab \(startTab) should keep tab \(startTab)")
+            selectedTab = attemptedTab
+            XCTFail("Should not reach here when attemptedTab is FAB spacer")
         }
     }
     

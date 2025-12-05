@@ -398,8 +398,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
-        try await Task.sleep(nanoseconds: 100_000_000)
         
         let memberId = UUID()
         let friend = AccountFriend(
@@ -411,9 +409,14 @@ final class AppStoreDataNormalizationTests: XCTestCase {
             linkedAccountEmail: nil
         )
         
+        // Sync friends BEFORE authentication so fetchFriends retrieves them
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [friend])
-        sut.addGroup(name: "Test", memberNames: ["Alice Smith"])
+        
+        sut.completeAuthentication(with: session)
         try await Task.sleep(nanoseconds: 300_000_000)
+        
+        sut.addGroup(name: "Test", memberNames: ["Alice Smith"])
+        try await Task.sleep(nanoseconds: 100_000_000)
         
         // When - check friend members
         let friends = sut.friendMembers
@@ -426,8 +429,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
-        try await Task.sleep(nanoseconds: 100_000_000)
         
         let memberId = UUID()
         let friend = AccountFriend(
@@ -439,9 +440,14 @@ final class AppStoreDataNormalizationTests: XCTestCase {
             linkedAccountEmail: nil
         )
         
+        // Sync friends BEFORE authentication so fetchFriends retrieves them
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [friend])
-        sut.addGroup(name: "Test", memberNames: ["Alice Smith"])
+        
+        sut.completeAuthentication(with: session)
         try await Task.sleep(nanoseconds: 300_000_000)
+        
+        sut.addGroup(name: "Test", memberNames: ["Alice Smith"])
+        try await Task.sleep(nanoseconds: 100_000_000)
         
         // When - check friend members
         let friends = sut.friendMembers
