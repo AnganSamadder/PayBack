@@ -186,18 +186,18 @@ private struct InviteTokenRow: Codable {
     }
 }
 
-private struct SupabaseUserContext {
-    let id: String
-    let email: String
-}
-
 /// Supabase implementation of InviteLinkService
 final class SupabaseInviteLinkService: InviteLinkService {
     private let client: SupabaseClient
     private let table = "invite_tokens"
+    private let userContextProvider: () async throws -> SupabaseUserContext
     
-    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+    init(
+        client: SupabaseClient = SupabaseClientProvider.client!,
+        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+    ) {
         self.client = client
+        self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
     }
     
     func generateInviteLink(
@@ -299,7 +299,7 @@ final class SupabaseInviteLinkService: InviteLinkService {
     }
     
     func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
-        let context = try await userContext()
+        let context = try await userContextProvider()
         
         let response: PostgrestResponse<[InviteTokenRow]> = try await client
             .from(table)
@@ -347,7 +347,7 @@ final class SupabaseInviteLinkService: InviteLinkService {
     }
     
     func fetchActiveInvites() async throws -> [InviteToken] {
-        let context = try await userContext()
+        let context = try await userContextProvider()
         let now = Date()
         
         let snapshot: PostgrestResponse<[InviteTokenRow]> = try await client
@@ -362,7 +362,7 @@ final class SupabaseInviteLinkService: InviteLinkService {
     }
     
     func revokeInvite(_ tokenId: UUID) async throws {
-        let context = try await userContext()
+        let context = try await userContextProvider()
         
         let snapshot: PostgrestResponse<[InviteTokenRow]> = try await client
             .from(table)
@@ -403,16 +403,8 @@ final class SupabaseInviteLinkService: InviteLinkService {
     }
     
     private func userContext() async throws -> SupabaseUserContext {
-        guard SupabaseClientProvider.isConfigured else {
-            throw LinkingError.unauthorized
-        }
-        
         do {
-            let session = try await client.auth.session
-            guard let email = session.user.email?.lowercased() else {
-                throw LinkingError.unauthorized
-            }
-            return SupabaseUserContext(id: session.user.id.uuidString, email: email)
+            return try await userContextProvider()
         } catch {
             throw LinkingError.unauthorized
         }

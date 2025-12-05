@@ -2,67 +2,34 @@ name: iOS CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "supabase"]
   pull_request:
-    branches: ["main"]
-
-env:
-  GOOGLE_SERVICE_PLIST: |
-    <?xml version="1.0" encoding="UTF-8"?>
-    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-    <plist version="1.0">
-    <dict>
-      <key>CLIENT_ID</key>
-      <string>dummy-client-id</string>
-      <key>REVERSED_CLIENT_ID</key>
-      <string>com.googleusercontent.apps.dummy</string>
-      <key>API_KEY</key>
-      <string>dummy-api-key</string>
-      <key>GCM_SENDER_ID</key>
-      <string>123456789</string>
-      <key>PLIST_VERSION</key>
-      <string>1</string>
-      <key>BUNDLE_ID</key>
-      <string>com.angansamadder.PayBack</string>
-      <key>PROJECT_ID</key>
-      <string>dummy-project-id</string>
-      <key>STORAGE_BUCKET</key>
-      <string>dummy-bucket.appspot.com</string>
-      <key>IS_ADS_ENABLED</key>
-      <false/>
-      <key>IS_ANALYTICS_ENABLED</key>
-      <false/>
-      <key>IS_APPINVITE_ENABLED</key>
-      <false/>
-      <key>IS_GCM_ENABLED</key>
-      <true/>
-      <key>IS_SIGNIN_ENABLED</key>
-      <true/>
-      <key>GOOGLE_APP_ID</key>
-      <string>1:123456789:ios:dummy</string>
-    </dict>
-    </plist>
+    branches: ["main", "supabase"]
 
 jobs:
   build-and-test:
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create GoogleService-Info.plist
+      - name: Create Supabase Environment
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          cat <<EOF > apps/ios/PayBack/GoogleService-Info.plist
-          ${GOOGLE_SERVICE_PLIST}
+          # Use test/mock values if secrets are not set (for PRs from forks)
+          SUPABASE_URL="${SUPABASE_URL:-https://example.supabase.co}"
+          SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY:-test-anon-key-for-ci}"
+          
+          cat > .env.supabase.local <<EOF
+          SUPABASE_URL=${SUPABASE_URL}
+          SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
           EOF
-          echo "Created GoogleService-Info.plist for CI"
-
-      - name: Verify GoogleService-Info.plist
-        run: |
-          ls -la apps/ios/PayBack/GoogleService-Info.plist
-          plutil -p apps/ios/PayBack/GoogleService-Info.plist | head
+          
+          echo "✅ Created .env.supabase.local for CI build"
 
       - name: Detect latest stable Xcode (not beta)
         id: detect-xcode
@@ -90,7 +57,6 @@ jobs:
       - name: Detect iOS SDK Version
         id: detect-sdk
         run: |
-          # Get the iOS SDK version from xcodebuild
           SDK_VERSION=$(xcodebuild -showsdks | grep -o 'iphoneos[0-9]*\.[0-9]*' | sed 's/iphoneos//' | sort -V | tail -1)
           if [ -z "$SDK_VERSION" ]; then
             echo "ERROR: Could not detect iOS SDK version"
@@ -115,8 +81,9 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/Developer/Xcode/DerivedData
-          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
+          key: ${{ runner.os }}-spm-supabase-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
           restore-keys: |
+            ${{ runner.os }}-spm-supabase-
             ${{ runner.os }}-spm-
 
       - name: Install xcpretty
@@ -147,13 +114,11 @@ jobs:
             for token in version_raw.split('.'):
               token = ''.join(ch for ch in token if ch.isdigit()) or '0'
               parts.append(int(token))
-            # Only accept simulators matching the SDK major version (e.g., iOS 26.x for Xcode 26)
             if parts and parts[0] != target_major:
               return (), ""
             return tuple(parts), version_raw
 
           def get_device_priority(name: str):
-            # Higher number = better device (prefer latest, non-SE models)
             if "Pro Max" in name:
               return 100
             if "Pro" in name:
@@ -163,28 +128,21 @@ jobs:
             if "Air" in name:
               return 70
             if name.startswith("iPhone ") and name.split()[1].isdigit():
-              return 60  # iPhone 17, iPhone 16, etc.
+              return 60
             if "SE" in name:
-              return 10  # Lowest priority
+              return 10
             return 50
 
           def pick_preferred(candidates):
-            # Sort by: 1) iOS version (highest first), 2) device priority, 3) name
             def sorter(entry):
               version_tuple, name, udid, version_str = entry
               return (version_tuple, get_device_priority(name), name)
-            
             sorted_candidates = sorted(candidates, key=sorter, reverse=True)
             return sorted_candidates[0]
 
           try:
             result = subprocess.check_output([
-              "xcrun",
-              "simctl",
-              "list",
-              "devices",
-              "available",
-              "--json",
+              "xcrun", "simctl", "list", "devices", "available", "--json",
             ])
           except subprocess.CalledProcessError as exc:
             print(f"Failed to list simulators: {exc}", file=sys.stderr)
@@ -254,9 +212,6 @@ jobs:
         env:
           NSUnbufferedIO: "YES"
 
-      - name: Test (skipped)
-        run: echo "Skipping xcodebuild test for PayBack scheme; tests run in unit-tests job"
-
       - name: Install SwiftLint
         run: |
           brew update
@@ -268,7 +223,7 @@ jobs:
   unit-tests:
     name: Unit Tests (${{ matrix.sanitizer }})
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -278,18 +233,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create GoogleService-Info.plist
+      - name: Create Supabase Environment
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          cat <<EOF > apps/ios/PayBack/GoogleService-Info.plist
-          ${GOOGLE_SERVICE_PLIST}
+          # Use test/mock values if secrets are not set (for PRs from forks)
+          SUPABASE_URL="${SUPABASE_URL:-https://example.supabase.co}"
+          SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY:-test-anon-key-for-ci}"
+          
+          cat > .env.supabase.local <<EOF
+          SUPABASE_URL=${SUPABASE_URL}
+          SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
           EOF
-          echo "Created GoogleService-Info.plist for CI"
+          
+          echo "✅ Created .env.supabase.local for CI tests"
 
       - name: Detect latest stable Xcode (not beta)
         id: detect-xcode
         run: |
-          # Get all stable Xcode versions (format: Xcode_16.1.app, not Xcode_26.1_Release_Candidate.app)
-          # Exclude Xcode 26.x until it's production-ready (currently RC with iOS destination issues)
           LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | grep -v "^Xcode_26\." | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
           if [ -z "$LATEST_STABLE" ]; then
             echo "ERROR: No stable Xcode version found in /Applications"
@@ -298,7 +260,6 @@ jobs:
             exit 1
           fi
           echo "version=$LATEST_STABLE" >> $GITHUB_OUTPUT
-          echo "Using Xcode $LATEST_STABLE"$GITHUB_OUTPUT
           echo "Using Xcode $LATEST_STABLE"
 
       - name: Set up Xcode
@@ -312,7 +273,6 @@ jobs:
       - name: Detect iOS SDK Version
         id: detect-sdk
         run: |
-          # Get the iOS SDK version from xcodebuild
           SDK_VERSION=$(xcodebuild -showsdks | grep -o 'iphoneos[0-9]*\.[0-9]*' | sed 's/iphoneos//' | sort -V | tail -1)
           if [ -z "$SDK_VERSION" ]; then
             echo "ERROR: Could not detect iOS SDK version"
@@ -337,43 +297,13 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/Developer/Xcode/DerivedData
-          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
+          key: ${{ runner.os }}-spm-supabase-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
           restore-keys: |
+            ${{ runner.os }}-spm-supabase-
             ${{ runner.os }}-spm-
-
-      - name: Cache Firebase Emulators
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/firebase/emulators
-          key: ${{ runner.os }}-firebase-emulators-${{ hashFiles('firebase.json') }}
-          restore-keys: |
-            ${{ runner.os }}-firebase-emulators-
 
       - name: Install xcpretty
         run: sudo gem install xcpretty --no-document
-
-      - name: Install Firebase CLI
-        run: |
-          npm install -g firebase-tools
-          firebase --version
-
-      - name: Start Firebase Emulators
-        run: |
-          firebase emulators:start --only auth,firestore --project demo-test &
-          echo "Waiting for emulators to start..."
-          timeout=60
-          elapsed=0
-          while [ $elapsed -lt $timeout ]; do
-            if curl -s http://localhost:9099/ > /dev/null && curl -s http://localhost:8080/ > /dev/null; then
-              echo "Firebase emulators started successfully."
-              exit 0
-            fi
-            sleep 2
-            elapsed=$((elapsed + 2))
-            echo "Waiting... ($elapsed/$timeout seconds)"
-          done
-          echo "Timed out waiting for emulators to start."
-          exit 1
 
       - name: Resolve dependencies
         run: |
@@ -402,16 +332,14 @@ jobs:
               return (), ""
             version_raw = runtime.split(".iOS-")[-1].replace("-", ".")
             parts = []
-            for token in version_raw.split('.'):  # prefer numeric tokens only
+            for token in version_raw.split('.'):
               token = ''.join(ch for ch in token if ch.isdigit()) or '0'
               parts.append(int(token))
-            # Only accept simulators matching the SDK major version (e.g., iOS 26.x for Xcode 26)
             if parts and parts[0] != target_major:
               return (), ""
             return tuple(parts), version_raw
 
           def get_device_priority(name: str):
-            # Higher number = better device (prefer latest, non-SE models)
             if "Pro Max" in name:
               return 100
             if "Pro" in name:
@@ -421,28 +349,21 @@ jobs:
             if "Air" in name:
               return 70
             if name.startswith("iPhone ") and name.split()[1].isdigit():
-              return 60  # iPhone 17, iPhone 16, etc.
+              return 60
             if "SE" in name:
-              return 10  # Lowest priority
+              return 10
             return 50
 
           def pick_preferred(candidates):
-            # Sort by: 1) iOS version (highest first), 2) device priority, 3) name
             def sorter(entry):
               version_tuple, name, udid, version_str = entry
               return (version_tuple, get_device_priority(name), name)
-            
             sorted_candidates = sorted(candidates, key=sorter, reverse=True)
             return sorted_candidates[0]
 
           try:
             result = subprocess.check_output([
-              "xcrun",
-              "simctl",
-              "list",
-              "devices",
-              "available",
-              "--json",
+              "xcrun", "simctl", "list", "devices", "available", "--json",
             ])
           except subprocess.CalledProcessError as exc:
             print(f"Failed to list simulators: {exc}", file=sys.stderr)
@@ -535,7 +456,6 @@ jobs:
           echo "## Skipped Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Extract skipped test count from the output
           SKIPPED_COUNT=$(grep -o "with [0-9]* tests skipped" test-output.txt | grep -o "[0-9]*" | head -1)
           if [ -z "$SKIPPED_COUNT" ]; then SKIPPED_COUNT=0; fi
           echo "**Total Skipped: $SKIPPED_COUNT tests**" >> $GITHUB_STEP_SUMMARY
@@ -546,7 +466,6 @@ jobs:
             echo "<summary>Click to see which tests were skipped</summary>" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            # Find test classes/methods that were skipped
             grep "◷\|Skipped" test-output.txt | head -100 >> $GITHUB_STEP_SUMMARY || echo "Could not extract skipped test details" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "</details>" >> $GITHUB_STEP_SUMMARY
@@ -641,9 +560,3 @@ jobs:
             coverage.json
             coverage-report.txt
           retention-days: 30
-
-      - name: Stop Firebase Emulators
-        if: always()
-        run: |
-          pkill -f "firebase.*emulators" || true
-          echo "Firebase emulators stopped"

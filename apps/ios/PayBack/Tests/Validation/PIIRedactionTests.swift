@@ -420,9 +420,9 @@ func redactPII(_ message: String) -> String {
     
     // Redact Supabase user IDs (UUID strings that look like identifiers)
     // Match standalone alphanumeric strings between 18-30 characters
-    let firebaseUIDPattern = "\\b[a-zA-Z0-9]{18,30}\\b"
+    let supabaseUIDPattern = "\\b[a-zA-Z0-9]{18,30}\\b"
     redacted = redacted.replacingOccurrences(
-        of: firebaseUIDPattern,
+        of: supabaseUIDPattern,
         with: "[UID]",
         options: .regularExpression
     )

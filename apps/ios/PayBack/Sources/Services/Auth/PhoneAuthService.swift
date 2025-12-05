@@ -1,7 +1,7 @@
 import Foundation
 import Supabase
 
-enum PhoneAuthServiceError: LocalizedError {
+enum PhoneAuthServiceError: LocalizedError, Equatable {
     case configurationMissing
     case invalidCode
     case verificationFailed
@@ -19,6 +19,19 @@ enum PhoneAuthServiceError: LocalizedError {
             return error.localizedDescription
         }
     }
+    
+    static func == (lhs: PhoneAuthServiceError, rhs: PhoneAuthServiceError) -> Bool {
+        switch (lhs, rhs) {
+        case (.configurationMissing, .configurationMissing),
+             (.invalidCode, .invalidCode),
+             (.verificationFailed, .verificationFailed):
+            return true
+        case (.underlying, .underlying):
+            return true // Just check the case matches, not the underlying error
+        default:
+            return false
+        }
+    }
 }
 
 enum PhoneVerificationIntent: Equatable {
@@ -31,6 +44,28 @@ struct PhoneVerificationSignInResult {
     let phoneNumber: String?
 }
 
+protocol PhoneAuthProviding {
+    func signInWithOTP(phone: String) async throws
+    func verifyOTP(phone: String, token: String, type: MobileOTPType) async throws -> AuthResponse
+    func signOut() async throws
+}
+
+private struct SupabasePhoneAuthProvider: PhoneAuthProviding {
+    let client: SupabaseClient
+
+    func signInWithOTP(phone: String) async throws {
+        try await client.auth.signInWithOTP(phone: phone)
+    }
+
+    func verifyOTP(phone: String, token: String, type: MobileOTPType) async throws -> AuthResponse {
+        try await client.auth.verifyOTP(phone: phone, token: token, type: type)
+    }
+
+    func signOut() async throws {
+        try await client.auth.signOut()
+    }
+}
+
 protocol PhoneAuthService {
     func requestVerificationCode(for phoneNumber: String) async throws -> String
     func signIn(verificationID: String, smsCode: String) async throws -> PhoneVerificationSignInResult
@@ -39,24 +74,26 @@ protocol PhoneAuthService {
 
 struct SupabasePhoneAuthService: PhoneAuthService {
     private let client: SupabaseClient
+    private let authProvider: PhoneAuthProviding
+    private let skipConfigurationCheck: Bool
 
-    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+    init(
+        client: SupabaseClient = SupabaseClientProvider.client!,
+        authProvider: PhoneAuthProviding? = nil,
+        skipConfigurationCheck: Bool = false
+    ) {
         self.client = client
+        self.authProvider = authProvider ?? SupabasePhoneAuthProvider(client: client)
+        self.skipConfigurationCheck = skipConfigurationCheck
     }
 
     func requestVerificationCode(for phoneNumber: String) async throws -> String {
-        guard SupabaseClientProvider.isConfigured else {
+        guard skipConfigurationCheck || SupabaseClientProvider.isConfigured else {
             throw PhoneAuthServiceError.configurationMissing
         }
 
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-            return try await MockPhoneAuthService().requestVerificationCode(for: phoneNumber)
-        }
-        #endif
-
         do {
-            try await client.auth.signInWithOTP(phone: phoneNumber)
+            try await authProvider.signInWithOTP(phone: phoneNumber)
             return phoneNumber
         } catch {
             throw mapError(error)
@@ -64,23 +101,23 @@ struct SupabasePhoneAuthService: PhoneAuthService {
     }
 
     func signIn(verificationID: String, smsCode: String) async throws -> PhoneVerificationSignInResult {
-        guard SupabaseClientProvider.isConfigured else {
+        guard skipConfigurationCheck || SupabaseClientProvider.isConfigured else {
             throw PhoneAuthServiceError.configurationMissing
         }
 
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-            return try await MockPhoneAuthService().signIn(verificationID: verificationID, smsCode: smsCode)
-        }
-        #endif
-
         do {
-            let response = try await client.auth.verifyOTP(
+            let response = try await authProvider.verifyOTP(
                 phone: verificationID,
                 token: smsCode,
                 type: .sms
             )
-            let user = response.user
+            let user: User
+            switch response {
+            case .session(let session):
+                user = session.user
+            case .user(let u):
+                user = u
+            }
             return PhoneVerificationSignInResult(
                 uid: user.id.uuidString,
                 phoneNumber: user.phone ?? verificationID
@@ -91,14 +128,14 @@ struct SupabasePhoneAuthService: PhoneAuthService {
     }
 
     func signOut() throws {
-        guard SupabaseClientProvider.isConfigured else { return }
+        guard skipConfigurationCheck || SupabaseClientProvider.isConfigured else { return }
 
         let semaphore = DispatchSemaphore(value: 0)
         var capturedError: Error?
 
         Task {
             do {
-                try await client.auth.signOut()
+                try await authProvider.signOut()
             } catch {
                 capturedError = error
             }

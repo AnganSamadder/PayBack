@@ -224,19 +224,18 @@ private struct LinkRequestRow: Codable {
     }
 }
 
-private struct SupabaseUserContext {
-    let id: String
-    let email: String
-    let name: String
-}
-
 /// Supabase implementation of LinkRequestService
 final class SupabaseLinkRequestService: LinkRequestService {
     private let client: SupabaseClient
     private let table = "link_requests"
+    private let userContextProvider: () async throws -> SupabaseUserContext
     
-    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+    init(
+        client: SupabaseClient = SupabaseClientProvider.client!,
+        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+    ) {
         self.client = client
+        self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
     }
     
     func createLinkRequest(
@@ -268,7 +267,7 @@ final class SupabaseLinkRequestService: LinkRequestService {
             id: UUID(),
             requesterId: context.id,
             requesterEmail: context.email,
-            requesterName: context.name,
+            requesterName: context.name ?? context.email,
             recipientEmail: normalizedRecipientEmail,
             targetMemberId: targetMemberId,
             targetMemberName: targetMemberName,
@@ -468,30 +467,15 @@ final class SupabaseLinkRequestService: LinkRequestService {
             rejectedAt: row.rejectedAt
         )
     }
-    
+
     private func userContext() async throws -> SupabaseUserContext {
-        guard SupabaseClientProvider.isConfigured else {
-            throw LinkingError.unauthorized
-        }
-        
         do {
-            let session = try await client.auth.session
-            guard let email = session.user.email?.lowercased() else {
-                throw LinkingError.unauthorized
-            }
-            let name: String
-            if let display = session.user.userMetadata["display_name"], case let .string(value) = display, !value.isEmpty {
-                name = value
-            } else if let email = session.user.email, let prefix = email.split(separator: "@").first {
-                name = String(prefix)
-            } else {
-                name = "Unknown"
-            }
-            return SupabaseUserContext(id: session.user.id.uuidString, email: email, name: name)
+            return try await userContextProvider()
         } catch {
             throw LinkingError.unauthorized
         }
     }
+    
 }
 
 /// Provider for LinkRequestService that returns appropriate implementation

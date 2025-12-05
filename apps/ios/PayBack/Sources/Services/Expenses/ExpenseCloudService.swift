@@ -94,17 +94,25 @@ private struct ExpenseParticipantRow: Codable {
     }
 }
 
-private struct SupabaseUserContext {
-    let id: String
-    let email: String
-}
-
 struct SupabaseExpenseCloudService: ExpenseCloudService {
     private let client: SupabaseClient
     private let table = "expenses"
+    private let userContextProvider: () async throws -> SupabaseUserContext
 
-    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+    init(
+        client: SupabaseClient = SupabaseClientProvider.client!,
+        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+    ) {
         self.client = client
+        self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
+    }
+
+    private func userContext() async throws -> SupabaseUserContext {
+        do {
+            return try await userContextProvider()
+        } catch {
+            throw ExpenseCloudServiceError.userNotAuthenticated
+        }
     }
 
     func fetchExpenses() async throws -> [Expense] {
@@ -270,21 +278,6 @@ struct SupabaseExpenseCloudService: ExpenseCloudService {
         )
     }
 
-    private func userContext() async throws -> SupabaseUserContext {
-        guard SupabaseClientProvider.isConfigured else {
-            throw ExpenseCloudServiceError.userNotAuthenticated
-        }
-
-        do {
-            let session = try await client.auth.session
-            guard let email = session.user.email?.lowercased() else {
-                throw ExpenseCloudServiceError.userNotAuthenticated
-            }
-            return SupabaseUserContext(id: session.user.id.uuidString, email: email)
-        } catch {
-            throw ExpenseCloudServiceError.userNotAuthenticated
-        }
-    }
 }
 
 struct NoopExpenseCloudService: ExpenseCloudService {

@@ -45,17 +45,25 @@ private struct GroupMemberRow: Codable {
     let name: String
 }
 
-private struct SupabaseUserContext {
-    let id: String
-    let email: String
-}
-
 struct SupabaseGroupCloudService: GroupCloudService {
     private let client: SupabaseClient
     private let table = "groups"
+    private let userContextProvider: () async throws -> SupabaseUserContext
 
-    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+    init(
+        client: SupabaseClient = SupabaseClientProvider.client!,
+        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+    ) {
         self.client = client
+        self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
+    }
+
+    private func userContext() async throws -> SupabaseUserContext {
+        do {
+            return try await userContextProvider()
+        } catch {
+            throw GroupCloudServiceError.userNotAuthenticated
+        }
     }
 
     func fetchGroups() async throws -> [SpendingGroup] {
@@ -135,21 +143,6 @@ struct SupabaseGroupCloudService: GroupCloudService {
         )
     }
 
-    private func userContext() async throws -> SupabaseUserContext {
-        guard SupabaseClientProvider.isConfigured else {
-            throw GroupCloudServiceError.userNotAuthenticated
-        }
-
-        do {
-            let session = try await client.auth.session
-            guard let email = session.user.email?.lowercased() else {
-                throw GroupCloudServiceError.userNotAuthenticated
-            }
-            return SupabaseUserContext(id: session.user.id.uuidString, email: email)
-        } catch {
-            throw GroupCloudServiceError.userNotAuthenticated
-        }
-    }
 }
 
 enum GroupCloudServiceProvider {

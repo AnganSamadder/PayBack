@@ -59,18 +59,53 @@ protocol EmailAuthService {
     func signOut() throws
 }
 
+protocol EmailAuthProviding {
+    func signIn(email: String, password: String) async throws -> Session
+    func signUp(email: String, password: String, data: [String: AnyJSON]?) async throws -> User
+    func resetPasswordForEmail(_ email: String) async throws
+    func signOut() async throws
+}
+
+private struct SupabaseEmailAuthProvider: EmailAuthProviding {
+    let client: SupabaseClient
+
+    func signIn(email: String, password: String) async throws -> Session {
+        try await client.auth.signIn(email: email, password: password)
+    }
+
+    func signUp(email: String, password: String, data: [String: AnyJSON]?) async throws -> User {
+        try await client.auth.signUp(email: email, password: password, data: data).user
+    }
+
+    func resetPasswordForEmail(_ email: String) async throws {
+        try await client.auth.resetPasswordForEmail(email)
+    }
+
+    func signOut() async throws {
+        try await client.auth.signOut()
+    }
+}
+
 struct SupabaseEmailAuthService: EmailAuthService {
     private let client: SupabaseClient
+    private let authProvider: EmailAuthProviding
+    private let skipConfigurationCheck: Bool
 
-    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+    init(
+        client: SupabaseClient = SupabaseClientProvider.client!,
+        authProvider: EmailAuthProviding? = nil,
+        skipConfigurationCheck: Bool = false
+    ) {
         self.client = client
+        self.authProvider = authProvider ?? SupabaseEmailAuthProvider(client: client)
+        self.skipConfigurationCheck = skipConfigurationCheck
     }
 
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
         try ensureConfigured()
 
         do {
-            let session = try await client.auth.signIn(email: email, password: password)
+            let session = try await authProvider.signIn(email: email, password: password)
             let displayName = resolvedDisplayName(from: session.user, fallback: nil)
             return EmailAuthSignInResult(
                 uid: session.user.id.uuidString,
@@ -86,13 +121,7 @@ struct SupabaseEmailAuthService: EmailAuthService {
         try ensureConfigured()
 
         do {
-            let response = try await client.auth.signUp(
-                email: email,
-                password: password,
-                data: ["display_name": .string(displayName)]
-            )
-
-            let user = response.user
+            let user = try await authProvider.signUp(email: email, password: password, data: ["display_name": .string(displayName)])
             let resolvedName = resolvedDisplayName(from: user, fallback: displayName)
 
             return EmailAuthSignInResult(
@@ -108,7 +137,7 @@ struct SupabaseEmailAuthService: EmailAuthService {
     func sendPasswordReset(email: String) async throws {
         try ensureConfigured()
         do {
-            try await client.auth.resetPasswordForEmail(email)
+            try await authProvider.resetPasswordForEmail(email)
         } catch {
             throw mapError(error)
         }
@@ -121,7 +150,7 @@ struct SupabaseEmailAuthService: EmailAuthService {
 
         Task {
             do {
-                try await client.auth.signOut()
+                try await authProvider.signOut()
             } catch {
                 capturedError = error
             }
@@ -146,7 +175,7 @@ struct SupabaseEmailAuthService: EmailAuthService {
     }
 
     private func ensureConfigured() throws {
-        guard SupabaseClientProvider.isConfigured else {
+        guard skipConfigurationCheck || SupabaseClientProvider.isConfigured else {
             throw EmailAuthServiceError.configurationMissing
         }
     }

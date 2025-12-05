@@ -61,9 +61,14 @@ final class SupabaseAccountService: AccountService {
     private let client: SupabaseClient
     private let table = "accounts"
     private let friendsTable = "account_friends"
+    private let userContextProvider: () async throws -> SupabaseUserContext
 
-    init(client: SupabaseClient = SupabaseClientProvider.client!) {
+    init(
+        client: SupabaseClient = SupabaseClientProvider.client!,
+        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+    ) {
         self.client = client
+        self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
     }
 
     func normalizedEmail(from rawValue: String) throws -> String {
@@ -110,7 +115,7 @@ final class SupabaseAccountService: AccountService {
 
             let createdAt = Date()
             let row = AccountRow(
-                id: context.id,
+                id: UUID(uuidString: context.id) ?? UUID(),
                 email: context.email,
                 displayName: displayName,
                 linkedMemberId: nil,
@@ -157,7 +162,7 @@ final class SupabaseAccountService: AccountService {
             _ = try await client
                 .from(table)
                 .update(payload, returning: .minimal)
-                .eq("id", value: context.id)
+                .eq("id", value: UUID(uuidString: context.id) ?? UUID())
                 .execute() as PostgrestResponse<Void>
         } catch {
             throw mapError(error)
@@ -304,17 +309,9 @@ final class SupabaseAccountService: AccountService {
         return .underlying(error)
     }
 
-    private func userContext() async throws -> (id: UUID, email: String) {
-        guard SupabaseClientProvider.isConfigured else {
-            throw AccountServiceError.userNotFound
-        }
-
+    private func userContext() async throws -> SupabaseUserContext {
         do {
-            let session = try await client.auth.session
-            guard let email = session.user.email?.lowercased() else {
-                throw AccountServiceError.userNotFound
-            }
-            return (session.user.id, email)
+            return try await userContextProvider()
         } catch {
             throw AccountServiceError.userNotFound
         }
