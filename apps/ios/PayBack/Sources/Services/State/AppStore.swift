@@ -1178,6 +1178,7 @@ final class AppStore: ObservableObject {
         let expenseIds = expenses.map { $0.id }
         groups.removeAll()
         expenses.removeAll()
+        friends.removeAll()
         persistCurrentState()
         Task {
             if !groupIds.isEmpty {
