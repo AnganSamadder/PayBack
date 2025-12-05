@@ -46,7 +46,7 @@ public protocol LinkRequestService {
     func cancelLinkRequest(_ requestId: UUID) async throws
 }
 
-/// Mock implementation for testing and when Firebase is not configured
+/// Mock implementation for testing and when Supabase is not configured
 public final class MockLinkRequestService: LinkRequestService {
     private static var requests: [UUID: LinkRequest] = [:]
     private static let queue = DispatchQueue(label: "com.payback.mockLinkRequestService", attributes: .concurrent)
@@ -194,17 +194,48 @@ public final class MockLinkRequestService: LinkRequestService {
     }
 }
 
-import FirebaseCore
-import FirebaseFirestore
-import FirebaseAuth
+import Supabase
 
-/// Firestore implementation of LinkRequestService
-final class FirestoreLinkRequestService: LinkRequestService {
-    private let database: Firestore
-    private let collectionName = "linkRequests"
+private struct LinkRequestRow: Codable {
+    let id: UUID
+    let requesterId: String
+    let requesterEmail: String
+    let requesterName: String
+    let recipientEmail: String
+    let targetMemberId: UUID
+    let targetMemberName: String
+    let createdAt: Date
+    let status: String
+    let expiresAt: Date
+    let rejectedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case requesterId = "requester_id"
+        case requesterEmail = "requester_email"
+        case requesterName = "requester_name"
+        case recipientEmail = "recipient_email"
+        case targetMemberId = "target_member_id"
+        case targetMemberName = "target_member_name"
+        case createdAt = "created_at"
+        case status
+        case expiresAt = "expires_at"
+        case rejectedAt = "rejected_at"
+    }
+}
+
+/// Supabase implementation of LinkRequestService
+final class SupabaseLinkRequestService: LinkRequestService {
+    private let client: SupabaseClient
+    private let table = "link_requests"
+    private let userContextProvider: () async throws -> SupabaseUserContext
     
-    init(database: Firestore = Firestore.firestore()) {
-        self.database = database
+    init(
+        client: SupabaseClient = SupabaseClientProvider.client!,
+        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+    ) {
+        self.client = client
+        self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
     }
     
     func createLinkRequest(
@@ -212,380 +243,250 @@ final class FirestoreLinkRequestService: LinkRequestService {
         targetMemberId: UUID,
         targetMemberName: String
     ) async throws -> LinkRequest {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser else {
-                throw LinkingError.unauthorized
-            }
-            
-            let normalizedRecipientEmail = recipientEmail.lowercased().trimmingCharacters(in: .whitespaces)
-            let currentUserEmail = (currentUser.email ?? "").lowercased().trimmingCharacters(in: .whitespaces)
-            
-            // Prevent self-linking
-            if normalizedRecipientEmail == currentUserEmail {
-                throw LinkingError.selfLinkingNotAllowed
-            }
-            
-            // Check for duplicate pending requests
-            let existingRequests = try await database
-                .collection(collectionName)
-                .whereField("requesterId", isEqualTo: currentUser.uid)
-                .whereField("recipientEmail", isEqualTo: normalizedRecipientEmail)
-                .whereField("targetMemberId", isEqualTo: targetMemberId.uuidString)
-                .whereField("status", isEqualTo: LinkRequestStatus.pending.rawValue)
-                .getDocuments()
-            
-            if !existingRequests.documents.isEmpty {
-                throw LinkingError.duplicateRequest
-            }
-            
-            let request = LinkRequest(
-                id: UUID(),
-                requesterId: currentUser.uid,
-                requesterEmail: currentUserEmail,
-                requesterName: currentUser.displayName ?? "Unknown",
-                recipientEmail: normalizedRecipientEmail,
-                targetMemberId: targetMemberId,
-                targetMemberName: targetMemberName,
-                createdAt: Date(),
-                status: .pending,
-                expiresAt: Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date(),
-                rejectedAt: nil
-            )
-            
-            let data: [String: Any] = [
-                "id": request.id.uuidString,
-                "requesterId": request.requesterId,
-                "requesterEmail": request.requesterEmail,
-                "requesterName": request.requesterName,
-                "recipientEmail": request.recipientEmail,
-                "targetMemberId": request.targetMemberId.uuidString,
-                "targetMemberName": request.targetMemberName,
-                "createdAt": Timestamp(date: request.createdAt),
-                "status": request.status.rawValue,
-                "expiresAt": Timestamp(date: request.expiresAt)
-            ]
-            
-            try await database
-                .collection(collectionName)
-                .document(request.id.uuidString)
-                .setData(data)
-            
-            return request
-        } catch {
-            throw mapError(error)
+        let context = try await userContext()
+        let normalizedRecipientEmail = recipientEmail.lowercased().trimmingCharacters(in: .whitespaces)
+        
+        if normalizedRecipientEmail == context.email {
+            throw LinkingError.selfLinkingNotAllowed
         }
+        
+        let existing: PostgrestResponse<[LinkRequestRow]> = try await client
+            .from(table)
+            .select()
+            .eq("requester_id", value: context.id)
+            .eq("recipient_email", value: normalizedRecipientEmail)
+            .eq("target_member_id", value: targetMemberId)
+            .eq("status", value: LinkRequestStatus.pending.rawValue)
+            .execute()
+        
+        if !existing.value.isEmpty {
+            throw LinkingError.duplicateRequest
+        }
+        
+        let request = LinkRequest(
+            id: UUID(),
+            requesterId: context.id,
+            requesterEmail: context.email,
+            requesterName: context.name ?? context.email,
+            recipientEmail: normalizedRecipientEmail,
+            targetMemberId: targetMemberId,
+            targetMemberName: targetMemberName,
+            createdAt: Date(),
+            status: .pending,
+            expiresAt: Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date(),
+            rejectedAt: nil
+        )
+        
+        let row = LinkRequestRow(
+            id: request.id,
+            requesterId: request.requesterId,
+            requesterEmail: request.requesterEmail,
+            requesterName: request.requesterName,
+            recipientEmail: request.recipientEmail,
+            targetMemberId: request.targetMemberId,
+            targetMemberName: request.targetMemberName,
+            createdAt: request.createdAt,
+            status: request.status.rawValue,
+            expiresAt: request.expiresAt,
+            rejectedAt: request.rejectedAt
+        )
+        
+        _ = try await client
+            .from(table)
+            .insert([row], returning: .minimal)
+            .execute() as PostgrestResponse<Void>
+        
+        return request
     }
     
     func fetchIncomingRequests() async throws -> [LinkRequest] {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser,
-                  let email = currentUser.email else {
-                throw LinkingError.unauthorized
-            }
-            
-            let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
-            let now = Date()
-            
-            let snapshot = try await database
-                .collection(collectionName)
-                .whereField("recipientEmail", isEqualTo: normalizedEmail)
-                .whereField("status", isEqualTo: LinkRequestStatus.pending.rawValue)
-                .getDocuments()
-            
-            return snapshot.documents.compactMap { document in
-                try? parseLinkRequest(from: document.data())
-            }.filter { request in
-                // Filter out expired requests
-                request.expiresAt > now
-            }
-        } catch {
-            throw mapError(error)
-        }
+        let context = try await userContext()
+        let now = Date()
+        
+        let snapshot: PostgrestResponse<[LinkRequestRow]> = try await client
+            .from(table)
+            .select()
+            .eq("recipient_email", value: context.email)
+            .eq("status", value: LinkRequestStatus.pending.rawValue)
+            .gt("expires_at", value: now)
+            .execute()
+        
+        return snapshot.value.compactMap(linkRequest(from:))
     }
     
     func fetchOutgoingRequests() async throws -> [LinkRequest] {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser else {
-                throw LinkingError.unauthorized
-            }
-            
-            let now = Date()
-            
-            let snapshot = try await database
-                .collection(collectionName)
-                .whereField("requesterId", isEqualTo: currentUser.uid)
-                .whereField("status", isEqualTo: LinkRequestStatus.pending.rawValue)
-                .getDocuments()
-            
-            return snapshot.documents.compactMap { document in
-                try? parseLinkRequest(from: document.data())
-            }.filter { request in
-                // Filter out expired requests
-                request.expiresAt > now
-            }
-        } catch {
-            throw mapError(error)
-        }
+        let context = try await userContext()
+        let now = Date()
+        
+        let snapshot: PostgrestResponse<[LinkRequestRow]> = try await client
+            .from(table)
+            .select()
+            .eq("requester_id", value: context.id)
+            .eq("status", value: LinkRequestStatus.pending.rawValue)
+            .gt("expires_at", value: now)
+            .execute()
+        
+        return snapshot.value.compactMap(linkRequest(from:))
     }
     
     func fetchPreviousRequests() async throws -> [LinkRequest] {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser,
-                  let email = currentUser.email else {
-                throw LinkingError.unauthorized
-            }
-            
-            let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
-            
-            // Fetch accepted requests
-            let acceptedSnapshot = try await database
-                .collection(collectionName)
-                .whereField("recipientEmail", isEqualTo: normalizedEmail)
-                .whereField("status", isEqualTo: LinkRequestStatus.accepted.rawValue)
-                .getDocuments()
-            
-            // Fetch declined requests
-            let declinedSnapshot = try await database
-                .collection(collectionName)
-                .whereField("recipientEmail", isEqualTo: normalizedEmail)
-                .whereField("status", isEqualTo: LinkRequestStatus.declined.rawValue)
-                .getDocuments()
-            
-            // Fetch rejected requests
-            let rejectedSnapshot = try await database
-                .collection(collectionName)
-                .whereField("recipientEmail", isEqualTo: normalizedEmail)
-                .whereField("status", isEqualTo: LinkRequestStatus.rejected.rawValue)
-                .getDocuments()
-            
-            let acceptedRequests = acceptedSnapshot.documents.compactMap { document in
-                try? parseLinkRequest(from: document.data())
-            }
-            
-            let declinedRequests = declinedSnapshot.documents.compactMap { document in
-                try? parseLinkRequest(from: document.data())
-            }
-            
-            let rejectedRequests = rejectedSnapshot.documents.compactMap { document in
-                try? parseLinkRequest(from: document.data())
-            }
-            
-            return acceptedRequests + declinedRequests + rejectedRequests
-        } catch {
-            throw mapError(error)
-        }
+        let context = try await userContext()
+        
+        let snapshot: PostgrestResponse<[LinkRequestRow]> = try await client
+            .from(table)
+            .select()
+            .eq("recipient_email", value: context.email)
+            .`in`("status", values: [
+                LinkRequestStatus.accepted.rawValue,
+                LinkRequestStatus.declined.rawValue,
+                LinkRequestStatus.rejected.rawValue
+            ])
+            .execute()
+        
+        return snapshot.value.compactMap(linkRequest(from:))
     }
     
     func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser,
-                  let email = currentUser.email else {
-                throw LinkingError.unauthorized
-            }
-            
-            let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
-            let documentRef = database.collection(collectionName).document(requestId.uuidString)
-            
-            let document = try await documentRef.getDocument()
-            
-            guard document.exists, let data = document.data() else {
-                throw LinkingError.tokenInvalid
-            }
-            
-            let request = try parseLinkRequest(from: data)
-            
-            // Verify the current user is the recipient
-            guard request.recipientEmail == normalizedEmail else {
-                throw LinkingError.unauthorized
-            }
-            
-            // Check if expired
-            if request.expiresAt <= Date() {
-                throw LinkingError.tokenExpired
-            }
-            
-            // Check if already accepted
-            if request.status == .accepted {
-                throw LinkingError.tokenAlreadyClaimed
-            }
-            
-            // Update status to accepted
-            try await documentRef.updateData([
-                "status": LinkRequestStatus.accepted.rawValue
-            ])
-            
-            return LinkAcceptResult(
-                linkedMemberId: request.targetMemberId,
-                linkedAccountId: currentUser.uid,
-                linkedAccountEmail: normalizedEmail
-            )
-        } catch {
-            throw mapError(error)
+        let context = try await userContext()
+        
+        let response: PostgrestResponse<[LinkRequestRow]> = try await client
+            .from(table)
+            .select()
+            .eq("id", value: requestId)
+            .limit(1)
+            .execute()
+        
+        guard let row = response.value.first else {
+            throw LinkingError.tokenInvalid
         }
+        
+        guard row.recipientEmail == context.email else {
+            throw LinkingError.unauthorized
+        }
+        
+        guard row.expiresAt > Date() else {
+            throw LinkingError.tokenExpired
+        }
+        
+        guard row.status == LinkRequestStatus.pending.rawValue else {
+            throw LinkingError.tokenAlreadyClaimed
+        }
+        
+        _ = try await client
+            .from(table)
+            .update(["status": LinkRequestStatus.accepted.rawValue], returning: .minimal)
+            .eq("id", value: requestId)
+            .eq("status", value: LinkRequestStatus.pending.rawValue)
+            .execute() as PostgrestResponse<Void>
+        
+        return LinkAcceptResult(
+            linkedMemberId: row.targetMemberId,
+            linkedAccountId: context.id,
+            linkedAccountEmail: context.email
+        )
     }
     
     func declineLinkRequest(_ requestId: UUID) async throws {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser,
-                  let email = currentUser.email else {
-                throw LinkingError.unauthorized
-            }
-            
-            let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
-            let documentRef = database.collection(collectionName).document(requestId.uuidString)
-            
-            let document = try await documentRef.getDocument()
-            
-            guard document.exists, let data = document.data() else {
-                throw LinkingError.tokenInvalid
-            }
-            
-            let request = try parseLinkRequest(from: data)
-            
-            // Verify the current user is the recipient
-            guard request.recipientEmail == normalizedEmail else {
-                throw LinkingError.unauthorized
-            }
-            
-            // Update status to declined and store rejection timestamp
-            try await documentRef.updateData([
-                "status": LinkRequestStatus.declined.rawValue,
-                "rejectedAt": Timestamp(date: Date())
-            ])
-        } catch {
-            throw mapError(error)
+        let context = try await userContext()
+        
+        let response: PostgrestResponse<[LinkRequestRow]> = try await client
+            .from(table)
+            .select()
+            .eq("id", value: requestId)
+            .limit(1)
+            .execute()
+        
+        guard let row = response.value.first else {
+            throw LinkingError.tokenInvalid
         }
+        
+        guard row.recipientEmail == context.email else {
+            throw LinkingError.unauthorized
+        }
+        
+        struct DeclinePayload: Encodable {
+            let status: String
+            let rejectedAt: Date
+
+            enum CodingKeys: String, CodingKey {
+                case status
+                case rejectedAt = "rejected_at"
+            }
+        }
+
+        let payload = DeclinePayload(status: LinkRequestStatus.declined.rawValue, rejectedAt: Date())
+
+        _ = try await client
+            .from(table)
+            .update(payload, returning: .minimal)
+            .eq("id", value: requestId)
+            .execute() as PostgrestResponse<Void>
     }
     
     func cancelLinkRequest(_ requestId: UUID) async throws {
-        do {
-            try ensureFirebaseConfigured()
-            guard let currentUser = Auth.auth().currentUser else {
-                throw LinkingError.unauthorized
-            }
-            
-            let documentRef = database.collection(collectionName).document(requestId.uuidString)
-            
-            let document = try await documentRef.getDocument()
-            
-            guard document.exists, let data = document.data() else {
-                throw LinkingError.tokenInvalid
-            }
-            
-            let request = try parseLinkRequest(from: data)
-            
-            // Verify the current user is the requester
-            guard request.requesterId == currentUser.uid else {
-                throw LinkingError.unauthorized
-            }
-            
-            // Delete the request
-            try await documentRef.delete()
-        } catch {
-            throw mapError(error)
+        let context = try await userContext()
+        
+        let response: PostgrestResponse<[LinkRequestRow]> = try await client
+            .from(table)
+            .select()
+            .eq("id", value: requestId)
+            .limit(1)
+            .execute()
+        
+        guard let row = response.value.first else {
+            throw LinkingError.tokenInvalid
         }
+        
+        guard row.requesterId == context.id else {
+            throw LinkingError.unauthorized
+        }
+        
+        _ = try await client
+            .from(table)
+            .delete(returning: .minimal)
+            .eq("id", value: requestId)
+            .execute() as PostgrestResponse<Void>
     }
     
-    // MARK: - Private Helpers
+    // MARK: - Helpers
     
-    private func ensureFirebaseConfigured() throws {
-        guard FirebaseApp.app() != nil else {
+    private func linkRequest(from row: LinkRequestRow) -> LinkRequest? {
+        guard let status = LinkRequestStatus(rawValue: row.status) else { return nil }
+        
+        return LinkRequest(
+            id: row.id,
+            requesterId: row.requesterId,
+            requesterEmail: row.requesterEmail,
+            requesterName: row.requesterName,
+            recipientEmail: row.recipientEmail,
+            targetMemberId: row.targetMemberId,
+            targetMemberName: row.targetMemberName,
+            createdAt: row.createdAt,
+            status: status,
+            expiresAt: row.expiresAt,
+            rejectedAt: row.rejectedAt
+        )
+    }
+
+    private func userContext() async throws -> SupabaseUserContext {
+        do {
+            return try await userContextProvider()
+        } catch {
             throw LinkingError.unauthorized
         }
     }
     
-    private func parseLinkRequest(from data: [String: Any]) throws -> LinkRequest {
-        guard let idString = data["id"] as? String,
-              let id = UUID(uuidString: idString),
-              let requesterId = data["requesterId"] as? String,
-              let requesterEmail = data["requesterEmail"] as? String,
-              let requesterName = data["requesterName"] as? String,
-              let recipientEmail = data["recipientEmail"] as? String,
-              let targetMemberIdString = data["targetMemberId"] as? String,
-              let targetMemberId = UUID(uuidString: targetMemberIdString),
-              let targetMemberName = data["targetMemberName"] as? String,
-              let statusString = data["status"] as? String,
-              let status = LinkRequestStatus(rawValue: statusString) else {
-            throw LinkingError.tokenInvalid
-        }
-        
-        let createdAt: Date
-        if let timestamp = data["createdAt"] as? Timestamp {
-            createdAt = timestamp.dateValue()
-        } else {
-            createdAt = Date()
-        }
-        
-        let expiresAt: Date
-        if let timestamp = data["expiresAt"] as? Timestamp {
-            expiresAt = timestamp.dateValue()
-        } else {
-            expiresAt = Calendar.current.date(byAdding: .day, value: 30, to: createdAt) ?? Date()
-        }
-        
-        let rejectedAt: Date?
-        if let timestamp = data["rejectedAt"] as? Timestamp {
-            rejectedAt = timestamp.dateValue()
-        } else {
-            rejectedAt = nil
-        }
-        
-        return LinkRequest(
-            id: id,
-            requesterId: requesterId,
-            requesterEmail: requesterEmail,
-            requesterName: requesterName,
-            recipientEmail: recipientEmail,
-            targetMemberId: targetMemberId,
-            targetMemberName: targetMemberName,
-            createdAt: createdAt,
-            status: status,
-            expiresAt: expiresAt,
-            rejectedAt: rejectedAt
-        )
-    }
-    
-    private func mapError(_ error: Error) -> LinkingError {
-        if let linkingError = error as? LinkingError {
-            return linkingError
-        }
-        
-        let nsError = error as NSError
-        
-        if nsError.domain == FirestoreErrorDomain, let code = FirestoreErrorCode.Code(rawValue: nsError.code) {
-            switch code {
-            case .unavailable, .deadlineExceeded:
-                return .networkUnavailable
-            case .permissionDenied, .unauthenticated:
-                return .unauthorized
-            default:
-                return .networkUnavailable
-            }
-        }
-        
-        if nsError.domain == NSURLErrorDomain {
-            return .networkUnavailable
-        }
-        
-        return .networkUnavailable
-    }
 }
 
 /// Provider for LinkRequestService that returns appropriate implementation
 enum LinkRequestServiceProvider {
     static func makeLinkRequestService() -> LinkRequestService {
-        if FirebaseApp.app() != nil {
-            return FirestoreLinkRequestService()
+        if let client = SupabaseClientProvider.client {
+            return SupabaseLinkRequestService(client: client)
         }
         
         #if DEBUG
-        print("[LinkRequest] Firebase not configured – falling back to MockLinkRequestService.")
+        print("[LinkRequest] Supabase not configured – falling back to MockLinkRequestService.")
         #endif
         return MockLinkRequestService()
     }

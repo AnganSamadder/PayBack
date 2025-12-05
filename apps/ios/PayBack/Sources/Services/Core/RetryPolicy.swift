@@ -100,12 +100,6 @@ struct RetryPolicy {
             }
         }
         
-        // Firestore error domain
-        if nsError.domain == "FIRFirestoreErrorDomain" {
-            // Error codes 14 (unavailable) and 4 (deadline exceeded) are retryable
-            return nsError.code == 14 || nsError.code == 4
-        }
-        
         return false
     }
 }

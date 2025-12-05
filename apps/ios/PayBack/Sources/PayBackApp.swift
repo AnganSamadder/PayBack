@@ -1,164 +1,18 @@
 import SwiftUI
 import UIKit
 import Foundation
-import FirebaseCore
-import FirebaseAuth
-import FirebaseFirestore
 import Network
+import Supabase
 
-private enum FirebaseConfiguratorLock {
-    static let lock = NSLock()
-}
-
-enum FirebaseConfigurator {
+private enum SupabaseConfigurator {
     static func configureIfNeeded() {
-        FirebaseConfiguratorLock.lock.lock()
-        defer { FirebaseConfiguratorLock.lock.unlock() }
-
-        guard FirebaseApp.app() == nil else { return }
-
-        guard let resolvedOptions = resolveFirebaseOptions() else {
-            #if DEBUG
-            print("[Firebase] GoogleService-Info.plist is missing or invalid - authentication flow will be disabled.")
-            #endif
-            return
-        }
-
-        FirebaseApp.configure(options: resolvedOptions)
-
-        guard let app = FirebaseApp.app() else {
-            #if DEBUG
-            print("[Firebase] Configuration still missing - check GoogleService-Info.plist bundle settings.")
-            #endif
-            return
-        }
-
-        // Configure emulators if running in test environment
-        if isRunningUnitTests {
-            #if DEBUG
-            print("[Firebase] ✅ DETECTED TEST ENVIRONMENT - Configuring emulators")
-            print("[Firebase] Auth Emulator: localhost:9099")
-            print("[Firebase] Firestore Emulator: localhost:8080")
-            #endif
-            Auth.auth().useEmulator(withHost: "localhost", port: 9099)
-            
-            let firestoreSettings = Firestore.firestore().settings
-            firestoreSettings.host = "localhost:8080"
-            firestoreSettings.isSSLEnabled = false
-            Firestore.firestore().settings = firestoreSettings
-            
-            #if DEBUG
-            print("[Firebase] ✅ Emulators configured successfully")
-            #endif
-        } else {
-            #if DEBUG
-            print("[Firebase] ℹ️  NOT in test environment - using production Firebase")
-            #endif
-        }
-
-        #if DEBUG
-        #if targetEnvironment(simulator)
-        Auth.auth().settings?.isAppVerificationDisabledForTesting = true
-        #endif
-        print("[Firebase] Configured: \(app.name) (AppID: \(app.options.googleAppID))")
-        #endif
-    }
-
-    private static func resolveFirebaseOptions() -> FirebaseOptions? {
-        let bundledOptions = loadBundledOptions()
-
-        if let bundled = bundledOptions, bundled.hasUsableIdentifiers {
-            return bundled
-        }
-
-        guard isRunningUnitTests else { return nil }
-
-        #if DEBUG
-        if bundledOptions != nil {
-            print("[Firebase] Bundled Firebase options are missing identifiers - substituting stub options for tests.")
-        } else {
-            print("[Firebase] GoogleService-Info.plist not bundled - substituting stub options for tests.")
-        }
-        #endif
-
-        let stub = FirebaseOptions(googleAppID: fallbackGoogleAppID, gcmSenderID: fallbackGCMSenderID)
-        stub.apiKey = fallbackAPIKey
-        stub.projectID = "payback-unit-tests"
-        stub.storageBucket = "payback-unit-tests.appspot.com"
-        return stub
-    }
-
-    private static func loadBundledOptions() -> FirebaseOptions? {
-        guard let plistPath = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") else {
-            return FirebaseOptions.defaultOptions()
-        }
-        return FirebaseOptions(contentsOfFile: plistPath)
-    }
-
-    private static var isRunningUnitTests: Bool {
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
-        ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil ||
-        ProcessInfo.processInfo.arguments.contains("XCTestConfigurationFilePath") ||
-        NSClassFromString("XCTest") != nil
-    }
-
-    private static let fallbackGoogleAppID = "1:000000000000:ios:000000000000000000000000"
-    private static let fallbackGCMSenderID = "000000000000"
-    private static let fallbackAPIKey = "AIzaSyCITestStubApiKeyDontUse"
-
-    fileprivate static let googleAppIDPattern: NSRegularExpression = {
-        let pattern = #"^[0-9]+:[0-9]+:ios:[0-9a-f]{12,}$"#
-        return try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-    }()
-}
-
-private extension FirebaseOptions {
-    var hasUsableIdentifiers: Bool {
-        let trimmedAppID = googleAppID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedAppID.isEmpty else { return false }
-
-        let appIDRange = NSRange(location: 0, length: trimmedAppID.utf16.count)
-        guard FirebaseConfigurator.googleAppIDPattern.firstMatch(in: trimmedAppID, options: [], range: appIDRange) != nil else {
-            return false
-        }
-
-        let cleanedSenderID = gcmSenderID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard cleanedSenderID.count >= 10, cleanedSenderID.allSatisfy({ $0.isNumber }) else {
-            return false
-        }
-
-        guard let resolvedAPIKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
-              resolvedAPIKey.count >= 20,
-              resolvedAPIKey.hasPrefix("AIza") else {
-            return false
-        }
-
-        return true
+        SupabaseClientProvider.configureIfNeeded()
     }
 }
 
 class AppDelegate: NSObject, UIApplicationDelegate {
-    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        guard FirebaseApp.app() != nil else { return }
-        Auth.auth().setAPNSToken(deviceToken, type: .prod)
-    }
-
-    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        #if DEBUG
-        print("[Push] Failed to register for remote notifications: \(error.localizedDescription)")
-        #endif
-    }
-
-    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable : Any]) {
-        guard FirebaseApp.app() != nil else { return }
-        if Auth.auth().canHandleNotification(userInfo) {
-            return
-        }
-    }
-
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
-        FirebaseConfigurator.configureIfNeeded()
-        UIApplication.shared.registerForRemoteNotifications()
+        SupabaseConfigurator.configureIfNeeded()
         return true
     }
 }
@@ -221,56 +75,53 @@ struct RootViewWithStore: View {
     }
     
     private func checkExistingSession() async {
-        // If Firebase isn't configured (e.g. running with dummy config), skip
-        // touching Auth entirely and fall back to showing the login flow.
-        guard FirebaseApp.app() != nil else {
+        SupabaseConfigurator.configureIfNeeded()
+        guard let client = SupabaseClientProvider.client else {
             isCheckingAuth = false
             return
         }
 
-        // Check if user is already logged in with Firebase
-        guard let firebaseUser = Auth.auth().currentUser else {
-            isCheckingAuth = false
-            return
-        }
-        
-        #if DEBUG
-        print("[Auth] Found existing Firebase session for user: \(firebaseUser.uid)")
-        #endif
-        
-        // Try to restore the user's account
         let accountService = AccountServiceProvider.makeAccountService()
-        
+
         do {
-            // Look up account by email if available
-            if let email = firebaseUser.email {
-                if let account = try await accountService.lookupAccount(byEmail: email) {
-                    let session = UserSession(account: account)
-                    store.completeAuthentication(with: session)
-                    isCheckingAuth = false
-                    return
-                }
+            var session = try await client.auth.session
+
+            if session.isExpired {
+                // Attempt to refresh; if it fails we'll drop to auth flow.
+                session = try await client.auth.refreshSession()
             }
-            
-            // If no account found, create one with available info
-            let displayName = firebaseUser.displayName ?? firebaseUser.email?.split(separator: "@").first.map(String.init) ?? "User"
-            let email = firebaseUser.email ?? "\(firebaseUser.uid)@payback.local"
-            
+
+            let email = session.user.email ?? "\(session.user.id.uuidString)@payback.local"
+
+            if let account = try await accountService.lookupAccount(byEmail: email) {
+                let sessionModel = UserSession(account: account)
+                store.completeAuthentication(with: sessionModel)
+                isCheckingAuth = false
+                return
+            }
+
+            let displayName = resolvedDisplayName(from: session.user, fallbackEmail: email)
             let account = try await accountService.createAccount(email: email, displayName: displayName)
-            let session = UserSession(account: account)
-            store.completeAuthentication(with: session)
-            
+            let sessionModel = UserSession(account: account)
+            store.completeAuthentication(with: sessionModel)
         } catch {
             #if DEBUG
-            print("[Auth] Failed to restore session: \(error.localizedDescription)")
+            print("[Auth] Failed to restore Supabase session: \(error.localizedDescription)")
             #endif
-            // Sign out on error to force fresh login
-            if FirebaseApp.app() != nil {
-                try? Auth.auth().signOut()
-            }
         }
-        
+
         isCheckingAuth = false
+    }
+
+    private func resolvedDisplayName(from user: User, fallbackEmail: String) -> String {
+        if let name = user.userMetadata["display_name"], case let .string(value) = name {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        if let emailPrefix = fallbackEmail.split(separator: "@").first {
+            return String(emailPrefix)
+        }
+        return "User"
     }
     
     private func handleScenePhaseChange(oldPhase: ScenePhase, newPhase: ScenePhase) {
@@ -395,7 +246,7 @@ struct PayBackApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
-        FirebaseConfigurator.configureIfNeeded()
+        SupabaseConfigurator.configureIfNeeded()
         AppAppearance.configure()
     }
 

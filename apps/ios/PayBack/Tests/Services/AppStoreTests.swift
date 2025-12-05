@@ -603,6 +603,7 @@ final class AppStoreTests: XCTestCase {
         // Then
         XCTAssertTrue(sut.groups.isEmpty)
         XCTAssertTrue(sut.expenses.isEmpty)
+        XCTAssertTrue(sut.friends.isEmpty)
     }
     
     // MARK: - Link Request Tests

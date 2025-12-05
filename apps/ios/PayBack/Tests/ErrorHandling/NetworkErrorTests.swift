@@ -336,54 +336,6 @@ final class NetworkErrorTests: XCTestCase {
         }
     }
     
-    func test_retryPolicy_firestoreUnavailableError_isRetryable() async {
-        // Arrange
-        let policy = RetryPolicy(maxAttempts: 2, baseDelay: 0.01)
-        var attemptCount = 0
-        
-        let firestoreError = NSError(
-            domain: "FIRFirestoreErrorDomain",
-            code: 14, // Unavailable
-            userInfo: [NSLocalizedDescriptionKey: "The service is currently unavailable."]
-        )
-        
-        // Act
-        do {
-            _ = try await policy.execute {
-                attemptCount += 1
-                throw firestoreError
-            }
-            XCTFail("Should have thrown error")
-        } catch {
-            // Assert
-            XCTAssertEqual(attemptCount, 2, "Firestore unavailable errors should be retried")
-        }
-    }
-    
-    func test_retryPolicy_firestoreDeadlineExceeded_isRetryable() async {
-        // Arrange
-        let policy = RetryPolicy(maxAttempts: 2, baseDelay: 0.01)
-        var attemptCount = 0
-        
-        let firestoreError = NSError(
-            domain: "FIRFirestoreErrorDomain",
-            code: 4, // Deadline exceeded
-            userInfo: [NSLocalizedDescriptionKey: "Deadline exceeded."]
-        )
-        
-        // Act
-        do {
-            _ = try await policy.execute {
-                attemptCount += 1
-                throw firestoreError
-            }
-            XCTFail("Should have thrown error")
-        } catch {
-            // Assert
-            XCTAssertEqual(attemptCount, 2, "Firestore deadline exceeded errors should be retried")
-        }
-    }
-    
     func test_retryPolicy_unknownError_notRetryable() async {
         // Arrange
         let policy = RetryPolicy(maxAttempts: 3, baseDelay: 0.01)

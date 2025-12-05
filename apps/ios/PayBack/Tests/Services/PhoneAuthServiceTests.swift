@@ -247,7 +247,7 @@ final class PhoneAuthServiceTests: XCTestCase {
     
     func testPhoneAuthServiceErrorDescriptions() {
         let errors: [(PhoneAuthServiceError, String)] = [
-            (.configurationMissing, "Phone verification is not available. Check your Firebase setup and try again."),
+            (.configurationMissing, "Phone verification is not available. Check your Supabase setup and try again."),
             (.invalidCode, "That code didn't match. Double-check the digits and try again."),
             (.verificationFailed, "We couldn't verify that number yet. Please request a new code."),
             (.underlying(NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "Test error"])), "Test error")
