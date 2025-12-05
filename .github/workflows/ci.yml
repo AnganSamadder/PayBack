@@ -454,7 +454,7 @@ jobs:
           echo "## Skipped Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          SKIPPED_COUNT=$(grep -o "with [0-9]* tests skipped" test-output.txt | grep -o "[0-9]*" | head -1)
+          SKIPPED_COUNT=$(grep -o "with [0-9]* tests skipped" test-output.txt | grep -o "[0-9]*" | head -1 || echo "0")
           if [ -z "$SKIPPED_COUNT" ]; then SKIPPED_COUNT=0; fi
           echo "**Total Skipped: $SKIPPED_COUNT tests**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
