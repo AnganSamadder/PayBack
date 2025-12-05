@@ -104,12 +104,11 @@ final class TabBarTests: XCTestCase {
             var selectedTab = startTab
             let attemptedTab = 2 // FAB spacer
             
-            // Guard logic from RootView
-            if attemptedTab == 2 {
-                // selectedTab stays the same (don't update)
-            } else {
+            // Guard logic from RootView - only update if NOT the FAB spacer
+            if attemptedTab != 2 {
                 selectedTab = attemptedTab
             }
+            // If attemptedTab == 2, selectedTab stays the same (don't update)
             
             XCTAssertEqual(selectedTab, startTab, 
                 "Attempting to select tab 2 from tab \(startTab) should keep tab \(startTab)")
@@ -121,7 +120,7 @@ final class TabBarTests: XCTestCase {
     func test_tabSwitch_fromFriendsTab_shouldResetFriendsNavigation() {
         // Simulate switching away from Friends tab
         let oldTab = TabIndex.friends.rawValue
-        let newTab = TabIndex.groups.rawValue
+        _ = TabIndex.groups.rawValue // newTab - switching to Groups
         var friendsNavigationState = FriendsNavigationState.friendDetail(GroupMember(name: "Test"))
         
         // Logic from RootView onChange
@@ -136,7 +135,7 @@ final class TabBarTests: XCTestCase {
     func test_tabSwitch_fromGroupsTab_shouldResetGroupsNavigation() {
         // Simulate switching away from Groups tab
         let oldTab = TabIndex.groups.rawValue
-        let newTab = TabIndex.activity.rawValue
+        _ = TabIndex.activity.rawValue // newTab - switching to Activity
         let group = SpendingGroup(name: "Test", members: [GroupMember(name: "Member")])
         var groupsNavigationState = GroupsNavigationState.groupDetail(group)
         
