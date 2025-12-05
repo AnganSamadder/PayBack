@@ -1,6 +1,6 @@
 import Foundation
 
-struct UserAccount: Identifiable, Codable, Hashable {
+struct UserAccount: Identifiable, Codable, Hashable, Sendable {
     let id: String
     var email: String
     var displayName: String
@@ -22,11 +22,11 @@ struct UserAccount: Identifiable, Codable, Hashable {
     }
 }
 
-struct UserSession: Equatable {
+struct UserSession: Equatable, Sendable {
     let account: UserAccount
 }
 
-struct AccountFriend: Identifiable, Codable, Hashable {
+struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     let memberId: UUID
     var name: String
     var nickname: String?

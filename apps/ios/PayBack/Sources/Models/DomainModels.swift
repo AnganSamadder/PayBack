@@ -1,6 +1,6 @@
 import Foundation
 
-struct GroupMember: Identifiable, Codable, Hashable {
+struct GroupMember: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var name: String
 
@@ -18,7 +18,7 @@ struct GroupMember: Identifiable, Codable, Hashable {
     }
 }
 
-struct SpendingGroup: Identifiable, Codable, Hashable {
+struct SpendingGroup: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var name: String
     var members: [GroupMember]
@@ -51,7 +51,7 @@ struct SpendingGroup: Identifiable, Codable, Hashable {
     }
 }
 
-struct ExpenseSplit: Identifiable, Codable, Hashable {
+struct ExpenseSplit: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     let memberId: UUID
     var amount: Double
@@ -65,7 +65,7 @@ struct ExpenseSplit: Identifiable, Codable, Hashable {
     }
 }
 
-struct Expense: Identifiable, Codable, Hashable {
+struct Expense: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     let groupId: UUID
     var description: String
@@ -163,7 +163,7 @@ struct Expense: Identifiable, Codable, Hashable {
     }
 }
 
-struct AppData: Codable {
+struct AppData: Codable, Sendable {
     var groups: [SpendingGroup]
     var expenses: [Expense]
 }

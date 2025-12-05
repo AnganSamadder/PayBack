@@ -1,6 +1,6 @@
 import Foundation
 
-enum AccountServiceError: LocalizedError {
+enum AccountServiceError: LocalizedError, Sendable {
     case configurationMissing
     case userNotFound
     case duplicateAccount
