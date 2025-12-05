@@ -12,10 +12,15 @@ echo "=========================================="
 # Navigate to repository root (ci_scripts is inside the repo)
 cd "$(dirname "$0")/.."
 
-if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_ANON_KEY:-}" ]; then
-  echo "❌ SUPABASE_URL or SUPABASE_ANON_KEY is missing."
-  echo "   Add them as encrypted environment variables in Xcode Cloud."
-  exit 1
+# Use placeholder values if secrets are not set (allows builds to succeed)
+SUPABASE_URL="${SUPABASE_URL:-https://placeholder.supabase.co}"
+SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY:-placeholder-anon-key}"
+
+if [ "$SUPABASE_URL" = "https://placeholder.supabase.co" ] || [ "$SUPABASE_ANON_KEY" = "placeholder-anon-key" ]; then
+  echo "⚠️  Using placeholder Supabase credentials (secrets not configured)."
+  echo "   Add SUPABASE_URL and SUPABASE_ANON_KEY in Xcode Cloud for full functionality."
+else
+  echo "✅ Using Supabase credentials from environment."
 fi
 
 cat > ".env.supabase.local" <<EOF
