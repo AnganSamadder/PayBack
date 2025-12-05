@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Link Request Models
 
-public struct LinkRequest: Identifiable, Codable, Hashable {
+public struct LinkRequest: Identifiable, Codable, Hashable, Sendable {
     public let id: UUID
     public let requesterId: String // Supabase Auth user id
     public let requesterEmail: String
@@ -30,7 +30,7 @@ public struct LinkRequest: Identifiable, Codable, Hashable {
     }
 }
 
-public enum LinkRequestStatus: String, Codable {
+public enum LinkRequestStatus: String, Codable, Sendable {
     case pending
     case accepted
     case declined
@@ -40,7 +40,7 @@ public enum LinkRequestStatus: String, Codable {
 
 // MARK: - Invite Token Models
 
-struct InviteToken: Identifiable, Codable, Hashable {
+struct InviteToken: Identifiable, Codable, Hashable, Sendable {
     let id: UUID // Used as the token in the URL
     let creatorId: String // Supabase Auth user id
     let creatorEmail: String
@@ -54,7 +54,7 @@ struct InviteToken: Identifiable, Codable, Hashable {
 
 // MARK: - Result Models
 
-public struct LinkAcceptResult {
+public struct LinkAcceptResult: Sendable {
     public let linkedMemberId: UUID
     public let linkedAccountId: String
     public let linkedAccountEmail: String
@@ -66,20 +66,20 @@ public struct LinkAcceptResult {
     }
 }
 
-public struct InviteLink {
+public struct InviteLink: Sendable {
     let token: InviteToken
     let url: URL // Deep link URL
     let shareText: String // Pre-formatted text for sharing
 }
 
-struct InviteTokenValidation {
+struct InviteTokenValidation: Sendable {
     let isValid: Bool
     let token: InviteToken?
     let expensePreview: ExpensePreview?
     let errorMessage: String?
 }
 
-struct ExpensePreview {
+struct ExpensePreview: Sendable {
     let personalExpenses: [Expense]
     let groupExpenses: [Expense]
     let totalBalance: Double
@@ -88,7 +88,7 @@ struct ExpensePreview {
 
 // MARK: - Error Handling
 
-public enum LinkingError: LocalizedError {
+public enum LinkingError: LocalizedError, Sendable {
     case accountNotFound
     case duplicateRequest
     case tokenExpired

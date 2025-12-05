@@ -217,12 +217,13 @@ actor MockAccountService: AccountService { ... }
 
 ### Step 1: Add `Sendable` Conformance to All Model Types
 **Files**: 
-- `apps/ios/PayBack/Sources/Models/Expense.swift`
-- `apps/ios/PayBack/Sources/Models/GroupMember.swift`
+- `apps/ios/PayBack/Sources/Models/DomainModels.swift`
+- `apps/ios/PayBack/Sources/Models/UserAccount.swift`
+- `apps/ios/PayBack/Sources/Models/LinkingModels.swift`
 
 **Change**: Add `Sendable` to struct declarations for safe modern Swift concurrency.
 
-**Status**: [ ] Not Started
+**Status**: [x] Completed
 
 ---
 
@@ -232,27 +233,31 @@ actor MockAccountService: AccountService { ... }
 **Pattern**:
 ```swift
 @MainActor
-final class Dependencies {
-    static var current = Dependencies()
+final class Dependencies: Sendable {
+    nonisolated(unsafe) static var current = Dependencies()
     
-    var accountService: AccountService
-    var emailAuthService: EmailAuthService
+    let accountService: any AccountService
+    let emailAuthService: any EmailAuthService
     // ...
     
-    private init() {
-        accountService = SupabaseAccountService()
-        emailAuthService = SupabaseEmailAuthService()
+    init(
+        accountService: (any AccountService)? = nil,
+        emailAuthService: (any EmailAuthService)? = nil
+    ) {
+        self.accountService = accountService ?? Dependencies.makeDefaultAccountService()
+        self.emailAuthService = emailAuthService ?? EmailAuthServiceProvider.makeService()
     }
     
     static func mock() -> Dependencies {
-        let deps = Dependencies()
-        deps.accountService = MockAccountService()
-        return deps
+        Dependencies(
+            accountService: MockAccountService(),
+            emailAuthService: MockEmailAuthService()
+        )
     }
 }
 ```
 
-**Status**: [ ] Not Started
+**Status**: [x] Completed
 
 ---
 
@@ -260,7 +265,7 @@ final class Dependencies {
 **From**: `apps/ios/PayBack/Sources/Services/Auth/AccountService.swift`
 **To**: `apps/ios/PayBack/Tests/Mocks/MockAccountService.swift`
 
-**Status**: [ ] Not Started
+**Status**: [x] Skipped - MockAccountService is kept in Source for fallback when Supabase isn't configured. A test-specific MockAccountServiceForAppStore is already in Tests/Mocks.
 
 ---
 
@@ -288,48 +293,62 @@ public enum PayBackError: Error, Sendable {
 }
 ```
 
-**Status**: [ ] Not Started
+**Status**: [x] Completed
 
 ---
 
 ### Step 5: Enhance Test Infrastructure
 
 #### 5a: Add Memory Leak Detection
-**Files**: All test files
+**New File**: `apps/ios/PayBack/Tests/Helpers/LeakCheckingTestCase.swift`
 
 **Pattern**:
 ```swift
-override func tearDown() {
-    let completion = { [weak sut] in
-        XCTAssertNil(sut, "sut should not leak")
+open class LeakCheckingTestCase: XCTestCase {
+    private var trackedObjects: [(name: String, weakRef: () -> AnyObject?)] = []
+    
+    open override func tearDown() {
+        for (name, weakRef) in trackedObjects {
+            XCTAssertNil(weakRef(), "\(name) should have been deallocated")
+        }
+        trackedObjects.removeAll()
+        super.tearDown()
     }
-    defer { completion() }
-    sut = nil
-    super.tearDown()
+    
+    public func trackForMemoryLeaks(_ object: AnyObject, name: String? = nil) {
+        let objectName = name ?? String(describing: type(of: object))
+        trackedObjects.append((name: objectName, weakRef: { [weak object] in object }))
+    }
 }
 ```
 
-**Status**: [ ] Not Started
+**Status**: [x] Completed
 
 #### 5b: Add Deterministic Async Testing Helper
 **New File**: `apps/ios/PayBack/Tests/Helpers/MainSerialExecutor.swift`
 
 ```swift
-import ConcurrencyExtras
-
 extension XCTestCase {
-    func withMainSerialExecutor(_ operation: () -> Void) {
-        ConcurrencyExtras.withMainSerialExecutor { operation() }
+    func withDeterministicOrdering(_ operation: @Sendable () -> Void) {
+        if Thread.isMainThread {
+            operation()
+        } else {
+            DispatchQueue.main.sync { operation() }
+        }
     }
+    
+    func waitForAsync<T>(timeout: TimeInterval = 5.0, _ operation: @escaping () async throws -> T) async throws -> T
+    
+    func performAsyncTest(_ description: String = "Async operation", timeout: TimeInterval = 5.0, operation: @escaping () async throws -> Void)
 }
 ```
 
-**Status**: [ ] Not Started
+**Status**: [x] Completed
 
 #### 5c: Add HTTPClientMock
 **New File**: `apps/ios/PayBack/Tests/Helpers/HTTPClientMock.swift`
 
-**Status**: [ ] Not Started
+**Status**: [x] Completed
 
 ---
 
@@ -361,9 +380,9 @@ extension XCTestCase {
 | Action | File(s) | Effort |
 |--------|---------|--------|
 | Add snapshot testing for API calls | New test infrastructure | High |
-| Implement `HTTPClientMock` pattern | New file in Tests/Helpers/ | Medium |
-| Add deterministic async testing | Add ConcurrencyExtras dependency | Medium |
-| Consolidate error types | New PayBackError.swift | Medium |
+| ~~Implement `HTTPClientMock` pattern~~ | ~~New file in Tests/Helpers/~~ | ~~Medium~~ ✅ |
+| ~~Add deterministic async testing~~ | ~~Add ConcurrencyExtras dependency~~ | ~~Medium~~ ✅ |
+| ~~Consolidate error types~~ | ~~New PayBackError.swift~~ | ~~Medium~~ ✅ |
 
 ### Low Priority (Technical Debt)
 
@@ -393,14 +412,14 @@ extension XCTestCase {
 
 | Step | Description | Status | Notes |
 |------|-------------|--------|-------|
-| 1 | Add Sendable conformance | ⬜ Not Started | |
-| 2 | Create Dependencies container | ⬜ Not Started | |
-| 3 | Relocate MockAccountService | ⬜ Not Started | |
-| 4 | Create PayBackError | ⬜ Not Started | |
-| 5a | Memory leak detection | ⬜ Not Started | |
-| 5b | Deterministic async helper | ⬜ Not Started | |
-| 5c | HTTPClientMock | ⬜ Not Started | |
-| 6 | Snapshot testing + strict concurrency | ⬜ Not Started | |
+| 1 | Add Sendable conformance | ✅ Completed | All model types updated |
+| 2 | Create Dependencies container | ✅ Completed | Created Dependencies.swift |
+| 3 | Relocate MockAccountService | ⏭️ Skipped | Kept in Source for fallback; test mock already exists |
+| 4 | Create PayBackError | ✅ Completed | Created PayBackError.swift |
+| 5a | Memory leak detection | ✅ Completed | Created LeakCheckingTestCase.swift |
+| 5b | Deterministic async helper | ✅ Completed | Created MainSerialExecutor.swift |
+| 5c | HTTPClientMock | ✅ Completed | Created HTTPClientMock.swift |
+| 6 | Snapshot testing + strict concurrency | ⬜ Deferred | Lower priority, can be added later |
 
 ---
 
