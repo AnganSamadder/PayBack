@@ -7,6 +7,12 @@ private func mockHTTPResponse(statusCode: Int = 400) -> HTTPURLResponse {
     HTTPURLResponse(url: URL(string: "https://example.com")!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
 }
 
+// Actor-based counter for async-safe counting in tests
+private actor Counter {
+    var value = 0
+    func increment() { value += 1 }
+}
+
 private struct FakePhoneAuthProvider: PhoneAuthProviding {
     var signInWithOTPHandler: ((String) async throws -> Void)?
     var verifyOTPHandler: ((String, String, MobileOTPType) async throws -> AuthResponse)?
@@ -159,13 +165,10 @@ final class SupabasePhoneAuthServiceTests: XCTestCase {
     
     func testConcurrentVerificationRequests() async throws {
         let concurrentCount = 10
-        var callCount = 0
-        let lock = NSLock()
+        let callCounter = Counter()
         
         let provider = FakePhoneAuthProvider(signInWithOTPHandler: { _ in
-            lock.lock()
-            callCount += 1
-            lock.unlock()
+            await callCounter.increment()
         })
         let service = SupabasePhoneAuthService(client: SupabaseClient(supabaseURL: URL(string: "https://example.com")!, supabaseKey: "key"), authProvider: provider, skipConfigurationCheck: true)
         
@@ -189,6 +192,7 @@ final class SupabasePhoneAuthServiceTests: XCTestCase {
         }
         
         XCTAssertEqual(results.count, concurrentCount)
+        let callCount = await callCounter.value
         XCTAssertEqual(callCount, concurrentCount)
     }
     
@@ -196,13 +200,10 @@ final class SupabasePhoneAuthServiceTests: XCTestCase {
         let user = stubUser(email: nil, phone: "+15555555555", name: "Caller")
         let session = stubSession(user: user)
         let concurrentCount = 5
-        var callCount = 0
-        let lock = NSLock()
+        let callCounter = Counter()
         
         let provider = FakePhoneAuthProvider(verifyOTPHandler: { _, _, _ in
-            lock.lock()
-            callCount += 1
-            lock.unlock()
+            await callCounter.increment()
             return .session(session)
         })
         let service = SupabasePhoneAuthService(client: SupabaseClient(supabaseURL: URL(string: "https://example.com")!, supabaseKey: "key"), authProvider: provider, skipConfigurationCheck: true)
@@ -227,6 +228,7 @@ final class SupabasePhoneAuthServiceTests: XCTestCase {
         }
         
         XCTAssertEqual(results.count, concurrentCount)
+        let callCount = await callCounter.value
         XCTAssertEqual(callCount, concurrentCount)
     }
     

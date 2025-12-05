@@ -435,7 +435,6 @@ final class SupabaseInviteLinkServiceTests: XCTestCase {
     
     func testGenerateInviteLinkCreatesValidURL() async throws {
         let targetMemberId = UUID()
-        let tokenId = UUID()
         
         MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
 
