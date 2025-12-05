@@ -81,9 +81,8 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/Developer/Xcode/DerivedData
-          key: ${{ runner.os }}-spm-supabase-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
           restore-keys: |
-            ${{ runner.os }}-spm-supabase-
             ${{ runner.os }}-spm-
 
       - name: Install xcpretty
@@ -297,9 +296,8 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/Developer/Xcode/DerivedData
-          key: ${{ runner.os }}-spm-supabase-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
           restore-keys: |
-            ${{ runner.os }}-spm-supabase-
             ${{ runner.os }}-spm-
 
       - name: Install xcpretty
