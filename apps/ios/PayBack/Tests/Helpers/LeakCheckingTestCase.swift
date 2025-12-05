@@ -102,6 +102,9 @@ extension XCTestCase {
     ///   - name: Name of the object for error messages
     ///   - file: Source file
     ///   - line: Source line
+    ///
+    /// - Note: The weak capture ensures we detect if the object is still retained.
+    ///   If the object is deallocated before teardown (expected behavior), the assertion passes.
     public func addLeakCheck(
         _ object: AnyObject,
         name: String? = nil,
@@ -110,6 +113,7 @@ extension XCTestCase {
     ) {
         let objectName = name ?? String(describing: type(of: object))
         
+        // Weak capture to detect if object is still retained after test completes
         addTeardownBlock { [weak object] in
             XCTAssertNil(
                 object,

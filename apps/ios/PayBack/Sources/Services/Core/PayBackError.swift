@@ -77,8 +77,8 @@ public enum PayBackError: Error, Sendable {
     /// Configuration is missing
     case configurationMissing(service: String)
     
-    /// Underlying error from another system
-    case underlying(Error)
+    /// Underlying error from another system (stores message instead of Error for Sendable conformance)
+    case underlying(message: String)
 }
 
 // MARK: - LocalizedError Conformance
@@ -132,8 +132,8 @@ extension PayBackError: LocalizedError {
             
         case .configurationMissing(let service):
             return "\(service) is not configured. Please check your settings."
-        case .underlying(let error):
-            return error.localizedDescription
+        case .underlying(let message):
+            return message
         }
     }
     

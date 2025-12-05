@@ -4,6 +4,7 @@ import XCTest
 
 /// Mock HTTP client for testing network requests following supabase-swift conventions.
 /// Allows capturing and verifying HTTP requests without making actual network calls.
+/// Thread-safety is ensured via internal DispatchQueue synchronization.
 final class HTTPClientMock: @unchecked Sendable {
     
     /// Represents a captured HTTP request
