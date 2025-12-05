@@ -125,7 +125,7 @@ final class AppStore: ObservableObject {
         friends = []
         persistence.clear()
         
-        // Sign out from Firebase Auth to clear the persistent session
+        // Sign out from Supabase Auth to clear the persistent session
         let emailAuthService = EmailAuthServiceProvider.makeService()
         try? emailAuthService.signOut()
         
@@ -936,7 +936,7 @@ final class AppStore: ObservableObject {
             return
         }
 
-        print("[Sync] Loaded \(groups.count) group(s), \(expenses.count) expense(s) from Firestore.")
+        print("[Sync] Loaded \(groups.count) group(s), \(expenses.count) expense(s) from Supabase.")
 
         if !expenses.isEmpty {
             let currencyCode = Locale.current.currency?.identifier ?? "USD"
@@ -1178,6 +1178,7 @@ final class AppStore: ObservableObject {
         let expenseIds = expenses.map { $0.id }
         groups.removeAll()
         expenses.removeAll()
+        friends.removeAll()
         persistCurrentState()
         Task {
             if !groupIds.isEmpty {
@@ -1515,7 +1516,7 @@ final class AppStore: ObservableObject {
             }
         }
         
-        // Sync to Firestore
+        // Sync to Supabase
         guard let session = session else {
             throw LinkingError.unauthorized
         }
@@ -1541,7 +1542,7 @@ final class AppStore: ObservableObject {
             )
         }
         
-        // Sync updated friends to Firestore with transaction-based retry logic
+        // Sync updated friends to Supabase with transaction-based retry logic
         guard let session = session else {
             throw LinkingError.unauthorized
         }
@@ -1558,7 +1559,7 @@ final class AppStore: ObservableObject {
             }
             
             #if DEBUG
-            print("[AppStore] Successfully synced friend link status to Firestore with transaction")
+            print("[AppStore] Successfully synced friend link status to Supabase with transaction")
             #endif
         } catch {
             // Record partial failure for later recovery
@@ -1740,7 +1741,7 @@ final class AppStore: ObservableObject {
         #endif
         
         do {
-            // Fetch fresh friend data from Firestore
+            // Fetch fresh friend data from Supabase
             let remoteFriends = try await accountService.fetchFriends(
                 accountEmail: session.account.email.lowercased()
             )

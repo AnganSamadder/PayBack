@@ -83,9 +83,9 @@ options:
 # Swift Package Manager Dependencies
 # ----------------------------------------------------------------------------
 packages:
-  Firebase:
-    url: https://github.com/firebase/firebase-ios-sdk.git
-    from: 11.5.0
+  Supabase:
+    url: https://github.com/supabase/supabase-swift.git
+    from: 2.0.0
 
   # Other package dependency types:
 
@@ -118,7 +118,7 @@ settings:
     SWIFT_VERSION: 5.10
     IPHONEOS_DEPLOYMENT_TARGET: "18.0"
     MARKETING_VERSION: 0.1.0
-    CURRENT_PROJECT_VERSION: 3
+    CURRENT_PROJECT_VERSION: 4
     DEVELOPMENT_TEAM: "39YTAJZTZ6"
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -232,22 +232,13 @@ targets:
         # resourceTags: []
         # attributes: []
 
-      - path: apps/ios/PayBack/GoogleService-Info.plist
-        type: resource
-        # optional: true
-
       - path: apps/ios/PayBack/Assets.xcassets
         type: resource
 
     # Dependencies
     dependencies:
-      - package: Firebase
-        product: FirebaseFirestore
-        # link: true
-        # embed: false
-
-      - package: Firebase
-        product: FirebaseAuth
+      - package: Supabase
+        product: Supabase
 
       # Other dependency types:
 
@@ -270,15 +261,6 @@ targets:
 
       # CocoaPods
       # - pod: AFNetworking
-
-    # Pre/Post build scripts
-    postBuildScripts:
-      - script: |
-          "${SRCROOT}/scripts/swap_google_plist.sh"
-        name: Swap GoogleService-Info.plist
-        shell: /bin/sh
-        showEnvVars: false
-        basedOnDependencyAnalysis: false
 
     # postCompileScripts:
     #   - script: swiftlint
@@ -311,6 +293,21 @@ targets:
       #   Release:
       #     SWIFT_OPTIMIZATION_LEVEL: -O
       #     SWIFT_COMPILATION_MODE: wholemodule
+
+    # Pre/Post build scripts
+    preBuildScripts:
+      - script: |
+          "${SRCROOT}/scripts/generate_supabase_config.sh"
+        name: Generate Supabase Config
+        shell: /bin/sh
+        showEnvVars: false
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(SRCROOT)/scripts/generate_supabase_config.sh
+          - $(SRCROOT)/.env.supabase.local
+          - $(SRCROOT)/.env.local
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/SupabaseConfig.plist
 
     # Info.plist configuration
     info:

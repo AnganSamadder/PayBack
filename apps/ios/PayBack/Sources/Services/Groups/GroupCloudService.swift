@@ -1,7 +1,5 @@
 import Foundation
-import FirebaseAuth
-import FirebaseCore
-import FirebaseFirestore
+import Supabase
 
 protocol GroupCloudService {
     func fetchGroups() async throws -> [SpendingGroup]
@@ -15,168 +13,146 @@ enum GroupCloudServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .userNotAuthenticated:
-            return "Please sign in before syncing groups with the cloud."
+            return "Please sign in before syncing groups with Supabase."
         }
     }
 }
 
-struct FirestoreGroupCloudService: GroupCloudService {
-    private let database: Firestore
-    private let collectionName = "groups"
+private struct GroupRow: Codable {
+    let id: UUID
+    let name: String
+    let members: [GroupMemberRow]
+    let ownerEmail: String
+    let ownerAccountId: String
+    let isDirect: Bool?
+    let createdAt: Date
+    let updatedAt: Date
 
-    init(database: Firestore = Firestore.firestore()) {
-        self.database = database
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case members
+        case ownerEmail = "owner_email"
+        case ownerAccountId = "owner_account_id"
+        case isDirect = "is_direct"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+private struct GroupMemberRow: Codable {
+    let id: UUID
+    let name: String
+}
+
+struct SupabaseGroupCloudService: GroupCloudService {
+    private let client: SupabaseClient
+    private let table = "groups"
+    private let userContextProvider: () async throws -> SupabaseUserContext
+
+    init(
+        client: SupabaseClient = SupabaseClientProvider.client!,
+        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+    ) {
+        self.client = client
+        self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
+    }
+
+    private func userContext() async throws -> SupabaseUserContext {
+        do {
+            return try await userContextProvider()
+        } catch {
+            throw GroupCloudServiceError.userNotAuthenticated
+        }
     }
 
     func fetchGroups() async throws -> [SpendingGroup] {
-        try ensureFirebaseConfigured()
+        let context = try await userContext()
 
-        guard let currentUser = Auth.auth().currentUser,
-              let email = currentUser.email?.lowercased() else {
-            throw GroupCloudServiceError.userNotAuthenticated
+        let primary: PostgrestResponse<[GroupRow]> = try await client
+            .from(table)
+            .select()
+            .eq("owner_account_id", value: context.id)
+            .execute()
+
+        if !primary.value.isEmpty {
+            return primary.value.map(group(from:))
         }
 
-        let collection = database.collection(collectionName)
+        let secondary: PostgrestResponse<[GroupRow]> = try await client
+            .from(table)
+            .select()
+            .eq("owner_email", value: context.email)
+            .execute()
 
-        let primarySnapshot = try await collection
-            .whereField("ownerAccountId", isEqualTo: currentUser.uid)
-            .getDocuments()
-
-        if !primarySnapshot.isEmpty {
-            return primarySnapshot.documents.compactMap { group(from: $0) }
+        if !secondary.value.isEmpty {
+            return secondary.value.map(group(from:))
         }
 
-        let secondarySnapshot = try await collection
-            .whereField("ownerEmail", isEqualTo: email)
-            .getDocuments()
+        let fallback: PostgrestResponse<[GroupRow]> = try await client
+            .from(table)
+            .select()
+            .execute()
 
-        if !secondarySnapshot.isEmpty {
-            return secondarySnapshot.documents.compactMap { group(from: $0) }
-        }
-
-        let fallbackSnapshot = try await collection.getDocuments()
-        return fallbackSnapshot.documents
-            .filter { document in
-                let data = document.data()
-                if let owner = data["ownerAccountId"] as? String, owner == currentUser.uid {
-                    return true
-                }
-                if let ownerEmail = data["ownerEmail"] as? String, ownerEmail.lowercased() == email {
-                    return true
-                }
-                if data["ownerAccountId"] == nil && data["ownerEmail"] == nil {
-                    return true
-                }
-                return false
+        return fallback.value
+            .filter { row in
+                row.ownerAccountId == context.id ||
+                row.ownerEmail.lowercased() == context.email ||
+                (row.ownerAccountId.isEmpty && row.ownerEmail.isEmpty)
             }
-            .compactMap { group(from: $0) }
+            .map(group(from:))
     }
 
     func upsertGroup(_ group: SpendingGroup) async throws {
-        try ensureFirebaseConfigured()
+        let context = try await userContext()
+        let row = GroupRow(
+            id: group.id,
+            name: group.name,
+            members: group.members.map { GroupMemberRow(id: $0.id, name: $0.name) },
+            ownerEmail: context.email,
+            ownerAccountId: context.id,
+            isDirect: group.isDirect,
+            createdAt: group.createdAt,
+            updatedAt: Date()
+        )
 
-        guard let currentUser = Auth.auth().currentUser,
-              let email = currentUser.email?.lowercased() else {
-            throw GroupCloudServiceError.userNotAuthenticated
-        }
-
-        let document = database.collection(collectionName).document(group.id.uuidString)
-        try await document.setData(groupPayload(group, ownerEmail: email, ownerAccountId: currentUser.uid), merge: true)
+        _ = try await client
+            .from(table)
+            .upsert([row], onConflict: "id", returning: .minimal)
+            .execute() as PostgrestResponse<Void>
     }
 
     func deleteGroups(_ ids: [UUID]) async throws {
         guard !ids.isEmpty else { return }
-        try ensureFirebaseConfigured()
+        guard SupabaseClientProvider.isConfigured else { throw GroupCloudServiceError.userNotAuthenticated }
 
-        guard Auth.auth().currentUser != nil else {
-            throw GroupCloudServiceError.userNotAuthenticated
-        }
-
-        let batch = database.batch()
-        let collection = database.collection(collectionName)
-        for id in ids {
-            batch.deleteDocument(collection.document(id.uuidString))
-        }
-        try await batch.commit()
+        _ = try await client
+            .from(table)
+            .delete(returning: .minimal)
+            .`in`("id", values: ids)
+            .execute() as PostgrestResponse<Void>
     }
 
-    private func group(from document: DocumentSnapshot) -> SpendingGroup? {
-        guard let data = document.data(),
-              let name = data["name"] as? String,
-              let membersArray = data["members"] as? [[String: Any]] else {
-            return nil
-        }
-
-        let members: [GroupMember] = membersArray.compactMap { member in
-            guard let idString = member["id"] as? String,
-                  let name = member["name"] as? String,
-                  let id = UUID(uuidString: idString) else {
-                return nil
-            }
-            return GroupMember(id: id, name: name)
-        }
-
-        let createdAt: Date
-        if let timestamp = data["createdAt"] as? Timestamp {
-            createdAt = timestamp.dateValue()
-        } else {
-            createdAt = Date()
-        }
-
-        let isDirect: Bool?
-        if let flag = data["isDirect"] as? Bool {
-            isDirect = flag
-        } else {
-            isDirect = nil
-        }
-
-        return SpendingGroup(
-            id: UUID(uuidString: document.documentID) ?? UUID(),
-            name: name,
-            members: members,
-            createdAt: createdAt,
-            isDirect: isDirect
+    private func group(from row: GroupRow) -> SpendingGroup {
+        SpendingGroup(
+            id: row.id,
+            name: row.name,
+            members: row.members.map { GroupMember(id: $0.id, name: $0.name) },
+            createdAt: row.createdAt,
+            isDirect: row.isDirect
         )
     }
 
-    private func groupPayload(
-        _ group: SpendingGroup,
-        ownerEmail: String,
-        ownerAccountId: String
-    ) -> [String: Any] {
-        var payload: [String: Any] = [:]
-        payload["name"] = group.name
-        payload["members"] = group.members.map { member in
-            [
-                "id": member.id.uuidString,
-                "name": member.name
-            ]
-        }
-        if let isDirect = group.isDirect {
-            payload["isDirect"] = isDirect
-        }
-        payload["ownerEmail"] = ownerEmail
-        payload["ownerAccountId"] = ownerAccountId
-        payload["createdAt"] = Timestamp(date: group.createdAt)
-        payload["updatedAt"] = Timestamp(date: Date())
-        return payload
-    }
-
-    private func ensureFirebaseConfigured() throws {
-        guard FirebaseApp.app() != nil else {
-            throw AccountServiceError.configurationMissing
-        }
-    }
 }
 
 enum GroupCloudServiceProvider {
     static func makeService() -> GroupCloudService {
-        if FirebaseApp.app() != nil {
-            return FirestoreGroupCloudService()
+        if let client = SupabaseClientProvider.client {
+            return SupabaseGroupCloudService(client: client)
         }
 
         #if DEBUG
-        print("[Groups] Firebase not configured – returning no-op service.")
+        print("[Groups] Supabase not configured – returning no-op service.")
         #endif
         return NoopGroupCloudService()
     }

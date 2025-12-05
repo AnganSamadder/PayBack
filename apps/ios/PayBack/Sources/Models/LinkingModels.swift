@@ -4,7 +4,7 @@ import Foundation
 
 public struct LinkRequest: Identifiable, Codable, Hashable {
     public let id: UUID
-    public let requesterId: String // Firebase Auth UID
+    public let requesterId: String // Supabase Auth user id
     public let requesterEmail: String
     public let requesterName: String
     public let recipientEmail: String
@@ -42,13 +42,13 @@ public enum LinkRequestStatus: String, Codable {
 
 struct InviteToken: Identifiable, Codable, Hashable {
     let id: UUID // Used as the token in the URL
-    let creatorId: String // Firebase Auth UID
+    let creatorId: String // Supabase Auth user id
     let creatorEmail: String
     let targetMemberId: UUID
     let targetMemberName: String
     let createdAt: Date
     var expiresAt: Date
-    var claimedBy: String? // Firebase Auth UID when claimed
+    var claimedBy: String? // Supabase Auth user id when claimed
     var claimedAt: Date?
 }
 
