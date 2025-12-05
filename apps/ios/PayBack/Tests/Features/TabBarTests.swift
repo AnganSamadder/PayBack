@@ -102,18 +102,18 @@ final class TabBarTests: XCTestCase {
         let fabSpacerTab = 2
         
         for startTab in startingTabs {
-            var selectedTab = startTab
+            let selectedTab = startTab
             let attemptedTab = fabSpacerTab
             
             // Guard logic from RootView - only update if NOT the FAB spacer
-            guard attemptedTab != fabSpacerTab else {
-                // If attemptedTab == FAB spacer, selectedTab stays the same (don't update)
+            // Since attemptedTab is always fabSpacerTab in this test, the guard always triggers
+            if attemptedTab == fabSpacerTab {
+                // FAB spacer tab is blocked, selectedTab stays the same
                 XCTAssertEqual(selectedTab, startTab, 
                     "Attempting to select tab 2 from tab \(startTab) should keep tab \(startTab)")
-                continue
+            } else {
+                XCTFail("attemptedTab should always be fabSpacerTab in this test")
             }
-            selectedTab = attemptedTab
-            XCTFail("Should not reach here when attemptedTab is FAB spacer")
         }
     }
     
