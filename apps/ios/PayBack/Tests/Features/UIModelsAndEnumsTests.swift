@@ -9,27 +9,35 @@ final class UIModelsAndEnumsTests: XCTestCase {
     
     func test_splitMode_allCases() {
         let modes = SplitMode.allCases
-        XCTAssertEqual(modes.count, 3)
+        XCTAssertEqual(modes.count, 5)
         XCTAssertTrue(modes.contains(.equal))
         XCTAssertTrue(modes.contains(.percent))
+        XCTAssertTrue(modes.contains(.shares))
+        XCTAssertTrue(modes.contains(.itemized))
         XCTAssertTrue(modes.contains(.manual))
     }
     
     func test_splitMode_rawValues() {
         XCTAssertEqual(SplitMode.equal.rawValue, "Equal")
         XCTAssertEqual(SplitMode.percent.rawValue, "Percent")
+        XCTAssertEqual(SplitMode.shares.rawValue, "Shares")
+        XCTAssertEqual(SplitMode.itemized.rawValue, "Receipt")
         XCTAssertEqual(SplitMode.manual.rawValue, "Manual")
     }
     
     func test_splitMode_identifiable() {
         XCTAssertEqual(SplitMode.equal.id, "Equal")
         XCTAssertEqual(SplitMode.percent.id, "Percent")
+        XCTAssertEqual(SplitMode.shares.id, "Shares")
+        XCTAssertEqual(SplitMode.itemized.id, "Receipt")
         XCTAssertEqual(SplitMode.manual.id, "Manual")
     }
     
     func test_splitMode_initialization() {
         XCTAssertEqual(SplitMode(rawValue: "Equal"), .equal)
         XCTAssertEqual(SplitMode(rawValue: "Percent"), .percent)
+        XCTAssertEqual(SplitMode(rawValue: "Shares"), .shares)
+        XCTAssertEqual(SplitMode(rawValue: "Receipt"), .itemized)
         XCTAssertEqual(SplitMode(rawValue: "Manual"), .manual)
         XCTAssertNil(SplitMode(rawValue: "Invalid"))
     }
