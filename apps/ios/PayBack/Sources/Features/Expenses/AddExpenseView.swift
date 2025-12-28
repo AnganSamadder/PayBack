@@ -1077,7 +1077,7 @@ private struct PercentSplitView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(participants) { p in
-                let baseAmount = (percents[p.id] ?? 0) / 100 * total
+
                 let adjustment = adjustments[p.id] ?? 0
                 HStack {
                     Text(p.name)
