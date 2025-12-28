@@ -47,14 +47,14 @@ final class AccountServiceTests: XCTestCase {
         do {
             _ = try sut.normalizedEmail(from: invalidEmail)
             XCTFail("Expected error to be thrown")
-        } catch let error as AccountServiceError {
-            if case AccountServiceError.invalidEmail = error {
+        } catch let error as PayBackError {
+            if case PayBackError.accountInvalidEmail = error {
                 // Expected error
             } else {
-                XCTFail("Expected AccountServiceError.invalidEmail")
+                XCTFail("Expected PayBackError.accountInvalidEmail")
             }
         } catch {
-            XCTFail("Expected AccountServiceError but got \(error)")
+            XCTFail("Expected PayBackError but got \(error)")
         }
     }
     
@@ -67,7 +67,7 @@ final class AccountServiceTests: XCTestCase {
             _ = try sut.normalizedEmail(from: emptyEmail)
             XCTFail("Expected error to be thrown")
         } catch {
-            XCTAssertTrue(error is AccountServiceError)
+            XCTAssertTrue(error is PayBackError)
         }
     }
     
@@ -80,7 +80,7 @@ final class AccountServiceTests: XCTestCase {
             _ = try sut.normalizedEmail(from: invalidEmail)
             XCTFail("Expected error to be thrown")
         } catch {
-            XCTAssertTrue(error is AccountServiceError)
+            XCTAssertTrue(error is PayBackError)
         }
     }
     
@@ -93,7 +93,7 @@ final class AccountServiceTests: XCTestCase {
             _ = try sut.normalizedEmail(from: invalidEmail)
             XCTFail("Expected error to be thrown")
         } catch {
-            XCTAssertTrue(error is AccountServiceError)
+            XCTAssertTrue(error is PayBackError)
         }
     }
     
@@ -152,11 +152,11 @@ final class AccountServiceTests: XCTestCase {
             _ = try await sut.createAccount(email: email, displayName: "Another User")
             XCTFail("Expected duplicate account error")
         } catch {
-            XCTAssertTrue(error is AccountServiceError)
-            if case AccountServiceError.duplicateAccount = error {
+            XCTAssertTrue(error is PayBackError)
+            if case PayBackError.accountDuplicate = error {
                 // Expected error
             } else {
-                XCTFail("Expected AccountServiceError.duplicateAccount")
+                XCTFail("Expected PayBackError.accountDuplicate")
             }
         }
     }
@@ -311,12 +311,12 @@ final class AccountServiceTests: XCTestCase {
     
     func test_accountServiceError_descriptions() {
         // Given/When/Then
-        let errors: [(AccountServiceError, String)] = [
-            (.configurationMissing, "Authentication is not configured yet"),
-            (.userNotFound, "We couldn't find an account"),
-            (.duplicateAccount, "An account with this email address already exists"),
-            (.invalidEmail, "Please enter a valid email address"),
-            (.networkUnavailable, "We couldn't reach the network")
+        let errors: [(PayBackError, String)] = [
+            (.configurationMissing(service: "Test"), "is not configured"),
+            (.accountNotFound(email: "test"), "No account found"),
+            (.accountDuplicate(email: "test"), "An account already exists"),
+            (.accountInvalidEmail(email: "test"), "invalid"),
+            (.networkUnavailable, "internet")
         ]
         
         for (error, expectedSubstring) in errors {
@@ -334,7 +334,7 @@ final class AccountServiceTests: XCTestCase {
             var errorDescription: String? { "Custom error message" }
         }
         let underlyingError = CustomError()
-        let serviceError = AccountServiceError.underlying(underlyingError)
+        let serviceError = PayBackError.underlying(message: underlyingError.localizedDescription)
         
         // When
         let description = serviceError.errorDescription
@@ -443,7 +443,7 @@ final class AccountServiceTests: XCTestCase {
             do {
                 _ = try sut.normalizedEmail(from: email)
                 XCTFail("Should throw error for: \(email)")
-            } catch AccountServiceError.invalidEmail {
+            } catch PayBackError.accountInvalidEmail {
                 // Expected
             } catch {
                 XCTFail("Unexpected error for \(email): \(error)")
@@ -458,7 +458,7 @@ final class AccountServiceTests: XCTestCase {
             do {
                 _ = try sut.normalizedEmail(from: email)
                 XCTFail("Should throw error for whitespace: '\(email)'")
-            } catch AccountServiceError.invalidEmail {
+            } catch PayBackError.accountInvalidEmail {
                 // Expected
             } catch {
                 XCTFail("Unexpected error: \(error)")
@@ -761,13 +761,13 @@ final class AccountServiceTests: XCTestCase {
     // MARK: - Error Type Tests
     
     func testAccountServiceError_allCases_haveDescriptions() {
-        let errors: [AccountServiceError] = [
-            .configurationMissing,
-            .userNotFound,
-            .duplicateAccount,
-            .invalidEmail,
+        let errors: [PayBackError] = [
+            .configurationMissing(service: "Test"),
+            .accountNotFound(email: "test"),
+            .accountDuplicate(email: "test"),
+            .accountInvalidEmail(email: "test"),
             .networkUnavailable,
-            .underlying(NSError(domain: "test", code: 1))
+            .underlying(message: "test")
         ]
         
         for error in errors {
@@ -776,11 +776,8 @@ final class AccountServiceTests: XCTestCase {
         }
     }
     
-    func testAccountServiceError_underlying_withNSError() {
-        let nsError = NSError(domain: "TestDomain", code: 123, userInfo: [
-            NSLocalizedDescriptionKey: "Test error message"
-        ])
-        let serviceError = AccountServiceError.underlying(nsError)
+    func testAccountServiceError_underlying_withMessage() {
+        let serviceError = PayBackError.underlying(message: "Test error message")
         
         XCTAssertEqual(serviceError.errorDescription, "Test error message")
     }

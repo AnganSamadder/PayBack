@@ -8,24 +8,13 @@ struct ExpenseParticipant {
     let linkedAccountEmail: String?
 }
 
-protocol ExpenseCloudService {
+protocol ExpenseCloudService: Sendable {
     func fetchExpenses() async throws -> [Expense]
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws
     func upsertDebugExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws
     func deleteExpense(_ id: UUID) async throws
     func deleteDebugExpenses() async throws
     func clearLegacyMockExpenses() async throws
-}
-
-enum ExpenseCloudServiceError: LocalizedError {
-    case userNotAuthenticated
-
-    var errorDescription: String? {
-        switch self {
-        case .userNotAuthenticated:
-            return "Please sign in before syncing expenses with Supabase."
-        }
-    }
 }
 
 private struct ExpenseRow: Codable {
@@ -96,14 +85,14 @@ private struct ExpenseParticipantRow: Codable {
     }
 }
 
-struct SupabaseExpenseCloudService: ExpenseCloudService {
+final class SupabaseExpenseCloudService: ExpenseCloudService, Sendable {
     private let client: SupabaseClient
     private let table = "expenses"
-    private let userContextProvider: () async throws -> SupabaseUserContext
+    private let userContextProvider: @Sendable () async throws -> SupabaseUserContext
 
     init(
         client: SupabaseClient = SupabaseClientProvider.client!,
-        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+        userContextProvider: (@Sendable () async throws -> SupabaseUserContext)? = nil
     ) {
         self.client = client
         self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
@@ -113,7 +102,7 @@ struct SupabaseExpenseCloudService: ExpenseCloudService {
         do {
             return try await userContextProvider()
         } catch {
-            throw ExpenseCloudServiceError.userNotAuthenticated
+            throw PayBackError.authSessionMissing
         }
     }
 
@@ -188,7 +177,7 @@ struct SupabaseExpenseCloudService: ExpenseCloudService {
 
     func deleteExpense(_ id: UUID) async throws {
         guard SupabaseClientProvider.isConfigured else {
-            throw ExpenseCloudServiceError.userNotAuthenticated
+            throw PayBackError.configurationMissing(service: "Expenses")
         }
 
         _ = try await client

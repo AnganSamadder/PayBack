@@ -543,7 +543,10 @@ final class SupabaseLinkRequestServiceTests: XCTestCase {
         MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
 
         await XCTAssertThrowsErrorAsync(try await service.cancelLinkRequest(UUID())) { error in
-            XCTAssertTrue(error is LinkingError)
+            XCTAssertTrue(error is PayBackError)
+            if let payBackError = error as? PayBackError {
+                XCTAssertEqual(payBackError, .linkInvalid)
+            }
         }
     }
     
@@ -568,7 +571,10 @@ final class SupabaseLinkRequestServiceTests: XCTestCase {
         )
 
         await XCTAssertThrowsErrorAsync(try await service.cancelLinkRequest(requestId)) { error in
-            XCTAssertTrue(error is LinkingError)
+            XCTAssertTrue(error is PayBackError)
+            if let payBackError = error as? PayBackError {
+                XCTAssertEqual(payBackError, .linkInvalid)
+            }
         }
     }
     

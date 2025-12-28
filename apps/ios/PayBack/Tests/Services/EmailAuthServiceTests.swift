@@ -60,8 +60,13 @@ final class EmailAuthServiceTests: XCTestCase {
         do {
             _ = try await sut.signIn(email: email, password: "wrongpassword")
             XCTFail("Should throw invalid credentials error")
-        } catch EmailAuthServiceError.invalidCredentials {
-            // Expected
+            XCTFail("Should throw invalid credentials error")
+        } catch let error as PayBackError {
+            if case .authInvalidCredentials = error {
+                // Expected
+            } else {
+                XCTFail("Wrong error type: \(error)")
+            }
         } catch {
             XCTFail("Wrong error type: \(error)")
         }
@@ -71,8 +76,13 @@ final class EmailAuthServiceTests: XCTestCase {
         do {
             _ = try await sut.signIn(email: "unknown@example.com", password: "anypassword")
             XCTFail("Should throw invalid credentials error")
-        } catch EmailAuthServiceError.invalidCredentials {
-            // Expected
+            XCTFail("Should throw invalid credentials error")
+        } catch let error as PayBackError {
+            if case .authInvalidCredentials = error {
+                // Expected
+            } else {
+                XCTFail("Wrong error type: \(error)")
+            }
         } catch {
             XCTFail("Wrong error type: \(error)")
         }
@@ -82,8 +92,13 @@ final class EmailAuthServiceTests: XCTestCase {
         do {
             _ = try await sut.signIn(email: "notexist@example.com", password: "wrong")
             XCTFail("Should throw invalid credentials error")
-        } catch EmailAuthServiceError.invalidCredentials {
-            // Expected
+            XCTFail("Should throw invalid credentials error")
+        } catch let error as PayBackError {
+            if case .authInvalidCredentials = error {
+                // Expected
+            } else {
+                XCTFail("Wrong error type: \(error)")
+            }
         } catch {
             XCTFail("Wrong error type: \(error)")
         }
@@ -99,8 +114,13 @@ final class EmailAuthServiceTests: XCTestCase {
         do {
             _ = try await sut.signIn(email: email, password: "wrongpass")
             XCTFail("Should throw invalid credentials error")
-        } catch EmailAuthServiceError.invalidCredentials {
-            // Expected
+            XCTFail("Should throw invalid credentials error")
+        } catch let error as PayBackError {
+            if case .authInvalidCredentials = error {
+                 // Expected
+            } else {
+                XCTFail("Wrong error type: \(error)")
+            }
         } catch {
             XCTFail("Wrong error type: \(error)")
         }
@@ -154,8 +174,13 @@ final class EmailAuthServiceTests: XCTestCase {
         do {
             _ = try await sut.signUp(email: "test@example.com", password: "weak", displayName: "Test")
             XCTFail("Should throw weak password error")
-        } catch EmailAuthServiceError.weakPassword {
-            // Expected
+            XCTFail("Should throw weak password error")
+        } catch let error as PayBackError {
+            if case .authWeakPassword = error {
+                // Expected
+            } else {
+                XCTFail("Wrong error type: \(error)")
+            }
         } catch {
             XCTFail("Wrong error type: \(error)")
         }
@@ -165,8 +190,13 @@ final class EmailAuthServiceTests: XCTestCase {
         do {
             _ = try await sut.signUp(email: "test@example.com", password: "Pass1", displayName: "Test")
             XCTFail("Should throw weak password error")
-        } catch EmailAuthServiceError.weakPassword {
-            // Expected
+            XCTFail("Should throw weak password error")
+        } catch let error as PayBackError {
+            if case .authWeakPassword = error {
+                // Expected
+            } else {
+                XCTFail("Wrong error type: \(error)")
+            }
         } catch {
             XCTFail("Wrong error type: \(error)")
         }
@@ -181,8 +211,13 @@ final class EmailAuthServiceTests: XCTestCase {
         do {
             _ = try await sut.signUp(email: email, password: "password456", displayName: "Second")
             XCTFail("Should throw email in use error")
-        } catch EmailAuthServiceError.emailAlreadyInUse {
-            // Expected
+            XCTFail("Should throw email in use error")
+        } catch let error as PayBackError {
+            if case .accountDuplicate = error {
+                // Expected
+            } else {
+                XCTFail("Wrong error type: \(error)")
+            }
         } catch {
             XCTFail("Wrong error type: \(error)")
         }
@@ -252,8 +287,13 @@ final class EmailAuthServiceTests: XCTestCase {
         do {
             try await sut.sendPasswordReset(email: "nonexistent@example.com")
             XCTFail("Should throw error for non-existent user")
-        } catch EmailAuthServiceError.invalidCredentials {
-            // Expected - mock service returns invalidCredentials for non-existent users
+            XCTFail("Should throw error for non-existent user")
+        } catch let error as PayBackError {
+            if case .authInvalidCredentials = error {
+                // Expected
+            } else {
+                 XCTFail("Wrong error type: \(error)")
+            }
         } catch {
             XCTFail("Wrong error type: \(error)")
         }
@@ -311,8 +351,13 @@ final class EmailAuthServiceTests: XCTestCase {
         do {
             _ = try await sut.signUp(email: "test@example.com", password: "password2", displayName: "User2")
             XCTFail("Should have thrown emailAlreadyInUse error")
-        } catch EmailAuthServiceError.emailAlreadyInUse {
-            // Expected
+            XCTFail("Should have thrown emailAlreadyInUse error")
+        } catch let error as PayBackError {
+            if case .accountDuplicate = error {
+                // Expected
+            } else {
+               XCTFail("Wrong error type: \(error)") 
+            }
         }
         
         // Sign in with different case should work (case-insensitive)

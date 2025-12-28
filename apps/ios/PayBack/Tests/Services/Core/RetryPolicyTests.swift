@@ -44,7 +44,7 @@ final class RetryPolicyTests: XCTestCase {
         let result = try await policy.execute {
             attemptCount += 1
             if attemptCount < 3 {
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             return "success"
         }
@@ -63,14 +63,14 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
             XCTAssertEqual(attemptCount, 3, "Should attempt all retries")
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.networkUnavailable)
+            XCTAssertTrue(error is PayBackError)
+            if let payBackError = error as? PayBackError {
+                XCTAssertEqual(payBackError, PayBackError.networkUnavailable)
             }
         }
     }
@@ -134,13 +134,13 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.unauthorized
+                throw PayBackError.authSessionMissing
             }
             XCTFail("Should have thrown error")
         } catch {
             // Assert
             XCTAssertEqual(attemptCount, 1, "Should not retry non-retryable errors")
-            XCTAssertTrue(error is LinkingError)
+            XCTAssertTrue(error is PayBackError)
         }
     }
     
@@ -153,7 +153,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.tokenExpired
+                throw PayBackError.linkExpired
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -171,7 +171,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.duplicateRequest
+                throw PayBackError.linkDuplicateRequest
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -189,7 +189,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.selfLinkingNotAllowed
+                throw PayBackError.linkSelfNotAllowed
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -209,7 +209,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptTimes.append(Date())
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -248,7 +248,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptTimes.append(Date())
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -284,7 +284,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -302,7 +302,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -407,7 +407,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.accountNotFound
+                throw PayBackError.accountNotFound(email: "test@example.com")
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -422,7 +422,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.tokenInvalid
+                throw PayBackError.linkInvalid
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -437,7 +437,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.tokenAlreadyClaimed
+                throw PayBackError.linkAlreadyClaimed
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -452,7 +452,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.memberAlreadyLinked
+                throw PayBackError.linkMemberAlreadyLinked
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -467,7 +467,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.accountAlreadyLinked
+                throw PayBackError.linkAccountAlreadyLinked
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -568,7 +568,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -584,7 +584,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptTimes.append(Date())
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -604,7 +604,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptTimes.append(Date())
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -624,7 +624,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptTimes.append(Date())
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -648,7 +648,7 @@ final class RetryPolicyTests: XCTestCase {
         let result = try await policy.execute {
             attemptCount += 1
             if attemptCount == 1 {
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             return "success"
         }
@@ -664,7 +664,7 @@ final class RetryPolicyTests: XCTestCase {
         let result = try await policy.execute {
             attemptCount += 1
             if attemptCount < 3 {
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             return "success"
         }
@@ -760,7 +760,7 @@ final class RetryPolicyTests: XCTestCase {
                     do {
                         let result = try await policy.execute {
                             if i % 2 == 0 {
-                                throw LinkingError.networkUnavailable
+                                throw PayBackError.networkUnavailable
                             }
                             return "success-\(i)"
                         }
@@ -801,7 +801,7 @@ final class RetryPolicyTests: XCTestCase {
         do {
             _ = try await RetryPolicy.linkingDefault.execute {
                 attemptCount += 1
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {

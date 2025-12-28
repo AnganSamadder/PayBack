@@ -17,8 +17,8 @@ final class AuthCoordinator: ObservableObject {
     private let emailAuthService: EmailAuthService
 
     init(
-        accountService: AccountService = AccountServiceProvider.makeAccountService(),
-        emailAuthService: EmailAuthService = EmailAuthServiceProvider.makeService()
+        accountService: AccountService = Dependencies.current.accountService,
+        emailAuthService: EmailAuthService = Dependencies.current.emailAuthService
     ) {
         self.accountService = accountService
         self.emailAuthService = emailAuthService
@@ -70,7 +70,7 @@ final class AuthCoordinator: ObservableObject {
                 do {
                     let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: trimmedName)
                     self.route = .authenticated(UserSession(account: account))
-                } catch AccountServiceError.sessionMissing {
+                } catch PayBackError.authSessionMissing {
                     // Sign up succeeded but session is missing -> Email confirmation likely required
                     self.infoMessage = "Account created! Please check your email to verify your account."
                     self.route = .login
@@ -107,16 +107,11 @@ final class AuthCoordinator: ObservableObject {
     }
 
     private func handle(error: Error) {
-        if let accountError = error as? AccountServiceError {
+        if let paybackError = error as? PayBackError {
 #if DEBUG
-            print("[AuthCoordinator] AccountServiceError: \(accountError)")
+            print("[AuthCoordinator] PayBackError: \(paybackError)")
 #endif
-            errorMessage = accountError.errorDescription
-        } else if let emailError = error as? EmailAuthServiceError {
-#if DEBUG
-            print("[AuthCoordinator] EmailAuthServiceError: \(emailError)")
-#endif
-            errorMessage = emailError.errorDescription
+            errorMessage = paybackError.errorDescription
         } else {
 #if DEBUG
             print("[AuthCoordinator] Unknown error: \(error.localizedDescription)")
