@@ -103,7 +103,7 @@ final class AsyncCancellationTests: XCTestCase {
             try await policy.execute {
                 attemptCount += 1
                 try await Task.sleep(nanoseconds: 100_000_000) // 100ms
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
         }
         
@@ -410,7 +410,7 @@ final class AsyncCancellationTests: XCTestCase {
         let task = Task {
             try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
         }
         

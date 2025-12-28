@@ -66,7 +66,7 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
                 isValid: false,
                 token: nil,
                 expensePreview: nil,
-                errorMessage: LinkingError.tokenInvalid.errorDescription
+                errorMessage: PayBackError.linkInvalid.errorDescription
             )
         }
         
@@ -75,7 +75,7 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
                 isValid: false,
                 token: token,
                 expensePreview: nil,
-                errorMessage: LinkingError.tokenExpired.errorDescription
+                errorMessage: PayBackError.linkExpired.errorDescription
             )
         }
         
@@ -84,7 +84,7 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
                 isValid: false,
                 token: token,
                 expensePreview: nil,
-                errorMessage: LinkingError.tokenAlreadyClaimed.errorDescription
+                errorMessage: PayBackError.linkAlreadyClaimed.errorDescription
             )
         }
         
@@ -106,18 +106,18 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
     
     func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
         guard var token = tokens[tokenId] else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         // Check if expired first
         if token.expiresAt < Date() {
-            throw LinkingError.tokenExpired
+            throw PayBackError.linkExpired
         }
         
         // Atomic check-and-set: Check if already claimed BEFORE we try to claim it
         // This must be atomic within the actor to prevent race conditions
         if claims.contains(tokenId) || token.claimedBy != nil {
-            throw LinkingError.tokenAlreadyClaimed
+            throw PayBackError.linkAlreadyClaimed
         }
         
         // Mark as claimed atomically (both in Set and token)
@@ -143,7 +143,7 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
     
     func revokeInvite(_ tokenId: UUID) async throws {
         guard tokens[tokenId] != nil else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         tokens.removeValue(forKey: tokenId)
         claims.remove(tokenId)

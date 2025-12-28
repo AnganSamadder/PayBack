@@ -11,7 +11,7 @@ struct FriendDetailView: View {
     @State private var isGeneratingInviteLink = false
     @State private var showShareSheet = false
     @State private var inviteLinkToShare: InviteLink?
-    @State private var linkError: LinkingError?
+    @State private var linkError: PayBackError?
     @State private var showErrorAlert = false
     @State private var showSuccessMessage = false
     @State private var isEditingNickname = false
@@ -486,13 +486,13 @@ struct FriendDetailView: View {
             Button("OK", role: .cancel) { }
         } message: {
             if let error = linkError {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(error.errorDescription ?? "An error occurred")
-                    if let suggestion = error.recoverySuggestion {
-                        Text(suggestion)
-                            .font(.caption)
-                    }
-                }
+               if let suggestion = error.recoverySuggestion {
+                   Text(error.errorDescription ?? "An error occurred") + Text("\n\n") + Text(suggestion)
+               } else {
+                   Text(error.errorDescription ?? "An error occurred")
+               }
+            } else {
+               Text("An unknown error occurred.")
             }
         }
     }
@@ -534,8 +534,8 @@ struct FriendDetailView: View {
                 // Trigger error haptic
                 Haptics.notify(.error)
 
-                if let linkingError = error as? LinkingError {
-                    self.linkError = linkingError
+                if let paybackError = error as? PayBackError {
+                    self.linkError = paybackError
                 } else {
                     self.linkError = .networkUnavailable
                 }

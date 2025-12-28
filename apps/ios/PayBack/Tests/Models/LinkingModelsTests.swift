@@ -301,7 +301,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_accountNotFound_hasDescription() {
         // Arrange
-        let error = LinkingError.accountNotFound
+        let error = PayBackError.accountNotFound(email: "test@example.com")
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -311,7 +311,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_accountNotFound_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.accountNotFound
+        let error = PayBackError.accountNotFound(email: "test@example.com")
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -320,7 +320,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_duplicateRequest_hasDescription() {
         // Arrange
-        let error = LinkingError.duplicateRequest
+        let error = PayBackError.linkDuplicateRequest
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -329,7 +329,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_duplicateRequest_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.duplicateRequest
+        let error = PayBackError.linkDuplicateRequest
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -338,7 +338,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_tokenExpired_hasDescription() {
         // Arrange
-        let error = LinkingError.tokenExpired
+        let error = PayBackError.linkExpired
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -347,7 +347,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_tokenExpired_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.tokenExpired
+        let error = PayBackError.linkExpired
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -356,7 +356,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_tokenAlreadyClaimed_hasDescription() {
         // Arrange
-        let error = LinkingError.tokenAlreadyClaimed
+        let error = PayBackError.linkAlreadyClaimed
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -365,7 +365,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_tokenAlreadyClaimed_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.tokenAlreadyClaimed
+        let error = PayBackError.linkAlreadyClaimed
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -374,7 +374,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_tokenInvalid_hasDescription() {
         // Arrange
-        let error = LinkingError.tokenInvalid
+        let error = PayBackError.linkInvalid
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -383,7 +383,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_tokenInvalid_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.tokenInvalid
+        let error = PayBackError.linkInvalid
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -392,7 +392,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_networkUnavailable_hasDescription() {
         // Arrange
-        let error = LinkingError.networkUnavailable
+        let error = PayBackError.networkUnavailable
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -401,7 +401,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_networkUnavailable_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.networkUnavailable
+        let error = PayBackError.networkUnavailable
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -410,7 +410,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_unauthorized_hasDescription() {
         // Arrange
-        let error = LinkingError.unauthorized
+        let error = PayBackError.authSessionMissing
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -419,7 +419,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_unauthorized_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.unauthorized
+        let error = PayBackError.authSessionMissing
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -428,7 +428,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_selfLinkingNotAllowed_hasDescription() {
         // Arrange
-        let error = LinkingError.selfLinkingNotAllowed
+        let error = PayBackError.linkSelfNotAllowed
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -437,7 +437,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_selfLinkingNotAllowed_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.selfLinkingNotAllowed
+        let error = PayBackError.linkSelfNotAllowed
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -446,7 +446,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_memberAlreadyLinked_hasDescription() {
         // Arrange
-        let error = LinkingError.memberAlreadyLinked
+        let error = PayBackError.linkMemberAlreadyLinked
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -455,7 +455,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_memberAlreadyLinked_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.memberAlreadyLinked
+        let error = PayBackError.linkMemberAlreadyLinked
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -464,7 +464,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_accountAlreadyLinked_hasDescription() {
         // Arrange
-        let error = LinkingError.accountAlreadyLinked
+        let error = PayBackError.linkAccountAlreadyLinked
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -473,7 +473,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_accountAlreadyLinked_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.accountAlreadyLinked
+        let error = PayBackError.linkAccountAlreadyLinked
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -482,17 +482,17 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_allErrors_haveDescriptions() {
         // Arrange
-        let allErrors: [LinkingError] = [
-            .accountNotFound,
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .tokenInvalid,
+        let allErrors: [PayBackError] = [
+            .accountNotFound(email: "test@example.com"),
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkInvalid,
             .networkUnavailable,
-            .unauthorized,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked,
-            .accountAlreadyLinked
+            .authSessionMissing,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked,
+            .linkAccountAlreadyLinked
         ]
         
         // Act & Assert
@@ -504,17 +504,17 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_allErrors_haveRecoverySuggestions() {
         // Arrange
-        let allErrors: [LinkingError] = [
-            .accountNotFound,
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .tokenInvalid,
+        let allErrors: [PayBackError] = [
+            .accountNotFound(email: "test@example.com"),
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkInvalid,
             .networkUnavailable,
-            .unauthorized,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked,
-            .accountAlreadyLinked
+            .authSessionMissing,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked,
+            .linkAccountAlreadyLinked
         ]
         
         // Act & Assert
@@ -526,17 +526,17 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_noPII_inErrorMessages() {
         // Arrange
-        let allErrors: [LinkingError] = [
-            .accountNotFound,
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .tokenInvalid,
+        let allErrors: [PayBackError] = [
+            .accountNotFound(email: "test@example.com"),
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkInvalid,
             .networkUnavailable,
-            .unauthorized,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked,
-            .accountAlreadyLinked
+            .authSessionMissing,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked,
+            .linkAccountAlreadyLinked
         ]
         
         // Act & Assert
@@ -566,7 +566,7 @@ final class LinkingModelsTests: XCTestCase {
     
     func test_linkingError_localizedError_conformance() {
         // Arrange
-        let error: LocalizedError = LinkingError.tokenExpired
+        let error: LocalizedError = PayBackError.linkExpired
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)

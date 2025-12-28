@@ -53,10 +53,10 @@ final class AccountLinkingSecurityTests: XCTestCase {
         do {
             _ = try await inviteLinkService.claimInviteToken(inviteLink.token.id)
             XCTFail("Second claim should have thrown tokenAlreadyClaimed error")
-        } catch LinkingError.tokenAlreadyClaimed {
+        } catch PayBackError.linkAlreadyClaimed {
             // Expected error
         } catch {
-            XCTFail("Expected tokenAlreadyClaimed but got \(error)")
+            XCTFail("Expected linkAlreadyClaimed but got \(error)")
         }
     }
     
@@ -112,7 +112,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
                 case .success:
                     successCount += 1
                 case .failure(let error):
-                    if case LinkingError.tokenAlreadyClaimed = error {
+                    if case PayBackError.linkAlreadyClaimed = error {
                         failureCount += 1
                     }
                 }
@@ -196,7 +196,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
         
         // We can't easily test this with the mock without modifying it
         // But we can verify the error type exists and has proper description
-        let error = LinkingError.tokenExpired
+        let error = PayBackError.linkExpired
         XCTAssertNotNil(error.errorDescription)
         XCTAssertTrue(error.errorDescription!.contains("expired"))
     }
@@ -216,7 +216,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
                 targetMemberName: "Self"
             )
             XCTFail("Self-linking should have thrown selfLinkingNotAllowed error")
-        } catch LinkingError.selfLinkingNotAllowed {
+        } catch PayBackError.linkSelfNotAllowed {
             // Expected error - test passes
             XCTAssert(true, "Correctly caught selfLinkingNotAllowed error")
         } catch {
@@ -226,7 +226,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
     
     func test_selfLinking_errorHasDescription() {
         // Arrange
-        let error = LinkingError.selfLinkingNotAllowed
+        let error = PayBackError.linkSelfNotAllowed
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -235,7 +235,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
     
     func test_selfLinking_errorHasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.selfLinkingNotAllowed
+        let error = PayBackError.linkSelfNotAllowed
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -263,7 +263,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
     
     func test_memberAlreadyLinked_failsWithMemberAlreadyLinkedError() {
         // Arrange
-        let error = LinkingError.memberAlreadyLinked
+        let error = PayBackError.linkMemberAlreadyLinked
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -272,7 +272,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
     
     func test_memberAlreadyLinked_errorHasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.memberAlreadyLinked
+        let error = PayBackError.linkMemberAlreadyLinked
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -293,7 +293,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
         // Act & Assert - Second link to same member should fail
         // Note: In a real implementation, the service would check if member is already linked
         // For this test, we verify the error type exists
-        let error = LinkingError.memberAlreadyLinked
+        let error = PayBackError.linkMemberAlreadyLinked
         XCTAssertNotNil(error.errorDescription)
     }
     
@@ -301,7 +301,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
     
     func test_accountAlreadyLinked_failsWithAccountAlreadyLinkedError() {
         // Arrange
-        let error = LinkingError.accountAlreadyLinked
+        let error = PayBackError.linkAccountAlreadyLinked
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)
@@ -310,7 +310,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
     
     func test_accountAlreadyLinked_errorHasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.accountAlreadyLinked
+        let error = PayBackError.linkAccountAlreadyLinked
         
         // Act & Assert
         XCTAssertNotNil(error.recoverySuggestion)
@@ -331,7 +331,7 @@ final class AccountLinkingSecurityTests: XCTestCase {
         // Act & Assert - Second link from same account to different member should fail
         // Note: In a real implementation, the service would check if account is already linked
         // For this test, we verify the error type exists
-        let error = LinkingError.accountAlreadyLinked
+        let error = PayBackError.linkAccountAlreadyLinked
         XCTAssertNotNil(error.errorDescription)
     }
     
@@ -453,17 +453,17 @@ final class AccountLinkingSecurityTests: XCTestCase {
             do {
                 _ = try await inviteLinkService.claimInviteToken(inviteLink.token.id)
                 XCTFail("Token reuse should always fail")
-            } catch LinkingError.tokenAlreadyClaimed {
+            } catch PayBackError.linkAlreadyClaimed {
                 // Expected - each attempt should fail with clear error
             } catch {
-                XCTFail("Expected tokenAlreadyClaimed but got \(error)")
+                XCTFail("Expected linkAlreadyClaimed but got \(error)")
             }
         }
     }
     
     func test_tokenReuse_errorMessage_isClear() async throws {
         // Arrange
-        let error = LinkingError.tokenAlreadyClaimed
+        let error = PayBackError.linkAlreadyClaimed
         
         // Act & Assert
         XCTAssertNotNil(error.errorDescription)

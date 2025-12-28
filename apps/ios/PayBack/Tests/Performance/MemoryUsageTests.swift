@@ -57,7 +57,7 @@ final class MemoryUsageTests: XCTestCase {
                 // Perform operations that fail and retry
                 for _ in 0..<50 {
                     _ = try? await policy.execute {
-                        throw LinkingError.networkUnavailable
+                        throw PayBackError.networkUnavailable
                     }
                 }
                 expectation.fulfill()

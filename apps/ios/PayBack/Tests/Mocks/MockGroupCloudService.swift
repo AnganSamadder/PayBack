@@ -8,21 +8,21 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
     
     func upsertGroup(_ group: SpendingGroup) async throws {
         if shouldFail {
-            throw GroupCloudServiceError.userNotAuthenticated
+            throw PayBackError.authSessionMissing
         }
         groups[group.id] = group
     }
     
     func fetchGroups() async throws -> [SpendingGroup] {
         if shouldFail {
-            throw GroupCloudServiceError.userNotAuthenticated
+            throw PayBackError.authSessionMissing
         }
         return Array(groups.values)
     }
     
     func deleteGroups(_ groupIds: [UUID]) async throws {
         if shouldFail {
-            throw GroupCloudServiceError.userNotAuthenticated
+            throw PayBackError.authSessionMissing
         }
         for id in groupIds {
             groups.removeValue(forKey: id)
@@ -31,7 +31,7 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
     
     func upsertDebugGroup(_ group: SpendingGroup) async throws {
         if shouldFail {
-            throw GroupCloudServiceError.userNotAuthenticated
+            throw PayBackError.authSessionMissing
         }
         groups[group.id] = group
     }

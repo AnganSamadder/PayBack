@@ -64,20 +64,20 @@ struct RetryPolicy {
         }
         
         // If we get here, all retries failed
-        throw lastError ?? LinkingError.networkUnavailable
+        throw lastError ?? PayBackError.networkUnavailable
     }
     
     /// Determines if an error is retryable
     private func isRetryable(_ error: Error) -> Bool {
-        // Check for LinkingError types
-        if let linkingError = error as? LinkingError {
-            switch linkingError {
-            case .networkUnavailable:
+        // Check for PayBackError types
+        if let paybackError = error as? PayBackError {
+            switch paybackError {
+            case .networkUnavailable, .timeout, .authRateLimited:
                 return true
-            case .unauthorized, .accountNotFound, .duplicateRequest,
-                 .tokenExpired, .tokenAlreadyClaimed, .tokenInvalid,
-                 .memberAlreadyLinked, .accountAlreadyLinked,
-                 .selfLinkingNotAllowed:
+            case .underlying:
+                // Check inner error for network issues if needed, but usually PayBackError wraps them
+                return false 
+            default:
                 return false
             }
         }

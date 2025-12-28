@@ -25,22 +25,21 @@ final class BusinessLogicErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.duplicateRequest
+                throw PayBackError.linkDuplicateRequest
             }
             XCTFail("Should have thrown error")
         } catch {
             // Assert
             XCTAssertEqual(attemptCount, 1, "Duplicate request errors should not be retried")
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.duplicateRequest)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.linkDuplicateRequest)
             }
         }
     }
     
     func test_duplicateRequestError_hasDescription() {
         // Arrange
-        let error = LinkingError.duplicateRequest
+        let error = PayBackError.linkDuplicateRequest
         
         // Act
         let description = error.errorDescription
@@ -54,7 +53,7 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_duplicateRequestError_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.duplicateRequest
+        let error = PayBackError.linkDuplicateRequest
         
         // Act
         let suggestion = error.recoverySuggestion
@@ -74,7 +73,7 @@ final class BusinessLogicErrorTests: XCTestCase {
         // Act
         do {
             _ = try await policy.execute {
-                throw LinkingError.duplicateRequest
+                throw PayBackError.linkDuplicateRequest
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -96,22 +95,22 @@ final class BusinessLogicErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.tokenExpired
+                throw PayBackError.linkExpired
             }
             XCTFail("Should have thrown error")
         } catch {
             // Assert
             XCTAssertEqual(attemptCount, 1, "Expired token errors should not be retried")
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.tokenExpired)
+            XCTAssertTrue(error is PayBackError)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.linkExpired)
             }
         }
     }
     
     func test_expiredTokenError_hasDescription() {
         // Arrange
-        let error = LinkingError.tokenExpired
+        let error = PayBackError.linkExpired
         
         // Act
         let description = error.errorDescription
@@ -125,7 +124,7 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_expiredTokenError_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.tokenExpired
+        let error = PayBackError.linkExpired
         
         // Act
         let suggestion = error.recoverySuggestion
@@ -138,7 +137,7 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_expiredTokenError_providesActionableGuidance() {
         // Arrange
-        let error = LinkingError.tokenExpired
+        let error = PayBackError.linkExpired
         
         // Act
         let description = error.errorDescription
@@ -165,22 +164,22 @@ final class BusinessLogicErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.tokenAlreadyClaimed
+                throw PayBackError.linkAlreadyClaimed
             }
             XCTFail("Should have thrown error")
         } catch {
             // Assert
             XCTAssertEqual(attemptCount, 1, "Already claimed token errors should not be retried")
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.tokenAlreadyClaimed)
+            XCTAssertTrue(error is PayBackError)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.linkAlreadyClaimed)
             }
         }
     }
     
     func test_alreadyClaimedTokenError_hasDescription() {
         // Arrange
-        let error = LinkingError.tokenAlreadyClaimed
+        let error = PayBackError.linkAlreadyClaimed
         
         // Act
         let description = error.errorDescription
@@ -193,7 +192,7 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_alreadyClaimedTokenError_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.tokenAlreadyClaimed
+        let error = PayBackError.linkAlreadyClaimed
         
         // Act
         let suggestion = error.recoverySuggestion
@@ -205,8 +204,8 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_alreadyClaimedTokenError_distinguishedFromExpired() {
         // Arrange
-        let claimedError = LinkingError.tokenAlreadyClaimed
-        let expiredError = LinkingError.tokenExpired
+        let claimedError = PayBackError.linkAlreadyClaimed
+        let expiredError = PayBackError.linkExpired
         
         // Act
         let claimedDescription = claimedError.errorDescription!
@@ -230,22 +229,22 @@ final class BusinessLogicErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.selfLinkingNotAllowed
+                throw PayBackError.linkSelfNotAllowed
             }
             XCTFail("Should have thrown error")
         } catch {
             // Assert
             XCTAssertEqual(attemptCount, 1, "Self-linking errors should not be retried")
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.selfLinkingNotAllowed)
+            XCTAssertTrue(error is PayBackError)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.linkSelfNotAllowed)
             }
         }
     }
     
     func test_selfLinkingError_hasDescription() {
         // Arrange
-        let error = LinkingError.selfLinkingNotAllowed
+        let error = PayBackError.linkSelfNotAllowed
         
         // Act
         let description = error.errorDescription
@@ -258,7 +257,7 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_selfLinkingError_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.selfLinkingNotAllowed
+        let error = PayBackError.linkSelfNotAllowed
         
         // Act
         let suggestion = error.recoverySuggestion
@@ -278,7 +277,7 @@ final class BusinessLogicErrorTests: XCTestCase {
         // Act
         do {
             _ = try await policy.execute {
-                throw LinkingError.selfLinkingNotAllowed
+                throw PayBackError.linkSelfNotAllowed
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -286,7 +285,7 @@ final class BusinessLogicErrorTests: XCTestCase {
             
             // Assert
             XCTAssertLessThan(elapsed, 0.05, "Should fail immediately without retries")
-            XCTAssertTrue(error is LinkingError)
+            XCTAssertTrue(error is PayBackError)
         }
     }
     
@@ -301,22 +300,22 @@ final class BusinessLogicErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.memberAlreadyLinked
+                throw PayBackError.linkMemberAlreadyLinked
             }
             XCTFail("Should have thrown error")
         } catch {
             // Assert
             XCTAssertEqual(attemptCount, 1, "Member already linked errors should not be retried")
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.memberAlreadyLinked)
+            XCTAssertTrue(error is PayBackError)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.linkMemberAlreadyLinked)
             }
         }
     }
     
     func test_memberAlreadyLinkedError_hasDescription() {
         // Arrange
-        let error = LinkingError.memberAlreadyLinked
+        let error = PayBackError.linkMemberAlreadyLinked
         
         // Act
         let description = error.errorDescription
@@ -330,7 +329,7 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_memberAlreadyLinkedError_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.memberAlreadyLinked
+        let error = PayBackError.linkMemberAlreadyLinked
         
         // Act
         let suggestion = error.recoverySuggestion
@@ -351,22 +350,22 @@ final class BusinessLogicErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.accountAlreadyLinked
+                throw PayBackError.linkAccountAlreadyLinked
             }
             XCTFail("Should have thrown error")
         } catch {
             // Assert
             XCTAssertEqual(attemptCount, 1, "Account already linked errors should not be retried")
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.accountAlreadyLinked)
+            XCTAssertTrue(error is PayBackError)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.linkAccountAlreadyLinked)
             }
         }
     }
     
     func test_accountAlreadyLinkedError_hasDescription() {
         // Arrange
-        let error = LinkingError.accountAlreadyLinked
+        let error = PayBackError.linkAccountAlreadyLinked
         
         // Act
         let description = error.errorDescription
@@ -380,7 +379,7 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_accountAlreadyLinkedError_hasRecoverySuggestion() {
         // Arrange
-        let error = LinkingError.accountAlreadyLinked
+        let error = PayBackError.linkAccountAlreadyLinked
         
         // Act
         let suggestion = error.recoverySuggestion
@@ -394,8 +393,8 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_alreadyLinkedErrors_distinguishable() {
         // Arrange
-        let memberError = LinkingError.memberAlreadyLinked
-        let accountError = LinkingError.accountAlreadyLinked
+        let memberError = PayBackError.linkMemberAlreadyLinked
+        let accountError = PayBackError.linkAccountAlreadyLinked
         
         // Act
         let memberDescription = memberError.errorDescription!
@@ -412,15 +411,15 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_allBusinessLogicErrors_haveDescriptions() {
         // Arrange
-        let businessLogicErrors: [LinkingError] = [
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked,
-            .accountAlreadyLinked,
-            .tokenInvalid,
-            .accountNotFound
+        let businessLogicErrors: [PayBackError] = [
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked,
+            .linkAccountAlreadyLinked,
+            .linkInvalid,
+            .accountNotFound(email: "test@example.com")
         ]
         
         // Act & Assert
@@ -436,15 +435,15 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_allBusinessLogicErrors_haveRecoverySuggestions() {
         // Arrange
-        let businessLogicErrors: [LinkingError] = [
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked,
-            .accountAlreadyLinked,
-            .tokenInvalid,
-            .accountNotFound
+        let businessLogicErrors: [PayBackError] = [
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked,
+            .linkAccountAlreadyLinked,
+            .linkInvalid,
+            .accountNotFound(email: "test@example.com")
         ]
         
         // Act & Assert
@@ -460,15 +459,15 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_businessLogicErrors_noPII() {
         // Arrange
-        let businessLogicErrors: [LinkingError] = [
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked,
-            .accountAlreadyLinked,
-            .tokenInvalid,
-            .accountNotFound
+        let businessLogicErrors: [PayBackError] = [
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked,
+            .linkAccountAlreadyLinked,
+            .linkInvalid,
+            .accountNotFound(email: "test@example.com")
         ]
         
         // Act & Assert
@@ -507,13 +506,13 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_businessLogicErrors_userFriendly() {
         // Arrange
-        let businessLogicErrors: [LinkingError] = [
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked,
-            .accountAlreadyLinked
+        let businessLogicErrors: [PayBackError] = [
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked,
+            .linkAccountAlreadyLinked
         ]
         
         // Act & Assert
@@ -542,12 +541,12 @@ final class BusinessLogicErrorTests: XCTestCase {
     
     func test_multipleBusinessLogicErrors_eachHandledCorrectly() async {
         // Arrange
-        let errors: [LinkingError] = [
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked
+        let errors: [PayBackError] = [
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked
         ]
         
         // Act & Assert
@@ -577,7 +576,7 @@ final class BusinessLogicErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.tokenInvalid
+                throw PayBackError.linkInvalid
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -595,7 +594,7 @@ final class BusinessLogicErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.accountNotFound
+                throw PayBackError.accountNotFound(email: "test")
             }
             XCTFail("Should have thrown error")
         } catch {

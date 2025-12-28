@@ -57,15 +57,15 @@ private struct FriendRow: Codable {
     }
 }
 
-final class SupabaseAccountService: AccountService {
+final class SupabaseAccountService: AccountService, Sendable {
     private let client: SupabaseClient
     private let table = "accounts"
     private let friendsTable = "account_friends"
-    private let userContextProvider: () async throws -> SupabaseUserContext
+    private let userContextProvider: @Sendable () async throws -> SupabaseUserContext
 
     init(
         client: SupabaseClient = SupabaseClientProvider.client!,
-        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+        userContextProvider: (@Sendable () async throws -> SupabaseUserContext)? = nil
     ) {
         self.client = client
         self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
@@ -75,7 +75,7 @@ final class SupabaseAccountService: AccountService {
         let normalized = EmailValidator.normalized(rawValue)
 
         guard EmailValidator.isValid(normalized) else {
-            throw AccountServiceError.invalidEmail
+            throw PayBackError.accountInvalidEmail(email: rawValue)
         }
 
         return normalized
@@ -110,7 +110,7 @@ final class SupabaseAccountService: AccountService {
             let context = try await userContext()
 
             if try await lookupAccount(byEmail: sanitized) != nil {
-                throw AccountServiceError.duplicateAccount
+                throw PayBackError.accountDuplicate(email: sanitized)
             }
 
             let createdAt = Date()
@@ -128,7 +128,7 @@ final class SupabaseAccountService: AccountService {
                 .execute()
 
             guard let inserted = response.value.first else {
-                throw AccountServiceError.underlying(NSError(domain: "SupabaseAccountService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unable to create account."]))
+                throw PayBackError.underlying(message: "Unable to create account.")
             }
 
             return UserAccount(
@@ -236,19 +236,13 @@ final class SupabaseAccountService: AccountService {
                 .execute()
 
             guard let existing = existingResponse.value.first else {
-                throw AccountServiceError.userNotFound
+                throw PayBackError.accountNotFound(email: accountEmail) // Or userNotFound generic? Using accountNotFound
             }
 
             if let currentLinked = existing.linkedAccountId,
                !currentLinked.isEmpty,
                currentLinked != linkedAccountId {
-                throw AccountServiceError.underlying(
-                    NSError(
-                        domain: "SupabaseAccountService",
-                        code: -2,
-                        userInfo: [NSLocalizedDescriptionKey: "This participant is already linked to another account."]
-                    )
-                )
+                throw PayBackError.linkAlreadyClaimed // Or similar logic
             }
 
             let updateRow = FriendRow(
@@ -297,23 +291,23 @@ final class SupabaseAccountService: AccountService {
         }
     }
 
-    private func mapError(_ error: Error) -> AccountServiceError {
-        if let accountError = error as? AccountServiceError {
-            return accountError
+    private func mapError(_ error: Error) -> PayBackError {
+        if let paybackError = error as? PayBackError {
+            return paybackError
         }
 
         if (error as NSError).domain == NSURLErrorDomain {
             return .networkUnavailable
         }
 
-        return .underlying(error)
+        return .underlying(message: error.localizedDescription)
     }
 
     private func userContext() async throws -> SupabaseUserContext {
         do {
             return try await userContextProvider()
         } catch {
-            throw AccountServiceError.sessionMissing
+            throw PayBackError.authSessionMissing
         }
     }
 }
