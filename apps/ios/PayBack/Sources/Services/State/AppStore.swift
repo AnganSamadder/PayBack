@@ -1228,8 +1228,8 @@ final class AppStore: ObservableObject {
     /// Clears only debug data, preserving real transactions and friends
     func clearDebugData() {
         // Get all debug expense IDs and group IDs
-        let debugExpenseIds = expenses.filter { $0.isDebug }.map { $0.id }
-        let debugGroupIds = groups.filter { $0.isDebug == true }.map { $0.id }
+        _ = expenses.filter { $0.isDebug }.map { $0.id }
+        _ = groups.filter { $0.isDebug == true }.map { $0.id }
         
         // Collect member IDs from debug groups (potential debug friends)
         var debugMemberIds: Set<UUID> = []
