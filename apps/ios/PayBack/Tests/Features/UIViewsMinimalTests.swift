@@ -23,15 +23,19 @@ final class UIViewsMinimalTests: XCTestCase {
     
     func test_splitMode_allCasesHaveUniqueIds() {
         let modes = SplitMode.allCases
-        XCTAssertEqual(modes.count, 3)
+        XCTAssertEqual(modes.count, 5)
         XCTAssertEqual(modes[0].id, "Equal")
         XCTAssertEqual(modes[1].id, "Percent")
-        XCTAssertEqual(modes[2].id, "Manual")
+        XCTAssertEqual(modes[2].id, "Shares")
+        XCTAssertEqual(modes[3].id, "Receipt")
+        XCTAssertEqual(modes[4].id, "Manual")
     }
     
     func test_splitMode_rawValues() {
         XCTAssertEqual(SplitMode.equal.rawValue, "Equal")
         XCTAssertEqual(SplitMode.percent.rawValue, "Percent")
+        XCTAssertEqual(SplitMode.shares.rawValue, "Shares")
+        XCTAssertEqual(SplitMode.itemized.rawValue, "Receipt")
         XCTAssertEqual(SplitMode.manual.rawValue, "Manual")
     }
     
