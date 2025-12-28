@@ -53,7 +53,7 @@ final class LinkRequestServiceTests: XCTestCase {
 				targetMemberName: "Test Member"
 			)
 			XCTFail("Should have thrown selfLinkingNotAllowed error")
-		} catch LinkingError.selfLinkingNotAllowed {
+		} catch PayBackError.linkSelfNotAllowed {
 			// Expected
 		} catch {
 			XCTFail("Unexpected error: \(error)")
@@ -77,7 +77,7 @@ final class LinkRequestServiceTests: XCTestCase {
 				targetMemberName: "Test Member"
 			)
 			XCTFail("Should have thrown duplicateRequest error")
-		} catch LinkingError.duplicateRequest {
+		} catch PayBackError.linkDuplicateRequest {
 			// Expected
 		} catch {
 			XCTFail("Unexpected error: \(error)")
@@ -132,7 +132,7 @@ final class LinkRequestServiceTests: XCTestCase {
 		do {
 			_ = try await mockService.acceptLinkRequest(invalidId)
 			XCTFail("Should have thrown tokenInvalid error")
-		} catch LinkingError.tokenInvalid {
+		} catch PayBackError.linkInvalid {
 			// Expected
 		} catch {
 			XCTFail("Unexpected error: \(error)")
@@ -186,7 +186,7 @@ final class LinkRequestServiceTests: XCTestCase {
 		do {
 			try await mockService.declineLinkRequest(invalidId)
 			XCTFail("Should have thrown tokenInvalid error")
-		} catch LinkingError.tokenInvalid {
+		} catch PayBackError.linkInvalid {
 			// Expected
 		} catch {
 			XCTFail("Unexpected error: \(error)")
@@ -444,7 +444,7 @@ final class LinkRequestServiceTests: XCTestCase {
 		
 		let successCount = results.filter { if case .success = $0 { return true }; return false }.count
 		let duplicateCount = results.filter { 
-			if case .failure(let error) = $0, case LinkingError.duplicateRequest = error {
+			if case .failure(let error) = $0, case PayBackError.linkDuplicateRequest = error {
 				return true
 			}
 			return false
@@ -673,7 +673,7 @@ final class LinkRequestServiceTests: XCTestCase {
 				targetMemberName: "Test Member"
 			)
 			XCTFail("Should have thrown selfLinkingNotAllowed error")
-		} catch LinkingError.selfLinkingNotAllowed {
+		} catch PayBackError.linkSelfNotAllowed {
 			// Expected - normalization should catch this
 		} catch {
 			XCTFail("Unexpected error: \(error)")
@@ -691,7 +691,7 @@ final class LinkRequestServiceTests: XCTestCase {
 				targetMemberName: "Test Member"
 			)
 			XCTFail("Should have thrown selfLinkingNotAllowed error")
-		} catch LinkingError.selfLinkingNotAllowed {
+		} catch PayBackError.linkSelfNotAllowed {
 			// Expected - normalization should catch this
 		} catch {
 			XCTFail("Unexpected error: \(error)")
@@ -923,7 +923,7 @@ final class LinkRequestServiceTests: XCTestCase {
 		do {
 			_ = try await mockService.acceptLinkRequest(invalidId)
 			XCTFail("Should throw tokenInvalid error")
-		} catch LinkingError.tokenInvalid {
+		} catch PayBackError.linkInvalid {
 			// Expected
 			XCTAssertTrue(true)
 		} catch {
@@ -938,7 +938,7 @@ final class LinkRequestServiceTests: XCTestCase {
 		do {
 			try await mockService.declineLinkRequest(invalidId)
 			XCTFail("Should throw tokenInvalid error")
-		} catch LinkingError.tokenInvalid {
+		} catch PayBackError.linkInvalid {
 			// Expected
 			XCTAssertTrue(true)
 		} catch {

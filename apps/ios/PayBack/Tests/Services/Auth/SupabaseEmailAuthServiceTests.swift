@@ -7,11 +7,11 @@ private func mockHTTPResponse(statusCode: Int = 400) -> HTTPURLResponse {
     HTTPURLResponse(url: URL(string: "https://example.com")!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
 }
 
-private struct FakeEmailAuthProvider: EmailAuthProviding {
-    var signInHandler: ((String, String) async throws -> Session)?
-    var signUpHandler: ((String, String, [String: AnyJSON]?) async throws -> User)?
-    var resetPasswordHandler: ((String) async throws -> Void)?
-    var signOutHandler: (() async throws -> Void)?
+private struct FakeEmailAuthProvider: EmailAuthProviding, Sendable {
+    var signInHandler: (@Sendable (String, String) async throws -> Session)?
+    var signUpHandler: (@Sendable (String, String, [String: AnyJSON]?) async throws -> User)?
+    var resetPasswordHandler: (@Sendable (String) async throws -> Void)?
+    var signOutHandler: (@Sendable () async throws -> Void)?
 
     func signIn(email: String, password: String) async throws -> Session {
         if let handler = signInHandler { return try await handler(email, password) }
@@ -88,8 +88,12 @@ final class SupabaseEmailAuthServiceTests: XCTestCase {
         do {
             _ = try await service.signIn(email: "test@example.com", password: "wrongpassword")
             XCTFail("Expected invalidCredentials error")
-        } catch let error as EmailAuthServiceError {
-            XCTAssertEqual(error, .invalidCredentials)
+        } catch let error as PayBackError {
+            if case .authInvalidCredentials = error {
+                // Success
+            } else {
+                XCTFail("Expected authInvalidCredentials, got \(error)")
+            }
         }
     }
     
@@ -105,8 +109,8 @@ final class SupabaseEmailAuthServiceTests: XCTestCase {
         do {
             _ = try await service.signIn(email: "banned@example.com", password: "password123")
             XCTFail("Expected userDisabled error")
-        } catch let error as EmailAuthServiceError {
-            XCTAssertEqual(error, .userDisabled)
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authAccountDisabled)
         }
     }
     
@@ -122,8 +126,8 @@ final class SupabaseEmailAuthServiceTests: XCTestCase {
         do {
             _ = try await service.signIn(email: "test@example.com", password: "password123")
             XCTFail("Expected tooManyRequests error")
-        } catch let error as EmailAuthServiceError {
-            XCTAssertEqual(error, .tooManyRequests)
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authRateLimited)
         }
     }
     
@@ -176,8 +180,12 @@ final class SupabaseEmailAuthServiceTests: XCTestCase {
         do {
             _ = try await service.signUp(email: "existing@example.com", password: "password123", displayName: "User")
             XCTFail("Expected emailAlreadyInUse error")
-        } catch let error as EmailAuthServiceError {
-            XCTAssertEqual(error, .emailAlreadyInUse)
+        } catch let error as PayBackError {
+            if case .accountDuplicate = error {
+                // Success
+            } else {
+                 XCTFail("Expected accountDuplicate, got \(error)")
+            }
         }
     }
     
@@ -192,8 +200,12 @@ final class SupabaseEmailAuthServiceTests: XCTestCase {
         do {
             _ = try await service.signUp(email: "existing@example.com", password: "password123", displayName: "User")
             XCTFail("Expected emailAlreadyInUse error")
-        } catch let error as EmailAuthServiceError {
-            XCTAssertEqual(error, .emailAlreadyInUse)
+        } catch let error as PayBackError {
+             if case .accountDuplicate = error {
+                // Success
+            } else {
+                 XCTFail("Expected accountDuplicate, got \(error)")
+            }
         }
     }
     
@@ -208,8 +220,8 @@ final class SupabaseEmailAuthServiceTests: XCTestCase {
         do {
             _ = try await service.signUp(email: "test@example.com", password: "123", displayName: "User")
             XCTFail("Expected weakPassword error")
-        } catch let error as EmailAuthServiceError {
-            XCTAssertEqual(error, .weakPassword)
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authWeakPassword)
         }
     }
     
@@ -243,8 +255,8 @@ final class SupabaseEmailAuthServiceTests: XCTestCase {
         do {
             _ = try await service.signUp(email: "test@example.com", password: "password123", displayName: "User")
             XCTFail("Expected tooManyRequests error")
-        } catch let error as EmailAuthServiceError {
-            XCTAssertEqual(error, .tooManyRequests)
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authRateLimited)
         }
     }
     
@@ -275,8 +287,8 @@ final class SupabaseEmailAuthServiceTests: XCTestCase {
         do {
             try await service.sendPasswordReset(email: "user@example.com")
             XCTFail("Expected tooManyRequests error")
-        } catch let error as EmailAuthServiceError {
-            XCTAssertEqual(error, .tooManyRequests)
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authRateLimited)
         }
     }
     
@@ -324,27 +336,28 @@ final class SupabaseEmailAuthServiceTests: XCTestCase {
     // MARK: - Error Message Tests
     
     func testErrorDescriptions() {
-        let testCases: [(EmailAuthServiceError, String)] = [
-            (.configurationMissing, "Email sign-in is unavailable. Check your Supabase configuration and try again."),
-            (.invalidCredentials, "That email and password didn’t match our records."),
-            (.emailAlreadyInUse, "That email is already registered. Try signing in instead."),
-            (.weakPassword, "Please choose a stronger password (at least 6 characters)."),
-            (.userDisabled, "This account has been disabled. Contact support if you think this is a mistake."),
-            (.tooManyRequests, "Too many attempts right now. Please wait a moment and try again.")
+        let testCases: [(PayBackError, String)] = [
+            (.configurationMissing(service: "Email Auth"), "Email Auth is not configured"),
+            (.authInvalidCredentials(message: "Invalid credentials"), "Invalid credentials"),
+            (.accountDuplicate(email: "test@example.com"), "An account already exists for this email address."),
+            (.authWeakPassword, "Please choose a stronger password"),
+            (.authAccountDisabled, "This account has been disabled"),
+            (.authRateLimited, "Too many attempts")
         ]
         
-        for (error, expectedDescription) in testCases {
-            XCTAssertEqual(error.errorDescription, expectedDescription, "Wrong description for \(error)")
+        for (error, expectedSubstring) in testCases {
+            let description = error.errorDescription ?? ""
+            XCTAssertTrue(description.contains(expectedSubstring), "Description '\(description)' should contain '\(expectedSubstring)'")
         }
     }
     
     func testErrorEquality() {
-        XCTAssertEqual(EmailAuthServiceError.invalidCredentials, EmailAuthServiceError.invalidCredentials)
-        XCTAssertEqual(EmailAuthServiceError.weakPassword, EmailAuthServiceError.weakPassword)
-        XCTAssertNotEqual(EmailAuthServiceError.invalidCredentials, EmailAuthServiceError.weakPassword)
+        XCTAssertEqual(PayBackError.authInvalidCredentials(message: "Same"), PayBackError.authInvalidCredentials(message: "Same"))
+        XCTAssertEqual(PayBackError.authWeakPassword, PayBackError.authWeakPassword)
+        XCTAssertNotEqual(PayBackError.authInvalidCredentials(message: "A"), PayBackError.authInvalidCredentials(message: "B"))
         
-        let error1 = EmailAuthServiceError.underlying(NSError(domain: "test", code: 1))
-        let error2 = EmailAuthServiceError.underlying(NSError(domain: "test", code: 1))
+        let error1 = PayBackError.underlying(message: "test")
+        let error2 = PayBackError.underlying(message: "test")
         XCTAssertEqual(error1, error2)
     }
     

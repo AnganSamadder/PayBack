@@ -15,7 +15,7 @@ final class ErrorPropagationTests: XCTestCase {
     func test_asyncError_propagatesToCaller() async {
         // Arrange
         func throwingAsyncFunction() async throws -> String {
-            throw LinkingError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
         
         // Act & Assert
@@ -23,9 +23,9 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await throwingAsyncFunction()
             XCTFail("Should have thrown error")
         } catch {
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.networkUnavailable)
+            XCTAssertTrue(error is PayBackError)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.networkUnavailable)
             }
         }
     }
@@ -33,7 +33,7 @@ final class ErrorPropagationTests: XCTestCase {
     func test_asyncError_propagatesThroughMultipleLayers() async {
         // Arrange
         func level3() async throws -> String {
-            throw LinkingError.tokenExpired
+            throw PayBackError.linkExpired
         }
         
         func level2() async throws -> String {
@@ -49,9 +49,9 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await level1()
             XCTFail("Should have thrown error")
         } catch {
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.tokenExpired)
+            XCTAssertTrue(error is PayBackError)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.linkExpired)
             }
         }
     }
@@ -59,7 +59,7 @@ final class ErrorPropagationTests: XCTestCase {
     func test_asyncError_propagatesThroughAwaitChain() async {
         // Arrange
         func fetchData() async throws -> String {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         func processData() async throws -> String {
@@ -77,9 +77,9 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await handleRequest()
             XCTFail("Should have thrown error")
         } catch {
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.unauthorized)
+            XCTAssertTrue(error is PayBackError)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.authSessionMissing)
             }
         }
     }
@@ -89,7 +89,7 @@ final class ErrorPropagationTests: XCTestCase {
         do {
             try await withThrowingTaskGroup(of: String.self) { group in
                 group.addTask {
-                    throw LinkingError.duplicateRequest
+                    throw PayBackError.linkDuplicateRequest
                 }
                 
                 group.addTask {
@@ -104,9 +104,9 @@ final class ErrorPropagationTests: XCTestCase {
             XCTFail("Should have thrown error")
         } catch {
             // Assert
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.duplicateRequest)
+            XCTAssertTrue(error is PayBackError)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.linkDuplicateRequest)
             }
         }
     }
@@ -118,7 +118,7 @@ final class ErrorPropagationTests: XCTestCase {
                 outerGroup.addTask {
                     try await withThrowingTaskGroup(of: String.self) { innerGroup in
                         innerGroup.addTask {
-                            throw LinkingError.accountNotFound
+                            throw PayBackError.accountNotFound(email: "test")
                         }
                         
                         for try await result in innerGroup {
@@ -135,9 +135,9 @@ final class ErrorPropagationTests: XCTestCase {
             XCTFail("Should have thrown error")
         } catch {
             // Assert
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.accountNotFound)
+            XCTAssertTrue(error is PayBackError)
+            if let linkingError = error as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.accountNotFound(email: "test"))
             }
         }
     }
@@ -146,8 +146,9 @@ final class ErrorPropagationTests: XCTestCase {
     
     func test_linkingError_preservedThroughAsyncBoundary() async {
         // Arrange
+        // Arrange
         func performLinking() async throws -> String {
-            throw LinkingError.memberAlreadyLinked
+            throw PayBackError.linkMemberAlreadyLinked
         }
         
         // Act & Assert
@@ -155,11 +156,11 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await performLinking()
             XCTFail("Should have thrown error")
         } catch let error {
-            guard let linkingError = error as? LinkingError else {
+            guard let linkingError = error as? PayBackError else {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
-            XCTAssertEqual(linkingError, LinkingError.memberAlreadyLinked)
+            XCTAssertEqual(linkingError, PayBackError.linkMemberAlreadyLinked)
         }
     }
     
@@ -194,16 +195,16 @@ final class ErrorPropagationTests: XCTestCase {
         // Act & Assert
         do {
             _ = try await policy.execute {
-                throw LinkingError.selfLinkingNotAllowed
+                throw PayBackError.linkSelfNotAllowed
             }
             XCTFail("Should have thrown error")
         } catch {
-            guard let linkingError = error as? LinkingError else {
+            guard let linkingError = error as? PayBackError else {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
             // Non-retryable error should be thrown immediately
-            XCTAssertEqual(linkingError, LinkingError.selfLinkingNotAllowed)
+            XCTAssertEqual(linkingError, PayBackError.linkSelfNotAllowed)
         }
     }
     
@@ -247,7 +248,7 @@ final class ErrorPropagationTests: XCTestCase {
         // Arrange
         actor ErrorThrowingActor {
             func performOperation() throws -> String {
-                throw LinkingError.tokenInvalid
+                throw PayBackError.linkInvalid
             }
         }
         
@@ -258,11 +259,11 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await actor.performOperation()
             XCTFail("Should have thrown error")
         } catch {
-            guard let linkingError = error as? LinkingError else {
+            guard let linkingError = error as? PayBackError else {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
-            XCTAssertEqual(linkingError, LinkingError.tokenInvalid)
+            XCTAssertEqual(linkingError, PayBackError.linkInvalid)
         }
     }
     
@@ -271,7 +272,7 @@ final class ErrorPropagationTests: XCTestCase {
         actor AsyncErrorThrowingActor {
             func performAsyncOperation() async throws -> String {
                 try await Task.sleep(nanoseconds: 10_000_000) // 10ms
-                throw LinkingError.accountAlreadyLinked
+                throw PayBackError.linkAccountAlreadyLinked
             }
         }
         
@@ -282,11 +283,11 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await actor.performAsyncOperation()
             XCTFail("Should have thrown error")
         } catch {
-            guard let linkingError = error as? LinkingError else {
+            guard let linkingError = error as? PayBackError else {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
-            XCTAssertEqual(linkingError, LinkingError.accountAlreadyLinked)
+            XCTAssertEqual(linkingError, PayBackError.linkAccountAlreadyLinked)
         }
     }
     
@@ -294,16 +295,17 @@ final class ErrorPropagationTests: XCTestCase {
     
     func test_multipleErrors_firstErrorPropagates() async {
         // Arrange & Act
+        // Arrange & Act
         do {
             try await withThrowingTaskGroup(of: String.self) { group in
                 group.addTask {
                     try await Task.sleep(nanoseconds: 10_000_000) // 10ms
-                    throw LinkingError.tokenExpired
+                    throw PayBackError.linkExpired
                 }
                 
                 group.addTask {
                     try await Task.sleep(nanoseconds: 20_000_000) // 20ms
-                    throw LinkingError.unauthorized
+                    throw PayBackError.authSessionMissing
                 }
                 
                 // First error should propagate
@@ -313,13 +315,13 @@ final class ErrorPropagationTests: XCTestCase {
             }
             XCTFail("Should have thrown error")
         } catch {
-            guard let linkingError = error as? LinkingError else {
+            guard let linkingError = error as? PayBackError else {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
             // Should be one of the errors (likely the first to complete)
             XCTAssertTrue(
-                linkingError == LinkingError.tokenExpired || linkingError == LinkingError.unauthorized,
+                linkingError == PayBackError.linkExpired || linkingError == PayBackError.authSessionMissing,
                 "Should be one of the thrown errors"
             )
         }
@@ -338,7 +340,7 @@ final class ErrorPropagationTests: XCTestCase {
         
         func step2() async throws -> String {
             step2Executed = true
-            throw LinkingError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
         
         func step3() async throws -> String {
@@ -358,11 +360,11 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await executeChain()
             XCTFail("Should have thrown error")
         } catch {
-            guard let linkingError = error as? LinkingError else {
+            guard let linkingError = error as? PayBackError else {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
-            XCTAssertEqual(linkingError, LinkingError.networkUnavailable)
+            XCTAssertEqual(linkingError, PayBackError.networkUnavailable)
             XCTAssertTrue(step1Executed, "Step 1 should execute")
             XCTAssertTrue(step2Executed, "Step 2 should execute")
             XCTAssertFalse(step3Executed, "Step 3 should not execute after error")
@@ -384,7 +386,9 @@ final class ErrorPropagationTests: XCTestCase {
             
             resourceAcquired = true
             errorThrown = true
-            throw LinkingError.duplicateRequest
+            resourceAcquired = true
+            errorThrown = true
+            throw PayBackError.linkDuplicateRequest
         }
         
         // Act & Assert
@@ -392,11 +396,11 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await operationWithCleanup()
             XCTFail("Should have thrown error")
         } catch {
-            guard let linkingError = error as? LinkingError else {
+            guard let linkingError = error as? PayBackError else {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
-            XCTAssertEqual(linkingError, LinkingError.duplicateRequest)
+            XCTAssertEqual(linkingError, PayBackError.linkDuplicateRequest)
             XCTAssertTrue(errorThrown, "Error should be thrown")
             XCTAssertTrue(resourceAcquired, "Resource should be acquired")
             XCTAssertTrue(resourceReleased, "Resource should be released before error propagates")
@@ -407,8 +411,8 @@ final class ErrorPropagationTests: XCTestCase {
     
     func test_resultType_capturesError() async {
         // Arrange
-        func operationReturningResult() async -> Result<String, LinkingError> {
-            return .failure(.tokenAlreadyClaimed)
+        func operationReturningResult() async -> Result<String, PayBackError> {
+            return .failure(.linkAlreadyClaimed)
         }
         
         // Act
@@ -419,14 +423,14 @@ final class ErrorPropagationTests: XCTestCase {
         case .success:
             XCTFail("Should have failed")
         case .failure(let error):
-            XCTAssertEqual(error, LinkingError.tokenAlreadyClaimed)
+            XCTAssertEqual(error, PayBackError.linkAlreadyClaimed)
         }
     }
     
     func test_resultType_convertsToThrowingError() async {
         // Arrange
-        func operationReturningResult() async -> Result<String, LinkingError> {
-            return .failure(.memberAlreadyLinked)
+        func operationReturningResult() async -> Result<String, PayBackError> {
+            return .failure(.linkMemberAlreadyLinked)
         }
         
         // Act & Assert
@@ -436,7 +440,7 @@ final class ErrorPropagationTests: XCTestCase {
         case .success:
             XCTFail("Should have failed")
         case .failure(let error):
-            XCTAssertEqual(error, LinkingError.memberAlreadyLinked)
+            XCTAssertEqual(error, PayBackError.linkMemberAlreadyLinked)
         }
     }
     
@@ -451,7 +455,7 @@ final class ErrorPropagationTests: XCTestCase {
         
         @Sendable func operation2() async throws -> String {
             try await Task.sleep(nanoseconds: 20_000_000) // 20ms
-            throw LinkingError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
         
         // Act & Assert
@@ -462,11 +466,11 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await (result1, result2)
             XCTFail("Should have thrown error")
         } catch {
-            guard let linkingError = error as? LinkingError else {
+            guard let linkingError = error as? PayBackError else {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
-            XCTAssertEqual(linkingError, LinkingError.networkUnavailable)
+            XCTAssertEqual(linkingError, PayBackError.networkUnavailable)
         }
     }
     
@@ -474,12 +478,12 @@ final class ErrorPropagationTests: XCTestCase {
         // Arrange
         @Sendable func operation1() async throws -> String {
             try await Task.sleep(nanoseconds: 10_000_000) // 10ms
-            throw LinkingError.tokenExpired
+            throw PayBackError.linkExpired
         }
         
         @Sendable func operation2() async throws -> String {
             try await Task.sleep(nanoseconds: 50_000_000) // 50ms
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         // Act & Assert
@@ -490,12 +494,12 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await (result1, result2)
             XCTFail("Should have thrown error")
         } catch {
-            guard let linkingError = error as? LinkingError else {
+            guard let linkingError = error as? PayBackError else {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
             // First error should propagate
-            XCTAssertEqual(linkingError, LinkingError.tokenExpired)
+            XCTAssertEqual(linkingError, PayBackError.linkExpired)
         }
     }
     
@@ -504,7 +508,7 @@ final class ErrorPropagationTests: XCTestCase {
     func test_errorContext_preservedInStackTrace() async {
         // Arrange
         func deepFunction() async throws -> String {
-            throw LinkingError.accountNotFound
+            throw PayBackError.accountNotFound(email: "test")
         }
         
         func middleFunction() async throws -> String {
@@ -520,12 +524,12 @@ final class ErrorPropagationTests: XCTestCase {
             _ = try await topFunction()
             XCTFail("Should have thrown error")
         } catch {
-            guard let linkingError = error as? LinkingError else {
+            guard let linkingError = error as? PayBackError else {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
             // Error should maintain its type through the call stack
-            XCTAssertEqual(linkingError, LinkingError.accountNotFound)
+            XCTAssertEqual(linkingError, PayBackError.accountNotFound(email: "test"))
 
             // Verify error description is preserved
             XCTAssertNotNil(linkingError.errorDescription)
@@ -540,7 +544,7 @@ final class ErrorPropagationTests: XCTestCase {
         }
         
         func throwWrappedError() async throws -> String {
-            throw WrapperError(underlyingError: LinkingError.tokenInvalid)
+            throw WrapperError(underlyingError: PayBackError.linkInvalid)
         }
         
         // Act & Assert
@@ -553,9 +557,9 @@ final class ErrorPropagationTests: XCTestCase {
                 XCTFail("Wrong error type: \(error)")
                 return
             }
-            XCTAssertTrue(wrapperError.underlyingError is LinkingError)
-            if let linkingError = wrapperError.underlyingError as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.tokenInvalid)
+            XCTAssertTrue(wrapperError.underlyingError is PayBackError)
+            if let linkingError = wrapperError.underlyingError as? PayBackError {
+                XCTAssertEqual(linkingError, PayBackError.linkInvalid)
             }
         }
     }

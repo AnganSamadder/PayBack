@@ -252,15 +252,15 @@ final class NetworkErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.unauthorized
+                throw PayBackError.authSessionMissing
             }
             XCTFail("Should have thrown error immediately")
         } catch {
             // Assert
             XCTAssertEqual(attemptCount, 1, "Unauthorized errors should not be retried")
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.unauthorized)
+            XCTAssertTrue(error is PayBackError)
+            if let payBackError = error as? PayBackError {
+                XCTAssertEqual(payBackError, PayBackError.authSessionMissing)
             }
         }
     }
@@ -275,7 +275,7 @@ final class NetworkErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.unauthorized
+                throw PayBackError.authSessionMissing
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -298,7 +298,7 @@ final class NetworkErrorTests: XCTestCase {
         do {
             _ = try await policy.execute {
                 attemptCount += 1
-                throw LinkingError.networkUnavailable
+                throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
@@ -319,19 +319,19 @@ final class NetworkErrorTests: XCTestCase {
                 
                 // First two attempts: retryable network error
                 if attemptCount <= 2 {
-                    throw LinkingError.networkUnavailable
+                    throw PayBackError.networkUnavailable
                 }
                 
                 // Third attempt: non-retryable error
-                throw LinkingError.unauthorized
+                throw PayBackError.authSessionMissing
             }
             XCTFail("Should have thrown error")
         } catch {
             // Assert
             XCTAssertEqual(attemptCount, 3, "Should retry network errors but stop at unauthorized")
-            XCTAssertTrue(error is LinkingError)
-            if let linkingError = error as? LinkingError {
-                XCTAssertEqual(linkingError, LinkingError.unauthorized)
+            XCTAssertTrue(error is PayBackError)
+            if let payBackError = error as? PayBackError {
+                XCTAssertEqual(payBackError, PayBackError.authSessionMissing)
             }
         }
     }

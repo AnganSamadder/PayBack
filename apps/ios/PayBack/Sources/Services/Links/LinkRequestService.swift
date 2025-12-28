@@ -1,13 +1,13 @@
 import Foundation
 
-public protocol LinkRequestService {
+public protocol LinkRequestService: Sendable {
     /// Creates a link request to connect an account with an unlinked participant
     /// - Parameters:
     ///   - recipientEmail: Email address of the account to send the request to
     ///   - targetMemberId: UUID of the GroupMember to link
     ///   - targetMemberName: Display name of the member
     /// - Returns: The created LinkRequest
-    /// - Throws: LinkingError if creation fails (duplicate, unauthorized, etc.)
+    /// - Throws: PayBackError if creation fails (duplicate, unauthorized, etc.)
     func createLinkRequest(
         recipientEmail: String,
         targetMemberId: UUID,
@@ -16,38 +16,38 @@ public protocol LinkRequestService {
     
     /// Fetches all incoming link requests for the current user
     /// - Returns: Array of pending link requests sent to the current user
-    /// - Throws: LinkingError if fetch fails
+    /// - Throws: PayBackError if fetch fails
     func fetchIncomingRequests() async throws -> [LinkRequest]
     
     /// Fetches all outgoing link requests created by the current user
     /// - Returns: Array of pending link requests created by the current user
-    /// - Throws: LinkingError if fetch fails
+    /// - Throws: PayBackError if fetch fails
     func fetchOutgoingRequests() async throws -> [LinkRequest]
     
     /// Fetches previous (accepted/rejected) link requests for the current user
     /// - Returns: Array of accepted or rejected link requests
-    /// - Throws: LinkingError if fetch fails
+    /// - Throws: PayBackError if fetch fails
     func fetchPreviousRequests() async throws -> [LinkRequest]
     
     /// Accepts a link request and links the account to the member
     /// - Parameter requestId: UUID of the link request to accept
     /// - Returns: LinkAcceptResult containing the linked account details
-    /// - Throws: LinkingError if acceptance fails
+    /// - Throws: PayBackError if acceptance fails
     func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult
     
     /// Declines a link request
     /// - Parameter requestId: UUID of the link request to decline
-    /// - Throws: LinkingError if decline fails
+    /// - Throws: PayBackError if decline fails
     func declineLinkRequest(_ requestId: UUID) async throws
     
     /// Cancels an outgoing link request
     /// - Parameter requestId: UUID of the link request to cancel
-    /// - Throws: LinkingError if cancellation fails
+    /// - Throws: PayBackError if cancellation fails
     func cancelLinkRequest(_ requestId: UUID) async throws
 }
 
 /// Mock implementation for testing and when Supabase is not configured
-public final class MockLinkRequestService: LinkRequestService {
+public final class MockLinkRequestService: LinkRequestService, @unchecked Sendable {
     private static var requests: [UUID: LinkRequest] = [:]
     private static let queue = DispatchQueue(label: "com.payback.mockLinkRequestService", attributes: .concurrent)
     
@@ -64,7 +64,7 @@ public final class MockLinkRequestService: LinkRequestService {
                 
                 // Prevent self-linking
                 if normalizedRecipientEmail == normalizedRequesterEmail {
-                    continuation.resume(throwing: LinkingError.selfLinkingNotAllowed)
+                    continuation.resume(throwing: PayBackError.linkSelfNotAllowed)
                     return
                 }
                 
@@ -76,7 +76,7 @@ public final class MockLinkRequestService: LinkRequestService {
                 }
                 
                 if existingRequest != nil {
-                    continuation.resume(throwing: LinkingError.duplicateRequest)
+                    continuation.resume(throwing: PayBackError.linkDuplicateRequest)
                     return
                 }
                 
@@ -144,13 +144,13 @@ public final class MockLinkRequestService: LinkRequestService {
         return try await withCheckedThrowingContinuation { continuation in
             Self.queue.async(flags: .barrier) {
                 guard var request = Self.requests[requestId] else {
-                    continuation.resume(throwing: LinkingError.tokenInvalid)
+                    continuation.resume(throwing: PayBackError.linkInvalid)
                     return
                 }
                 
                 // Check if expired
                 if request.expiresAt <= Date() {
-                    continuation.resume(throwing: LinkingError.tokenExpired)
+                    continuation.resume(throwing: PayBackError.linkExpired)
                     return
                 }
                 
@@ -172,7 +172,7 @@ public final class MockLinkRequestService: LinkRequestService {
         return try await withCheckedThrowingContinuation { continuation in
             Self.queue.async(flags: .barrier) {
                 guard var request = Self.requests[requestId] else {
-                    continuation.resume(throwing: LinkingError.tokenInvalid)
+                    continuation.resume(throwing: PayBackError.linkInvalid)
                     return
                 }
                 
@@ -225,14 +225,14 @@ private struct LinkRequestRow: Codable {
 }
 
 /// Supabase implementation of LinkRequestService
-final class SupabaseLinkRequestService: LinkRequestService {
+final class SupabaseLinkRequestService: LinkRequestService, Sendable {
     private let client: SupabaseClient
     private let table = "link_requests"
-    private let userContextProvider: () async throws -> SupabaseUserContext
+    private let userContextProvider: @Sendable () async throws -> SupabaseUserContext
     
     init(
         client: SupabaseClient = SupabaseClientProvider.client!,
-        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+        userContextProvider: (@Sendable () async throws -> SupabaseUserContext)? = nil
     ) {
         self.client = client
         self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
@@ -247,7 +247,7 @@ final class SupabaseLinkRequestService: LinkRequestService {
         let normalizedRecipientEmail = recipientEmail.lowercased().trimmingCharacters(in: .whitespaces)
         
         if normalizedRecipientEmail == context.email {
-            throw LinkingError.selfLinkingNotAllowed
+            throw PayBackError.linkSelfNotAllowed
         }
         
         let existing: PostgrestResponse<[LinkRequestRow]> = try await client
@@ -260,7 +260,7 @@ final class SupabaseLinkRequestService: LinkRequestService {
             .execute()
         
         if !existing.value.isEmpty {
-            throw LinkingError.duplicateRequest
+            throw PayBackError.linkDuplicateRequest
         }
         
         let request = LinkRequest(
@@ -357,19 +357,19 @@ final class SupabaseLinkRequestService: LinkRequestService {
             .execute()
         
         guard let row = response.value.first else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         guard row.recipientEmail == context.email else {
-            throw LinkingError.unauthorized
+            throw PayBackError.linkInvalid
         }
         
         guard row.expiresAt > Date() else {
-            throw LinkingError.tokenExpired
+            throw PayBackError.linkExpired
         }
         
         guard row.status == LinkRequestStatus.pending.rawValue else {
-            throw LinkingError.tokenAlreadyClaimed
+            throw PayBackError.linkAlreadyClaimed
         }
         
         _ = try await client
@@ -397,11 +397,11 @@ final class SupabaseLinkRequestService: LinkRequestService {
             .execute()
         
         guard let row = response.value.first else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         guard row.recipientEmail == context.email else {
-            throw LinkingError.unauthorized
+            throw PayBackError.linkInvalid
         }
         
         struct DeclinePayload: Encodable {
@@ -434,11 +434,11 @@ final class SupabaseLinkRequestService: LinkRequestService {
             .execute()
         
         guard let row = response.value.first else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         guard row.requesterId == context.id else {
-            throw LinkingError.unauthorized
+            throw PayBackError.linkInvalid
         }
         
         _ = try await client
@@ -472,22 +472,8 @@ final class SupabaseLinkRequestService: LinkRequestService {
         do {
             return try await userContextProvider()
         } catch {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
     }
     
-}
-
-/// Provider for LinkRequestService that returns appropriate implementation
-enum LinkRequestServiceProvider {
-    static func makeLinkRequestService() -> LinkRequestService {
-        if let client = SupabaseClientProvider.client {
-            return SupabaseLinkRequestService(client: client)
-        }
-        
-        #if DEBUG
-        print("[LinkRequest] Supabase not configured – falling back to MockLinkRequestService.")
-        #endif
-        return MockLinkRequestService()
-    }
 }

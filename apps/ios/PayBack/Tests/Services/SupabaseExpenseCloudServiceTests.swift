@@ -894,7 +894,7 @@ final class SupabaseExpenseCloudServiceTests: XCTestCase {
     }
     
     func testExpenseCloudServiceErrorDescription() {
-        let error = ExpenseCloudServiceError.userNotAuthenticated
-        XCTAssertEqual(error.errorDescription, "Please sign in before syncing expenses with Supabase.")
+        let error = PayBackError.authSessionMissing
+        XCTAssertEqual(error.errorDescription, "Your session has expired. Please sign in again.")
     }
 }

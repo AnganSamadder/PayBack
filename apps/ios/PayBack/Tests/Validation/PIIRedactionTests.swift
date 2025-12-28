@@ -191,17 +191,17 @@ final class PIIRedactionTests: XCTestCase {
     
     func test_errorMessages_doNotContainEmails() {
         // Arrange
-        let errors: [LinkingError] = [
-            .accountNotFound,
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .tokenInvalid,
+        let errors: [PayBackError] = [
+            .accountNotFound(email: "test@example.com"),
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkInvalid,
             .networkUnavailable,
-            .unauthorized,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked,
-            .accountAlreadyLinked
+            .authSessionMissing,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked,
+            .linkAccountAlreadyLinked
         ]
         
         // Act & Assert
@@ -218,17 +218,17 @@ final class PIIRedactionTests: XCTestCase {
     
     func test_errorMessages_doNotContainPhoneNumbers() {
         // Arrange
-        let errors: [LinkingError] = [
-            .accountNotFound,
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .tokenInvalid,
+        let errors: [PayBackError] = [
+            .accountNotFound(email: "test@example.com"),
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkInvalid,
             .networkUnavailable,
-            .unauthorized,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked,
-            .accountAlreadyLinked
+            .authSessionMissing,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked,
+            .linkAccountAlreadyLinked
         ]
         
         // Act & Assert
@@ -247,17 +247,17 @@ final class PIIRedactionTests: XCTestCase {
     
     func test_errorMessages_doNotContainTokens() {
         // Arrange
-        let errors: [LinkingError] = [
-            .accountNotFound,
-            .duplicateRequest,
-            .tokenExpired,
-            .tokenAlreadyClaimed,
-            .tokenInvalid,
+        let errors: [PayBackError] = [
+            .accountNotFound(email: "test@example.com"),
+            .linkDuplicateRequest,
+            .linkExpired,
+            .linkAlreadyClaimed,
+            .linkInvalid,
             .networkUnavailable,
-            .unauthorized,
-            .selfLinkingNotAllowed,
-            .memberAlreadyLinked,
-            .accountAlreadyLinked
+            .authSessionMissing,
+            .linkSelfNotAllowed,
+            .linkMemberAlreadyLinked,
+            .linkAccountAlreadyLinked
         ]
         
         // Act & Assert

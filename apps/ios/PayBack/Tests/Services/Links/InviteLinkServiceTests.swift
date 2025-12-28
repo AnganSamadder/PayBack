@@ -18,11 +18,11 @@ final class InviteLinkServiceTests: XCTestCase {
     // MARK: - Error Description Tests
     
     func testLinkingErrorDescriptions() {
-        XCTAssertNotNil(LinkingError.tokenInvalid.errorDescription)
-        XCTAssertNotNil(LinkingError.tokenExpired.errorDescription)
-        XCTAssertNotNil(LinkingError.tokenAlreadyClaimed.errorDescription)
-        XCTAssertNotNil(LinkingError.unauthorized.errorDescription)
-        XCTAssertNotNil(LinkingError.networkUnavailable.errorDescription)
+        XCTAssertNotNil(PayBackError.linkInvalid.errorDescription)
+        XCTAssertNotNil(PayBackError.linkExpired.errorDescription)
+        XCTAssertNotNil(PayBackError.linkAlreadyClaimed.errorDescription)
+        XCTAssertNotNil(PayBackError.authSessionMissing.errorDescription)
+        XCTAssertNotNil(PayBackError.networkUnavailable.errorDescription)
     }
     
     // MARK: - Token Generation Tests
@@ -134,7 +134,7 @@ final class InviteLinkServiceTests: XCTestCase {
         do {
             _ = try await service.claimInviteToken(nonExistentTokenId)
             XCTFail("Should throw tokenInvalid error")
-        } catch LinkingError.tokenInvalid {
+        } catch PayBackError.linkInvalid {
             // Expected
         } catch {
             XCTFail("Unexpected error: \(error)")
@@ -154,7 +154,7 @@ final class InviteLinkServiceTests: XCTestCase {
         do {
             _ = try await service.claimInviteToken(inviteLink.token.id)
             XCTFail("Should throw tokenAlreadyClaimed error")
-        } catch LinkingError.tokenAlreadyClaimed {
+        } catch PayBackError.linkAlreadyClaimed {
             // Expected
         } catch {
             XCTFail("Unexpected error: \(error)")
@@ -222,8 +222,8 @@ final class InviteLinkServiceTests: XCTestCase {
         
         let failures = results.filter { result in
             if case .failure(let error) = result,
-               let linkingError = error as? LinkingError,
-               linkingError == .tokenAlreadyClaimed {
+               let linkingError = error as? PayBackError,
+               linkingError == .linkAlreadyClaimed {
                 return true
             }
             return false
@@ -299,7 +299,7 @@ final class InviteLinkServiceTests: XCTestCase {
         do {
             try await service.revokeInvite(nonExistentTokenId)
             XCTFail("Should throw tokenInvalid error")
-        } catch LinkingError.tokenInvalid {
+        } catch PayBackError.linkInvalid {
             // Expected
         } catch {
             XCTFail("Unexpected error: \(error)")
@@ -402,7 +402,7 @@ final class InviteLinkServiceTests: XCTestCase {
         do {
             _ = try await service.claimInviteToken(UUID())
             XCTFail("Should throw")
-        } catch LinkingError.tokenInvalid {
+        } catch PayBackError.linkInvalid {
             // Expected
         }
     }
@@ -420,7 +420,7 @@ final class InviteLinkServiceTests: XCTestCase {
         do {
             _ = try await service.claimInviteToken(invite.token.id)
             XCTFail("Should throw")
-        } catch LinkingError.tokenAlreadyClaimed {
+        } catch PayBackError.linkAlreadyClaimed {
             // Expected
         }
     }

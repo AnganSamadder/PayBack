@@ -33,11 +33,11 @@ final class AppStore: ObservableObject {
 
     init(
         persistence: PersistenceServiceProtocol = PersistenceService.shared,
-        accountService: AccountService = AccountServiceProvider.makeAccountService(),
-        expenseCloudService: ExpenseCloudService = ExpenseCloudServiceProvider.makeService(),
-        groupCloudService: GroupCloudService = GroupCloudServiceProvider.makeService(),
-        linkRequestService: LinkRequestService = LinkRequestServiceProvider.makeLinkRequestService(),
-        inviteLinkService: InviteLinkService = InviteLinkServiceProvider.makeInviteLinkService()
+        accountService: AccountService = Dependencies.current.accountService,
+        expenseCloudService: ExpenseCloudService = Dependencies.current.expenseService,
+        groupCloudService: GroupCloudService = Dependencies.current.groupService,
+        linkRequestService: LinkRequestService = Dependencies.current.linkRequestService,
+        inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService
     ) {
         self.persistence = persistence
         self.accountService = accountService
@@ -1272,47 +1272,47 @@ final class AppStore: ObservableObject {
     /// Sends a link request to an email address for a specific friend with retry logic
     func sendLinkRequest(toEmail email: String, forFriend friend: GroupMember) async throws {
         guard let session = session else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         // Prevent self-linking: check if recipient email matches current user's email
         let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
         let currentUserEmail = session.account.email.lowercased()
         if normalizedEmail == currentUserEmail {
-            throw LinkingError.selfLinkingNotAllowed
+            throw PayBackError.linkSelfNotAllowed
         }
         
         // Prevent self-linking: check if target member is current user's linked member
         if friend.id == currentUser.id {
-            throw LinkingError.selfLinkingNotAllowed
+            throw PayBackError.linkSelfNotAllowed
         }
         
         // Also check if the target member is the current user's linked member ID
         if let linkedMemberId = session.account.linkedMemberId, friend.id == linkedMemberId {
-            throw LinkingError.selfLinkingNotAllowed
+            throw PayBackError.linkSelfNotAllowed
         }
         
         // Check if this specific member (by ID) is already linked
         if isMemberAlreadyLinked(friend.id) {
-            throw LinkingError.memberAlreadyLinked
+            throw PayBackError.linkMemberAlreadyLinked
         }
         
         // Lookup account by email with retry
         let account = try await retryPolicy.execute {
             guard let acc = try? await self.accountService.lookupAccount(byEmail: normalizedEmail) else {
-                throw LinkingError.accountNotFound
+                throw PayBackError.accountNotFound(email: normalizedEmail)
             }
             return acc
         }
         
         // Additional self-linking check: verify the found account is not the current user
         if account.id == session.account.id {
-            throw LinkingError.selfLinkingNotAllowed
+            throw PayBackError.linkSelfNotAllowed
         }
         
         // Check if this account is already linked to a different member
         if isAccountAlreadyLinked(accountId: account.id) {
-            throw LinkingError.accountAlreadyLinked
+            throw PayBackError.linkAccountAlreadyLinked
         }
         
         // Check for existing pending request for this member
@@ -1323,7 +1323,7 @@ final class AppStore: ObservableObject {
         }
         
         if hasPendingRequest {
-            throw LinkingError.duplicateRequest
+            throw PayBackError.linkDuplicateRequest
         }
         
         // Create link request with retry
@@ -1346,7 +1346,7 @@ final class AppStore: ObservableObject {
     /// Fetches all incoming and outgoing link requests with retry logic
     func fetchLinkRequests() async throws {
         guard session != nil else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         let incoming = try await retryPolicy.execute {
@@ -1366,7 +1366,7 @@ final class AppStore: ObservableObject {
     /// Fetches previous (accepted/rejected) link requests with retry logic
     func fetchPreviousRequests() async throws {
         guard session != nil else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         let previous = try await retryPolicy.execute {
@@ -1381,7 +1381,7 @@ final class AppStore: ObservableObject {
     /// Accepts a link request and links the account with retry logic
     func acceptLinkRequest(_ request: LinkRequest) async throws {
         guard session != nil else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         // Check if this request was previously rejected
@@ -1431,7 +1431,7 @@ final class AppStore: ObservableObject {
     /// Declines a link request
     func declineLinkRequest(_ request: LinkRequest) async throws {
         guard session != nil else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         // Decline the request via service
@@ -1446,7 +1446,7 @@ final class AppStore: ObservableObject {
     /// Cancels an outgoing link request
     func cancelLinkRequest(_ request: LinkRequest) async throws {
         guard session != nil else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         // Cancel the request via service
@@ -1463,12 +1463,12 @@ final class AppStore: ObservableObject {
     /// Generates an invite link for an unlinked friend
     func generateInviteLink(forFriend friend: GroupMember) async throws -> InviteLink {
         guard session != nil else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         // Check if this specific member (by ID) is already linked
         if isMemberAlreadyLinked(friend.id) {
-            throw LinkingError.memberAlreadyLinked
+            throw PayBackError.linkMemberAlreadyLinked
         }
         
         // Generate invite link via service
@@ -1483,7 +1483,7 @@ final class AppStore: ObservableObject {
     /// Validates an invite token and generates expense preview
     func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation {
         guard session != nil else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         // Validate token via service
@@ -1508,7 +1508,7 @@ final class AppStore: ObservableObject {
     /// Claims an invite token and links the account with retry logic
     func claimInviteToken(_ tokenId: UUID) async throws {
         guard session != nil else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         // Claim token via service with retry
@@ -1580,7 +1580,7 @@ final class AppStore: ObservableObject {
     /// Updates the nickname for a friend
     func updateFriendNickname(memberId: UUID, nickname: String?) async throws {
         guard session != nil else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         // Update nickname in local state
@@ -1594,7 +1594,7 @@ final class AppStore: ObservableObject {
         
         // Sync to Supabase
         guard let session = session else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         let currentFriends = await MainActor.run { friends }
@@ -1620,7 +1620,7 @@ final class AppStore: ObservableObject {
         
         // Sync updated friends to Supabase with transaction-based retry logic
         guard let session = session else {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
         
         do {
@@ -1679,7 +1679,7 @@ final class AppStore: ObservableObject {
             #endif
             
             // Throw error to indicate partial failure
-            throw LinkingError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
     }
     
@@ -1795,7 +1795,7 @@ final class AppStore: ObservableObject {
         
         // If any errors occurred, throw to trigger retry
         if !groupErrors.isEmpty || !expenseErrors.isEmpty {
-            throw LinkingError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
     }
     
