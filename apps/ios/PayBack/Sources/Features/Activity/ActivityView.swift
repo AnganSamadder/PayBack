@@ -177,8 +177,8 @@ struct ActivityView: View {
     }
     
     private func clearAllData() {
-        // Clear all groups and expenses
-        store.clearAllData()
+        // Clear only debug groups and expenses (preserves real data)
+        store.clearDebugData()
     }
 
 
@@ -232,15 +232,13 @@ private func addTestData() {
         )
     ]
 
-    func upsertGroup(_ group: SpendingGroup) {
-        if let existing = store.group(by: group.id) {
-            if existing != group { store.updateGroup(group) }
-        } else {
-            store.addExistingGroup(group)
+    func upsertDebugGroup(_ group: SpendingGroup) {
+        if store.group(by: group.id) == nil {
+            store.addExistingDebugGroup(group)
         }
     }
 
-    for group in groups { upsertGroup(group) }
+    for group in groups { upsertDebugGroup(group) }
 
     let expenses: [Expense] = [
         Expense(
@@ -365,10 +363,8 @@ private func addTestData() {
     ]
 
     for expense in expenses {
-        if store.expenses.contains(where: { $0.id == expense.id }) {
-            store.updateExpense(expense)
-        } else {
-            store.addExpense(expense)
+        if !store.expenses.contains(where: { $0.id == expense.id }) {
+            store.addDebugExpense(expense)
         }
     }
 

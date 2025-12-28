@@ -25,19 +25,23 @@ struct SpendingGroup: Identifiable, Codable, Hashable {
     var createdAt: Date
     // Direct person-to-person group if true; hidden from regular Groups list
     var isDirect: Bool?
+    // Whether this is debug/test data
+    var isDebug: Bool?
 
     init(
         id: UUID = UUID(),
         name: String,
         members: [GroupMember],
         createdAt: Date = Date(),
-        isDirect: Bool? = false
+        isDirect: Bool? = false,
+        isDebug: Bool? = false
     ) {
         self.id = id
         self.name = name
         self.members = members
         self.createdAt = createdAt
         self.isDirect = isDirect
+        self.isDebug = isDebug
     }
     
     // Equality based on ID only (entity identity)
@@ -76,9 +80,10 @@ struct Expense: Identifiable, Codable, Hashable {
     var splits: [ExpenseSplit] // amounts owed per member with individual settlement status
     var isSettled: Bool // Overall settlement status (all splits settled)
     var participantNames: [UUID: String]? // Optional cache of participant display names from remote payload
+    var isDebug: Bool // Whether this is debug/test data (not synced to real transactions)
 
     enum CodingKeys: String, CodingKey {
-        case id, groupId, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames
+        case id, groupId, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug
     }
     
     init(from decoder: Decoder) throws {
@@ -94,6 +99,8 @@ struct Expense: Identifiable, Codable, Hashable {
         isSettled = try container.decode(Bool.self, forKey: .isSettled)
         // participantNames is optional - decode if present, otherwise nil
         participantNames = try container.decodeIfPresent([UUID: String].self, forKey: .participantNames)
+        // isDebug defaults to false if not present (backward compatibility)
+        isDebug = try container.decodeIfPresent(Bool.self, forKey: .isDebug) ?? false
     }
     
     func encode(to encoder: Encoder) throws {
@@ -111,6 +118,10 @@ struct Expense: Identifiable, Codable, Hashable {
         if let participantNames = participantNames {
             try container.encode(participantNames, forKey: .participantNames)
         }
+        // Only encode isDebug if true (to minimize payload for normal expenses)
+        if isDebug {
+            try container.encode(isDebug, forKey: .isDebug)
+        }
     }
 
     init(
@@ -123,7 +134,8 @@ struct Expense: Identifiable, Codable, Hashable {
         involvedMemberIds: [UUID],
         splits: [ExpenseSplit],
         isSettled: Bool = false,
-        participantNames: [UUID: String]? = nil
+        participantNames: [UUID: String]? = nil,
+        isDebug: Bool = false
     ) {
         self.id = id
         self.groupId = groupId
@@ -135,6 +147,7 @@ struct Expense: Identifiable, Codable, Hashable {
         self.splits = splits
         self.isSettled = isSettled
         self.participantNames = participantNames
+        self.isDebug = isDebug
     }
     
     // Computed property to check if all splits are settled

@@ -4,7 +4,9 @@ import Supabase
 protocol GroupCloudService {
     func fetchGroups() async throws -> [SpendingGroup]
     func upsertGroup(_ group: SpendingGroup) async throws
+    func upsertDebugGroup(_ group: SpendingGroup) async throws
     func deleteGroups(_ ids: [UUID]) async throws
+    func deleteDebugGroups() async throws
 }
 
 enum GroupCloudServiceError: LocalizedError {
@@ -27,6 +29,7 @@ private struct GroupRow: Codable {
     let isDirect: Bool?
     let createdAt: Date
     let updatedAt: Date
+    let isPayBackGeneratedMockData: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -37,6 +40,7 @@ private struct GroupRow: Codable {
         case isDirect = "is_direct"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case isPayBackGeneratedMockData = "is_payback_generated_mock_data"
     }
 }
 
@@ -113,7 +117,28 @@ struct SupabaseGroupCloudService: GroupCloudService {
             ownerAccountId: context.id,
             isDirect: group.isDirect,
             createdAt: group.createdAt,
-            updatedAt: Date()
+            updatedAt: Date(),
+            isPayBackGeneratedMockData: nil
+        )
+
+        _ = try await client
+            .from(table)
+            .upsert([row], onConflict: "id", returning: .minimal)
+            .execute() as PostgrestResponse<Void>
+    }
+
+    func upsertDebugGroup(_ group: SpendingGroup) async throws {
+        let context = try await userContext()
+        let row = GroupRow(
+            id: group.id,
+            name: group.name,
+            members: group.members.map { GroupMemberRow(id: $0.id, name: $0.name) },
+            ownerEmail: context.email,
+            ownerAccountId: context.id,
+            isDirect: group.isDirect,
+            createdAt: group.createdAt,
+            updatedAt: Date(),
+            isPayBackGeneratedMockData: true
         )
 
         _ = try await client
@@ -133,13 +158,25 @@ struct SupabaseGroupCloudService: GroupCloudService {
             .execute() as PostgrestResponse<Void>
     }
 
+    func deleteDebugGroups() async throws {
+        let context = try await userContext()
+
+        _ = try await client
+            .from(table)
+            .delete(returning: .minimal)
+            .eq("owner_account_id", value: context.id)
+            .eq("is_payback_generated_mock_data", value: true)
+            .execute() as PostgrestResponse<Void>
+    }
+
     private func group(from row: GroupRow) -> SpendingGroup {
         SpendingGroup(
             id: row.id,
             name: row.name,
             members: row.members.map { GroupMember(id: $0.id, name: $0.name) },
             createdAt: row.createdAt,
-            isDirect: row.isDirect
+            isDirect: row.isDirect,
+            isDebug: row.isPayBackGeneratedMockData
         )
     }
 
@@ -161,5 +198,7 @@ enum GroupCloudServiceProvider {
 struct NoopGroupCloudService: GroupCloudService {
     func fetchGroups() async throws -> [SpendingGroup] { [] }
     func upsertGroup(_ group: SpendingGroup) async throws {}
+    func upsertDebugGroup(_ group: SpendingGroup) async throws {}
     func deleteGroups(_ ids: [UUID]) async throws {}
+    func deleteDebugGroups() async throws {}
 }

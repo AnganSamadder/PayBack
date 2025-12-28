@@ -37,7 +37,8 @@ create table if not exists groups (
   owner_account_id uuid not null,
   is_direct boolean default false,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  is_payback_generated_mock_data boolean
 );
 
 create index if not exists idx_groups_owner_account on groups (owner_account_id);

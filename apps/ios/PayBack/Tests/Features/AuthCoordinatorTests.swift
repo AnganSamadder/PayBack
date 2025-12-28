@@ -332,6 +332,26 @@ final class AuthCoordinatorTests: XCTestCase {
         XCTAssertEqual(mockEmailAuthService.lastSignUpEmail, "new@example.com")
     }
     
+    func testSignup_WhenAccountCreationFailsWithSessionMissing_SetsInfoMessage() async {
+        let testEmail = "verify@example.com"
+        
+        mockEmailAuthService.signUpResult = EmailAuthSignInResult(
+            uid: "new123",
+            email: testEmail,
+            displayName: "Test"
+        )
+        // Simulate sign up success but create account failure due to session missing (email verification needed)
+        await mockAccountService.setShouldThrowOnCreate(true, error: AccountServiceError.sessionMissing)
+        
+        await coordinator.signup(emailInput: testEmail, displayName: "Test", password: "password")
+        
+        XCTAssertFalse(coordinator.isBusy)
+        XCTAssertNil(coordinator.errorMessage)
+        XCTAssertNotNil(coordinator.infoMessage)
+        XCTAssertTrue(coordinator.infoMessage!.contains("check your email"))
+        XCTAssertEqual(coordinator.route, .login)
+    }
+    
     // MARK: - SendPasswordReset Tests
     
     func testSendPasswordReset_Success() async {
