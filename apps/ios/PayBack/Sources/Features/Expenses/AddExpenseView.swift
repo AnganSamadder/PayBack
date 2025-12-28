@@ -3,8 +3,31 @@ import SwiftUI
 enum SplitMode: String, CaseIterable, Identifiable {
     case equal = "Equal"
     case percent = "Percent"
+    case shares = "Shares"
+    case itemized = "Receipt"
     case manual = "Manual"
+    
     var id: String { rawValue }
+    
+    var icon: String {
+        switch self {
+        case .equal: return "equal"
+        case .percent: return "percent"
+        case .shares: return "chart.pie.fill"
+        case .itemized: return "receipt"
+        case .manual: return "pencil"
+        }
+    }
+    
+    var shortLabel: String {
+        switch self {
+        case .equal: return "="
+        case .percent: return "%"
+        case .shares: return "÷"
+        case .itemized: return "📃"
+        case .manual: return "✎"
+        }
+    }
 }
 
 struct AddExpenseView: View {
@@ -23,6 +46,16 @@ struct AddExpenseView: View {
     @State private var mode: SplitMode = .equal
     @State private var percents: [UUID: Double] = [:]
     @State private var manualAmounts: [UUID: Double] = [:]
+    
+    // Advanced split mode state
+    @State private var shares: [UUID: Int] = [:]
+    @State private var adjustments: [UUID: Double] = [:]
+    @State private var itemizedAmounts: [UUID: Double] = [:]
+    @State private var itemizedSubtotal: Double = 0
+    @State private var itemizedTax: Double = 0
+    @State private var itemizedTip: Double = 0
+    @State private var autoDistributeTaxTip: Bool = true
+    
     @State private var showNotesSheet: Bool = false
     @State private var showSaveConfirm: Bool = false
 
@@ -60,27 +93,75 @@ struct AddExpenseView: View {
     private func computedSplits() -> [ExpenseSplit] {
         let ids = participants.map(\.id)
         guard !ids.isEmpty, totalAmount > 0 else { return [] }
+        
+        var baseSplits: [ExpenseSplit]
+        
         switch mode {
         case .equal:
             let each = totalAmount / Double(ids.count)
-            return ids.map { ExpenseSplit(memberId: $0, amount: each) }
+            baseSplits = ids.map { ExpenseSplit(memberId: $0, amount: each) }
+            
         case .percent:
             let totalPercent = ids.reduce(0) { $0 + (percents[$1] ?? 0) }
             guard totalPercent > 0 else { return [] }
-            return ids.map { id in
+            baseSplits = ids.map { id in
                 let pct = (percents[id] ?? 0) / totalPercent
                 return ExpenseSplit(memberId: id, amount: totalAmount * pct)
             }
+            
+        case .shares:
+            let totalShares = ids.reduce(0) { $0 + (shares[$1] ?? 1) }
+            guard totalShares > 0 else { return [] }
+            baseSplits = ids.map { id in
+                let memberShares = Double(shares[id] ?? 1)
+                let portion = memberShares / Double(totalShares)
+                return ExpenseSplit(memberId: id, amount: totalAmount * portion)
+            }
+            
+        case .itemized:
+            // Smart Tax/Tip distribution
+            let userItemsTotal = ids.reduce(0.0) { $0 + (itemizedAmounts[$1] ?? 0) }
+            guard userItemsTotal > 0 else { return [] }
+            
+            let taxTipTotal = itemizedTax + itemizedTip
+            baseSplits = ids.map { id in
+                let userItems = itemizedAmounts[id] ?? 0
+                var finalAmount = userItems
+                
+                if autoDistributeTaxTip && taxTipTotal > 0 {
+                    // Distribute tax/tip proportionally based on user's items
+                    let proportion = userItems / userItemsTotal
+                    finalAmount += proportion * taxTipTotal
+                }
+                
+                return ExpenseSplit(memberId: id, amount: finalAmount)
+            }
+            
         case .manual:
             let amounts = ids.map { manualAmounts[$0] ?? 0 }
             let sum = amounts.reduce(0, +)
             guard sum > 0 else { return [] }
             // Normalize to total amount to avoid rounding drift
-            return ids.enumerated().map { idx, id in
+            baseSplits = ids.enumerated().map { _, id in
                 let portion = (manualAmounts[id] ?? 0) / sum
                 return ExpenseSplit(memberId: id, amount: totalAmount * portion)
             }
         }
+        
+        // Apply adjustments on top of base splits (available for all modes except itemized)
+        if mode != .itemized {
+            baseSplits = baseSplits.map { split in
+                let adjustment = adjustments[split.memberId] ?? 0
+                return ExpenseSplit(
+                    id: split.id,
+                    memberId: split.memberId,
+                    amount: split.amount + adjustment,
+                    isSettled: split.isSettled
+                )
+            }
+        }
+        
+        return baseSplits
     }
 
     private func save() {
@@ -173,6 +254,13 @@ struct AddExpenseView: View {
                          mode: $mode,
                          percents: $percents,
                          manualAmounts: $manualAmounts,
+                         shares: $shares,
+                         adjustments: $adjustments,
+                         itemizedAmounts: $itemizedAmounts,
+                         itemizedSubtotal: $itemizedSubtotal,
+                         itemizedTax: $itemizedTax,
+                         itemizedTip: $itemizedTip,
+                         autoDistributeTaxTip: $autoDistributeTaxTip,
                          totalAmount: totalAmount
                      )
                      .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
@@ -402,6 +490,13 @@ private struct PaidSplitBubble: View {
     @Binding var mode: SplitMode
     @Binding var percents: [UUID: Double]
     @Binding var manualAmounts: [UUID: Double]
+    @Binding var shares: [UUID: Int]
+    @Binding var adjustments: [UUID: Double]
+    @Binding var itemizedAmounts: [UUID: Double]
+    @Binding var itemizedSubtotal: Double
+    @Binding var itemizedTax: Double
+    @Binding var itemizedTip: Double
+    @Binding var autoDistributeTaxTip: Bool
     let totalAmount: Double
 
     @State private var showPayerPicker = false
@@ -484,7 +579,14 @@ private struct PaidSplitBubble: View {
                     mode: $mode,
                     involvedIds: $involvedIds,
                     percents: $percents,
-                    manualAmounts: $manualAmounts
+                    manualAmounts: $manualAmounts,
+                    shares: $shares,
+                    adjustments: $adjustments,
+                    itemizedAmounts: $itemizedAmounts,
+                    itemizedSubtotal: $itemizedSubtotal,
+                    itemizedTax: $itemizedTax,
+                    itemizedTip: $itemizedTip,
+                    autoDistributeTaxTip: $autoDistributeTaxTip
                 )
             }
         }
@@ -492,7 +594,13 @@ private struct PaidSplitBubble: View {
 
     private var currentPayer: GroupMember { group.members.first(where: { $0.id == payerId }) ?? group.members.first! }
     private var modeTitle: String {
-        switch mode { case .equal: return "Equally"; case .percent: return "Percent"; case .manual: return "Manual" }
+        switch mode {
+        case .equal: return "Equally"
+        case .percent: return "Percent"
+        case .shares: return "Shares"
+        case .itemized: return "Receipt"
+        case .manual: return "Manual"
+        }
     }
     private var payerLabel: String {
         if let first = group.members.first, first.id == payerId {
@@ -510,6 +618,15 @@ private struct SplitDetailView: View {
     @Binding var involvedIds: Set<UUID>
     @Binding var percents: [UUID: Double]
     @Binding var manualAmounts: [UUID: Double]
+    @Binding var shares: [UUID: Int]
+    @Binding var adjustments: [UUID: Double]
+    @Binding var itemizedAmounts: [UUID: Double]
+    @Binding var itemizedSubtotal: Double
+    @Binding var itemizedTax: Double
+    @Binding var itemizedTip: Double
+    @Binding var autoDistributeTaxTip: Bool
+    
+    @State private var showAdjustments: Bool = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -529,11 +646,14 @@ private struct SplitDetailView: View {
                                     member: member,
                                     isSelected: involvedIds.contains(member.id),
                                     onToggle: { isSelected in
-                                        if isSelected {
-                                            involvedIds.insert(member.id)
-                                        } else {
-                                            involvedIds.remove(member.id)
+                                        withAnimation(AppAnimation.springy) {
+                                            if isSelected {
+                                                involvedIds.insert(member.id)
+                                            } else {
+                                                involvedIds.remove(member.id)
+                                            }
                                         }
+                                        Haptics.selection()
                                     }
                                 )
                             }
@@ -547,11 +667,14 @@ private struct SplitDetailView: View {
                                     member: member,
                                     isSelected: involvedIds.contains(member.id),
                                     onToggle: { isSelected in
-                                        if isSelected {
-                                            involvedIds.insert(member.id)
-                                        } else {
-                                            involvedIds.remove(member.id)
+                                        withAnimation(AppAnimation.springy) {
+                                            if isSelected {
+                                                involvedIds.insert(member.id)
+                                            } else {
+                                                involvedIds.remove(member.id)
+                                            }
                                         }
+                                        Haptics.selection()
                                     }
                                 )
                             }
@@ -568,24 +691,31 @@ private struct SplitDetailView: View {
                         .padding(.horizontal, 20)
                     
                     VStack(spacing: 12) {
-                        // Mode Picker
-                        Picker("Mode", selection: $mode) {
-                            ForEach(SplitMode.allCases) { mode in 
-                                Text(mode.rawValue).tag(mode) 
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .padding(.horizontal, 20)
+                        // Mode Picker with custom selector
+                        SplitModeSelector(selectedMode: $mode)
+                            .padding(.horizontal, 20)
                         
                         // Split Details
                         VStack(spacing: 8) {
                             switch mode {
                             case .equal:
-                                EqualSplitView(total: totalAmount, participants: participants)
+                                EqualSplitView(total: totalAmount, participants: participants, adjustments: $adjustments, showAdjustments: $showAdjustments)
                             case .percent:
-                                PercentSplitView(total: totalAmount, participants: participants, percents: $percents)
+                                PercentSplitView(total: totalAmount, participants: participants, percents: $percents, adjustments: $adjustments, showAdjustments: $showAdjustments)
+                            case .shares:
+                                SharesSplitView(total: totalAmount, participants: participants, shares: $shares, adjustments: $adjustments, showAdjustments: $showAdjustments)
+                            case .itemized:
+                                ItemizedSplitView(
+                                    total: totalAmount,
+                                    participants: participants,
+                                    itemizedAmounts: $itemizedAmounts,
+                                    subtotal: $itemizedSubtotal,
+                                    tax: $itemizedTax,
+                                    tip: $itemizedTip,
+                                    autoDistributeTaxTip: $autoDistributeTaxTip
+                                )
                             case .manual:
-                                ManualSplitView(total: totalAmount, participants: participants, manualAmounts: $manualAmounts)
+                                ManualSplitView(total: totalAmount, participants: participants, manualAmounts: $manualAmounts, adjustments: $adjustments, showAdjustments: $showAdjustments)
                             }
                         }
                         .padding(.horizontal, 20)
@@ -800,6 +930,53 @@ private struct NotesEditor: View {
     }
 }
 
+// MARK: - Split Mode Selector
+private struct SplitModeSelector: View {
+    @Binding var selectedMode: SplitMode
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(SplitMode.allCases) { mode in
+                SplitModeButton(
+                    mode: mode,
+                    isSelected: selectedMode == mode,
+                    action: {
+                        withAnimation(AppAnimation.springy) {
+                            selectedMode = mode
+                        }
+                        Haptics.impact(.light)
+                    }
+                )
+            }
+        }
+    }
+}
+
+private struct SplitModeButton: View {
+    let mode: SplitMode
+    let isSelected: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: mode.icon)
+                    .font(.system(size: 16, weight: .semibold))
+                Text(mode.rawValue)
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isSelected ? AppTheme.brand : AppTheme.card)
+            )
+            .foregroundStyle(isSelected ? .white : .primary)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct ItemizedBillHelper: View {
     @Binding var totalText: String
     let participants: [GroupMember]
@@ -859,17 +1036,33 @@ private struct ItemizedBillHelper: View {
 private struct EqualSplitView: View {
     let total: Double
     let participants: [GroupMember]
+    @Binding var adjustments: [UUID: Double]
+    @Binding var showAdjustments: Bool
 
     var body: some View {
         let each = participants.isEmpty ? 0 : total / Double(participants.count)
         VStack(alignment: .leading, spacing: 8) {
             ForEach(participants) { p in
+                let adjustment = adjustments[p.id] ?? 0
+                let finalAmount = each + adjustment
                 HStack {
                     Text(p.name)
                     Spacer()
-                    Text(each, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    if adjustment != 0 {
+                        Text(adjustment > 0 ? "+\(adjustment, specifier: "%.2f")" : "\(adjustment, specifier: "%.2f")")
+                            .font(.caption)
+                            .foregroundStyle(adjustment > 0 ? .green : .red)
+                    }
+                    Text(finalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                        .fontWeight(.medium)
                 }
             }
+            
+            AdjustmentsSection(
+                participants: participants,
+                adjustments: $adjustments,
+                showAdjustments: $showAdjustments
+            )
         }
     }
 }
@@ -878,10 +1071,14 @@ private struct PercentSplitView: View {
     let total: Double
     let participants: [GroupMember]
     @Binding var percents: [UUID: Double]
+    @Binding var adjustments: [UUID: Double]
+    @Binding var showAdjustments: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(participants) { p in
+                let baseAmount = (percents[p.id] ?? 0) / 100 * total
+                let adjustment = adjustments[p.id] ?? 0
                 HStack {
                     Text(p.name)
                     Spacer()
@@ -891,17 +1088,39 @@ private struct PercentSplitView: View {
                     ), format: .number)
                     .keyboardType(.decimalPad)
                     .frame(width: AppMetrics.AddExpense.percentFieldWidth)
+                    .multilineTextAlignment(.trailing)
                     Text("%")
+                    if adjustment != 0 {
+                        Text(adjustment > 0 ? "+\(adjustment, specifier: "%.2f")" : "\(adjustment, specifier: "%.2f")")
+                            .font(.caption)
+                            .foregroundStyle(adjustment > 0 ? .green : .red)
+                    }
                 }
             }
+            
+            let totalPercent = participants.reduce(0) { $0 + (percents[$1.id] ?? 0) }
             let computed = participants.map { id in
-                (percents[id.id] ?? 0) / 100 * total
+                (percents[id.id] ?? 0) / max(totalPercent, 1) * total + (adjustments[id.id] ?? 0)
             }.reduce(0, +)
+            
+            HStack {
+                Text("Total Percent")
+                Spacer()
+                Text("\(totalPercent, specifier: "%.0f")%")
+                    .foregroundStyle(abs(totalPercent - 100) < 0.01 ? .green : .orange)
+            }
+            
             HStack {
                 Text("Allocated")
                 Spacer()
                 Text(computed, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
             }
+            
+            AdjustmentsSection(
+                participants: participants,
+                adjustments: $adjustments,
+                showAdjustments: $showAdjustments
+            )
         }
     }
 }
@@ -910,10 +1129,13 @@ private struct ManualSplitView: View {
     let total: Double
     let participants: [GroupMember]
     @Binding var manualAmounts: [UUID: Double]
+    @Binding var adjustments: [UUID: Double]
+    @Binding var showAdjustments: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(participants) { p in
+                let adjustment = adjustments[p.id] ?? 0
                 HStack {
                     Text(p.name)
                     Spacer()
@@ -923,9 +1145,15 @@ private struct ManualSplitView: View {
                     ), format: .number)
                     .keyboardType(.decimalPad)
                     .frame(width: AppMetrics.AddExpense.manualAmountFieldWidth)
+                    .multilineTextAlignment(.trailing)
+                    if adjustment != 0 {
+                        Text(adjustment > 0 ? "+\(adjustment, specifier: "%.2f")" : "\(adjustment, specifier: "%.2f")")
+                            .font(.caption)
+                            .foregroundStyle(adjustment > 0 ? .green : .red)
+                    }
                 }
             }
-            let sum = participants.map { manualAmounts[$0.id] ?? 0 }.reduce(0, +)
+            let sum = participants.map { (manualAmounts[$0.id] ?? 0) + (adjustments[$0.id] ?? 0) }.reduce(0, +)
             HStack {
                 Text("Allocated")
                 Spacer()
@@ -937,7 +1165,369 @@ private struct ManualSplitView: View {
                 Text(total - sum, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                     .foregroundStyle((total - sum).magnitude < AppMetrics.AddExpense.balanceTolerance ? .green : .orange)
             }
+            
+            AdjustmentsSection(
+                participants: participants,
+                adjustments: $adjustments,
+                showAdjustments: $showAdjustments
+            )
         }
     }
 }
 
+// MARK: - Shares Split View
+private struct SharesSplitView: View {
+    let total: Double
+    let participants: [GroupMember]
+    @Binding var shares: [UUID: Int]
+    @Binding var adjustments: [UUID: Double]
+    @Binding var showAdjustments: Bool
+    
+    private var totalShares: Int {
+        participants.reduce(0) { $0 + (shares[$1.id] ?? 1) }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(participants) { p in
+                let memberShares = shares[p.id] ?? 1
+                let portion = totalShares > 0 ? Double(memberShares) / Double(totalShares) : 0
+                let baseAmount = total * portion
+                let adjustment = adjustments[p.id] ?? 0
+                let finalAmount = baseAmount + adjustment
+                
+                VStack(spacing: 6) {
+                    HStack {
+                        Text(p.name)
+                            .fontWeight(.medium)
+                        Spacer()
+                        
+                        // Stepper for shares
+                        HStack(spacing: 12) {
+                            Button {
+                                let current = shares[p.id] ?? 1
+                                if current > 1 {
+                                    shares[p.id] = current - 1
+                                    Haptics.impact(.light)
+                                }
+                            } label: {
+                                Image(systemName: "minus.circle.fill")
+                                    .font(.title2)
+                                    .foregroundStyle((shares[p.id] ?? 1) > 1 ? AppTheme.brand : .secondary)
+                            }
+                            .disabled((shares[p.id] ?? 1) <= 1)
+                            
+                            Text("\(memberShares)")
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .frame(minWidth: 30)
+                            
+                            Button {
+                                let current = shares[p.id] ?? 1
+                                shares[p.id] = current + 1
+                                Haptics.impact(.light)
+                            } label: {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(AppTheme.brand)
+                            }
+                        }
+                    }
+                    
+                    // Portion bar
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(AppTheme.card)
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(AppTheme.brand)
+                                .frame(width: max(0, geometry.size.width * portion))
+                                .animation(AppAnimation.springy, value: portion)
+                        }
+                    }
+                    .frame(height: 8)
+                    
+                    HStack {
+                        Text("\(Int(portion * 100))% of total")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if adjustment != 0 {
+                            Text(adjustment > 0 ? "+\(adjustment, specifier: "%.2f")" : "\(adjustment, specifier: "%.2f")")
+                                .font(.caption)
+                                .foregroundStyle(adjustment > 0 ? .green : .red)
+                        }
+                        Text(finalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                            .fontWeight(.medium)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            
+            Divider()
+            
+            HStack {
+                Text("Total Shares")
+                Spacer()
+                Text("\(totalShares)")
+                    .fontWeight(.bold)
+            }
+            
+            AdjustmentsSection(
+                participants: participants,
+                adjustments: $adjustments,
+                showAdjustments: $showAdjustments
+            )
+        }
+    }
+}
+
+// MARK: - Itemized Split View
+private struct ItemizedSplitView: View {
+    let total: Double
+    let participants: [GroupMember]
+    @Binding var itemizedAmounts: [UUID: Double]
+    @Binding var subtotal: Double
+    @Binding var tax: Double
+    @Binding var tip: Double
+    @Binding var autoDistributeTaxTip: Bool
+    
+    private var userItemsTotal: Double {
+        participants.reduce(0) { $0 + (itemizedAmounts[$1.id] ?? 0) }
+    }
+    
+    private var taxTipTotal: Double {
+        tax + tip
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Header fields
+            VStack(spacing: 12) {
+                ItemizedFieldRow(label: "Subtotal", value: $subtotal, placeholder: "0.00")
+                ItemizedFieldRow(label: "Tax", value: $tax, placeholder: "0.00")
+                ItemizedFieldRow(label: "Tip", value: $tip, placeholder: "0.00")
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(AppTheme.card)
+            )
+            
+            // Smart Tax/Tip toggle
+            Toggle(isOn: $autoDistributeTaxTip) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Smart Tax/Tip Distribution")
+                        .font(.subheadline.weight(.medium))
+                    Text("Distribute proportionally based on items")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .tint(AppTheme.brand)
+            .onChange(of: autoDistributeTaxTip) { _, _ in
+                Haptics.selection()
+            }
+            
+            Divider()
+            
+            // Per-user items
+            Text("Each Person's Items")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            
+            ForEach(participants) { p in
+                let userItems = itemizedAmounts[p.id] ?? 0
+                let proportion = userItemsTotal > 0 ? userItems / userItemsTotal : 0
+                let taxTipShare = autoDistributeTaxTip ? proportion * taxTipTotal : 0
+                let finalAmount = userItems + taxTipShare
+                
+                VStack(spacing: 4) {
+                    HStack {
+                        Text(p.name)
+                        Spacer()
+                        TextField("0.00", value: Binding(
+                            get: { itemizedAmounts[p.id] ?? 0 },
+                            set: { itemizedAmounts[p.id] = $0 }
+                        ), format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 100)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(AppTheme.card)
+                        )
+                    }
+                    
+                    if autoDistributeTaxTip && taxTipTotal > 0 {
+                        HStack {
+                            Text("+ \(Int(proportion * 100))% of tax/tip")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("= \(finalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(AppTheme.brand)
+                        }
+                    }
+                }
+            }
+            
+            Divider()
+            
+            // Summary
+            VStack(spacing: 8) {
+                HStack {
+                    Text("Items Total")
+                    Spacer()
+                    Text(userItemsTotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                }
+                
+                HStack {
+                    Text("Tax + Tip")
+                    Spacer()
+                    Text(taxTipTotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                }
+                
+                HStack {
+                    Text("Grand Total")
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Text(userItemsTotal + taxTipTotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                        .fontWeight(.semibold)
+                }
+                
+                if abs((userItemsTotal + taxTipTotal) - total) > 0.01 {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("Difference from entered total: \(abs((userItemsTotal + taxTipTotal) - total), format: .currency(code: Locale.current.currency?.identifier ?? "USD"))")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ItemizedFieldRow: View {
+    let label: String
+    @Binding var value: Double
+    let placeholder: String
+    
+    var body: some View {
+        HStack {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            TextField(placeholder, value: $value, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 100)
+        }
+    }
+}
+
+// MARK: - Adjustments Section
+private struct AdjustmentsSection: View {
+    let participants: [GroupMember]
+    @Binding var adjustments: [UUID: Double]
+    @Binding var showAdjustments: Bool
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+                .padding(.vertical, 4)
+            
+            Button {
+                withAnimation(AppAnimation.springy) {
+                    showAdjustments.toggle()
+                }
+                Haptics.impact(.light)
+            } label: {
+                HStack {
+                    Image(systemName: showAdjustments ? "chevron.down.circle.fill" : "plus.circle.fill")
+                        .foregroundStyle(AppTheme.brand)
+                    Text("Adjustments")
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                    if !adjustments.isEmpty {
+                        let totalAdjustments = adjustments.values.reduce(0, +)
+                        Text(totalAdjustments > 0 ? "+\(totalAdjustments, specifier: "%.2f")" : "\(totalAdjustments, specifier: "%.2f")")
+                            .font(.caption)
+                            .foregroundStyle(totalAdjustments > 0 ? .green : totalAdjustments < 0 ? .red : .secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            
+            if showAdjustments {
+                VStack(spacing: 8) {
+                    Text("Add/subtract amounts for specific people")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    ForEach(participants) { p in
+                        HStack {
+                            Text(p.name)
+                                .font(.subheadline)
+                            Spacer()
+                            
+                            HStack(spacing: 8) {
+                                Button {
+                                    let current = adjustments[p.id] ?? 0
+                                    adjustments[p.id] = current - 1
+                                    Haptics.impact(.light)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                        .foregroundStyle(.red)
+                                }
+                                
+                                TextField("0", value: Binding(
+                                    get: { adjustments[p.id] ?? 0 },
+                                    set: { adjustments[p.id] = $0 }
+                                ), format: .number.precision(.fractionLength(2)))
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.center)
+                                .frame(width: 70)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(AppTheme.card)
+                                )
+                                
+                                Button {
+                                    let current = adjustments[p.id] ?? 0
+                                    adjustments[p.id] = current + 1
+                                    Haptics.impact(.light)
+                                } label: {
+                                    Image(systemName: "plus.circle")
+                                        .foregroundStyle(.green)
+                                }
+                            }
+                        }
+                    }
+                    
+                    if !adjustments.isEmpty {
+                        Button {
+                            withAnimation(AppAnimation.springy) {
+                                adjustments.removeAll()
+                            }
+                            Haptics.notify(.warning)
+                        } label: {
+                            Text("Clear All Adjustments")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                        .padding(.top, 4)
+                    }
+                }
+                .padding(.leading, 8)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+}
