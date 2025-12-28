@@ -8,21 +8,21 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
         if shouldFail {
-            throw ExpenseCloudServiceError.userNotAuthenticated
+            throw PayBackError.authSessionMissing
         }
         expenses[expense.id] = expense
     }
     
     func fetchExpenses() async throws -> [Expense] {
         if shouldFail {
-            throw ExpenseCloudServiceError.userNotAuthenticated
+            throw PayBackError.authSessionMissing
         }
         return Array(expenses.values)
     }
     
     func deleteExpense(_ expenseId: UUID) async throws {
         if shouldFail {
-            throw ExpenseCloudServiceError.userNotAuthenticated
+            throw PayBackError.authSessionMissing
         }
         expenses.removeValue(forKey: expenseId)
     }
@@ -33,7 +33,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     
     func upsertDebugExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
         if shouldFail {
-            throw ExpenseCloudServiceError.userNotAuthenticated
+            throw PayBackError.authSessionMissing
         }
         expenses[expense.id] = expense
     }

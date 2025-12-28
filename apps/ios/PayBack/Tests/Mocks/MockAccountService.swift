@@ -14,14 +14,14 @@ actor MockAccountServiceForAppStore: AccountService {
     
     func lookupAccount(byEmail email: String) async throws -> UserAccount? {
         if shouldFail {
-            throw AccountServiceError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
         return accounts[email.lowercased()]
     }
     
     func createAccount(email: String, displayName: String) async throws -> UserAccount {
         if shouldFail {
-            throw AccountServiceError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
         let account = UserAccount(id: UUID().uuidString, email: email, displayName: displayName)
         accounts[email.lowercased()] = account
@@ -30,7 +30,7 @@ actor MockAccountServiceForAppStore: AccountService {
     
     func updateLinkedMember(accountId: String, memberId: UUID?) async throws {
         if shouldFail {
-            throw AccountServiceError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
         // Find account by ID and update
         for (email, var account) in accounts {
@@ -44,14 +44,14 @@ actor MockAccountServiceForAppStore: AccountService {
     
     func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {
         if shouldFail {
-            throw AccountServiceError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
         self.friends[accountEmail.lowercased()] = friends
     }
     
     func fetchFriends(accountEmail: String) async throws -> [AccountFriend] {
         if shouldFail {
-            throw AccountServiceError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
         return friends[accountEmail.lowercased()] ?? []
     }
@@ -63,7 +63,7 @@ actor MockAccountServiceForAppStore: AccountService {
         linkedAccountEmail: String
     ) async throws {
         if shouldFail {
-            throw AccountServiceError.networkUnavailable
+            throw PayBackError.networkUnavailable
         }
         
         var currentFriends = friends[accountEmail.lowercased()] ?? []

@@ -21,7 +21,7 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
         let normalizedRecipient = recipientEmail.lowercased().trimmingCharacters(in: .whitespaces)
         
         if normalizedRequester == normalizedRecipient {
-            throw LinkingError.selfLinkingNotAllowed
+            throw PayBackError.linkSelfNotAllowed
         }
         
         // Check for duplicate requests to same email
@@ -33,7 +33,7 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
         }
         
         if existingRequest != nil {
-            throw LinkingError.duplicateRequest
+            throw PayBackError.linkDuplicateRequest
         }
         
         let requestId = UUID()
@@ -89,17 +89,17 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
     /// Accept a link request
     func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult {
         guard var request = requests[requestId] else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         // Check if expired
         if request.expiresAt < Date() {
-            throw LinkingError.tokenExpired
+            throw PayBackError.linkExpired
         }
         
         // Check if already processed
         if request.status != .pending {
-            throw LinkingError.tokenAlreadyClaimed
+            throw PayBackError.linkAlreadyClaimed
         }
         
         // Mark as accepted
@@ -116,7 +116,7 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
     /// Decline a link request
     func declineLinkRequest(_ requestId: UUID) async throws {
         guard var request = requests[requestId] else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         // Mark as declined
@@ -127,7 +127,7 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
     /// Cancels an outgoing link request
     func cancelLinkRequest(_ requestId: UUID) async throws {
         guard requests[requestId] != nil else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         // Mark as cancelled by removing it
@@ -139,7 +139,7 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
     /// Reject a link request (explicit rejection) - test helper
     func rejectLinkRequest(_ requestId: UUID) async throws {
         guard var request = requests[requestId] else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         // Mark as rejected

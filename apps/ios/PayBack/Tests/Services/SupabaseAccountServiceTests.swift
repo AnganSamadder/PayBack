@@ -59,7 +59,10 @@ final class SupabaseAccountServiceTests: XCTestCase {
         )
 
         await XCTAssertThrowsErrorAsync(try await service.createAccount(email: context.email, displayName: "User")) { error in
-            XCTAssertTrue(error is AccountServiceError)
+            XCTAssertTrue(error is PayBackError)
+            if let payBackError = error as? PayBackError {
+                XCTAssertEqual(payBackError, .accountDuplicate(email: self.context.email))
+            }
         }
     }
     
@@ -430,14 +433,14 @@ final class SupabaseAccountServiceTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(
             try await failingService.fetchFriends(accountEmail: "test@example.com")
         ) { error in
-            guard let accountError = error as? AccountServiceError else {
-                XCTFail("Expected AccountServiceError but got \(error)")
+            guard let payBackError = error as? PayBackError else {
+                XCTFail("Expected PayBackError but got \(error)")
                 return
             }
-            if case .sessionMissing = accountError {
+            if case .authSessionMissing = payBackError {
                 // Expected
             } else {
-                XCTFail("Expected sessionMissing but got \(accountError)")
+                XCTFail("Expected authSessionMissing but got \(payBackError)")
             }
         }
     }
@@ -458,14 +461,14 @@ final class SupabaseAccountServiceTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(
             try await failingService.createAccount(email: "test@example.com", displayName: "User")
         ) { error in
-            guard let accountError = error as? AccountServiceError else {
-                XCTFail("Expected AccountServiceError but got \(error)")
+            guard let payBackError = error as? PayBackError else {
+                XCTFail("Expected PayBackError but got \(error)")
                 return
             }
-            if case .sessionMissing = accountError {
+            if case .authSessionMissing = payBackError {
                 // Expected
             } else {
-                XCTFail("Expected sessionMissing but got \(accountError)")
+                XCTFail("Expected authSessionMissing but got \(payBackError)")
             }
         }
     }
@@ -492,14 +495,14 @@ final class SupabaseAccountServiceTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(
             try await failingService.syncFriends(accountEmail: "test@example.com", friends: [friend])
         ) { error in
-            guard let accountError = error as? AccountServiceError else {
-                XCTFail("Expected AccountServiceError but got \(error)")
+            guard let payBackError = error as? PayBackError else {
+                XCTFail("Expected PayBackError but got \(error)")
                 return
             }
-            if case .sessionMissing = accountError {
+            if case .authSessionMissing = payBackError {
                 // Expected
             } else {
-                XCTFail("Expected sessionMissing but got \(accountError)")
+                XCTFail("Expected authSessionMissing but got \(payBackError)")
             }
         }
     }

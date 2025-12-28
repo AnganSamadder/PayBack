@@ -1,13 +1,13 @@
 import Foundation
 import Supabase
 
-protocol InviteLinkService {
+protocol InviteLinkService: Sendable {
     /// Generates an invite link for an unlinked participant
     /// - Parameters:
     ///   - targetMemberId: UUID of the GroupMember to create invite for
     ///   - targetMemberName: Display name of the member
     /// - Returns: InviteLink containing token, URL, and shareable text
-    /// - Throws: LinkingError if generation fails
+    /// - Throws: PayBackError if generation fails
     func generateInviteLink(
         targetMemberId: UUID,
         targetMemberName: String
@@ -16,23 +16,23 @@ protocol InviteLinkService {
     /// Validates an invite token and returns validation result with expense preview
     /// - Parameter tokenId: UUID of the invite token to validate
     /// - Returns: InviteTokenValidation containing validity status and preview data
-    /// - Throws: LinkingError if validation fails
+    /// - Throws: PayBackError if validation fails
     func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation
     
     /// Claims an invite token and links the account to the member
     /// - Parameter tokenId: UUID of the invite token to claim
     /// - Returns: LinkAcceptResult containing the linked account details
-    /// - Throws: LinkingError if claim fails
+    /// - Throws: PayBackError if claim fails
     func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult
     
     /// Fetches all active invite tokens created by the current user
     /// - Returns: Array of active (unclaimed, unexpired) invite tokens
-    /// - Throws: LinkingError if fetch fails
+    /// - Throws: PayBackError if fetch fails
     func fetchActiveInvites() async throws -> [InviteToken]
     
     /// Revokes an invite token, preventing it from being claimed
     /// - Parameter tokenId: UUID of the invite token to revoke
-    /// - Throws: LinkingError if revocation fails
+    /// - Throws: PayBackError if revocation fails
     func revokeInvite(_ tokenId: UUID) async throws
 }
 
@@ -86,7 +86,7 @@ actor MockInviteLinkService: InviteLinkService {
                 isValid: false,
                 token: nil,
                 expensePreview: nil,
-                errorMessage: LinkingError.tokenInvalid.errorDescription
+                errorMessage: PayBackError.linkInvalid.errorDescription
             )
         }
         
@@ -95,7 +95,7 @@ actor MockInviteLinkService: InviteLinkService {
                 isValid: false,
                 token: token,
                 expensePreview: nil,
-                errorMessage: LinkingError.tokenExpired.errorDescription
+                errorMessage: PayBackError.linkExpired.errorDescription
             )
         }
         
@@ -104,7 +104,7 @@ actor MockInviteLinkService: InviteLinkService {
                 isValid: false,
                 token: token,
                 expensePreview: nil,
-                errorMessage: LinkingError.tokenAlreadyClaimed.errorDescription
+                errorMessage: PayBackError.linkAlreadyClaimed.errorDescription
             )
         }
         
@@ -125,15 +125,15 @@ actor MockInviteLinkService: InviteLinkService {
     
     func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
         guard var token = tokens[tokenId] else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         if token.expiresAt <= Date() {
-            throw LinkingError.tokenExpired
+            throw PayBackError.linkExpired
         }
         
         if claimedTokenIds.contains(tokenId) || token.claimedBy != nil {
-            throw LinkingError.tokenAlreadyClaimed
+            throw PayBackError.linkAlreadyClaimed
         }
         
         let now = Date()
@@ -187,14 +187,14 @@ private struct InviteTokenRow: Codable {
 }
 
 /// Supabase implementation of InviteLinkService
-final class SupabaseInviteLinkService: InviteLinkService {
+final class SupabaseInviteLinkService: InviteLinkService, Sendable {
     private let client: SupabaseClient
     private let table = "invite_tokens"
-    private let userContextProvider: () async throws -> SupabaseUserContext
+    private let userContextProvider: @Sendable () async throws -> SupabaseUserContext
     
     init(
         client: SupabaseClient = SupabaseClientProvider.client!,
-        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+        userContextProvider: (@Sendable () async throws -> SupabaseUserContext)? = nil
     ) {
         self.client = client
         self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
@@ -251,7 +251,7 @@ final class SupabaseInviteLinkService: InviteLinkService {
     
     func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation {
         guard SupabaseClientProvider.isConfigured else {
-            throw LinkingError.unauthorized
+            throw PayBackError.configurationMissing(service: "Invite Link")
         }
         
         let response: PostgrestResponse<[InviteTokenRow]> = try await client
@@ -266,7 +266,7 @@ final class SupabaseInviteLinkService: InviteLinkService {
                 isValid: false,
                 token: nil,
                 expensePreview: nil,
-                errorMessage: LinkingError.tokenInvalid.errorDescription
+                errorMessage: PayBackError.linkInvalid.errorDescription
             )
         }
         
@@ -277,7 +277,7 @@ final class SupabaseInviteLinkService: InviteLinkService {
                 isValid: false,
                 token: token,
                 expensePreview: nil,
-                errorMessage: LinkingError.tokenExpired.errorDescription
+                errorMessage: PayBackError.linkExpired.errorDescription
             )
         }
         
@@ -286,7 +286,7 @@ final class SupabaseInviteLinkService: InviteLinkService {
                 isValid: false,
                 token: token,
                 expensePreview: nil,
-                errorMessage: LinkingError.tokenAlreadyClaimed.errorDescription
+                errorMessage: PayBackError.linkAlreadyClaimed.errorDescription
             )
         }
         
@@ -309,15 +309,15 @@ final class SupabaseInviteLinkService: InviteLinkService {
             .execute()
         
         guard let row = response.value.first else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         guard row.expiresAt > Date() else {
-            throw LinkingError.tokenExpired
+            throw PayBackError.linkExpired
         }
         
         if let claimedBy = row.claimedBy, !claimedBy.isEmpty {
-            throw LinkingError.tokenAlreadyClaimed
+            throw PayBackError.linkAlreadyClaimed
         }
         
         struct ClaimPayload: Encodable {
@@ -372,11 +372,11 @@ final class SupabaseInviteLinkService: InviteLinkService {
             .execute()
         
         guard let row = snapshot.value.first else {
-            throw LinkingError.tokenInvalid
+            throw PayBackError.linkInvalid
         }
         
         guard row.creatorId == context.id else {
-            throw LinkingError.unauthorized
+            throw PayBackError.linkInvalid
         }
         
         _ = try await client
@@ -406,7 +406,7 @@ final class SupabaseInviteLinkService: InviteLinkService {
         do {
             return try await userContextProvider()
         } catch {
-            throw LinkingError.unauthorized
+            throw PayBackError.authSessionMissing
         }
     }
 }
@@ -415,13 +415,11 @@ final class SupabaseInviteLinkService: InviteLinkService {
 /// Provider for InviteLinkService that returns appropriate implementation
 enum InviteLinkServiceProvider {
     static func makeInviteLinkService() -> InviteLinkService {
-        if let client = SupabaseClientProvider.client {
-            return SupabaseInviteLinkService(client: client)
+        if SupabaseClientProvider.isConfigured {
+            return SupabaseInviteLinkService()
+        } else {
+            return MockInviteLinkService.shared
         }
-        
-        #if DEBUG
-        print("[InviteLink] Supabase not configured – falling back to MockInviteLinkService.")
-        #endif
-        return MockInviteLinkService.shared
     }
 }
+

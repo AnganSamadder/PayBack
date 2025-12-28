@@ -303,7 +303,7 @@ struct AddFriendSheet: View {
         Task {
             do {
                 // Use AccountService to lookup account
-                let accountService = AccountServiceProvider.makeAccountService()
+                let accountService = Dependencies.current.accountService
                 
                 if let account = try await accountService.lookupAccount(byEmail: trimmedEmail) {
                     await MainActor.run {
@@ -324,10 +324,8 @@ struct AddFriendSheet: View {
                 await MainActor.run {
                     Haptics.notify(.error)
                     withAnimation(AppAnimation.fade) {
-                        if let accountError = error as? AccountServiceError {
-                            searchState = .error(accountError.errorDescription ?? "An error occurred.")
-                        } else if let linkingError = error as? LinkingError {
-                            searchState = .error(linkingError.errorDescription ?? "An error occurred.")
+                        if let paybackError = error as? PayBackError {
+                            searchState = .error(paybackError.errorDescription ?? "An error occurred.")
                         } else {
                             searchState = .error(error.localizedDescription)
                         }
@@ -363,8 +361,8 @@ struct AddFriendSheet: View {
                 await MainActor.run {
                     Haptics.notify(.error)
                     withAnimation(AppAnimation.fade) {
-                        if let linkingError = error as? LinkingError {
-                            searchState = .error(linkingError.errorDescription ?? "Failed to send link request.")
+                        if let paybackError = error as? PayBackError {
+                            searchState = .error(paybackError.errorDescription ?? "Failed to send link request.")
                         } else {
                             searchState = .error("Failed to send link request: \(error.localizedDescription)")
                         }

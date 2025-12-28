@@ -1,35 +1,6 @@
 import Foundation
 
-enum AccountServiceError: LocalizedError {
-    case configurationMissing
-    case userNotFound
-    case duplicateAccount
-    case invalidEmail
-    case networkUnavailable
-    case sessionMissing
-    case underlying(Error)
-
-    var errorDescription: String? {
-        switch self {
-        case .configurationMissing:
-            return "Authentication is not configured yet. Provide Supabase credentials to continue."
-        case .userNotFound:
-            return "We couldn't find an account with that email address."
-        case .duplicateAccount:
-            return "An account with this email address already exists."
-        case .invalidEmail:
-            return "Please enter a valid email address."
-        case .networkUnavailable:
-            return "We couldn't reach the network. Check your connection and try again."
-        case .sessionMissing:
-            return "You need to be signed in to perform this action."
-        case .underlying(let error):
-            return error.localizedDescription
-        }
-    }
-}
-
-protocol AccountService {
+protocol AccountService: Sendable {
     func normalizedEmail(from rawValue: String) throws -> String
     func lookupAccount(byEmail email: String) async throws -> UserAccount?
     func createAccount(email: String, displayName: String) async throws -> UserAccount
@@ -60,7 +31,7 @@ actor MockAccountService: AccountService {
 #if DEBUG
             print("[AccountService] Invalid email: \(trimmed)")
 #endif
-            throw AccountServiceError.invalidEmail
+            throw PayBackError.accountInvalidEmail(email: rawValue)
         }
 
         return trimmed
@@ -72,7 +43,7 @@ actor MockAccountService: AccountService {
 
     func createAccount(email: String, displayName: String) async throws -> UserAccount {
         if accounts[email] != nil {
-            throw AccountServiceError.duplicateAccount
+            throw PayBackError.accountDuplicate(email: email)
         }
         let account = UserAccount(id: UUID().uuidString, email: email, displayName: displayName)
         accounts[email] = account

@@ -1,23 +1,12 @@
 import Foundation
 import Supabase
 
-protocol GroupCloudService {
+protocol GroupCloudService: Sendable {
     func fetchGroups() async throws -> [SpendingGroup]
     func upsertGroup(_ group: SpendingGroup) async throws
     func upsertDebugGroup(_ group: SpendingGroup) async throws
     func deleteGroups(_ ids: [UUID]) async throws
     func deleteDebugGroups() async throws
-}
-
-enum GroupCloudServiceError: LocalizedError {
-    case userNotAuthenticated
-
-    var errorDescription: String? {
-        switch self {
-        case .userNotAuthenticated:
-            return "Please sign in before syncing groups with Supabase."
-        }
-    }
 }
 
 private struct GroupRow: Codable {
@@ -49,14 +38,14 @@ private struct GroupMemberRow: Codable {
     let name: String
 }
 
-struct SupabaseGroupCloudService: GroupCloudService {
+final class SupabaseGroupCloudService: GroupCloudService, Sendable {
     private let client: SupabaseClient
     private let table = "groups"
-    private let userContextProvider: () async throws -> SupabaseUserContext
+    private let userContextProvider: @Sendable () async throws -> SupabaseUserContext
 
     init(
         client: SupabaseClient = SupabaseClientProvider.client!,
-        userContextProvider: (() async throws -> SupabaseUserContext)? = nil
+        userContextProvider: (@Sendable () async throws -> SupabaseUserContext)? = nil
     ) {
         self.client = client
         self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
@@ -66,7 +55,7 @@ struct SupabaseGroupCloudService: GroupCloudService {
         do {
             return try await userContextProvider()
         } catch {
-            throw GroupCloudServiceError.userNotAuthenticated
+            throw PayBackError.authSessionMissing
         }
     }
 
@@ -149,7 +138,7 @@ struct SupabaseGroupCloudService: GroupCloudService {
 
     func deleteGroups(_ ids: [UUID]) async throws {
         guard !ids.isEmpty else { return }
-        guard SupabaseClientProvider.isConfigured else { throw GroupCloudServiceError.userNotAuthenticated }
+        guard SupabaseClientProvider.isConfigured else { throw PayBackError.configurationMissing(service: "Groups") }
 
         _ = try await client
             .from(table)
@@ -182,18 +171,6 @@ struct SupabaseGroupCloudService: GroupCloudService {
 
 }
 
-enum GroupCloudServiceProvider {
-    static func makeService() -> GroupCloudService {
-        if let client = SupabaseClientProvider.client {
-            return SupabaseGroupCloudService(client: client)
-        }
-
-        #if DEBUG
-        print("[Groups] Supabase not configured – returning no-op service.")
-        #endif
-        return NoopGroupCloudService()
-    }
-}
 
 struct NoopGroupCloudService: GroupCloudService {
     func fetchGroups() async throws -> [SpendingGroup] { [] }

@@ -396,7 +396,10 @@ final class SupabaseInviteLinkServiceTests: XCTestCase {
         MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
 
         await XCTAssertThrowsErrorAsync(try await service.revokeInvite(UUID())) { error in
-            XCTAssertTrue(error is LinkingError)
+            XCTAssertTrue(error is PayBackError)
+            if let payBackError = error as? PayBackError {
+                XCTAssertEqual(payBackError, .linkInvalid)
+            }
         }
     }
     
@@ -419,7 +422,10 @@ final class SupabaseInviteLinkServiceTests: XCTestCase {
         )
 
         await XCTAssertThrowsErrorAsync(try await service.revokeInvite(tokenId)) { error in
-            XCTAssertTrue(error is LinkingError)
+            XCTAssertTrue(error is PayBackError)
+            if let payBackError = error as? PayBackError {
+                XCTAssertEqual(payBackError, .linkInvalid)
+            }
         }
     }
     
