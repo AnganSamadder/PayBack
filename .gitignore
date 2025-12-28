@@ -129,3 +129,5 @@ apps/ios/PayBack/SupabaseConfig.plist
 coverage-report.txt
 
 .supabase-swift/
+
+.plans/
