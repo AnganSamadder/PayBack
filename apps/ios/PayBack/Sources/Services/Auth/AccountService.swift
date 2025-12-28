@@ -6,6 +6,7 @@ enum AccountServiceError: LocalizedError {
     case duplicateAccount
     case invalidEmail
     case networkUnavailable
+    case sessionMissing
     case underlying(Error)
 
     var errorDescription: String? {
@@ -20,6 +21,8 @@ enum AccountServiceError: LocalizedError {
             return "Please enter a valid email address."
         case .networkUnavailable:
             return "We couldn't reach the network. Check your connection and try again."
+        case .sessionMissing:
+            return "You need to be signed in to perform this action."
         case .underlying(let error):
             return error.localizedDescription
         }

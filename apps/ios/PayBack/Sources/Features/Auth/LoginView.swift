@@ -143,6 +143,17 @@ struct LoginView: View {
         )
         .padding(.horizontal, 24)
         .padding(.vertical, 32)
+        .onTapGesture {
+            focusedField = nil
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    focusedField = nil
+                }
+            }
+        }
         .onAppear {
             focusedField = .email
         }

@@ -11,6 +11,7 @@
 		025AC1F86D4203D429E228BF /* ExpenseSplitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0340193934C27016C59EBF49 /* ExpenseSplitTests.swift */; };
 		029621A60FC347E8EC491949 /* EmailValidatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F45BB3B4078A680BE7D260A2 /* EmailValidatorTests.swift */; };
 		02DA0EEDCE9DED1F99D38090 /* metrics_template.csv in Resources */ = {isa = PBXBuildFile; fileRef = AFAED94382E80DC702F256BE /* metrics_template.csv */; };
+		0466734F95A4513D7F050558 /* SignupViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AEFBDA3414831919896FB4E /* SignupViewTests.swift */; };
 		048E2B39F61F67994F440E2C /* UserAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5717A22E4AAD8CD7A14ED7D /* UserAccount.swift */; };
 		04B113CDCEE47F46770947BA /* FriendsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BDA8B0A8AF582C2E1CBE990 /* FriendsTabView.swift */; };
 		06FDA5FAB7F7A66F89196E96 /* DetailContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49D7C53DAB1E7F54FE02BDCC /* DetailContainer.swift */; };
@@ -233,6 +234,7 @@
 		552929851A5AD547D2879FBA /* TEST_REQUIREMENTS_MAPPING.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TEST_REQUIREMENTS_MAPPING.md; sourceTree = "<group>"; };
 		55512C199A3314C244C0B764 /* DetailContainerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailContainerTests.swift; sourceTree = "<group>"; };
 		581F7C23F0AA944D1A1145AC /* SupabaseAccountServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseAccountServiceTests.swift; sourceTree = "<group>"; };
+		5AEFBDA3414831919896FB4E /* SignupViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignupViewTests.swift; sourceTree = "<group>"; };
 		5B716DF6C753362E081C4E53 /* XCTest+Async.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XCTest+Async.swift"; sourceTree = "<group>"; };
 		5C71E965AF224177D5DD4360 /* MockCurrencyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockCurrencyService.swift; sourceTree = "<group>"; };
 		5CC45A098C92F0A8A972BC76 /* ReconciliationPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReconciliationPerformanceTests.swift; sourceTree = "<group>"; };
@@ -551,6 +553,7 @@
 			isa = PBXGroup;
 			children = (
 				C3121780D688F8F76B749362 /* LoginViewTests.swift */,
+				5AEFBDA3414831919896FB4E /* SignupViewTests.swift */,
 			);
 			path = Auth;
 			sourceTree = "<group>";
@@ -1087,6 +1090,7 @@
 				18FDD59853D2D60E9E0E6E50 /* RetryPolicyTests.swift in Sources */,
 				790BD182748949C4951DC46A /* RoundingTests.swift in Sources */,
 				E3732A559287438FD2DB677D /* SettlementLogicTests.swift in Sources */,
+				0466734F95A4513D7F050558 /* SignupViewTests.swift in Sources */,
 				BBEBB5F9E321220ACF7D5E9E /* SmartIconTests.swift in Sources */,
 				E35BE6589DB9D7C34660C318 /* SpendingGroupTests.swift in Sources */,
 				1B285C78202C7397E1CF856D /* SplitCalculationPerformanceTests.swift in Sources */,
@@ -1219,12 +1223,12 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -1288,12 +1292,12 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = s;

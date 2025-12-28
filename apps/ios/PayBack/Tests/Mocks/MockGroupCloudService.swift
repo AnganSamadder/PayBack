@@ -29,6 +29,17 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         }
     }
     
+    func upsertDebugGroup(_ group: SpendingGroup) async throws {
+        if shouldFail {
+            throw GroupCloudServiceError.userNotAuthenticated
+        }
+        groups[group.id] = group
+    }
+    
+    func deleteDebugGroups() async throws {
+        // No-op for mock - just clear groups flagged as debug
+    }
+    
     // Test helpers
     func addGroup(_ group: SpendingGroup) {
         groups[group.id] = group

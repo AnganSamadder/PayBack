@@ -11,7 +11,9 @@ struct ExpenseParticipant {
 protocol ExpenseCloudService {
     func fetchExpenses() async throws -> [Expense]
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws
+    func upsertDebugExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws
     func deleteExpense(_ id: UUID) async throws
+    func deleteDebugExpenses() async throws
     func clearLegacyMockExpenses() async throws
 }
 
@@ -158,7 +160,24 @@ struct SupabaseExpenseCloudService: ExpenseCloudService {
             expense,
             participants: participants,
             ownerEmail: context.email,
-            ownerAccountId: context.id
+            ownerAccountId: context.id,
+            isDebug: false
+        )
+
+        _ = try await client
+            .from(table)
+            .upsert([row], onConflict: "id", returning: .minimal)
+            .execute() as PostgrestResponse<Void>
+    }
+
+    func upsertDebugExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
+        let context = try await userContext()
+        let row = expensePayload(
+            expense,
+            participants: participants,
+            ownerEmail: context.email,
+            ownerAccountId: context.id,
+            isDebug: true
         )
 
         _ = try await client
@@ -197,11 +216,23 @@ struct SupabaseExpenseCloudService: ExpenseCloudService {
             .execute() as PostgrestResponse<Void>
     }
 
+    func deleteDebugExpenses() async throws {
+        let context = try await userContext()
+
+        _ = try await client
+            .from(table)
+            .delete(returning: .minimal)
+            .eq("owner_account_id", value: context.id)
+            .eq("is_payback_generated_mock_data", value: true)
+            .execute() as PostgrestResponse<Void>
+    }
+
     private func expensePayload(
         _ expense: Expense,
         participants: [ExpenseParticipant],
         ownerEmail: String,
-        ownerAccountId: String
+        ownerAccountId: String,
+        isDebug: Bool
     ) -> ExpenseRow {
         let linkedParticipants: [ExpenseParticipantRow] = participants.compactMap { participant in
             guard participant.linkedAccountId != nil || participant.linkedAccountEmail != nil else {
@@ -246,7 +277,7 @@ struct SupabaseExpenseCloudService: ExpenseCloudService {
             linkedParticipants: linkedParticipants.isEmpty ? nil : linkedParticipants,
             createdAt: expense.date,
             updatedAt: Date(),
-            isPayBackGeneratedMockData: nil
+            isPayBackGeneratedMockData: isDebug ? true : nil
         )
     }
 
@@ -274,7 +305,8 @@ struct SupabaseExpenseCloudService: ExpenseCloudService {
             involvedMemberIds: row.involvedMemberIds,
             splits: splits,
             isSettled: isSettled,
-            participantNames: participantNames.isEmpty ? nil : participantNames
+            participantNames: participantNames.isEmpty ? nil : participantNames,
+            isDebug: row.isPayBackGeneratedMockData ?? false
         )
     }
 
@@ -283,7 +315,9 @@ struct SupabaseExpenseCloudService: ExpenseCloudService {
 struct NoopExpenseCloudService: ExpenseCloudService {
     func fetchExpenses() async throws -> [Expense] { [] }
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {}
+    func upsertDebugExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {}
     func deleteExpense(_ id: UUID) async throws {}
+    func deleteDebugExpenses() async throws {}
     func clearLegacyMockExpenses() async throws {}
 }
 

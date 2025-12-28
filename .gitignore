@@ -127,3 +127,5 @@ apps/ios/PayBack/SupabaseConfig.plist
 .github/prompts/
 *.log
 coverage-report.txt
+
+.supabase-swift/

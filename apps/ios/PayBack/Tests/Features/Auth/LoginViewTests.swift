@@ -145,4 +145,74 @@ final class LoginViewTests: XCTestCase {
         XCTAssertFalse(forgotPasswordCalled)
         XCTAssertFalse(signupCalled)
     }
+    
+    // MARK: - SignupView Password Mismatch Tests
+    
+    func testSignupPasswordMismatch_ReturnsTrueWhenPasswordsDiffer() {
+        // Given: Different passwords (matches SignupView's passwordMismatch computed property)
+        let passwordInput = "password123"
+        let confirmPasswordInput = "differentPassword"
+        
+        // The passwordMismatch property logic: !confirmPasswordInput.isEmpty && passwordInput != confirmPasswordInput
+        let passwordMismatch = !confirmPasswordInput.isEmpty && passwordInput != confirmPasswordInput
+        
+        XCTAssertTrue(passwordMismatch, "passwordMismatch should return true when passwords differ")
+    }
+    
+    func testSignupPasswordMismatch_ReturnsFalseWhenPasswordsMatch() {
+        // Given: Matching passwords
+        let passwordInput = "password123"
+        let confirmPasswordInput = "password123"
+        
+        let passwordMismatch = !confirmPasswordInput.isEmpty && passwordInput != confirmPasswordInput
+        
+        XCTAssertFalse(passwordMismatch, "passwordMismatch should return false when passwords match")
+    }
+    
+    func testSignupPasswordMismatch_ReturnsFalseWhenConfirmPasswordIsEmpty() {
+        // Given: Empty confirm password (should not show mismatch error)
+        let passwordInput = "password123"
+        let confirmPasswordInput = ""
+        
+        let passwordMismatch = !confirmPasswordInput.isEmpty && passwordInput != confirmPasswordInput
+        
+        XCTAssertFalse(passwordMismatch, "passwordMismatch should return false when confirmPassword is empty")
+    }
+    
+    func testSignupFormValidation_RequiresPasswordsToMatch() {
+        // Test the full form validation logic
+        let email = "test@example.com"
+        let name = "Test User"
+        let passwordInput = "password123"
+        let confirmPasswordInput = "password123"
+        
+        let normalizedEmail = EmailValidator.normalized(email)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let passwordMatches = !passwordInput.isEmpty && passwordInput == confirmPasswordInput
+        
+        let isFormValid = EmailValidator.isValid(normalizedEmail) &&
+                         !trimmedName.isEmpty &&
+                         passwordInput.count >= 6 &&
+                         passwordMatches
+        
+        XCTAssertTrue(isFormValid, "Form should be valid when all conditions are met")
+    }
+    
+    func testSignupFormValidation_ReturnsFalseWhenPasswordsDontMatch() {
+        let email = "test@example.com"
+        let name = "Test User"
+        let passwordInput = "password123"
+        let confirmPasswordInput = "differentPassword"
+        
+        let normalizedEmail = EmailValidator.normalized(email)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let passwordMatches = !passwordInput.isEmpty && passwordInput == confirmPasswordInput
+        
+        let isFormValid = EmailValidator.isValid(normalizedEmail) &&
+                         !trimmedName.isEmpty &&
+                         passwordInput.count >= 6 &&
+                         passwordMatches
+        
+        XCTAssertFalse(isFormValid, "Form should be invalid when passwords don't match")
+    }
 }

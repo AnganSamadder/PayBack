@@ -1173,6 +1173,40 @@ final class AppStore: ObservableObject {
     }
     
     // MARK: - Debug helpers
+    
+    /// Adds a debug expense that will be flagged for easy cleanup
+    func addDebugExpense(_ expense: Expense) {
+        var debugExpense = expense
+        debugExpense.isDebug = true
+        expenses.append(debugExpense)
+        persistCurrentState()
+        let participants = makeParticipants(for: debugExpense)
+        Task { [debugExpense, participants] in
+            try? await expenseCloudService.upsertDebugExpense(debugExpense, participants: participants)
+        }
+    }
+    
+    /// Adds a debug group that will be flagged for easy cleanup
+    func addExistingDebugGroup(_ group: SpendingGroup) {
+        guard !groups.contains(where: { $0.id == group.id }) else { return }
+
+        var debugGroup = group
+        debugGroup.isDebug = true
+        if debugGroup.isDirect != true && isDirectGroup(debugGroup) {
+            debugGroup.isDirect = true
+        }
+
+        groups.append(debugGroup)
+        persistCurrentState()
+
+        Task { [group = debugGroup] in
+            try? await groupCloudService.upsertDebugGroup(group)
+        }
+
+        scheduleFriendSync()
+    }
+    
+    /// Clears ALL data (debug + real) - use with caution
     func clearAllData() {
         let groupIds = groups.map { $0.id }
         let expenseIds = expenses.map { $0.id }
@@ -1188,6 +1222,51 @@ final class AppStore: ObservableObject {
                 try? await expenseCloudService.deleteExpense(id)
             }
         }
+        scheduleFriendSync()
+    }
+    
+    /// Clears only debug data, preserving real transactions and friends
+    func clearDebugData() {
+        // Get all debug expense IDs and group IDs
+        let debugExpenseIds = expenses.filter { $0.isDebug }.map { $0.id }
+        let debugGroupIds = groups.filter { $0.isDebug == true }.map { $0.id }
+        
+        // Collect member IDs from debug groups (potential debug friends)
+        var debugMemberIds: Set<UUID> = []
+        for group in groups where group.isDebug == true {
+            for member in group.members where !isCurrentUser(member) {
+                debugMemberIds.insert(member.id)
+            }
+        }
+        
+        // Remove debug expenses locally
+        expenses.removeAll { $0.isDebug }
+        
+        // Remove debug groups locally
+        groups.removeAll { $0.isDebug == true }
+        
+        // Find which debug members still have real transactions
+        var membersWithRealTransactions: Set<UUID> = []
+        for expense in expenses where !expense.isDebug {
+            membersWithRealTransactions.insert(expense.paidByMemberId)
+            for memberId in expense.involvedMemberIds {
+                membersWithRealTransactions.insert(memberId)
+            }
+        }
+        
+        // Remove debug friends that have no real transactions
+        let friendsToRemove = debugMemberIds.subtracting(membersWithRealTransactions)
+        friends.removeAll { friendsToRemove.contains($0.memberId) }
+        
+        persistCurrentState()
+        
+        // Clean up remote data
+        Task {
+            // Delete debug groups and expenses from cloud
+            try? await groupCloudService.deleteDebugGroups()
+            try? await expenseCloudService.deleteDebugExpenses()
+        }
+        
         scheduleFriendSync()
     }
     

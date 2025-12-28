@@ -66,8 +66,15 @@ final class AuthCoordinator: ObservableObject {
                 let normalizedEmail = try self.accountService.normalizedEmail(from: emailInput)
                 let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
                 _ = try await self.emailAuthService.signUp(email: normalizedEmail, password: password, displayName: trimmedName)
-                let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: trimmedName)
-                self.route = .authenticated(UserSession(account: account))
+                
+                do {
+                    let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: trimmedName)
+                    self.route = .authenticated(UserSession(account: account))
+                } catch AccountServiceError.sessionMissing {
+                    // Sign up succeeded but session is missing -> Email confirmation likely required
+                    self.infoMessage = "Account created! Please check your email to verify your account."
+                    self.route = .login
+                }
             } catch {
                 self.handle(error: error)
             }

@@ -17,6 +17,10 @@ struct SignupView: View {
     @State private var isConfirmVisible: Bool = false
     @FocusState private var focusedField: Field?
 
+    private var passwordMismatch: Bool {
+        !confirmPasswordInput.isEmpty && passwordInput != confirmPasswordInput
+    }
+
     let isBusy: Bool
     let errorMessage: String?
     let onSubmit: (String, String, String) -> Void
@@ -111,6 +115,18 @@ struct SignupView: View {
                 )
             }
 
+            if passwordMismatch {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                    Text("Passwords do not match")
+                        .font(.system(.footnote, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.9))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.opacity)
+            }
+
             if let errorMessage, !errorMessage.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -163,6 +179,17 @@ struct SignupView: View {
         )
         .padding(.horizontal, 24)
         .padding(.vertical, 32)
+        .onTapGesture {
+            focusedField = nil
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    focusedField = nil
+                }
+            }
+        }
         .onAppear {
             if nameInput.isEmpty {
                 focusedField = .name

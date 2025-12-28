@@ -31,6 +31,17 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         // No-op for mock
     }
     
+    func upsertDebugExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
+        if shouldFail {
+            throw ExpenseCloudServiceError.userNotAuthenticated
+        }
+        expenses[expense.id] = expense
+    }
+    
+    func deleteDebugExpenses() async throws {
+        // No-op for mock - just clear expenses flagged as debug
+    }
+    
     // Test helpers
     func addExpense(_ expense: Expense) {
         expenses[expense.id] = expense

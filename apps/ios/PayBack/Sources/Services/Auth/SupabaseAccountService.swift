@@ -313,7 +313,7 @@ final class SupabaseAccountService: AccountService {
         do {
             return try await userContextProvider()
         } catch {
-            throw AccountServiceError.userNotFound
+            throw AccountServiceError.sessionMissing
         }
     }
 }

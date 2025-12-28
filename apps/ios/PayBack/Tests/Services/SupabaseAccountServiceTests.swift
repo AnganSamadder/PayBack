@@ -413,4 +413,94 @@ final class SupabaseAccountServiceTests: XCTestCase {
         
         XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 3)
     }
+    
+    // MARK: - Session Missing Tests
+    
+    func testUserContextProviderThrowsSessionMissingWhenUnderlyingProviderFails() async throws {
+        // Given: A service with a userContextProvider that throws an error
+        let failingService = SupabaseAccountService(
+            client: client,
+            userContextProvider: {
+                throw NSError(domain: "TestError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Context unavailable"])
+            }
+        )
+        
+        // When: Calling a method that requires userContext
+        // Then: It should throw AccountServiceError.sessionMissing
+        await XCTAssertThrowsErrorAsync(
+            try await failingService.fetchFriends(accountEmail: "test@example.com")
+        ) { error in
+            guard let accountError = error as? AccountServiceError else {
+                XCTFail("Expected AccountServiceError but got \(error)")
+                return
+            }
+            if case .sessionMissing = accountError {
+                // Expected
+            } else {
+                XCTFail("Expected sessionMissing but got \(accountError)")
+            }
+        }
+    }
+    
+    func testCreateAccountThrowsSessionMissingWhenContextFails() async throws {
+        // Given: A service with a failing userContextProvider
+        let failingService = SupabaseAccountService(
+            client: client,
+            userContextProvider: {
+                throw NSError(domain: "TestError", code: -1)
+            }
+        )
+        
+        // Enqueue mock for initial lookup (which doesn't need context)
+        MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
+        
+        // When/Then: createAccount should throw sessionMissing
+        await XCTAssertThrowsErrorAsync(
+            try await failingService.createAccount(email: "test@example.com", displayName: "User")
+        ) { error in
+            guard let accountError = error as? AccountServiceError else {
+                XCTFail("Expected AccountServiceError but got \(error)")
+                return
+            }
+            if case .sessionMissing = accountError {
+                // Expected
+            } else {
+                XCTFail("Expected sessionMissing but got \(accountError)")
+            }
+        }
+    }
+    
+    func testSyncFriendsThrowsSessionMissingWhenContextFails() async throws {
+        // Given: A service with a failing userContextProvider
+        let failingService = SupabaseAccountService(
+            client: client,
+            userContextProvider: {
+                throw NSError(domain: "TestError", code: -1)
+            }
+        )
+        
+        let friend = AccountFriend(
+            memberId: UUID(),
+            name: "Test Friend",
+            nickname: nil,
+            hasLinkedAccount: false,
+            linkedAccountId: nil,
+            linkedAccountEmail: nil
+        )
+        
+        // When/Then: syncFriends should throw sessionMissing
+        await XCTAssertThrowsErrorAsync(
+            try await failingService.syncFriends(accountEmail: "test@example.com", friends: [friend])
+        ) { error in
+            guard let accountError = error as? AccountServiceError else {
+                XCTFail("Expected AccountServiceError but got \(error)")
+                return
+            }
+            if case .sessionMissing = accountError {
+                // Expected
+            } else {
+                XCTFail("Expected sessionMissing but got \(accountError)")
+            }
+        }
+    }
 }
