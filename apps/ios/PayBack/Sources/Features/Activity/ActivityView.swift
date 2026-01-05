@@ -418,85 +418,168 @@ struct DashboardView: View {
     
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(spacing: 20) {
+            VStack(spacing: 24) {
                 // Hero balance card
-                VStack(spacing: 0) {
-                    // Dynamic gradient background based on balance
-                    LinearGradient(
-                        colors: gradientColors,
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .frame(height: 200)
-                    .overlay(
-                        VStack(spacing: 16) {
-                            // Balance amount
-                            Text(balanceText)
-                                .font(.system(size: 52, weight: .bold, design: .rounded))
-                                .foregroundStyle(balanceColor)
-                                .shadow(color: balanceColor.opacity(0.3), radius: 8, x: 0, y: 4)
-                        }
-                    )
-                }
-                .background(AppTheme.card)
-                .clipShape(RoundedRectangle(cornerRadius: 24))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24)
-                        .stroke(
-                            LinearGradient(
-                                colors: [
-                                    balanceColor.opacity(0.3),
-                                    balanceColor.opacity(0.15),
-                                    balanceColor.opacity(0.05)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 2
-                        )
-                )
-                .shadow(color: AppTheme.brand.opacity(0.1), radius: 16, x: 0, y: 8)
-                .padding(.horizontal, 16)
+                heroSection
                 
-                // Stats cards
+                // Groups & Friends Horizontal Scroll
+                if !store.groups.isEmpty {
+                    groupsSection
+                }
+                
+                // Recent Activity Feed
                 if !store.expenses.isEmpty {
-                    VStack(spacing: 16) {
-                        HStack {
-                            Text("Group Balances")
-                                .font(.system(.title3, design: .rounded, weight: .semibold))
-                                .foregroundStyle(.primary)
-                            Spacer()
-                        }
-                        .padding(.horizontal, 20)
-                        
-                        LazyVStack(spacing: 12) {
-                            ForEach(store.groups.filter { store.hasNonCurrentUserMembers($0) && !store.isDirectGroup($0) }) { group in
-                                Button(action: {
-                                    let isDirectGroup = group.isDirect ?? false
-                                    if isDirectGroup,
-                                       let friend = group.members.first(where: { !store.isCurrentUser($0) }) {
-                                        onFriendTap(friend)
-                                    } else {
-                                        onGroupTap(group)
-                                    }
-                                }) {
-                                    ModernGroupBalanceCard(group: group)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                    }
+                    recentActivitySection
+                } else {
+                    emptyState
                 }
             }
             .padding(.vertical, 16)
+            .padding(.bottom, 80) // Spacing for tab bar
         }
         .background(AppTheme.background)
     }
     
+    // MARK: - Sections
+    
+    private var heroSection: some View {
+        VStack(spacing: 0) {
+            // Dynamic gradient background based on balance
+            LinearGradient(
+                colors: gradientColors,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .frame(height: 180)
+            .overlay(
+                VStack(spacing: 8) {
+                    Text("Total Balance")
+                        .font(.system(.subheadline, design: .rounded, weight: .medium))
+                        .foregroundStyle(balanceColor.opacity(0.8))
+                        .textCase(.uppercase)
+                        .tracking(1)
+                    
+                    // Balance amount
+                    Text(balanceText)
+                        .font(.system(size: 48, weight: .bold, design: .rounded))
+                        .foregroundStyle(balanceColor)
+                        .contentTransition(.numericText(value: calculateOverallNetBalance()))
+                    
+                    Text(balanceDescription)
+                        .font(.system(.caption, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                        .padding(.top, 4)
+                }
+            )
+        }
+        .background(AppTheme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 24))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            balanceColor.opacity(0.3),
+                            balanceColor.opacity(0.1),
+                            Color.clear
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: AppTheme.brand.opacity(0.05), radius: 20, x: 0, y: 10)
+        .padding(.horizontal, 16)
+    }
+    
+    private var groupsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Your Groups")
+                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 12) {
+                    // Filter for active groups (groups with non-current user members)
+                    ForEach(store.groups.filter { store.hasNonCurrentUserMembers($0) }) { group in
+                        Button(action: {
+                            if group.isDirect == true,
+                               let friend = group.members.first(where: { !store.isCurrentUser($0) }) {
+                                onFriendTap(friend)
+                            } else {
+                                onGroupTap(group)
+                            }
+                        }) {
+                            CompactGroupCard(group: group)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 20)
+            }
+        }
+    }
+    
+    private var recentActivitySection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Recent Activity")
+                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            
+            LazyVStack(spacing: 0) {
+                let sortedExpenses = store.expenses.sorted(by: { $0.date > $1.date }).prefix(10)
+                
+                ForEach(Array(sortedExpenses.enumerated()), id: \.element.id) { index, expense in
+                    ActivityRow(expense: expense)
+                    
+                    if index < sortedExpenses.count - 1 {
+                        Divider()
+                            .padding(.leading, 76)
+                    }
+                }
+            }
+            .background(AppTheme.card)
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .padding(.horizontal, 16)
+            .shadow(color: Color.black.opacity(0.03), radius: 10, x: 0, y: 4)
+        }
+    }
+    
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "list.bullet.clipboard")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary.opacity(0.3))
+            
+            Text("No activity yet")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            
+            Text("Create a group or add an expense to see it here.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.vertical, 40)
+        .frame(maxWidth: .infinity)
+    }
+    
+    // MARK: - Helpers
+    
     private var balanceText: String {
         let net = calculateOverallNetBalance()
-        if abs(net) < 0.0001 { return "Settled" }
+        if abs(net) < 0.0001 { return "Settled Up" }
         return currency(net)
     }
     
@@ -509,37 +592,19 @@ struct DashboardView: View {
     
     private var balanceDescription: String {
         let net = calculateOverallNetBalance()
-        if net > 0.0001 { return "You're owed money across all your groups" }
-        if net < -0.0001 { return "You owe money across all your groups" }
-        return "All your expenses are settled up"
+        if net > 0.0001 { return "You are owed overall" }
+        if net < -0.0001 { return "You owe overall" }
+        return "Everything is settled"
     }
     
     private var gradientColors: [Color] {
         let net = calculateOverallNetBalance()
         if net > 0.0001 {
-            // Green gradient for positive balance - more vibrant in light mode
-            return [
-                Color.green.opacity(0.25),
-                Color.green.opacity(0.15),
-                Color.green.opacity(0.08),
-                Color.clear
-            ]
+            return [Color.green.opacity(0.15), Color.green.opacity(0.02)]
         } else if net < -0.0001 {
-            // Red gradient for negative balance - more vibrant in light mode
-            return [
-                Color.red.opacity(0.25),
-                Color.red.opacity(0.15),
-                Color.red.opacity(0.08),
-                Color.clear
-            ]
+            return [Color.red.opacity(0.15), Color.red.opacity(0.02)]
         } else {
-            // Neutral gradient for settled balance - more vibrant in light mode
-            return [
-                AppTheme.brand.opacity(0.25),
-                AppTheme.brand.opacity(0.15),
-                AppTheme.brand.opacity(0.08),
-                Color.clear
-            ]
+            return [AppTheme.brand.opacity(0.15), AppTheme.brand.opacity(0.02)]
         }
     }
     
@@ -549,141 +614,68 @@ struct DashboardView: View {
     }
     
     private func calculateOverallNetBalance() -> Double {
-        var totalBalance: Double = 0
-
-        // TODO: DATABASE_INTEGRATION - Replace with efficient database query
-        // Example: SELECT SUM(amount) FROM balances WHERE user_id = currentUser.id
-        for group in store.groups where store.hasNonCurrentUserMembers(group) {
-            for expense in store.expenses(in: group.id) {
-                if expense.paidByMemberId == store.currentUser.id {
-                    // Current user paid - others owe current user (only unsettled splits)
-                    for split in expense.splits where split.memberId != store.currentUser.id && !split.isSettled {
-                        totalBalance += split.amount
-                    }
-                } else {
-                    // Someone else paid - current user might owe (only unsettled splits)
-                    if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }), !userSplit.isSettled {
-                        totalBalance -= userSplit.amount
-                    }
-                }
-            }
-        }
-
-        return totalBalance
+        store.overallNetBalance()
     }
 }
 
-struct ModernGroupBalanceCard: View {
+// MARK: - Components
+
+struct CompactGroupCard: View {
     @EnvironmentObject var store: AppStore
     let group: SpendingGroup
     
     var body: some View {
         let net = calculateNetBalance()
-        let expenseCount = store.expenses(in: group.id).count
         
-        HStack(spacing: 12) {
-            // Group icon/avatar
-            if group.isDirect == true {
-                // Friend avatar
-                AvatarView(name: group.name)
-                    .frame(width: 48, height: 48)
-            } else {
-                // Group icon
-                GroupIcon(name: group.name)
-                    .frame(width: 48, height: 48)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                if group.isDirect == true {
+                    AvatarView(name: group.name)
+                        .frame(width: 40, height: 40)
+                } else {
+                    GroupIcon(name: group.name)
+                        .frame(width: 40, height: 40)
+                }
+                
+                Spacer()
+                
+                if abs(net) > 0.0001 {
+                    Text(net > 0 ? "Owed" : "Owe")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(net > 0 ? .green : .red)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background((net > 0 ? Color.green : Color.red).opacity(0.1))
+                        .clipShape(Capsule())
+                }
             }
             
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(group.name)
-                    .font(.system(.headline, design: .rounded, weight: .semibold))
+                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 
-                HStack(spacing: 4) {
-                    Text("\(expenseCount) expense\(expenseCount == 1 ? "" : "s")")
-                        .font(.system(.caption, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    
-                    if group.isDirect != true && group.members.count > 0 {
-                        Text("•")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        
-                        Text("\(group.members.count) member\(group.members.count == 1 ? "" : "s")")
-                            .font(.system(.caption, design: .rounded))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                    }
-                    
-                    Spacer(minLength: 0)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            
-            VStack(alignment: .trailing, spacing: 4) {
                 Text(balanceText(net))
-                    .font(.system(.headline, design: .rounded, weight: .semibold))
+                    .font(.system(.caption, design: .rounded, weight: .medium))
                     .foregroundStyle(balanceColor(net))
-                
-                // Balance indicator
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(balanceColor(net))
-                        .frame(width: 6, height: 6)
-                    
-                    Text(balanceStatus(net))
-                        .font(.system(.caption, design: .rounded))
-                        .foregroundStyle(.secondary)
-                }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 18)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            AppTheme.card,
-                            AppTheme.card.opacity(0.95),
-                            balanceColor(net).opacity(0.03)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 4)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(
-                    LinearGradient(
-                        colors: [
-                            balanceColor(net).opacity(0.4),
-                            balanceColor(net).opacity(0.2),
-                            balanceColor(net).opacity(0.1)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 2.5
-                )
-        )
+        .padding(16)
+        .frame(width: 150, height: 130)
+        .background(AppTheme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .shadow(color: Color.black.opacity(0.04), radius: 8, x: 0, y: 4)
     }
     
-    private func balanceStatus(_ net: Double) -> String {
-        if net > 0.0001 { return "You're owed" }
-        if net < -0.0001 { return "You owe" }
-        return "Settled up"
+    private func calculateNetBalance() -> Double {
+        store.netBalance(for: group)
     }
     
     private func balanceText(_ net: Double) -> String {
-        if net > 0.0001 { return "Get \(currency(net))" }
-        if net < -0.0001 { return "Owe \(currency(abs(net)))" }
-        return "Settled"
+        if abs(net) < 0.0001 { return "Settled" }
+        let id = Locale.current.currency?.identifier ?? "USD"
+        return abs(net).formatted(.currency(code: id))
     }
     
     private func balanceColor(_ net: Double) -> Color {
@@ -691,30 +683,48 @@ struct ModernGroupBalanceCard: View {
         if net < -0.0001 { return .red }
         return .secondary
     }
-    
-    private func currency(_ v: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
-        return v.formatted(.currency(code: id))
-    }
-    
-    private func calculateNetBalance() -> Double {
-        var paidByUser: Double = 0
-        var owes: Double = 0
+}
 
-        // TODO: DATABASE_INTEGRATION - Replace with database query
-        // Example: SELECT * FROM expenses WHERE group_id = group.id AND settled = false
-        let groupExpenses = store.expenses(in: group.id)
-
-        for expense in groupExpenses {
-            if expense.paidByMemberId == store.currentUser.id {
-                paidByUser += expense.totalAmount
+struct ActivityRow: View {
+    let expense: Expense
+    
+    var body: some View {
+        HStack(spacing: 16) {
+            GroupIcon(name: expense.description)
+                .frame(width: 44, height: 44)
+                .opacity(expense.isSettled ? 0.6 : 1.0)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(expense.description)
+                    .font(.system(.body, design: .rounded, weight: .medium))
+                    .foregroundStyle(expense.isSettled ? .secondary : .primary)
+                    .strikethrough(expense.isSettled)
+                
+                Text(expense.date.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            if let split = expense.splits.first(where: { $0.memberId == store.currentUser.id }), !split.isSettled {
-                owes += split.amount
+            
+            Spacer()
+            
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                    .foregroundStyle(expense.isSettled ? .secondary : .primary)
+                
+                if expense.isSettled {
+                    Text("Settled")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                } else {
+                    Text("Unsettled")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
         }
-
-        return paidByUser - owes
+        .padding(16)
+        .background(AppTheme.card) // Ensure touch target
     }
 }
 

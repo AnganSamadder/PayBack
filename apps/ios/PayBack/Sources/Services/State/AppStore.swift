@@ -557,6 +557,39 @@ final class AppStore: ObservableObject {
             try? await expenseCloudService.upsertExpense(updatedExpense, participants: participants)
         }
     }
+    
+    // MARK: - Balance Calculations
+    
+    func overallNetBalance() -> Double {
+        var totalBalance: Double = 0
+        for group in groups {
+            totalBalance += netBalance(for: group)
+        }
+        return totalBalance
+    }
+    
+    func netBalance(for group: SpendingGroup) -> Double {
+        var paidByUser: Double = 0
+        var owes: Double = 0
+        
+        let groupExpenses = expenses(in: group.id)
+        
+        for expense in groupExpenses {
+            if expense.paidByMemberId == currentUser.id {
+                // User paid, add up what others owe (unsettled)
+                for split in expense.splits where split.memberId != currentUser.id && !split.isSettled {
+                    paidByUser += split.amount
+                }
+            } else {
+                // Someone else paid, check if user owes
+                if let split = expense.splits.first(where: { $0.memberId == currentUser.id }), !split.isSettled {
+                    owes += split.amount
+                }
+            }
+        }
+        
+        return paidByUser - owes
+    }
 
     // MARK: - Friend Sync
 
