@@ -69,6 +69,19 @@ struct ExpenseSplit: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+/// A sub-cost breakdown within an expense (e.g., individual items on a receipt)
+struct Subexpense: Identifiable, Codable, Hashable, Sendable {
+    let id: UUID
+    var amount: Double
+    var label: String? // Optional description for the sub-cost
+    
+    init(id: UUID = UUID(), amount: Double, label: String? = nil) {
+        self.id = id
+        self.amount = amount
+        self.label = label
+    }
+}
+
 struct Expense: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     let groupId: UUID
@@ -81,9 +94,10 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
     var isSettled: Bool // Overall settlement status (all splits settled)
     var participantNames: [UUID: String]? // Optional cache of participant display names from remote payload
     var isDebug: Bool // Whether this is debug/test data (not synced to real transactions)
+    var subexpenses: [Subexpense]? // Optional breakdown of the total amount into sub-costs
 
     enum CodingKeys: String, CodingKey {
-        case id, groupId, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug
+        case id, groupId, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug, subexpenses
     }
     
     init(from decoder: Decoder) throws {
@@ -101,6 +115,8 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         participantNames = try container.decodeIfPresent([UUID: String].self, forKey: .participantNames)
         // isDebug defaults to false if not present (backward compatibility)
         isDebug = try container.decodeIfPresent(Bool.self, forKey: .isDebug) ?? false
+        // subexpenses is optional - decode if present, otherwise nil
+        subexpenses = try container.decodeIfPresent([Subexpense].self, forKey: .subexpenses)
     }
     
     func encode(to encoder: Encoder) throws {
@@ -122,6 +138,10 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         if isDebug {
             try container.encode(isDebug, forKey: .isDebug)
         }
+        // Only encode subexpenses if present
+        if let subexpenses = subexpenses, !subexpenses.isEmpty {
+            try container.encode(subexpenses, forKey: .subexpenses)
+        }
     }
 
     init(
@@ -135,7 +155,8 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         splits: [ExpenseSplit],
         isSettled: Bool = false,
         participantNames: [UUID: String]? = nil,
-        isDebug: Bool = false
+        isDebug: Bool = false,
+        subexpenses: [Subexpense]? = nil
     ) {
         self.id = id
         self.groupId = groupId
@@ -148,6 +169,7 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         self.isSettled = isSettled
         self.participantNames = participantNames
         self.isDebug = isDebug
+        self.subexpenses = subexpenses
     }
     
     // Computed property to check if all splits are settled
@@ -173,6 +195,12 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
     // Get split for a specific member
     func split(for memberId: UUID) -> ExpenseSplit? {
         splits.first { $0.memberId == memberId }
+    }
+    
+    // Check if expense has subexpenses breakdown
+    var hasSubexpenses: Bool {
+        guard let subs = subexpenses else { return false }
+        return !subs.isEmpty
     }
 }
 

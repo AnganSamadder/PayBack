@@ -35,6 +35,7 @@ private struct ExpenseRow: Codable {
     let createdAt: Date
     let updatedAt: Date
     let isPayBackGeneratedMockData: Bool?
+    let subexpenses: [SubexpenseRow]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -54,6 +55,7 @@ private struct ExpenseRow: Codable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case isPayBackGeneratedMockData = "is_payback_generated_mock_data"
+        case subexpenses
     }
 }
 
@@ -83,6 +85,12 @@ private struct ExpenseParticipantRow: Codable {
         case linkedAccountId = "linked_account_id"
         case linkedAccountEmail = "linked_account_email"
     }
+}
+
+private struct SubexpenseRow: Codable {
+    let id: UUID
+    let amount: Double
+    let label: String?
 }
 
 final class SupabaseExpenseCloudService: ExpenseCloudService, Sendable {
@@ -266,7 +274,8 @@ final class SupabaseExpenseCloudService: ExpenseCloudService, Sendable {
             linkedParticipants: linkedParticipants.isEmpty ? nil : linkedParticipants,
             createdAt: expense.date,
             updatedAt: Date(),
-            isPayBackGeneratedMockData: isDebug ? true : nil
+            isPayBackGeneratedMockData: isDebug ? true : nil,
+            subexpenses: expense.subexpenses?.map { SubexpenseRow(id: $0.id, amount: $0.amount, label: $0.label) }
         )
     }
 
@@ -284,6 +293,11 @@ final class SupabaseExpenseCloudService: ExpenseCloudService, Sendable {
             participantNames[participant.memberId] = trimmed
         }
 
+        // Convert subexpenses from row format
+        let subexpenses: [Subexpense]? = row.subexpenses?.map { sub in
+            Subexpense(id: sub.id, amount: sub.amount, label: sub.label)
+        }
+
         return Expense(
             id: row.id,
             groupId: row.groupId,
@@ -295,7 +309,8 @@ final class SupabaseExpenseCloudService: ExpenseCloudService, Sendable {
             splits: splits,
             isSettled: isSettled,
             participantNames: participantNames.isEmpty ? nil : participantNames,
-            isDebug: row.isPayBackGeneratedMockData ?? false
+            isDebug: row.isPayBackGeneratedMockData ?? false,
+            subexpenses: subexpenses
         )
     }
 

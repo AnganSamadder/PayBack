@@ -56,6 +56,10 @@ struct AddExpenseView: View {
     @State private var itemizedTip: Double = 0
     @State private var autoDistributeTaxTip: Bool = true
     
+    // Subexpenses state
+    @State private var subexpenses: [Subexpense] = []
+    @State private var showSubexpenses: Bool = false
+    
     @State private var showNotesSheet: Bool = false
     @State private var showSaveConfirm: Bool = false
 
@@ -83,6 +87,19 @@ struct AddExpenseView: View {
                     .offset(y: dragOffset)
                 .ignoresSafeArea()
                 .compositingGroup()
+                .onTapGesture {
+                    // Dismiss keyboard on background tap
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") {
+                            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                        }
+                        .fontWeight(.semibold)
+                    }
+                }
         }
     }
 
@@ -179,7 +196,8 @@ struct AddExpenseView: View {
             totalAmount: totalAmount,
             paidByMemberId: payerId,
             involvedMemberIds: participants.map(\.id),
-            splits: splits
+            splits: splits,
+            subexpenses: subexpenses.isEmpty ? nil : subexpenses
         )
         store.addExpense(expense)
         close()
@@ -243,7 +261,9 @@ struct AddExpenseView: View {
                          descriptionText: $descriptionText,
                          amountText: $amountText,
                          currency: $currency,
-                         rates: $rates
+                         rates: $rates,
+                         subexpenses: $subexpenses,
+                         showSubexpenses: $showSubexpenses
                      )
                      .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
 
@@ -355,8 +375,11 @@ private struct CenterEntryBubble: View {
     @Binding var amountText: String
     @Binding var currency: String
     @Binding var rates: [String: Double]
+    @Binding var subexpenses: [Subexpense]
+    @Binding var showSubexpenses: Bool
 
     private let supported = ["USD","EUR","GBP","JPY","INR","CAD","AUD","BTC","ETH"]
+    @FocusState private var focusedSubexpenseId: UUID?
 
     var body: some View {
         // Metrics
@@ -367,8 +390,6 @@ private struct CenterEntryBubble: View {
         return VStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
             // Description row
             HStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
-                // Smaller rounded teal square icon inside the bubble
-                // 1:1 teal square (scaled up version of the bottom icon style)
                 RoundedRectangle(cornerRadius: AppMetrics.AddExpense.iconCornerRadius, style: .continuous)
                     .fill(AppTheme.brand)
                     .overlay(
@@ -387,14 +408,13 @@ private struct CenterEntryBubble: View {
                 .frame(maxWidth: .infinity)
             }
 
-            // Amount row
+            // Amount row with plus button for subexpenses
             HStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
                 Menu {
                     ForEach(supported, id: \.self) { code in
                         Button(code) { Task { await select(code) } }
                     }
                 } label: {
-                    // 1:1 teal square currency (scaled up, consistent with top)
                     RoundedRectangle(cornerRadius: AppMetrics.AddExpense.iconCornerRadius, style: .continuous)
                         .fill(AppTheme.brand)
                         .overlay(
@@ -403,12 +423,64 @@ private struct CenterEntryBubble: View {
                         .frame(width: leftColumnWidth, height: leftColumnWidth)
                 }
 
-                ZStack {
-                    Color.clear
-                    AmountField(text: $amountText)
+                if showSubexpenses {
+                    // Show total when in subexpenses mode
+                    VStack(spacing: 4) {
+                        Text("Total")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(totalFromSubexpenses, format: .currency(code: currency))
+                            .font(.system(size: AppMetrics.AddExpense.amountFontSize, weight: .bold, design: .rounded))
+                    }
+                    .frame(height: amountRowHeight)
+                    .frame(maxWidth: .infinity)
+                } else {
+                    ZStack {
+                        Color.clear
+                        AmountField(text: $amountText)
+                    }
+                    .frame(height: amountRowHeight)
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(height: amountRowHeight)
-                .frame(maxWidth: .infinity)
+
+                // Plus button to toggle subexpenses mode
+                Button {
+                    withAnimation(AppAnimation.springy) {
+                        if !showSubexpenses {
+                            // Convert current amount to first subexpense
+                            let currentAmount = Double(amountText) ?? 0
+                            if currentAmount > 0 {
+                                let firstSub = Subexpense(amount: currentAmount)
+                                subexpenses = [firstSub]
+                            } else {
+                                subexpenses = [Subexpense(amount: 0)]
+                            }
+                            showSubexpenses = true
+                            // Focus the first subexpense
+                            focusedSubexpenseId = subexpenses.first?.id
+                        } else {
+                            // Collapse back - total becomes the amount
+                            amountText = String(format: "%.2f", totalFromSubexpenses)
+                            subexpenses = []
+                            showSubexpenses = false
+                        }
+                    }
+                    Haptics.impact(.light)
+                } label: {
+                    Image(systemName: showSubexpenses ? "minus.circle.fill" : "plus.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(AppTheme.brand)
+                }
+            }
+
+            // Subexpenses list (when expanded)
+            if showSubexpenses {
+                SubexpensesEditor(
+                    subexpenses: $subexpenses,
+                    amountText: $amountText,
+                    currency: currency,
+                    focusedId: $focusedSubexpenseId
+                )
             }
         }
         .padding(AppMetrics.AddExpense.centerInnerPadding)
@@ -417,6 +489,16 @@ private struct CenterEntryBubble: View {
         .shadow(color: AppTheme.brand.opacity(0.15), radius: AppMetrics.AddExpense.centerShadowRadius, y: 4)
         .padding(AppMetrics.AddExpense.centerOuterPadding)
         .task { await select(currency) }
+        .onChange(of: subexpenses) { _, _ in
+            // Keep amountText in sync with subexpenses total
+            if showSubexpenses {
+                amountText = String(format: "%.2f", totalFromSubexpenses)
+            }
+        }
+    }
+
+    private var totalFromSubexpenses: Double {
+        subexpenses.reduce(0) { $0 + $1.amount }
     }
 
     private func select(_ code: String) async {
@@ -425,6 +507,123 @@ private struct CenterEntryBubble: View {
             rates = ["USD": (code == "BTC" ? 1.0/60000.0 : 1.0/3000.0)]
         } else {
             do { rates = try await CurrencyService.shared.fetchRates(base: code) } catch { rates = [:] }
+        }
+    }
+}
+
+// MARK: - Subexpenses Editor
+private struct SubexpensesEditor: View {
+    @Binding var subexpenses: [Subexpense]
+    @Binding var amountText: String
+    let currency: String
+    var focusedId: FocusState<UUID?>.Binding
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            // Scrollable list if many items
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 8) {
+                    ForEach($subexpenses) { $sub in
+                        SubexpenseRow(
+                            subexpense: $sub,
+                            currency: currency,
+                            focusedId: focusedId,
+                            onDelete: {
+                                withAnimation(AppAnimation.springy) {
+                                    subexpenses.removeAll { $0.id == sub.id }
+                                }
+                            },
+                            onSubmit: {
+                                // Add new subexpense on return
+                                let newSub = Subexpense(amount: 0)
+                                withAnimation(AppAnimation.springy) {
+                                    subexpenses.append(newSub)
+                                }
+                                focusedId.wrappedValue = newSub.id
+                            }
+                        )
+                    }
+                }
+            }
+            .frame(maxHeight: 180) // Limit height for scrolling
+            
+            // Add another button
+            Button {
+                let newSub = Subexpense(amount: 0)
+                withAnimation(AppAnimation.springy) {
+                    subexpenses.append(newSub)
+                }
+                focusedId.wrappedValue = newSub.id
+                Haptics.impact(.light)
+            } label: {
+                HStack {
+                    Image(systemName: "plus.circle")
+                    Text("Add item")
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(AppTheme.brand)
+            }
+            .padding(.top, 4)
+        }
+        .padding(.top, 8)
+    }
+}
+
+// MARK: - Subexpense Row
+private struct SubexpenseRow: View {
+    @Binding var subexpense: Subexpense
+    let currency: String
+    var focusedId: FocusState<UUID?>.Binding
+    let onDelete: () -> Void
+    let onSubmit: () -> Void
+    
+    @State private var amountString: String = ""
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // Amount field
+            TextField("0.00", text: $amountString)
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.center)
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .frame(width: 100)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(uiColor: .systemBackground))
+                )
+                .focused(focusedId, equals: subexpense.id)
+                .onChange(of: amountString) { _, newValue in
+                    let digits = newValue.filter { $0.isNumber || $0 == "." }
+                    if let value = Double(digits) {
+                        subexpense.amount = value
+                    } else {
+                        subexpense.amount = 0
+                    }
+                }
+                .onSubmit {
+                    onSubmit()
+                }
+            
+            // Optional label
+            TextField("Label (optional)", text: Binding(
+                get: { subexpense.label ?? "" },
+                set: { subexpense.label = $0.isEmpty ? nil : $0 }
+            ))
+            .font(.subheadline)
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity)
+            
+            // Delete button
+            Button(action: onDelete) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear {
+            amountString = subexpense.amount > 0 ? String(format: "%.2f", subexpense.amount) : ""
         }
     }
 }
@@ -1206,16 +1405,16 @@ private struct SharesSplitView: View {
                         HStack(spacing: 12) {
                             Button {
                                 let current = shares[p.id] ?? 1
-                                if current > 1 {
+                                if current > 0 {
                                     shares[p.id] = current - 1
                                     Haptics.impact(.light)
                                 }
                             } label: {
                                 Image(systemName: "minus.circle.fill")
                                     .font(.title2)
-                                    .foregroundStyle((shares[p.id] ?? 1) > 1 ? AppTheme.brand : .secondary)
+                                    .foregroundStyle((shares[p.id] ?? 1) > 0 ? AppTheme.brand : .secondary)
                             }
-                            .disabled((shares[p.id] ?? 1) <= 1)
+                            .disabled((shares[p.id] ?? 1) <= 0)
                             
                             Text("\(memberShares)")
                                 .font(.system(size: 18, weight: .bold, design: .rounded))
