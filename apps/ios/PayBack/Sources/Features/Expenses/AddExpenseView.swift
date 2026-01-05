@@ -87,19 +87,7 @@ struct AddExpenseView: View {
                     .offset(y: dragOffset)
                 .ignoresSafeArea()
                 .compositingGroup()
-                .onTapGesture {
-                    // Dismiss keyboard on background tap
-                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                }
-                .toolbar {
-                    ToolbarItemGroup(placement: .keyboard) {
-                        Spacer()
-                        Button("Done") {
-                            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                        }
-                        .fontWeight(.semibold)
-                    }
-                }
+                .dismissKeyboardOnTap()
         }
     }
 
@@ -397,14 +385,17 @@ private struct CenterEntryBubble: View {
                     )
                     .frame(width: leftColumnWidth, height: leftColumnWidth)
 
+                // Dynamic, growing description field
                 ZStack {
                     Color.clear
-                    TextField("Description", text: $descriptionText)
+                    TextField("Description", text: $descriptionText, axis: .vertical)
                         .multilineTextAlignment(.center)
-                        .font(.system(size: AppMetrics.AddExpense.descriptionFontSize, weight: .semibold))
+                        // Use amount font size (34) initially, let it scale naturally
+                        .font(.system(size: AppMetrics.AddExpense.amountFontSize, weight: .bold, design: .rounded))
                         .textInputAutocapitalization(.words)
+                        .submitLabel(.next)
                 }
-                .frame(height: descriptionRowHeight)
+                .frame(minHeight: descriptionRowHeight) // Allow growth
                 .frame(maxWidth: .infinity)
             }
 
@@ -435,9 +426,16 @@ private struct CenterEntryBubble: View {
                     .frame(height: amountRowHeight)
                     .frame(maxWidth: .infinity)
                 } else {
+                    // Smart Currency Input
                     ZStack {
                         Color.clear
-                        AmountField(text: $amountText)
+                        SmartCurrencyField(
+                            amount: Binding(
+                                get: { Double(amountText) ?? 0 },
+                                set: { amountText = String($0) }
+                            ),
+                            currency: currency
+                        )
                     }
                     .frame(height: amountRowHeight)
                     .frame(maxWidth: .infinity)
@@ -600,27 +598,25 @@ private struct SubexpenseRow: View {
                     .font(.system(.body, design: .rounded))
                     .foregroundStyle(.secondary)
                 
-                TextField("0.00", text: $amountString)
-                    .keyboardType(.decimalPad)
-                    .font(.system(size: 18, weight: .medium, design: .rounded))
-                    .focused($isFocused)
-                    .focused(focusedId, equals: subexpense.id)
-                    .onChange(of: amountString) { _, newValue in
-                        let digits = newValue.filter { $0.isNumber || $0 == "." }
-                        if let value = Double(digits) {
-                            subexpense.amount = value
-                        } else {
-                            subexpense.amount = 0
-                        }
+                // Smart Currency Input for Subexpense
+                SmartCurrencyField(
+                    amount: $subexpense.amount,
+                    currency: currency,
+                    font: .system(size: 18, weight: .medium, design: .rounded),
+                    isFocusedBinding: Binding(
+                        get: { focusedId.wrappedValue == subexpense.id },
+                        set: { if $0 { focusedId.wrappedValue = subexpense.id } }
+                    )
+                )
+                .focused($isFocused)
+                .onChange(of: isFocused) { _, focused in
+                    if !focused {
+                        onFocusLost()
                     }
-                    .onSubmit {
-                        onSubmit()
-                    }
-                    .onChange(of: isFocused) { _, focused in
-                        if !focused {
-                            onFocusLost()
-                        }
-                    }
+                }
+                .onSubmit {
+                    onSubmit()
+                }
                 
                 Spacer()
                 
@@ -641,9 +637,6 @@ private struct SubexpenseRow: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color(uiColor: .secondarySystemBackground)) // Slightly distinct background
             )
-        }
-        .onAppear {
-            amountString = subexpense.amount > 0 ? String(format: "%.2f", subexpense.amount) : ""
         }
     }
 }
@@ -955,6 +948,7 @@ private struct SplitDetailView: View {
         .navigationTitle("Split")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .dismissKeyboardOnTap()
     }
 
     private var participants: [GroupMember] {
