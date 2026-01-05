@@ -4,6 +4,7 @@ struct ProfileView: View {
     @EnvironmentObject var store: AppStore
     @State private var showLogoutConfirmation = false
     @State private var showSettings = false
+    @State private var showImportExport = false
     
     var body: some View {
         NavigationStack {
@@ -14,6 +15,9 @@ struct ProfileView: View {
                     
                     // Account information section
                     accountInfoSection
+                    
+                    // Data management section
+                    dataManagementSection
                     
                     // Logout button
                     logoutButton
@@ -62,6 +66,10 @@ struct ProfileView: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showImportExport) {
+            ImportExportView()
                 .environmentObject(store)
         }
     }
@@ -114,6 +122,55 @@ struct ProfileView: View {
                     .fill(AppTheme.card)
                     .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
             )
+        }
+    }
+    
+    // MARK: - Data Management Section
+    
+    private var dataManagementSection: some View {
+        VStack(spacing: 16) {
+            Text("Data Management")
+                .font(.system(.headline, design: .rounded, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            
+            Button(action: {
+                showImportExport = true
+            }) {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.up.arrow.down.square")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(AppTheme.brand)
+                        .frame(width: 32, height: 32)
+                        .background(
+                            Circle()
+                                .fill(AppTheme.brand.opacity(0.1))
+                        )
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Import & Export Data")
+                            .font(.system(.body, design: .rounded, weight: .medium))
+                            .foregroundStyle(.primary)
+                        
+                        Text("Backup or transfer your expenses")
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(16)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(AppTheme.card)
+                        .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
     
