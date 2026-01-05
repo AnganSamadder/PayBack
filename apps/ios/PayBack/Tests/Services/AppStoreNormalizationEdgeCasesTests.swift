@@ -147,7 +147,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let friend = GroupMember(name: "Friend")
         
         let remoteGroup = SpendingGroup(
-            name: "Two Person Group",
+            name: "Friend", // Must match other member's name to be inferred as direct
             members: [currentUserMember, friend],
             isDirect: false // Explicitly false
         )
