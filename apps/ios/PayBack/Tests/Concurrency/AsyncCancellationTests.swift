@@ -92,37 +92,40 @@ final class AsyncCancellationTests: XCTestCase {
         // Note: Task { } creates independent tasks that don't inherit cancellation
         // But async let DOES inherit cancellation from parent task
         var outerStarted = false
-        var innerCancellationDetected = false
+        var cancellationDetectedResult = false
         
-        let task = Task {
-            outerStarted = true
-            
+        let task = Task { @Sendable () -> Bool in
             // Using async let - this WILL inherit cancellation from parent
-            async let innerResult: Void = {
+            // Return Bool to indicate if cancellation was detected (avoids Swift 6 captured var mutation error)
+            async let innerResult: Bool = {
                 do {
                     try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+                    return false // Not cancelled
                 } catch is CancellationError {
-                    innerCancellationDetected = true
-                    throw CancellationError()
+                    return true // Cancellation detected
+                } catch {
+                    return false
                 }
             }()
             
             // Wait for inner result
-            try await innerResult
+            return await innerResult
         }
         
         // Give time for task to start
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        outerStarted = true
         
         // Act - cancel the outer task
         task.cancel()
         
-        // Wait for cancellation to complete
-        _ = await task.result
+        // Wait for cancellation to complete and get result
+        let result = await task.value
+        cancellationDetectedResult = result
         
         // Assert - outer should have started, inner should have detected cancellation
         XCTAssertTrue(outerStarted, "Outer task should have started")
-        XCTAssertTrue(innerCancellationDetected, "Cancellation should propagate via async let")
+        XCTAssertTrue(cancellationDetectedResult, "Cancellation should propagate via async let")
     }
     
     // MARK: - Test cancelled operations throw CancellationError
