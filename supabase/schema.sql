@@ -62,7 +62,8 @@ create table if not exists expenses (
   linked_participants jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  is_payback_generated_mock_data boolean
+  is_payback_generated_mock_data boolean,
+  subexpenses jsonb -- [{ "id": uuid, "amount": double, "label": text? }]
 );
 
 create index if not exists idx_expenses_owner_account on expenses (owner_account_id);
