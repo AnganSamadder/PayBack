@@ -560,7 +560,7 @@ final class AppStore: ObservableObject {
     
     // MARK: - Balance Calculations
     
-    func overallNetBalance() -> Double {
+    public func overallNetBalance() -> Double {
         var totalBalance: Double = 0
         for group in groups {
             totalBalance += netBalance(for: group)
@@ -568,7 +568,7 @@ final class AppStore: ObservableObject {
         return totalBalance
     }
     
-    func netBalance(for group: SpendingGroup) -> Double {
+    public func netBalance(for group: SpendingGroup) -> Double {
         var paidByUser: Double = 0
         var owes: Double = 0
         
