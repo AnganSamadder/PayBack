@@ -1,4 +1,13 @@
 #!/bin/sh
+# =========================================================================
+# IMPORTANT: ENABLE_USER_SCRIPT_SANDBOXING must be set to NO in the Xcode
+# project settings (Build Settings > User Script Sandboxing) for BOTH Debug
+# and Release configurations. Otherwise, this script will fail with:
+#   "Command PhaseScriptExecution failed with a nonzero exit code"
+# because the sandbox blocks reading .env.supabase.local and writing to
+# BUILT_PRODUCTS_DIR.
+# =========================================================================
+# 
 # Generates SupabaseConfig.plist at build time from environment variables.
 # Secrets never touch source control; provide SUPABASE_URL and SUPABASE_ANON_KEY in the build environment.
 
