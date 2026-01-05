@@ -343,46 +343,98 @@ final class AppStore: ObservableObject {
         scheduleFriendSync()
     }
 
-    /// Deletes a friend by removing their direct 1:1 group and associated expenses.
-    /// Does NOT remove them from multi-person groups.
+    /// Deletes a friend completely by:
+    /// 1. Removing them from the friends list
+    /// 2. Removing them from ALL groups they're in
+    /// 3. Deleting all expenses involving them in each group
+    /// 4. Auto-deleting any groups that become single-member (only current user)
     func deleteFriend(_ friend: GroupMember) {
         print("🔵 deleteFriend called for: \(friend.name) (\(friend.id))")
         
-        // Immediately remove from friends list for instant UI update
         let friendIdToRemove = friend.id
+        
+        // Step 1: Immediately remove from friends list for instant UI update
         friends.removeAll { $0.memberId == friendIdToRemove }
         print("🟢 Removed friend from friends list. Remaining: \(friends.count)")
         
-        // Find direct group with this friend
-        // A direct group usually has 2 members: current user and the friend
-        let directGroup = groups.first { group in
-            group.isDirect == true && 
-            group.members.contains(where: { $0.id == friendIdToRemove }) &&
-            group.members.count == 2
+        // Step 2: Find ALL groups containing this friend
+        let groupsWithFriend = groups.filter { group in
+            group.members.contains(where: { $0.id == friendIdToRemove })
         }
+        print("🟢 Found \(groupsWithFriend.count) groups containing this friend")
         
-        if let group = directGroup {
-            print("🟢 Found direct group to delete: \(group.name)")
-            // Delete the group and related expenses directly (don't call deleteGroups which triggers scheduleFriendSync)
-            let groupId = group.id
-            let relatedExpenses = expenses.filter { $0.groupId == groupId }
-            groups.removeAll { $0.id == groupId }
-            expenses.removeAll { $0.groupId == groupId }
-            persistCurrentState()
-            
-            Task { [groupId, relatedExpenses] in
-                try? await groupCloudService.deleteGroups([groupId])
-                for expense in relatedExpenses {
-                    try? await expenseCloudService.deleteExpense(expense.id)
-                }
+        var groupsToDelete: [UUID] = []
+        var groupsToUpdate: [SpendingGroup] = []
+        var allExpensesToDelete: [Expense] = []
+        
+        for group in groupsWithFriend {
+            // Find and collect all expenses involving this friend in this group
+            let expensesInGroup = expenses.filter { expense in
+                expense.groupId == group.id && (
+                    expense.paidByMemberId == friendIdToRemove ||
+                    expense.involvedMemberIds.contains(friendIdToRemove)
+                )
             }
-            print("🟢 Deleted group and \(relatedExpenses.count) related expenses")
-        } else {
-            print("🟡 No direct group found for friend. Just removing from friends list locally.")
-            persistCurrentState()
+            allExpensesToDelete.append(contentsOf: expensesInGroup)
+            
+            // Remove friend from the group's member list
+            var updatedGroup = group
+            updatedGroup.members.removeAll { $0.id == friendIdToRemove }
+            
+            // Check if group should be deleted (only current user left OR empty)
+            let remainingNonCurrentUserMembers = updatedGroup.members.filter { !isCurrentUser($0) }
+            if remainingNonCurrentUserMembers.isEmpty {
+                // Group only has current user - mark for deletion
+                groupsToDelete.append(group.id)
+                // Also delete ALL expenses in this group (not just ones involving the friend)
+                let allGroupExpenses = expenses.filter { $0.groupId == group.id }
+                allExpensesToDelete.append(contentsOf: allGroupExpenses)
+                print("🟢 Group '\(group.name)' will be deleted (only current user left)")
+            } else {
+                // Group still has other members - just update it
+                groupsToUpdate.append(updatedGroup)
+                print("🟢 Group '\(group.name)' will be updated (removed friend, \(updatedGroup.members.count) members remain)")
+            }
         }
         
-        // Sync the cleaned friends list directly to cloud (without re-merging from groups)
+        // Step 3: Apply local changes
+        // Remove expenses
+        let expenseIdsToDelete = Set(allExpensesToDelete.map(\.id))
+        expenses.removeAll { expenseIdsToDelete.contains($0.id) }
+        
+        // Remove groups marked for deletion
+        let groupIdsToDelete = Set(groupsToDelete)
+        groups.removeAll { groupIdsToDelete.contains($0.id) }
+        
+        // Update groups that still exist
+        for updatedGroup in groupsToUpdate {
+            if let idx = groups.firstIndex(where: { $0.id == updatedGroup.id }) {
+                groups[idx] = updatedGroup
+            }
+        }
+        
+        persistCurrentState()
+        print("✅ Local state updated: deleted \(groupsToDelete.count) groups, updated \(groupsToUpdate.count) groups, removed \(expenseIdsToDelete.count) expenses")
+        
+        // Step 4: Sync to cloud
+        Task { [groupsToDelete, groupsToUpdate, allExpensesToDelete] in
+            // Delete groups from cloud
+            if !groupsToDelete.isEmpty {
+                try? await groupCloudService.deleteGroups(groupsToDelete)
+            }
+            
+            // Update remaining groups in cloud
+            for group in groupsToUpdate {
+                try? await groupCloudService.upsertGroup(group)
+            }
+            
+            // Delete expenses from cloud
+            for expense in allExpensesToDelete {
+                try? await expenseCloudService.deleteExpense(expense.id)
+            }
+        }
+        
+        // Step 5: Sync the cleaned friends list to cloud
         if let session = session {
             let cleanedFriends = friends
             friendSyncTask?.cancel()
