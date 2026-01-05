@@ -3,6 +3,8 @@ import SwiftUI
 struct GroupsListView: View {
     @EnvironmentObject var store: AppStore
     @State private var showCreate = false
+    @State private var groupToDelete: SpendingGroup?
+    @State private var showDeleteConfirmation = false
     let onGroupSelected: (SpendingGroup) -> Void
 
     var body: some View {
@@ -39,8 +41,15 @@ struct GroupsListView: View {
                         }
                         .buttonStyle(.plain)
                         .listRowSeparator(.hidden)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                groupToDelete = group
+                                showDeleteConfirmation = true
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                     }
-                    .onDelete(perform: store.deleteGroups)
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
@@ -52,44 +61,24 @@ struct GroupsListView: View {
             CreateGroupView()
                 .environmentObject(store)
         }
-    }
-}
-
-struct CreateGroupView: View {
-    @EnvironmentObject var store: AppStore
-    @Environment(\.dismiss) var dismiss
-
-    @State private var name: String = ""
-    @State private var memberNames: [String] = ["You", "Friend"]
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Group") {
-                    TextField("Name", text: $name)
+        .confirmationDialog(
+            "Delete Group",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible,
+            presenting: groupToDelete
+        ) { group in
+            Button("Delete \"\(group.name)\"", role: .destructive) {
+                Haptics.notify(.warning)
+                if let index = store.groups.firstIndex(where: { $0.id == group.id }) {
+                    store.deleteGroups(at: IndexSet(integer: index))
                 }
-                Section("Members") {
-                    ForEach($memberNames, id: \.self) { $member in
-                        TextField("Member name", text: $member)
-                    }
-                    .onDelete { idx in memberNames.remove(atOffsets: idx) }
-                    Button { memberNames.append("") } label: {
-                        Label("Add member", systemImage: "plus.circle")
-                    }
-                }
+                groupToDelete = nil
             }
-            .navigationTitle("New Group")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Create") {
-                        let clean = memberNames.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-                        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !clean.isEmpty else { return }
-                        store.addGroup(name: name, memberNames: clean)
-                        dismiss()
-                    }
-                }
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: { dismiss() }) }
+            Button("Cancel", role: .cancel) {
+                groupToDelete = nil
             }
+        } message: { group in
+            Text("This will permanently delete the group \"\(group.name)\" and all its expenses. This action cannot be undone.")
         }
     }
 }
