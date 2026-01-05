@@ -199,16 +199,16 @@ public enum AppMetrics {
         static let topBarIconSize: CGFloat = 18
 
         // Center entry bubble (description + amount)
-        static let centerOuterPadding: CGFloat = 12
-        static let centerInnerPadding: CGFloat = 12
+        static let centerOuterPadding: CGFloat = 8
+        static let centerInnerPadding: CGFloat = 8
         static let centerCornerRadius: CGFloat = 18
         static let centerShadowRadius: CGFloat = 8
-        static let centerRowSpacing: CGFloat = 8
-        static let descriptionRowHeight: CGFloat = 52
-        static let amountRowHeight: CGFloat = 84
-        static let leftColumnWidth: CGFloat = 56
-        static let iconCornerRadius: CGFloat = 12
-        static let descriptionFontSize: CGFloat = 20
+        static let centerRowSpacing: CGFloat = 4
+        static let descriptionRowHeight: CGFloat = 44
+        static let amountRowHeight: CGFloat = 64
+        static let leftColumnWidth: CGFloat = 44
+        static let iconCornerRadius: CGFloat = 10
+        static let descriptionFontSize: CGFloat = 18
         static let amountFontSize: CGFloat = 34
         static let smartIconGlyphScale: CGFloat = 0.55
         static let currencyGlyphScale: CGFloat = 0.45
@@ -480,12 +480,13 @@ struct SmartCurrencyField: View {
     let currency: String
     var font: Font = .system(size: 34, weight: .bold, design: .rounded) // Default large
     var isFocusedBinding: Binding<Bool>? = nil
+    var alignment: Alignment = .trailing // New alignment parameter
     
     @State private var inputBuffer: String = ""
     @FocusState private var internalFocus: Bool
     
     var body: some View {
-        ZStack(alignment: .trailing) {
+        ZStack(alignment: alignment) {
             // Invisible field capturing inputs
             TextField("", text: $inputBuffer)
                 .keyboardType(.numberPad)
@@ -516,14 +517,6 @@ struct SmartCurrencyField: View {
         .onChange(of: isFocusedBinding?.wrappedValue) { _,Val in
             if let val = Val, val != internalFocus {
                 internalFocus = val
-            }
-        }
-        .onAppear {
-            if amount > 0 {
-                // Reconstruct buffer from existing amount
-                // e.g. 1.23 -> "123"
-                let cents = Int((amount * 100).rounded())
-                inputBuffer = String(cents)
             }
         }
     }
