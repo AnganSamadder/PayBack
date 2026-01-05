@@ -1797,20 +1797,17 @@ final class AppStoreTests: XCTestCase {
     // MARK: - Additional Coverage Tests for Uncovered Functions
     
     func testAddGroup_WithMultipleMembers_TriggersNormalization() async throws {
-        // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
-        try await Task.sleep(nanoseconds: 100_000_000)
-        
-        // When - add group with multiple members
+        // When - add group with multiple members (no authentication needed for basic group creation)
         sut.addGroup(name: "Team", memberNames: ["Alice", "Bob", "Charlie", "Diana"])
-        try await Task.sleep(nanoseconds: 200_000_000)
         
-        // Then
+        // Then - group should be created immediately with all members
         XCTAssertEqual(sut.groups.count, 1)
         let group = sut.groups[0]
         XCTAssertEqual(group.members.count, 5) // 4 + current user
+        XCTAssertTrue(group.members.contains { $0.name == "Alice" })
+        XCTAssertTrue(group.members.contains { $0.name == "Bob" })
+        XCTAssertTrue(group.members.contains { $0.name == "Charlie" })
+        XCTAssertTrue(group.members.contains { $0.name == "Diana" })
     }
     
     func testAddExpense_WithComplexSplits_HandlesCorrectly() async throws {
