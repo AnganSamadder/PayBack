@@ -434,7 +434,8 @@ private struct CenterEntryBubble: View {
                             alignment: .center
                         )
                     }
-                    .frame(height: amountRowHeight)
+
+                    .frame(minHeight: amountRowHeight)
                     .frame(maxWidth: .infinity)
                 }
 
