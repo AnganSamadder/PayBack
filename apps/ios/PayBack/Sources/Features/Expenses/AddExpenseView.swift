@@ -386,17 +386,13 @@ private struct CenterEntryBubble: View {
                     .frame(width: leftColumnWidth, height: leftColumnWidth)
 
                 // Dynamic, growing description field
-                ZStack {
-                    Color.clear
-                    TextField("Description", text: $descriptionText, axis: .vertical)
-                        .multilineTextAlignment(.center)
-                        // Use amount font size (34) initially, let it scale naturally
-                        .font(.system(size: AppMetrics.AddExpense.amountFontSize, weight: .bold, design: .rounded))
-                        .textInputAutocapitalization(.words)
-                        .submitLabel(.next)
-                }
-                .frame(minHeight: descriptionRowHeight) // Allow growth
-                .frame(maxWidth: .infinity)
+                TextField("Description", text: $descriptionText, axis: .vertical)
+                    .multilineTextAlignment(.center)
+                    // Use amount font size (34) initially, let it scale naturally
+                    .font(.system(size: AppMetrics.AddExpense.amountFontSize, weight: .bold, design: .rounded))
+                    .textInputAutocapitalization(.words)
+                    .submitLabel(.next)
+                    .frame(maxWidth: .infinity)
             }
 
             // Amount row with plus button for subexpenses

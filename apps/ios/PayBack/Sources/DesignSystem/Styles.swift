@@ -199,16 +199,16 @@ public enum AppMetrics {
         static let topBarIconSize: CGFloat = 18
 
         // Center entry bubble (description + amount)
-        static let centerOuterPadding: CGFloat = 8
-        static let centerInnerPadding: CGFloat = 8
+        static let centerOuterPadding: CGFloat = 12
+        static let centerInnerPadding: CGFloat = 12
         static let centerCornerRadius: CGFloat = 18
         static let centerShadowRadius: CGFloat = 8
-        static let centerRowSpacing: CGFloat = 4
-        static let descriptionRowHeight: CGFloat = 44
-        static let amountRowHeight: CGFloat = 64
-        static let leftColumnWidth: CGFloat = 44
-        static let iconCornerRadius: CGFloat = 10
-        static let descriptionFontSize: CGFloat = 18
+        static let centerRowSpacing: CGFloat = 8
+        static let descriptionRowHeight: CGFloat = 52
+        static let amountRowHeight: CGFloat = 84
+        static let leftColumnWidth: CGFloat = 56
+        static let iconCornerRadius: CGFloat = 12
+        static let descriptionFontSize: CGFloat = 20
         static let amountFontSize: CGFloat = 34
         static let smartIconGlyphScale: CGFloat = 0.55
         static let currencyGlyphScale: CGFloat = 0.45
