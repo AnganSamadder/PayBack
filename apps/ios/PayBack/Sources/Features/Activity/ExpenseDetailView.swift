@@ -75,7 +75,7 @@ struct ExpenseDetailView: View {
                             )
 
                             // Splits
-                            ForEach(expense.splits) { split in
+                            ForEach(expense.splits.filter { $0.memberId != expense.paidByMemberId }) { split in
                                 HStack {
                                     PaymentDetailRow(
                                         title: split.memberId == store.currentUser.id ? "You owe" : "\(memberName(for: split.memberId)) owes",
