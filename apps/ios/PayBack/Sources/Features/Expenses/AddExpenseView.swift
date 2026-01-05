@@ -434,7 +434,8 @@ private struct CenterEntryBubble: View {
                                 get: { Double(amountText) ?? 0 },
                                 set: { amountText = String($0) }
                             ),
-                            currency: currency
+                            currency: currency,
+                            alignment: .center
                         )
                     }
                     .frame(height: amountRowHeight)
@@ -547,6 +548,30 @@ private struct SubexpensesEditor: View {
                 .padding(.vertical, 4)
             }
             .frame(maxHeight: CGFloat(min(subexpenses.count * 60, 240))) // Dynamic height up to max
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    if focusedId.wrappedValue != nil {
+                        Spacer()
+                        Button("Next") {
+                            if let currentId = focusedId.wrappedValue,
+                               let index = subexpenses.firstIndex(where: { $0.id == currentId }) {
+                                if index < subexpenses.count - 1 {
+                                    focusedId.wrappedValue = subexpenses[index + 1].id
+                                } else {
+                                    // Last one
+                                    if subexpenses[index].amount > 0 {
+                                        addNewSubexpense()
+                                    } else {
+                                        // Dismiss if empty and last
+                                        focusedId.wrappedValue = nil
+                                    }
+                                }
+                            }
+                        }
+                        .fontWeight(.semibold)
+                    }
+                }
+            }
         }
         .padding(.top, 8)
         .onAppear {
