@@ -106,7 +106,9 @@ final class GroupMemberDeletionTests: XCTestCase {
     
     func testRemoveMemberFromGroup_DoesNotAffectOtherGroups() async throws {
         // Given
-        sut.addGroup(name: "Trip", memberNames: ["Alice"])
+        // Note: We add Bob to Trip so that removing Alice doesn't leave only the current user
+        // (which would trigger auto-deletion of the group)
+        sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
         sut.addGroup(name: "Work", memberNames: ["Alice"])
         let tripGroup = sut.groups[0]
         let workGroup = sut.groups[1]
@@ -127,9 +129,10 @@ final class GroupMemberDeletionTests: XCTestCase {
         sut.removeMemberFromGroup(groupId: tripGroup.id, memberId: aliceInTrip.id)
         
         // Then
-        // Trip group should not have Alice
+        // Trip group should not have Alice (but still has current user and Bob)
         let updatedTripGroup = sut.groups.first { $0.id == tripGroup.id }!
         XCTAssertFalse(updatedTripGroup.members.contains { $0.name == "Alice" })
+        XCTAssertTrue(updatedTripGroup.members.contains { $0.name == "Bob" })
         
         // Work group should still have Alice
         let updatedWorkGroup = sut.groups.first { $0.id == workGroup.id }!

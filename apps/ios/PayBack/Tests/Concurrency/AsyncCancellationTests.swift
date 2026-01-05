@@ -87,9 +87,42 @@ final class AsyncCancellationTests: XCTestCase {
         }
     }
     
-    func test_taskCancellation_nestedTasks_propagatesToChildren() async throws {
-        // Skip test - nested task cancellation timing is non-deterministic in simulator
-        throw XCTSkip("Test skipped - nested task cancellation timing is non-deterministic in simulator")
+    func test_taskCancellation_nestedTasks_propagatesToChildren() async {
+        // Arrange - Test that cancellation propagates through async let
+        // Note: Task { } creates independent tasks that don't inherit cancellation
+        // But async let DOES inherit cancellation from parent task
+        var outerStarted = false
+        var innerCancellationDetected = false
+        
+        let task = Task {
+            outerStarted = true
+            
+            // Using async let - this WILL inherit cancellation from parent
+            async let innerResult: Void = {
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+                } catch is CancellationError {
+                    innerCancellationDetected = true
+                    throw CancellationError()
+                }
+            }()
+            
+            // Wait for inner result
+            try await innerResult
+        }
+        
+        // Give time for task to start
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        
+        // Act - cancel the outer task
+        task.cancel()
+        
+        // Wait for cancellation to complete
+        _ = await task.result
+        
+        // Assert - outer should have started, inner should have detected cancellation
+        XCTAssertTrue(outerStarted, "Outer task should have started")
+        XCTAssertTrue(innerCancellationDetected, "Cancellation should propagate via async let")
     }
     
     // MARK: - Test cancelled operations throw CancellationError

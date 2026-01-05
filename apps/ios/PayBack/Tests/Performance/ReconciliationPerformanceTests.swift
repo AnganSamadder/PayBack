@@ -64,13 +64,10 @@ final class ReconciliationPerformanceTests: XCTestCase {
     }
     
     /// Test reconciliation performance with various friend list sizes
-    func test_reconciliation_variousSizes_scalesLinearly() throws {
-        // Skip this test - it calls measure() in a loop which is not supported
-        throw XCTSkip("Performance test with multiple measure() calls - baseline comparison not supported")
-    }
-    
-    func DISABLED_test_reconciliation_variousSizes_scalesLinearly_oldVersion() {
+    /// Verifies that reconciliation scales linearly by running multiple sizes sequentially
+    func test_reconciliation_variousSizes_scalesLinearly() async {
         let sizes = [100, 250, 500]
+        var durations: [Int: TimeInterval] = [:]
         
         for size in sizes {
             let friends = (0..<size).map { i in
@@ -81,19 +78,21 @@ final class ReconciliationPerformanceTests: XCTestCase {
                 )
             }
             
-            measure(metrics: [XCTClockMetric()]) {
-                let expectation = self.expectation(description: "reconcile-\(size)")
-                
-                Task {
-                    _ = await self.sut.reconcile(
-                        localFriends: friends,
-                        remoteFriends: friends
-                    )
-                    expectation.fulfill()
-                }
-                
-                wait(for: [expectation], timeout: 5.0)
-            }
+            let startTime = CFAbsoluteTimeGetCurrent()
+            _ = await sut.reconcile(
+                localFriends: friends,
+                remoteFriends: friends
+            )
+            let endTime = CFAbsoluteTimeGetCurrent()
+            durations[size] = endTime - startTime
+        }
+        
+        // All sizes should complete - verify we have results
+        XCTAssertEqual(durations.count, sizes.count, "All sizes should complete")
+        
+        // Verify rough linear scaling: 500 friends should take less than 10x the time of 100 friends
+        if let duration100 = durations[100], let duration500 = durations[500] {
+            XCTAssertLessThan(duration500, duration100 * 10, "Should scale roughly linearly")
         }
     }
     
