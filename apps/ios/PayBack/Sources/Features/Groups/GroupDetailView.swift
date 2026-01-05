@@ -50,13 +50,20 @@ struct GroupDetailSwipeBackModifier: ViewModifier {
 struct GroupDetailView: View {
     @EnvironmentObject var store: AppStore
     @AppStorage("showRealNames") private var showRealNames: Bool = true
-    let group: SpendingGroup
+    let groupId: UUID
     let onBack: () -> Void
     let onMemberTap: (GroupMember) -> Void
     let onExpenseTap: (Expense) -> Void
     @State private var showAddExpense = false
     @State private var showSettleView = false
-    @State private var refreshTrigger = UUID() // Force view updates
+    @State private var memberToDelete: GroupMember?
+    @State private var showMemberDeleteConfirmation = false
+    @State private var showAddMemberSheet = false
+    
+    // Get the live group from store to ensure updates are reflected
+    private var group: SpendingGroup? {
+        store.groups.first { $0.id == groupId }
+    }
 
     init(
         group: SpendingGroup,
@@ -64,7 +71,7 @@ struct GroupDetailView: View {
         onMemberTap: @escaping (GroupMember) -> Void = { _ in },
         onExpenseTap: @escaping (Expense) -> Void = { _ in }
     ) {
-        self.group = group
+        self.groupId = group.id
         self.onBack = onBack
         self.onMemberTap = onMemberTap
         self.onExpenseTap = onExpenseTap
@@ -72,25 +79,29 @@ struct GroupDetailView: View {
 
     var body: some View {
         ZStack {
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: AppMetrics.FriendDetail.verticalStackSpacing) {
-                    // Group info card
-                    groupInfoCard
+            if let group = group {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: AppMetrics.FriendDetail.verticalStackSpacing) {
+                        // Group info card
+                        groupInfoCard(group)
 
-                    // Members section
-                    membersSection
+                        // Members section
+                        membersSection(group)
 
-                    // Expenses section
-                    expensesSection
+                        // Expenses section
+                        expensesSection(group)
 
-                    // Bottom padding
-                    Spacer(minLength: 20)
+                        // Bottom padding
+                        Spacer(minLength: 20)
+                    }
+                    .padding(.vertical, AppMetrics.FriendDetail.contentVerticalPadding)
+                    .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
                 }
-                .padding(.vertical, AppMetrics.FriendDetail.contentVerticalPadding)
-                .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
+                .background(Color.clear)
+            } else {
+                // Group was deleted, go back
+                Color.clear.onAppear { onBack() }
             }
-            .background(Color.clear)
-            .id(refreshTrigger) // Force re-render when refreshTrigger changes
         }
         .customNavigationHeader(
             title: "Group Details",
@@ -99,17 +110,40 @@ struct GroupDetailView: View {
         .toolbar(.hidden, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
         .sheet(isPresented: $showAddExpense) {
-            AddExpenseView(group: group)
-                .environmentObject(store)
+            if let group = group {
+                AddExpenseView(group: group)
+                    .environmentObject(store)
+            }
         }
         .sheet(isPresented: $showSettleView) {
-            SettleModal(group: group)
-                .environmentObject(store)
+            if let group = group {
+                SettleModal(group: group)
+                    .environmentObject(store)
+            }
         }
-        .onChange(of: store.expenses(in: group.id)) { oldValue, newValue in
-            // Force view refresh when expenses change
-            print("🔄 Expenses changed, forcing view refresh")
-            refreshTrigger = UUID()
+        .sheet(isPresented: $showAddMemberSheet) {
+            if let group = group {
+                AddGroupMemberSheet(group: group)
+                    .environmentObject(store)
+                    .presentationDetents([.medium, .large])
+            }
+        }
+        .confirmationDialog(
+            "Remove Member",
+            isPresented: $showMemberDeleteConfirmation,
+            titleVisibility: .visible,
+            presenting: memberToDelete
+        ) { member in
+            Button("Remove \"\(member.name)\"", role: .destructive) {
+                Haptics.notify(.warning)
+                store.removeMemberFromGroup(groupId: groupId, memberId: member.id)
+                memberToDelete = nil
+            }
+            Button("Cancel", role: .cancel) {
+                memberToDelete = nil
+            }
+        } message: { member in
+            Text("This will remove \"\(member.name)\" from the group and delete all expenses involving them. This action cannot be undone.")
         }
     }
 
@@ -168,7 +202,7 @@ struct GroupDetailView: View {
 
     private func calculateNetBalance(for member: GroupMember) -> Double {
         // Positive means member should receive; negative means owes
-        let items = store.expenses(in: group.id)
+        let items = store.expenses(in: groupId)
         var paidByMember: Double = 0
         var owes: Double = 0
         for exp in items {
@@ -183,7 +217,7 @@ struct GroupDetailView: View {
     }
     
     private func calculateGroupTotalBalance() -> Double {
-        let items = store.expenses(in: group.id)
+        let items = store.expenses(in: groupId)
         return items.reduce(0) { $0 + $1.totalAmount }
     }
 
@@ -236,7 +270,7 @@ struct GroupDetailView: View {
 
     // MARK: - Group Info Card
     
-    private var groupInfoCard: some View {
+    private func groupInfoCard(_ group: SpendingGroup) -> some View {
         VStack(spacing: 0) {
             // Top section with icon and name
             HStack(spacing: 16) {
@@ -313,11 +347,28 @@ struct GroupDetailView: View {
     
     // MARK: - Members Section
     
-    private var membersSection: some View {
+    private func membersSection(_ group: SpendingGroup) -> some View {
         VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.contentSpacing) {
-            Text("Members")
-                .font(.system(.headline, design: .rounded, weight: .semibold))
-                .foregroundStyle(.primary)
+            HStack {
+                Text("Members")
+                    .font(.system(.headline, design: .rounded, weight: .semibold))
+                    .foregroundStyle(.primary)
+                
+                Spacer()
+                
+                Button(action: {
+                    Haptics.selection()
+                    showAddMemberSheet = true
+                }) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(AppTheme.brand)
+                        .frame(width: 28, height: 28)
+                        .background(AppTheme.brand.opacity(0.1))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
@@ -330,6 +381,16 @@ struct GroupDetailView: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(store.isCurrentUser(member))
+                        .contextMenu {
+                            if !store.isCurrentUser(member) {
+                                Button(role: .destructive) {
+                                    memberToDelete = member
+                                    showMemberDeleteConfirmation = true
+                                } label: {
+                                    Label("Remove from Group", systemImage: "person.badge.minus")
+                                }
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 4)
@@ -340,7 +401,7 @@ struct GroupDetailView: View {
     
     // MARK: - Expenses Section
     
-    private var expensesSection: some View {
+    private func expensesSection(_ group: SpendingGroup) -> some View {
         VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.contentSpacing) {
             Text("Expenses")
                 .font(.system(.headline, design: .rounded, weight: .semibold))
@@ -955,5 +1016,202 @@ private struct SettleModal: View {
         selectedExpenseIds.removeAll()
         dismiss()
         print("🏁 Settlement process completed")
+    }
+}
+
+// MARK: - AddGroupMemberSheet
+
+struct AddGroupMemberSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject var store: AppStore
+    
+    let group: SpendingGroup
+    
+    @State private var selectedFriendIds: Set<UUID> = []
+    @State private var searchText = ""
+    
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                // Search bar
+                if !availableFriends.isEmpty {
+                    searchBar
+                }
+                
+                // Friend Grid
+                ScrollView {
+                    if availableFriends.isEmpty {
+                        emptyState
+                    } else if filteredFriends.isEmpty {
+                        ContentUnavailableView.search(text: searchText)
+                    } else {
+                        friendGrid
+                    }
+                }
+            }
+            .background(AppTheme.background.ignoresSafeArea())
+            .navigationTitle("Add Members")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        addMembers()
+                    }
+                    .disabled(selectedFriendIds.isEmpty)
+                    .fontWeight(.bold)
+                }
+            }
+        }
+    }
+    
+    private var availableFriends: [GroupMember] {
+        // Filter out friends who are already in the group
+        // GroupMember equality is based on ID
+        store.friendMembers.filter { friend in
+            !group.members.contains(where: { $0.id == friend.id }) &&
+            !store.isCurrentUser(friend)
+        }
+    }
+    
+    private var filteredFriends: [GroupMember] {
+        if searchText.isEmpty {
+            return availableFriends
+        }
+        return availableFriends.filter { friend in
+            friend.name.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+    
+    // MARK: - Views
+    
+    private var searchBar: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            
+            TextField("Search friends", text: $searchText)
+                .textFieldStyle(.plain)
+            
+            if !searchText.isEmpty {
+                Button(action: { searchText = "" }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(.systemGray6))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+    
+    private var friendGrid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 120), spacing: 16)], spacing: 16) {
+            ForEach(filteredFriends) { friend in
+                FriendSelectionCard(
+                    friend: friend,
+                    isSelected: selectedFriendIds.contains(friend.id)
+                )
+                .onTapGesture {
+                    toggleSelection(friend)
+                }
+            }
+        }
+        .padding(20)
+    }
+    
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "person.2.slash")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary.opacity(0.5))
+            Text("No available friends")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("All your friends are already in this group")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Spacer()
+        }
+        .padding(40)
+    }
+    
+    // MARK: - Actions
+    
+    private func toggleSelection(_ friend: GroupMember) {
+        if selectedFriendIds.contains(friend.id) {
+            selectedFriendIds.remove(friend.id)
+            Haptics.selection()
+        } else {
+            selectedFriendIds.insert(friend.id)
+            Haptics.selection()
+        }
+    }
+    
+    private func addMembers() {
+        let memberNames = availableFriends
+            .filter { selectedFriendIds.contains($0.id) }
+            .map { $0.name }
+        
+        guard !memberNames.isEmpty else { return }
+        
+        store.addMembersToGroup(groupId: group.id, memberNames: memberNames)
+        Haptics.notify(.success)
+        dismiss()
+    }
+}
+
+private struct FriendSelectionCard: View {
+    let friend: GroupMember
+    let isSelected: Bool
+    
+    var body: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                AvatarView(name: friend.name, size: 56)
+                    .grayscale(isSelected ? 0 : 1)
+                
+                if isSelected {
+                    ZStack {
+                        Circle()
+                            .fill(AppTheme.brand)
+                            .frame(width: 24, height: 24)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .offset(x: 20, y: -20)
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            
+            Text(friend.name)
+                .font(.system(.subheadline, design: .rounded, weight: .medium))
+                .foregroundStyle(isSelected ? AppTheme.brand : .primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(height: 110)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(isSelected ? AppTheme.brand.opacity(0.1) : Color(.secondarySystemGroupedBackground))
+                .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(isSelected ? AppTheme.brand : Color.clear, lineWidth: 2)
+        )
+        .scaleEffect(isSelected ? 1.05 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
     }
 }

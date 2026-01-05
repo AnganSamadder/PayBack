@@ -162,7 +162,14 @@ final class AppStore: ObservableObject {
     
     /// Find or create a GroupMember with consistent ID based on name
     private func memberWithName(_ name: String) -> GroupMember {
-        // Search all existing groups for a member with this name
+        // 1. Search friends list (first priority to link to account)
+        if let friend = friends.first(where: { 
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame 
+        }) {
+             return GroupMember(id: friend.memberId, name: friend.name)
+        }
+
+        // 2. Search all existing groups for a member with this name
         for group in groups {
             if let existing = group.members.first(where: { $0.name == name && !isCurrentUser($0) }) {
                 return existing
@@ -235,6 +242,115 @@ final class AppStore: ObservableObject {
         }
         scheduleFriendSync()
     }
+
+    /// Removes a member from a group and deletes all expenses involving that member from that group only.
+    /// - Parameters:
+    ///   - groupId: The ID of the group to remove the member from
+    ///   - memberId: The ID of the member to remove
+    /// - Note: This action cannot be undone. All expenses involving the member in this group will be deleted.
+    func removeMemberFromGroup(groupId: UUID, memberId: UUID) {
+        print("🔵 removeMemberFromGroup called - groupId: \(groupId), memberId: \(memberId)")
+        
+        // Don't allow removing the current user
+        guard memberId != currentUser.id else {
+            print("🔴 Cannot remove current user")
+            return
+        }
+        
+        // Find the group
+        guard let groupIndex = groups.firstIndex(where: { $0.id == groupId }) else {
+            print("🔴 Group not found")
+            return
+        }
+        var group = groups[groupIndex]
+        
+        let memberCountBefore = group.members.count
+        
+        // Remove member from group
+        group.members.removeAll { $0.id == memberId }
+        groups[groupIndex] = group
+        
+        print("🟢 Removed member - members before: \(memberCountBefore), after: \(group.members.count)")
+        
+        // Find and delete all expenses involving this member in this group
+        let expensesToDelete = expenses.filter { expense in
+            expense.groupId == groupId && (
+                expense.paidByMemberId == memberId ||
+                expense.involvedMemberIds.contains(memberId)
+            )
+        }
+        
+        print("🟢 Expenses to delete: \(expensesToDelete.count)")
+        
+        expenses.removeAll { expense in
+            expensesToDelete.contains(where: { $0.id == expense.id })
+        }
+        
+        persistCurrentState()
+        
+        print("✅ Member removed and state persisted")
+        
+        // Sync to cloud
+        Task { [group, expensesToDelete] in
+            try? await groupCloudService.upsertGroup(group)
+            for expense in expensesToDelete {
+                try? await expenseCloudService.deleteExpense(expense.id)
+            }
+        }
+        
+        scheduleFriendSync()
+    }
+
+    /// Adds new members to an existing group
+    func addMembersToGroup(groupId: UUID, memberNames: [String]) {
+        guard let groupIndex = groups.firstIndex(where: { $0.id == groupId }) else { return }
+        var group = groups[groupIndex]
+        
+        let newMembers = memberNames.map { memberWithName($0) }
+        
+        // Filter out members that are already in the group
+        let uniqueNewMembers = newMembers.filter { newMember in
+            !group.members.contains(where: { $0.id == newMember.id })
+        }
+        
+        guard !uniqueNewMembers.isEmpty else { return }
+        
+        group.members.append(contentsOf: uniqueNewMembers)
+        groups[groupIndex] = group
+        
+        persistCurrentState()
+        
+        Task { [group] in
+            try? await groupCloudService.upsertGroup(group)
+        }
+        scheduleFriendSync()
+    }
+
+    /// Deletes a friend by removing their direct 1:1 group and associated expenses.
+    /// Does NOT remove them from multi-person groups.
+    func deleteFriend(_ friend: GroupMember) {
+        print("🔵 deleteFriend called for: \(friend.name) (\(friend.id))")
+        
+        // Find direct group with this friend
+        // A direct group usually has 2 members: current user and the friend
+        let directGroup = groups.first { group in
+            group.isDirect == true && 
+            group.members.contains(where: { $0.id == friend.id }) &&
+            group.members.count == 2
+        }
+        
+        if let group = directGroup {
+            print("🟢 Found direct group to delete: \(group.name)")
+            // Use existing deleteGroups logic but targeted
+            if let index = groups.firstIndex(where: { $0.id == group.id }) {
+                deleteGroups(at: IndexSet(integer: index))
+            }
+        } else {
+            print("🟡 No direct group found for friend. Just removing from friends list locally if present.")
+        }
+    }
+    
+    /// Removes a member from a group and deletes all expenses involving that member from that group only.
 
     // MARK: - Expenses
     func addExpense(_ expense: Expense) {
@@ -804,8 +920,16 @@ final class AppStore: ObservableObject {
             return true
         }
 
+        // For 2-member groups, only treat as direct if the group name matches
+        // the other member's name (i.e., an implicitly created 1:1 group)
         if memberIds.count == 2 && memberIds.contains(currentUser.id) {
-            return true
+            // Find the non-current-user member
+            if let otherMember = group.members.first(where: { !isCurrentUser($0) }) {
+                // Only direct if named after that member
+                if normalizedName(group.name) == normalizedName(otherMember.name) {
+                    return true
+                }
+            }
         }
 
         if normalizedName(group.name) == normalizedName(currentUser.name) {

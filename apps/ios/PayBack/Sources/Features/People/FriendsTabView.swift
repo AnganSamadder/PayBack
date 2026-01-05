@@ -189,6 +189,8 @@ private struct FriendsList: View {
     @AppStorage("showRealNames") private var showRealNames: Bool = true
     @State private var sortOrder: SortOrder = .alphabetical
     @State private var isAscending: Bool = true
+    @State private var friendToDelete: GroupMember?
+    @State private var showDeleteConfirmation = false
     let onFriendSelected: (GroupMember) -> Void
     
     enum SortOrder: String, CaseIterable {
@@ -204,7 +206,8 @@ private struct FriendsList: View {
     }
     
     var body: some View {
-        if sortedFriends.isEmpty {
+        Group {
+            if sortedFriends.isEmpty {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     EmptyStateView("No friends yet", systemImage: "person.crop.circle.badge.plus", description: "Add a group or friend to start")
@@ -292,6 +295,15 @@ private struct FriendsList: View {
                         .buttonStyle(.plain)
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                friendToDelete = friend
+                                showDeleteConfirmation = true
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                            .tint(.red)
+                        }
                     }
                 }
                 .listStyle(.plain)
@@ -299,6 +311,24 @@ private struct FriendsList: View {
                 .scrollIndicators(.hidden)
                 .background(AppTheme.background)
             }
+            }
+        }
+        .confirmationDialog(
+            "Remove Friend",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible,
+            presenting: friendToDelete
+        ) { friend in
+            Button("Remove \"\(friendDisplayName(friend))\"", role: .destructive) {
+                Haptics.notify(.warning)
+                store.deleteFriend(friend)
+                friendToDelete = nil
+            }
+            Button("Cancel", role: .cancel) {
+                friendToDelete = nil
+            }
+        } message: { friend in
+            Text("This will remove \"\(friendDisplayName(friend))\" from your friends list and delete your 1:1 group history. This cannot be undone.")
         }
     }
 
