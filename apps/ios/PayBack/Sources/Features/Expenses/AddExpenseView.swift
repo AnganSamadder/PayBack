@@ -520,7 +520,7 @@ private struct SubexpensesEditor: View {
     
     var body: some View {
         VStack(spacing: 8) {
-            // Scrollable list if many items
+            // Flexible container that grows
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 8) {
                     ForEach($subexpenses) { $sub in
@@ -534,38 +534,49 @@ private struct SubexpensesEditor: View {
                                 }
                             },
                             onSubmit: {
-                                // Add new subexpense on return
-                                let newSub = Subexpense(amount: 0)
-                                withAnimation(AppAnimation.springy) {
-                                    subexpenses.append(newSub)
+                                // Add new subexpense on return if current isn't last
+                                if sub.id == subexpenses.last?.id {
+                                    addNewSubexpense()
                                 }
-                                focusedId.wrappedValue = newSub.id
+                            },
+                            onFocusLost: {
+                                // When focus is lost, ensure we have an empty slot at the end
+                                ensureEmptySlotAtEnd()
                             }
                         )
                     }
                 }
+                .padding(.vertical, 4)
             }
-            .frame(maxHeight: 180) // Limit height for scrolling
-            
-            // Add another button
-            Button {
-                let newSub = Subexpense(amount: 0)
-                withAnimation(AppAnimation.springy) {
-                    subexpenses.append(newSub)
-                }
-                focusedId.wrappedValue = newSub.id
-                Haptics.impact(.light)
-            } label: {
-                HStack {
-                    Image(systemName: "plus.circle")
-                    Text("Add item")
-                }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(AppTheme.brand)
-            }
-            .padding(.top, 4)
+            .frame(maxHeight: CGFloat(min(subexpenses.count * 60, 240))) // Dynamic height up to max
         }
         .padding(.top, 8)
+        .onAppear {
+            ensureEmptySlotAtEnd()
+        }
+        .onChange(of: subexpenses) { _, _ in
+           // ensureEmptySlotAtEnd() - triggering this on every change causes loops/UX issues while typing
+           // Instead we rely on specific triggers like onSubmit and Focus loss
+        }
+    }
+    
+    private func addNewSubexpense() {
+        let newSub = Subexpense(amount: 0)
+        withAnimation(AppAnimation.springy) {
+            subexpenses.append(newSub)
+        }
+        // Small delay to allow animation to start before focusing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            focusedId.wrappedValue = newSub.id
+        }
+    }
+    
+    private func ensureEmptySlotAtEnd() {
+        if let last = subexpenses.last, last.amount > 0 {
+            addNewSubexpense()
+        } else if subexpenses.isEmpty {
+            addNewSubexpense()
+        }
     }
 }
 
@@ -576,55 +587,71 @@ private struct SubexpenseRow: View {
     var focusedId: FocusState<UUID?>.Binding
     let onDelete: () -> Void
     let onSubmit: () -> Void
+    let onFocusLost: () -> Void
     
     @State private var amountString: String = ""
+    @FocusState private var isFocused: Bool
     
     var body: some View {
         HStack(spacing: 12) {
-            // Amount field
-            TextField("0.00", text: $amountString)
-                .keyboardType(.decimalPad)
-                .multilineTextAlignment(.center)
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
-                .frame(width: 100)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(uiColor: .systemBackground))
-                )
-                .focused(focusedId, equals: subexpense.id)
-                .onChange(of: amountString) { _, newValue in
-                    let digits = newValue.filter { $0.isNumber || $0 == "." }
-                    if let value = Double(digits) {
-                        subexpense.amount = value
-                    } else {
-                        subexpense.amount = 0
-                    }
-                }
-                .onSubmit {
-                    onSubmit()
-                }
-            
-            // Optional label
-            TextField("Label (optional)", text: Binding(
-                get: { subexpense.label ?? "" },
-                set: { subexpense.label = $0.isEmpty ? nil : $0 }
-            ))
-            .font(.subheadline)
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity)
-            
-            // Delete button
-            Button(action: onDelete) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
+            // Amount field - Sleek full width look
+            HStack {
+                Text(CurrencySymbol.symbol(for: currency))
+                    .font(.system(.body, design: .rounded))
                     .foregroundStyle(.secondary)
+                
+                TextField("0.00", text: $amountString)
+                    .keyboardType(.decimalPad)
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .focused($isFocused)
+                    .focused(focusedId, equals: subexpense.id)
+                    .onChange(of: amountString) { _, newValue in
+                        let digits = newValue.filter { $0.isNumber || $0 == "." }
+                        if let value = Double(digits) {
+                            subexpense.amount = value
+                        } else {
+                            subexpense.amount = 0
+                        }
+                    }
+                    .onSubmit {
+                        onSubmit()
+                    }
+                    .onChange(of: isFocused) { _, focused in
+                        if !focused {
+                            onFocusLost()
+                        }
+                    }
+                
+                Spacer()
+                
+                // Delete button - sleek and themed
+                if isFocused || subexpense.amount > 0 {
+                    Button(action: onDelete) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(AppTheme.brand) // Consistent with theme
+                            .symbolRenderingMode(.hierarchical)
+                    }
+                    .transition(.opacity.combined(with: .scale))
+                }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground)) // Slightly distinct background
+            )
         }
         .onAppear {
             amountString = subexpense.amount > 0 ? String(format: "%.2f", subexpense.amount) : ""
         }
+    }
+}
+// Helper for currency symbol
+private struct CurrencySymbol {
+    static func symbol(for code: String) -> String {
+        let locale = Locale.availableIdentifiers.map(Locale.init).first { $0.currency?.identifier == code }
+        return locale?.currencySymbol ?? code
     }
 }
 
