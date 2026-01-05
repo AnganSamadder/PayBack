@@ -286,15 +286,32 @@ final class AppStore: ObservableObject {
             expensesToDelete.contains(where: { $0.id == expense.id })
         }
         
-        persistCurrentState()
-        
-        print("✅ Member removed and state persisted")
-        
-        // Sync to cloud
-        Task { [group, expensesToDelete] in
-            try? await groupCloudService.upsertGroup(group)
-            for expense in expensesToDelete {
-                try? await expenseCloudService.deleteExpense(expense.id)
+        // Check if group now has only the current user - if so, delete the entire group
+        let remainingNonCurrentUserMembers = group.members.filter { !isCurrentUser($0) }
+        if remainingNonCurrentUserMembers.isEmpty {
+            print("🟢 Group now has only current user - deleting entire group")
+            let allGroupExpenses = expenses.filter { $0.groupId == groupId }
+            groups.removeAll { $0.id == groupId }
+            expenses.removeAll { $0.groupId == groupId }
+            persistCurrentState()
+            
+            Task { [groupId, allGroupExpenses] in
+                try? await groupCloudService.deleteGroups([groupId])
+                for expense in allGroupExpenses {
+                    try? await expenseCloudService.deleteExpense(expense.id)
+                }
+            }
+        } else {
+            persistCurrentState()
+            
+            print("✅ Member removed and state persisted")
+            
+            // Sync to cloud
+            Task { [group, expensesToDelete] in
+                try? await groupCloudService.upsertGroup(group)
+                for expense in expensesToDelete {
+                    try? await expenseCloudService.deleteExpense(expense.id)
+                }
             }
         }
         
@@ -331,6 +348,9 @@ final class AppStore: ObservableObject {
     func deleteFriend(_ friend: GroupMember) {
         print("🔵 deleteFriend called for: \(friend.name) (\(friend.id))")
         
+        // Immediately remove from friends list for instant UI update
+        friends.removeAll { $0.memberId == friend.id }
+        
         // Find direct group with this friend
         // A direct group usually has 2 members: current user and the friend
         let directGroup = groups.first { group in
@@ -347,7 +367,12 @@ final class AppStore: ObservableObject {
             }
         } else {
             print("🟡 No direct group found for friend. Just removing from friends list locally if present.")
+            // Still need to persist and sync since we removed from friends
+            persistCurrentState()
         }
+        
+        // Sync friend removal to cloud
+        scheduleFriendSync()
     }
     
     /// Removes a member from a group and deletes all expenses involving that member from that group only.
@@ -869,13 +894,26 @@ final class AppStore: ObservableObject {
     }
 
     func pruneSelfOnlyDirectGroups() {
-        let offenders = groups.filter { isDirectGroup($0) && !hasNonCurrentUserMembers($0) }
+        // Find groups where only members are all current user representations
+        let offenders = groups.filter { group in
+            group.members.isEmpty || group.members.allSatisfy { isCurrentUser($0) }
+        }
         guard !offenders.isEmpty else { return }
-        let offenderIds = offenders.map(\.id)
+        
+        let offenderIds = Set(offenders.map(\.id))
+        
+        // Also find and delete related expenses
+        let expensesToDelete = expenses.filter { offenderIds.contains($0.groupId) }
+        
         groups.removeAll { offenderIds.contains($0.id) }
+        expenses.removeAll { offenderIds.contains($0.groupId) }
         persistCurrentState()
-        Task {
+        
+        Task { [offenderIds = Array(offenderIds), expensesToDelete] in
             try? await groupCloudService.deleteGroups(offenderIds)
+            for expense in expensesToDelete {
+                try? await expenseCloudService.deleteExpense(expense.id)
+            }
         }
     }
 
