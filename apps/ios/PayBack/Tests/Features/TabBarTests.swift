@@ -103,7 +103,7 @@ final class TabBarTests: XCTestCase {
         
         for startTab in startingTabs {
             let selectedTab = startTab
-            let attemptedTab = fabSpacerTab
+            _ = fabSpacerTab  // Attempting to select FAB spacer
             
             // Guard logic from RootView - only update if NOT the FAB spacer
             // Since attemptedTab is always fabSpacerTab in this test, the guard always triggers
