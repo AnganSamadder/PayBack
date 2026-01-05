@@ -115,9 +115,9 @@ struct ExpenseDetailView: View {
                             VStack(spacing: 8) {
                                 ForEach(subexpenses) { sub in
                                     HStack {
-                                        Text(sub.label ?? "Item")
+                                        Text("Entry")
                                             .font(.system(.body, design: .rounded))
-                                            .foregroundStyle(sub.label != nil ? .primary : .secondary)
+                                            .foregroundStyle(.secondary)
                                         Spacer()
                                         Text(sub.amount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                                             .font(.system(.body, design: .rounded, weight: .medium))
