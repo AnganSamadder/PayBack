@@ -455,3 +455,94 @@ struct GroupIcon: View {
         .frame(width: size, height: size)
     }
 }
+
+// MARK: - Reusable Modifiers
+
+struct DismissKeyboardOnTap: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .onTapGesture {
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            }
+    }
+}
+
+extension View {
+    func dismissKeyboardOnTap() -> some View {
+        modifier(DismissKeyboardOnTap())
+    }
+}
+
+// MARK: - Smart Currency Field
+/// Handles "ATM-style" entry: "1" -> 0.01, "12" -> 0.12
+struct SmartCurrencyField: View {
+    @Binding var amount: Double
+    let currency: String
+    var font: Font = .system(size: 34, weight: .bold, design: .rounded) // Default large
+    var isFocusedBinding: Binding<Bool>? = nil
+    
+    @State private var inputBuffer: String = ""
+    @FocusState private var internalFocus: Bool
+    
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            // Invisible field capturing inputs
+            TextField("", text: $inputBuffer)
+                .keyboardType(.numberPad)
+                .focused($internalFocus)
+                .opacity(0.01)
+                .onChange(of: inputBuffer) { _, newVal in
+                    handleInput(newVal)
+                }
+            
+            // Visible display
+            Text(amount.formatted(.currency(code: currency)))
+                .font(font)
+                .foregroundStyle(amount == 0 ? Color.secondary.opacity(0.5) : AppTheme.brand)
+                .onTapGesture {
+                    internalFocus = true
+                }
+        }
+        .onAppear {
+            if amount > 0 {
+                // Reconstruct buffer from existing amount
+                let cents = Int((amount * 100).rounded())
+                inputBuffer = String(cents)
+            }
+        }
+        .onChange(of: internalFocus) { _, focused in
+            isFocusedBinding?.wrappedValue = focused
+        }
+        .onChange(of: isFocusedBinding?.wrappedValue) { _,Val in
+            if let val = Val, val != internalFocus {
+                internalFocus = val
+            }
+        }
+        .onAppear {
+            if amount > 0 {
+                // Reconstruct buffer from existing amount
+                // e.g. 1.23 -> "123"
+                let cents = Int((amount * 100).rounded())
+                inputBuffer = String(cents)
+            }
+        }
+    }
+    
+    private func handleInput(_ newBuffer: String) {
+        // Filter only digits
+        let digits = newBuffer.filter { $0.isNumber }
+        
+        // Update buffer to scrub non-digits
+        if digits != newBuffer {
+            inputBuffer = digits
+        }
+        
+        // Calculate amount
+        if let cents = Double(digits) {
+            amount = cents / 100.0
+        } else {
+            amount = 0
+            inputBuffer = "" // Reset if empty
+        }
+    }
+}
