@@ -1,0 +1,9 @@
+{
+  "name": "payback-scripts",
+  "version": "1.0.0",
+  "description": "Helper scripts for PayBack",
+  "private": true,
+  "dependencies": {
+    "pg": "^8.11.3"
+  }
+}

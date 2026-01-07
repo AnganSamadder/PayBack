@@ -130,4 +130,9 @@ coverage-report.txt
 
 .supabase-swift/
 
+
 .plans/
+
+# Helper Scripts
+node_modules/
+scripts/node_modules/
