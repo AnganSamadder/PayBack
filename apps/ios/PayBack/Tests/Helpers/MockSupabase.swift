@@ -65,14 +65,34 @@ final class MockSupabaseURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
-func makeMockSupabaseClient() -> SupabaseClient {
+class MockLocalStorage: AuthLocalStorage {
+    private var storage: [String: Data]
+    
+    init(data: [String: Data] = [:]) {
+        self.storage = data
+    }
+    
+    func store(key: String, value: Data) throws {
+        storage[key] = value
+    }
+    
+    func retrieve(key: String) throws -> Data? {
+        return storage[key]
+    }
+    
+    func remove(key: String) throws {
+        storage.removeValue(forKey: key)
+    }
+}
+
+func makeMockSupabaseClient(storage: AuthLocalStorage? = nil) -> SupabaseClient {
     let config = URLSessionConfiguration.ephemeral
     config.protocolClasses = [MockSupabaseURLProtocol.self]
     let session = URLSession(configuration: config)
 
     let options = SupabaseClientOptions(
         db: .init(),
-        auth: .init(emitLocalSessionAsInitialSession: true),
+        auth: .init(storage: storage ?? MockLocalStorage(), emitLocalSessionAsInitialSession: false),
         global: .init(headers: [:], session: session),
         functions: .init(),
         realtime: .init(),
