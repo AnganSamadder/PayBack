@@ -185,7 +185,8 @@ struct AddExpenseView: View {
             paidByMemberId: payerId,
             involvedMemberIds: participants.map(\.id),
             splits: splits,
-            subexpenses: subexpenses.isEmpty ? nil : subexpenses
+            // Filter out zero-amount subexpenses (blank entries from UI)
+            subexpenses: subexpenses.filter { $0.amount > 0.001 }.isEmpty ? nil : subexpenses.filter { $0.amount > 0.001 }
         )
         store.addExpense(expense)
         close()
@@ -368,6 +369,7 @@ private struct CenterEntryBubble: View {
 
     private let supported = ["USD","EUR","GBP","JPY","INR","CAD","AUD","BTC","ETH"]
     @FocusState private var focusedSubexpenseId: UUID?
+    @FocusState private var isDescriptionFocused: Bool
 
     var body: some View {
         // Metrics
@@ -377,7 +379,7 @@ private struct CenterEntryBubble: View {
 
         return VStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
             // Description row
-            HStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
+            HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: AppMetrics.AddExpense.iconCornerRadius, style: .continuous)
                     .fill(AppTheme.brand)
                     .overlay(
@@ -385,18 +387,22 @@ private struct CenterEntryBubble: View {
                     )
                     .frame(width: leftColumnWidth, height: leftColumnWidth)
 
-                // Dynamic, growing description field
-                TextField("Description", text: $descriptionText, axis: .vertical)
+                // Description field - Single line, return goes to amount
+                TextField("Description", text: $descriptionText)
                     .multilineTextAlignment(.center)
-                    // Use amount font size (34) initially, let it scale naturally
                     .font(.system(size: AppMetrics.AddExpense.amountFontSize, weight: .bold, design: .rounded))
                     .textInputAutocapitalization(.words)
                     .submitLabel(.next)
+                    .focused($isDescriptionFocused)
+                    .onSubmit {
+                        // Dismiss keyboard - user will tap amount field
+                        isDescriptionFocused = false
+                    }
                     .frame(maxWidth: .infinity)
             }
 
             // Amount row with plus button for subexpenses
-            HStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
+            HStack(spacing: 8) {
                 Menu {
                     ForEach(supported, id: \.self) { code in
                         Button(code) { Task { await select(code) } }
@@ -422,41 +428,38 @@ private struct CenterEntryBubble: View {
                     .frame(height: amountRowHeight)
                     .frame(maxWidth: .infinity)
                 } else {
-                    // Smart Currency Input
-                    ZStack {
-                        Color.clear
-                        SmartCurrencyField(
-                            amount: Binding(
-                                get: { Double(amountText) ?? 0 },
-                                set: { amountText = String($0) }
-                            ),
-                            currency: currency,
-                            alignment: .center
-                        )
-                    }
-
-                    .frame(minHeight: amountRowHeight)
+                    // Smart Currency Input - fixed height, no expanding spacer
+                    SmartCurrencyField(
+                        amount: Binding(
+                            get: { Double(amountText) ?? 0 },
+                            set: { amountText = String($0) }
+                        ),
+                        currency: currency,
+                        alignment: .center
+                    )
+                    .frame(height: amountRowHeight)
                     .frame(maxWidth: .infinity)
                 }
 
                 // Plus button to toggle subexpenses mode
                 Button {
-                    withAnimation(AppAnimation.springy) {
-                        if !showSubexpenses {
-                            // Convert current amount to first subexpense
-                            let currentAmount = Double(amountText) ?? 0
-                            if currentAmount > 0 {
-                                let firstSub = Subexpense(amount: currentAmount)
-                                subexpenses = [firstSub]
-                            } else {
-                                subexpenses = [Subexpense(amount: 0)]
-                            }
+                    if !showSubexpenses {
+                        // Convert current amount to first subexpense
+                        let currentAmount = Double(amountText) ?? 0
+                        let firstSub = Subexpense(amount: currentAmount)
+                        let secondSub = Subexpense(amount: 0) // Empty slot for next entry
+                        subexpenses = [firstSub, secondSub]
+                        
+                        withAnimation(AppAnimation.springy) {
                             showSubexpenses = true
-                            // Focus the first subexpense
-                            focusedSubexpenseId = subexpenses.first?.id
-                        } else {
-                            // Collapse back - total becomes the amount
-                            amountText = String(format: "%.2f", totalFromSubexpenses)
+                        }
+                        // Focus the second (empty) subexpense for entry
+                        focusedSubexpenseId = secondSub.id
+                    } else {
+                        // Collapse back - total becomes the amount
+                        amountText = String(format: "%.2f", totalFromSubexpenses)
+                        focusedSubexpenseId = nil
+                        withAnimation(AppAnimation.springy) {
                             subexpenses = []
                             showSubexpenses = false
                         }
@@ -477,6 +480,7 @@ private struct CenterEntryBubble: View {
                     currency: currency,
                     focusedId: $focusedSubexpenseId
                 )
+                .padding(.top, 12) // Added subtle gap here
             }
         }
         .padding(AppMetrics.AddExpense.centerInnerPadding)
@@ -517,62 +521,54 @@ private struct SubexpensesEditor: View {
     var body: some View {
         VStack(spacing: 8) {
             // Flexible container that grows
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 8) {
-                    ForEach($subexpenses) { $sub in
-                        SubexpenseRow(
-                            subexpense: $sub,
-                            currency: currency,
-                            focusedId: focusedId,
-                            onDelete: {
-                                withAnimation(AppAnimation.springy) {
-                                    subexpenses.removeAll { $0.id == sub.id }
-                                }
-                            },
-                            onSubmit: {
-                                // Add new subexpense on return if current isn't last
-                                if sub.id == subexpenses.last?.id {
-                                    addNewSubexpense()
-                                }
-                            },
-                            onFocusLost: {
-                                // When focus is lost, ensure we have an empty slot at the end
-                                ensureEmptySlotAtEnd()
-                            }
-                        )
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-            .frame(maxHeight: CGFloat(min(subexpenses.count * 60, 240))) // Dynamic height up to max
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    if focusedId.wrappedValue != nil {
-                        Spacer()
-                        Button("Next") {
-                            if let currentId = focusedId.wrappedValue,
-                               let index = subexpenses.firstIndex(where: { $0.id == currentId }) {
-                                if index < subexpenses.count - 1 {
-                                    focusedId.wrappedValue = subexpenses[index + 1].id
-                                } else {
-                                    // Last one
-                                    if subexpenses[index].amount > 0 {
-                                        addNewSubexpense()
-                                    } else {
-                                        // Dismiss if empty and last
-                                        focusedId.wrappedValue = nil
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 8) {
+                        ForEach($subexpenses) { $sub in
+                            SubexpenseRow(
+                                subexpense: $sub,
+                                currency: currency,
+                                focusedId: focusedId,
+                                onDelete: {
+                                    withAnimation(AppAnimation.springy) {
+                                        subexpenses.removeAll { $0.id == sub.id }
                                     }
+                                },
+                                onNext: {
+                                    // Only allow Next if current box has a value
+                                    guard sub.amount > 0 else { return }
+                                    
+                                    // Find current index
+                                    if let index = subexpenses.firstIndex(where: { $0.id == sub.id }) {
+                                        if index < subexpenses.count - 1 {
+                                            // Move to next existing subexpense
+                                            let nextId = subexpenses[index + 1].id
+                                            focusedId.wrappedValue = nextId
+                                            withAnimation {
+                                                proxy.scrollTo(nextId, anchor: .bottom)
+                                            }
+                                        } else {
+                                            // At the end - create new and focus it
+                                            addNewSubexpense(scrollProxy: proxy)
+                                        }
+                                    }
+                                },
+                                onFocusLost: {
+                                    // When focus is lost, ensure we have an empty slot at the end
+                                    ensureEmptySlotAtEnd(scrollProxy: proxy)
                                 }
-                            }
+                            )
+                            .id(sub.id) // For ScrollViewReader
                         }
-                        .fontWeight(.semibold)
                     }
+                    .padding(.vertical, 4)
                 }
+                .frame(maxHeight: CGFloat(min(subexpenses.count * 60, 240))) // Dynamic height up to max
             }
         }
         .padding(.top, 8)
         .onAppear {
-            ensureEmptySlotAtEnd()
+            ensureEmptySlotAtEnd(scrollProxy: nil)
         }
         .onChange(of: subexpenses) { _, _ in
            // ensureEmptySlotAtEnd() - triggering this on every change causes loops/UX issues while typing
@@ -580,22 +576,33 @@ private struct SubexpensesEditor: View {
         }
     }
     
-    private func addNewSubexpense() {
+    private func addNewSubexpense(scrollProxy: ScrollViewProxy?, shouldFocus: Bool = true) {
         let newSub = Subexpense(amount: 0)
         withAnimation(AppAnimation.springy) {
             subexpenses.append(newSub)
         }
-        // Small delay to allow animation to start before focusing
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        
+        if shouldFocus {
+            // Set focus immediately
             focusedId.wrappedValue = newSub.id
+        }
+        
+        // Scroll to new item after a brief delay to let view update
+        if let proxy = scrollProxy {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                withAnimation {
+                    proxy.scrollTo(newSub.id, anchor: .bottom)
+                }
+            }
         }
     }
     
-    private func ensureEmptySlotAtEnd() {
+    private func ensureEmptySlotAtEnd(scrollProxy: ScrollViewProxy?) {
         if let last = subexpenses.last, last.amount > 0 {
-            addNewSubexpense()
+            // Don't focus when adding slot on focus lost - just create the slot
+            addNewSubexpense(scrollProxy: scrollProxy, shouldFocus: false)
         } else if subexpenses.isEmpty {
-            addNewSubexpense()
+            addNewSubexpense(scrollProxy: scrollProxy, shouldFocus: false)
         }
     }
 }
@@ -606,11 +613,13 @@ private struct SubexpenseRow: View {
     let currency: String
     var focusedId: FocusState<UUID?>.Binding
     let onDelete: () -> Void
-    let onSubmit: () -> Void
+    let onNext: () -> Void
     let onFocusLost: () -> Void
     
-    @State private var amountString: String = ""
-    @FocusState private var isFocused: Bool
+    // Computed property to check if this row is focused
+    private var isThisRowFocused: Bool {
+        focusedId.wrappedValue == subexpense.id
+    }
     
     var body: some View {
         HStack(spacing: 12) {
@@ -620,34 +629,23 @@ private struct SubexpenseRow: View {
                     .font(.system(.body, design: .rounded))
                     .foregroundStyle(.secondary)
                 
-                // Smart Currency Input for Subexpense
+                // Smart Currency Input for Subexpense - using UUID-based focus
                 SmartCurrencyField(
                     amount: $subexpense.amount,
                     currency: currency,
                     font: .system(size: 18, weight: .medium, design: .rounded),
-                    isFocusedBinding: Binding(
-                        get: { focusedId.wrappedValue == subexpense.id },
-                        set: { if $0 { focusedId.wrappedValue = subexpense.id } }
-                    )
+                    focusedId: focusedId,
+                    myId: subexpense.id
                 )
-                .focused($isFocused)
-                .onChange(of: isFocused) { _, focused in
-                    if !focused {
-                        onFocusLost()
-                    }
-                }
-                .onSubmit {
-                    onSubmit()
-                }
                 
                 Spacer()
                 
                 // Delete button - sleek and themed
-                if isFocused || subexpense.amount > 0 {
+                if isThisRowFocused || subexpense.amount > 0 {
                     Button(action: onDelete) {
                         Image(systemName: "xmark.circle.fill")
                             .font(.title3)
-                            .foregroundStyle(AppTheme.brand) // Consistent with theme
+                            .foregroundStyle(AppTheme.brand)
                             .symbolRenderingMode(.hierarchical)
                     }
                     .transition(.opacity.combined(with: .scale))
@@ -657,8 +655,30 @@ private struct SubexpenseRow: View {
             .padding(.vertical, 12)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(uiColor: .secondarySystemBackground)) // Slightly distinct background
+                    .fill(Color(uiColor: .secondarySystemBackground))
             )
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                if isThisRowFocused {
+                    Button("Done") {
+                        focusedId.wrappedValue = nil
+                    }
+                    
+                    Spacer()
+                    
+                    Button("Next") {
+                        onNext()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+        // Track when this row loses focus
+        .onChange(of: focusedId.wrappedValue) { oldVal, newVal in
+            if oldVal == subexpense.id && newVal != subexpense.id {
+                onFocusLost()
+            }
         }
     }
 }
