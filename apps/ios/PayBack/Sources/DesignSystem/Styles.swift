@@ -205,7 +205,7 @@ public enum AppMetrics {
         static let centerShadowRadius: CGFloat = 8
         static let centerRowSpacing: CGFloat = 8
         static let descriptionRowHeight: CGFloat = 52
-        static let amountRowHeight: CGFloat = 84
+        static let amountRowHeight: CGFloat = 56
         static let leftColumnWidth: CGFloat = 56
         static let iconCornerRadius: CGFloat = 12
         static let descriptionFontSize: CGFloat = 20
@@ -455,3 +455,97 @@ struct GroupIcon: View {
         .frame(width: size, height: size)
     }
 }
+
+// MARK: - Reusable Modifiers
+
+struct DismissKeyboardOnTap: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .onTapGesture {
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            }
+    }
+}
+
+extension View {
+    func dismissKeyboardOnTap() -> some View {
+        modifier(DismissKeyboardOnTap())
+    }
+}
+
+// MARK: - Smart Currency Field
+/// Handles "ATM-style" entry: "1" -> 0.01, "12" -> 0.12
+struct SmartCurrencyField: View {
+    @Binding var amount: Double
+    let currency: String
+    var font: Font = .system(size: 34, weight: .bold, design: .rounded)
+    var alignment: Alignment = .trailing
+    
+    // UUID-based focus (preferred for lists)
+    var focusedId: FocusState<UUID?>.Binding? = nil
+    var myId: UUID? = nil
+    
+    @State private var inputBuffer: String = ""
+    @FocusState private var internalFocus: Bool
+    
+    var body: some View {
+        ZStack(alignment: alignment) {
+            // Invisible field capturing inputs
+            if let focusedId = focusedId, let myId = myId {
+                // Use UUID-based focus for lists
+                TextField("", text: $inputBuffer)
+                    .keyboardType(.numberPad)
+                    .focused(focusedId, equals: myId)
+                    .opacity(0.01)
+                    .onChange(of: inputBuffer) { _, newVal in
+                        handleInput(newVal)
+                    }
+            } else {
+                // Fallback to simple focus
+                TextField("", text: $inputBuffer)
+                    .keyboardType(.numberPad)
+                    .focused($internalFocus)
+                    .opacity(0.01)
+                    .onChange(of: inputBuffer) { _, newVal in
+                        handleInput(newVal)
+                    }
+            }
+            
+            // Visible display
+            Text(amount.formatted(.currency(code: currency)))
+                .font(font)
+                .foregroundStyle(amount == 0 ? Color.secondary.opacity(0.5) : AppTheme.brand)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if let focusedId = focusedId, let myId = myId {
+                        focusedId.wrappedValue = myId
+                    } else {
+                        internalFocus = true
+                    }
+                }
+        }
+        .onAppear {
+            // Reconstruct buffer if amount already exists
+            if amount > 0 {
+                let cents = Int((amount * 100).rounded())
+                inputBuffer = String(cents)
+            }
+        }
+    }
+    
+    private func handleInput(_ newBuffer: String) {
+        let digits = newBuffer.filter { $0.isNumber }
+        
+        if digits != newBuffer {
+            inputBuffer = digits
+        }
+        
+        if let cents = Double(digits) {
+            amount = cents / 100.0
+        } else {
+            amount = 0
+            inputBuffer = ""
+        }
+    }
+}
+

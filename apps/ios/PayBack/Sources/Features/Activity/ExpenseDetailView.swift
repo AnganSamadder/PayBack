@@ -75,7 +75,7 @@ struct ExpenseDetailView: View {
                             )
 
                             // Splits
-                            ForEach(expense.splits) { split in
+                            ForEach(expense.splits.filter { $0.memberId != expense.paidByMemberId }) { split in
                                 HStack {
                                     PaymentDetailRow(
                                         title: split.memberId == store.currentUser.id ? "You owe" : "\(memberName(for: split.memberId)) owes",
@@ -97,6 +97,35 @@ struct ExpenseDetailView: View {
                             }
                         }
                         .padding(.horizontal, 16)
+                    }
+
+                    // Cost Breakdown (if subexpenses exist)
+                    if expense.hasSubexpenses, let subexpenses = expense.subexpenses {
+                        VStack(spacing: 16) {
+                            HStack {
+                                Text("Cost Breakdown")
+                                    .font(.system(.headline, design: .rounded, weight: .semibold))
+                                Spacer()
+                                Text("\(subexpenses.count) items")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 20)
+
+                            VStack(spacing: 8) {
+                                ForEach(subexpenses) { sub in
+                                    HStack {
+                                        Text("Entry")
+                                            .font(.system(.body, design: .rounded))
+                                            .foregroundStyle(.secondary)
+                                        Spacer()
+                                        Text(sub.amount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                                            .font(.system(.body, design: .rounded, weight: .medium))
+                                    }
+                                    .padding(.horizontal, 16)
+                                }
+                            }
+                        }
                     }
 
                     // Settle button or settled status

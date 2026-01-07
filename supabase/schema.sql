@@ -62,8 +62,18 @@ create table if not exists expenses (
   linked_participants jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  is_payback_generated_mock_data boolean,
   is_payback_generated_mock_data boolean
 );
+
+create table if not exists subexpenses (
+  id uuid primary key,
+  expense_id uuid not null references expenses (id) on delete cascade,
+  amount double precision not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_subexpenses_expense_id on subexpenses (expense_id);
 
 create index if not exists idx_expenses_owner_account on expenses (owner_account_id);
 create index if not exists idx_expenses_owner_email on expenses (owner_email);
@@ -108,6 +118,7 @@ alter table accounts enable row level security;
 alter table account_friends enable row level security;
 alter table groups enable row level security;
 alter table expenses enable row level security;
+alter table subexpenses enable row level security;
 alter table link_requests enable row level security;
 alter table invite_tokens enable row level security;
 
@@ -118,6 +129,7 @@ drop policy if exists "groups_owner_rw" on groups;
 drop policy if exists "expenses_owner_rw" on expenses;
 drop policy if exists "link_requests_read" on link_requests;
 drop policy if exists "link_requests_write" on link_requests;
+drop policy if exists "subexpenses_via_expense" on subexpenses;
 drop policy if exists "invite_tokens_read" on invite_tokens;
 drop policy if exists "invite_tokens_write" on invite_tokens;
 
@@ -167,6 +179,31 @@ create policy "expenses_owner_rw"
   with check (
     owner_account_id = auth.uid()
     or lower(owner_email) = lower(jwt_email())
+  );
+
+-- Subexpenses: accessible if user owns the parent expense
+create policy "subexpenses_via_expense"
+  on subexpenses
+  for all
+  using (
+    exists (
+      select 1 from expenses e
+      where e.id = subexpenses.expense_id
+      and (
+        e.owner_account_id = auth.uid()
+        or lower(e.owner_email) = lower(jwt_email())
+      )
+    )
+  )
+  with check (
+    exists (
+      select 1 from expenses e
+      where e.id = subexpenses.expense_id
+      and (
+        e.owner_account_id = auth.uid()
+        or lower(e.owner_email) = lower(jwt_email())
+      )
+    )
   );
 
 -- Link requests: requester or recipient can see; only requester writes

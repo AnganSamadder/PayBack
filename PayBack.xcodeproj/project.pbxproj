@@ -51,6 +51,7 @@
 		40232C51ECCE24BC4E3969A5 /* GroupsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A2457284DE994812735486 /* GroupsTabView.swift */; };
 		40D995DAA5F94D925B7A4A4D /* AccountServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A8B642930616D624DFF4D8 /* AccountServiceTests.swift */; };
 		46A0DEB415ADB0D436D8E833 /* SupabaseEmailAuthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31AF46D5B9298141F58197DA /* SupabaseEmailAuthServiceTests.swift */; };
+		47E4C08590B74B3E823F91C5 /* SupabaseUserContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 551653BF67ACC2D9826450D2 /* SupabaseUserContextTests.swift */; };
 		4BD63B213C7A3C656EDE5B6F /* PayBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17A3BE8746AD4D48BDCB0C1E /* PayBackTests.swift */; };
 		4BF4240CE243E9F9EA57DFA9 /* LinkRequestService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0143659E678920CB7777834 /* LinkRequestService.swift */; };
 		4D29E4813A23C389BE48E6E3 /* ExpenseDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEC794F53CA3D9FF5A554036 /* ExpenseDetailView.swift */; };
@@ -247,6 +248,7 @@
 		4D1EB6F6C491A423A4B98BAD /* PayBackTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PayBackTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4E2250695D4B911B5C06F64D /* AuthCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthCoordinatorTests.swift; sourceTree = "<group>"; };
 		52AEFA92954396252469BB8A /* NavigationTransitionSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationTransitionSettings.swift; sourceTree = "<group>"; };
+		551653BF67ACC2D9826450D2 /* SupabaseUserContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseUserContextTests.swift; sourceTree = "<group>"; };
 		552929851A5AD547D2879FBA /* TEST_REQUIREMENTS_MAPPING.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TEST_REQUIREMENTS_MAPPING.md; sourceTree = "<group>"; };
 		55512C199A3314C244C0B764 /* DetailContainerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailContainerTests.swift; sourceTree = "<group>"; };
 		581F7C23F0AA944D1A1145AC /* SupabaseAccountServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseAccountServiceTests.swift; sourceTree = "<group>"; };
@@ -750,6 +752,7 @@
 				2A73235653F423593484B65E /* SupabaseInviteLinkServiceTests.swift */,
 				F8D00110E69E2B73ADE185E5 /* SupabaseLinkRequestServiceTests.swift */,
 				A50754EF6510D9AFF70D29E8 /* SupabasePhoneAuthServiceTests.swift */,
+				551653BF67ACC2D9826450D2 /* SupabaseUserContextTests.swift */,
 				03C8314843DD5D96F5E03E2F /* Auth */,
 				AB3A728B79C5D8ED20461577 /* Core */,
 				C9914AED9FCC8D1D56C00CDF /* Links */,
@@ -1154,6 +1157,7 @@
 				1362F399B4ABEDBC1926A53E /* SupabaseLinkRequestServiceTests.swift in Sources */,
 				C842D54AFD6824DC12A0F834 /* SupabasePhoneAuthServiceTests.swift in Sources */,
 				6B2D7169A323DAFEE676B728 /* SupabaseTestStubs.swift in Sources */,
+				47E4C08590B74B3E823F91C5 /* SupabaseUserContextTests.swift in Sources */,
 				EB628C7BA2674F2CFAC629D3 /* SwipeBackModifierTests.swift in Sources */,
 				340D7AC16DE2663CC069B866 /* TabBarTests.swift in Sources */,
 				4E4A0EB92A6530BB1A81DE03 /* TestHelpers.swift in Sources */,
