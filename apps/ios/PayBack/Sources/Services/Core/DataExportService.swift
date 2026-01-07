@@ -5,8 +5,8 @@ struct DataExportService {
     
     // MARK: - Export Format Constants
     
-    private static let formatVersion = "PAYBACK_EXPORT_V1"
-    private static let headerMarker = "===PAYBACK_EXPORT_V1==="
+    // Simplified header without version number as requested
+    private static let headerMarker = "===PAYBACK_EXPORT==="
     private static let endMarker = "===END_PAYBACK_EXPORT==="
     
     // MARK: - Public Methods
@@ -120,14 +120,37 @@ struct DataExportService {
         lines.append("# expense_id,split_id,member_id,amount,is_settled")
         for expense in expenses {
             for split in expense.splits {
-                let row = [
-                    expense.id.uuidString,
-                    split.id.uuidString,
-                    split.memberId.uuidString,
-                    String(format: "%.2f", split.amount),
-                    String(split.isSettled)
-                ].joined(separator: ",")
-                lines.append(row)
+                // Filter out zero-amount splits as requested
+                if split.amount > 0.001 {
+                    let row = [
+                        expense.id.uuidString,
+                        split.id.uuidString,
+                        split.memberId.uuidString,
+                        String(format: "%.2f", split.amount),
+                        String(split.isSettled)
+                    ].joined(separator: ",")
+                    lines.append(row)
+                }
+            }
+        }
+        lines.append("")
+        
+        // Expense subexpenses section
+        lines.append("[EXPENSE_SUBEXPENSES]")
+        lines.append("# expense_id,subexpense_id,amount")
+        for expense in expenses {
+            if let subexpenses = expense.subexpenses {
+                for sub in subexpenses {
+                    // Filter out zero/empty amounts as requested
+                    if sub.amount > 0.001 {
+                        let row = [
+                            expense.id.uuidString,
+                            sub.id.uuidString,
+                            String(format: "%.2f", sub.amount)
+                        ].joined(separator: ",")
+                        lines.append(row)
+                    }
+                }
             }
         }
         lines.append("")
