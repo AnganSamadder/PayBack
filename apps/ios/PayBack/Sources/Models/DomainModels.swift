@@ -70,15 +70,14 @@ struct ExpenseSplit: Identifiable, Codable, Hashable, Sendable {
 }
 
 /// A sub-cost breakdown within an expense (e.g., individual items on a receipt)
-struct Subexpense: Identifiable, Codable, Hashable, Sendable {
-    let id: UUID
-    var amount: Double
-    var label: String? // Optional description for the sub-cost
+public struct Subexpense: Codable, Identifiable, Equatable, Hashable, Sendable {
+    public let id: UUID
+    public var amount: Double
+    // No label needed as per requirements
     
-    init(id: UUID = UUID(), amount: Double, label: String? = nil) {
+    public init(id: UUID = UUID(), amount: Double) {
         self.id = id
         self.amount = amount
-        self.label = label
     }
 }
 

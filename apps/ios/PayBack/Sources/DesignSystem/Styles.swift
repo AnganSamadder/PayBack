@@ -205,7 +205,7 @@ public enum AppMetrics {
         static let centerShadowRadius: CGFloat = 8
         static let centerRowSpacing: CGFloat = 8
         static let descriptionRowHeight: CGFloat = 52
-        static let amountRowHeight: CGFloat = 84
+        static let amountRowHeight: CGFloat = 56
         static let leftColumnWidth: CGFloat = 56
         static let iconCornerRadius: CGFloat = 12
         static let descriptionFontSize: CGFloat = 20
@@ -478,9 +478,12 @@ extension View {
 struct SmartCurrencyField: View {
     @Binding var amount: Double
     let currency: String
-    var font: Font = .system(size: 34, weight: .bold, design: .rounded) // Default large
-    var isFocusedBinding: Binding<Bool>? = nil
-    var alignment: Alignment = .trailing // New alignment parameter
+    var font: Font = .system(size: 34, weight: .bold, design: .rounded)
+    var alignment: Alignment = .trailing
+    
+    // UUID-based focus (preferred for lists)
+    var focusedId: FocusState<UUID?>.Binding? = nil
+    var myId: UUID? = nil
     
     @State private var inputBuffer: String = ""
     @FocusState private var internalFocus: Bool
@@ -488,54 +491,61 @@ struct SmartCurrencyField: View {
     var body: some View {
         ZStack(alignment: alignment) {
             // Invisible field capturing inputs
-            TextField("", text: $inputBuffer)
-                .keyboardType(.numberPad)
-                .focused($internalFocus)
-                .opacity(0.01)
-                .onChange(of: inputBuffer) { _, newVal in
-                    handleInput(newVal)
-                }
+            if let focusedId = focusedId, let myId = myId {
+                // Use UUID-based focus for lists
+                TextField("", text: $inputBuffer)
+                    .keyboardType(.numberPad)
+                    .focused(focusedId, equals: myId)
+                    .opacity(0.01)
+                    .onChange(of: inputBuffer) { _, newVal in
+                        handleInput(newVal)
+                    }
+            } else {
+                // Fallback to simple focus
+                TextField("", text: $inputBuffer)
+                    .keyboardType(.numberPad)
+                    .focused($internalFocus)
+                    .opacity(0.01)
+                    .onChange(of: inputBuffer) { _, newVal in
+                        handleInput(newVal)
+                    }
+            }
             
             // Visible display
             Text(amount.formatted(.currency(code: currency)))
                 .font(font)
                 .foregroundStyle(amount == 0 ? Color.secondary.opacity(0.5) : AppTheme.brand)
+                .contentShape(Rectangle())
                 .onTapGesture {
-                    internalFocus = true
+                    if let focusedId = focusedId, let myId = myId {
+                        focusedId.wrappedValue = myId
+                    } else {
+                        internalFocus = true
+                    }
                 }
         }
         .onAppear {
+            // Reconstruct buffer if amount already exists
             if amount > 0 {
-                // Reconstruct buffer from existing amount
                 let cents = Int((amount * 100).rounded())
                 inputBuffer = String(cents)
-            }
-        }
-        .onChange(of: internalFocus) { _, focused in
-            isFocusedBinding?.wrappedValue = focused
-        }
-        .onChange(of: isFocusedBinding?.wrappedValue) { _,Val in
-            if let val = Val, val != internalFocus {
-                internalFocus = val
             }
         }
     }
     
     private func handleInput(_ newBuffer: String) {
-        // Filter only digits
         let digits = newBuffer.filter { $0.isNumber }
         
-        // Update buffer to scrub non-digits
         if digits != newBuffer {
             inputBuffer = digits
         }
         
-        // Calculate amount
         if let cents = Double(digits) {
             amount = cents / 100.0
         } else {
             amount = 0
-            inputBuffer = "" // Reset if empty
+            inputBuffer = ""
         }
     }
 }
+
