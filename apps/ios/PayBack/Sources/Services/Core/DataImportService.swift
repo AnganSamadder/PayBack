@@ -48,6 +48,7 @@ struct ParsedExportData: Sendable {
     var expenses: [ParsedExpense] = []
     var expenseInvolvedMembers: [(expenseId: UUID, memberId: UUID)] = []
     var expenseSplits: [ParsedExpenseSplit] = []
+    var expenseSubexpenses: [ParsedSubexpense] = []
     var participantNames: [(expenseId: UUID, memberId: UUID, name: String)] = []
 }
 
@@ -94,12 +95,20 @@ struct ParsedExpenseSplit: Sendable {
     let isSettled: Bool
 }
 
+struct ParsedSubexpense: Sendable {
+    let expenseId: UUID
+    let subexpenseId: UUID
+    let amount: Double
+}
+
 /// Service responsible for importing app data from exported text format
 struct DataImportService {
     
     // MARK: - Format Constants
     
-    private static let headerMarker = "===PAYBACK_EXPORT_V1==="
+    private static let headerMarker = "===PAYBACK_EXPORT==="
+    // Legacy header for backward compatibility
+    private static let legacyHeaderMarker = "===PAYBACK_EXPORT_V1==="
     private static let endMarker = "===END_PAYBACK_EXPORT==="
     
     // MARK: - Public Methods
@@ -109,7 +118,9 @@ struct DataImportService {
     /// - Returns: true if the format is valid
     static func validateFormat(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.hasPrefix(headerMarker) && trimmed.contains(endMarker)
+        // Accept either the new header or the legacy V1 header
+        let hasValidHeader = trimmed.hasPrefix(headerMarker) || trimmed.hasPrefix(legacyHeaderMarker)
+        return hasValidHeader && trimmed.contains(endMarker)
     }
     
     /// Parses an export text into structured data
@@ -198,6 +209,11 @@ struct DataImportService {
             case "EXPENSE_SPLITS":
                 if let split = parseExpenseSplit(fields: fields) {
                     data.expenseSplits.append(split)
+                }
+                
+            case "EXPENSE_SUBEXPENSES":
+                if let sub = parseSubexpense(fields: fields) {
+                    data.expenseSubexpenses.append(sub)
                 }
                 
             case "PARTICIPANT_NAMES":
@@ -357,6 +373,12 @@ struct DataImportService {
                 }
             }
             
+            // Get subexpenses
+            let subEntries = parsedData.expenseSubexpenses.filter { $0.expenseId == parsedExpense.id }
+            let subexpenses: [Subexpense]? = subEntries.isEmpty ? nil : subEntries.map { entry in
+                Subexpense(id: UUID(), amount: entry.amount)
+            }
+            
             let newExpense = Expense(
                 id: UUID(),
                 groupId: newGroupId,
@@ -368,7 +390,8 @@ struct DataImportService {
                 splits: newSplits,
                 isSettled: parsedExpense.isSettled,
                 participantNames: participantNames,
-                isDebug: parsedExpense.isDebug
+                isDebug: parsedExpense.isDebug,
+                subexpenses: subexpenses
             )
             
             store.addExpense(newExpense)
@@ -522,6 +545,21 @@ struct DataImportService {
             memberId: memberId,
             amount: amount,
             isSettled: fields[4].lowercased() == "true"
+        )
+    }
+    
+    private static func parseSubexpense(fields: [String]) -> ParsedSubexpense? {
+        guard fields.count >= 3,
+              let expenseId = UUID(uuidString: fields[0]),
+              let subexpenseId = UUID(uuidString: fields[1]),
+              let amount = Double(fields[2]) else {
+            return nil
+        }
+        
+        return ParsedSubexpense(
+            expenseId: expenseId,
+            subexpenseId: subexpenseId,
+            amount: amount
         )
     }
 }

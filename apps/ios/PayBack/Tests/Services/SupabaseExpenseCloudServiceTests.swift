@@ -203,7 +203,7 @@ final class SupabaseExpenseCloudServiceTests: XCTestCase {
         MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
 
         try await service.upsertExpense(expense, participants: [participant])
-        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 1)
+        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 2)
     }
     
     func testUpsertExpenseWithMultipleParticipants() async throws {
@@ -235,7 +235,7 @@ final class SupabaseExpenseCloudServiceTests: XCTestCase {
         MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
 
         try await service.upsertExpense(expense, participants: participants)
-        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 1)
+        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 2)
     }
     
     func testUpsertSettledExpense() async throws {
@@ -256,7 +256,7 @@ final class SupabaseExpenseCloudServiceTests: XCTestCase {
         MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
 
         try await service.upsertExpense(expense, participants: [participant])
-        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 1)
+        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 2)
     }
     
     // MARK: - Delete Expense Tests
@@ -266,7 +266,7 @@ final class SupabaseExpenseCloudServiceTests: XCTestCase {
         MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
 
         try await service.deleteExpense(expenseId)
-        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 1)
+        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 1) // Cascade delete handles subexpenses server-side
     }
     
     // MARK: - Clear Legacy Mock Expenses Tests
@@ -503,7 +503,7 @@ final class SupabaseExpenseCloudServiceTests: XCTestCase {
         MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
 
         try await service.upsertExpense(expense, participants: [participant])
-        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 1)
+        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 2)
     }
     
     func testUpsertExpenseWithVeryLargeAmount() async throws {
@@ -524,7 +524,7 @@ final class SupabaseExpenseCloudServiceTests: XCTestCase {
         MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
 
         try await service.upsertExpense(expense, participants: [participant])
-        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 1)
+        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 2)
     }
     
     // MARK: - Additional Coverage Tests
@@ -688,7 +688,7 @@ final class SupabaseExpenseCloudServiceTests: XCTestCase {
         MockSupabaseURLProtocol.enqueue(MockSupabaseResponse(jsonObject: []))
 
         try await service.upsertExpense(expense, participants: participants)
-        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 1)
+        XCTAssertEqual(MockSupabaseURLProtocol.recordedRequests.count, 2)
         
         // Verify request body contains linked_participants
         let request = MockSupabaseURLProtocol.recordedRequests[0]

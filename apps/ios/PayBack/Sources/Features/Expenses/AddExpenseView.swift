@@ -56,6 +56,10 @@ struct AddExpenseView: View {
     @State private var itemizedTip: Double = 0
     @State private var autoDistributeTaxTip: Bool = true
     
+    // Subexpenses state
+    @State private var subexpenses: [Subexpense] = []
+    @State private var showSubexpenses: Bool = false
+    
     @State private var showNotesSheet: Bool = false
     @State private var showSaveConfirm: Bool = false
 
@@ -83,6 +87,7 @@ struct AddExpenseView: View {
                     .offset(y: dragOffset)
                 .ignoresSafeArea()
                 .compositingGroup()
+                .dismissKeyboardOnTap()
         }
     }
 
@@ -179,7 +184,9 @@ struct AddExpenseView: View {
             totalAmount: totalAmount,
             paidByMemberId: payerId,
             involvedMemberIds: participants.map(\.id),
-            splits: splits
+            splits: splits,
+            // Filter out zero-amount subexpenses (blank entries from UI)
+            subexpenses: subexpenses.filter { $0.amount > 0.001 }.isEmpty ? nil : subexpenses.filter { $0.amount > 0.001 }
         )
         store.addExpense(expense)
         close()
@@ -243,7 +250,9 @@ struct AddExpenseView: View {
                          descriptionText: $descriptionText,
                          amountText: $amountText,
                          currency: $currency,
-                         rates: $rates
+                         rates: $rates,
+                         subexpenses: $subexpenses,
+                         showSubexpenses: $showSubexpenses
                      )
                      .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
 
@@ -355,8 +364,12 @@ private struct CenterEntryBubble: View {
     @Binding var amountText: String
     @Binding var currency: String
     @Binding var rates: [String: Double]
+    @Binding var subexpenses: [Subexpense]
+    @Binding var showSubexpenses: Bool
 
     private let supported = ["USD","EUR","GBP","JPY","INR","CAD","AUD","BTC","ETH"]
+    @FocusState private var focusedSubexpenseId: UUID?
+    @FocusState private var isDescriptionFocused: Bool
 
     var body: some View {
         // Metrics
@@ -366,9 +379,7 @@ private struct CenterEntryBubble: View {
 
         return VStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
             // Description row
-            HStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
-                // Smaller rounded teal square icon inside the bubble
-                // 1:1 teal square (scaled up version of the bottom icon style)
+            HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: AppMetrics.AddExpense.iconCornerRadius, style: .continuous)
                     .fill(AppTheme.brand)
                     .overlay(
@@ -376,25 +387,27 @@ private struct CenterEntryBubble: View {
                     )
                     .frame(width: leftColumnWidth, height: leftColumnWidth)
 
-                ZStack {
-                    Color.clear
-                    TextField("Description", text: $descriptionText)
-                        .multilineTextAlignment(.center)
-                        .font(.system(size: AppMetrics.AddExpense.descriptionFontSize, weight: .semibold))
-                        .textInputAutocapitalization(.words)
-                }
-                .frame(height: descriptionRowHeight)
-                .frame(maxWidth: .infinity)
+                // Description field - Single line, return goes to amount
+                TextField("Description", text: $descriptionText)
+                    .multilineTextAlignment(.center)
+                    .font(.system(size: AppMetrics.AddExpense.amountFontSize, weight: .bold, design: .rounded))
+                    .textInputAutocapitalization(.words)
+                    .submitLabel(.next)
+                    .focused($isDescriptionFocused)
+                    .onSubmit {
+                        // Dismiss keyboard - user will tap amount field
+                        isDescriptionFocused = false
+                    }
+                    .frame(maxWidth: .infinity)
             }
 
-            // Amount row
-            HStack(spacing: AppMetrics.AddExpense.centerRowSpacing) {
+            // Amount row with plus button for subexpenses
+            HStack(spacing: 8) {
                 Menu {
                     ForEach(supported, id: \.self) { code in
                         Button(code) { Task { await select(code) } }
                     }
                 } label: {
-                    // 1:1 teal square currency (scaled up, consistent with top)
                     RoundedRectangle(cornerRadius: AppMetrics.AddExpense.iconCornerRadius, style: .continuous)
                         .fill(AppTheme.brand)
                         .overlay(
@@ -403,12 +416,71 @@ private struct CenterEntryBubble: View {
                         .frame(width: leftColumnWidth, height: leftColumnWidth)
                 }
 
-                ZStack {
-                    Color.clear
-                    AmountField(text: $amountText)
+                if showSubexpenses {
+                    // Show total when in subexpenses mode
+                    VStack(spacing: 4) {
+                        Text("Total")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(totalFromSubexpenses, format: .currency(code: currency))
+                            .font(.system(size: AppMetrics.AddExpense.amountFontSize, weight: .bold, design: .rounded))
+                    }
+                    .frame(height: amountRowHeight)
+                    .frame(maxWidth: .infinity)
+                } else {
+                    // Smart Currency Input - fixed height, no expanding spacer
+                    SmartCurrencyField(
+                        amount: Binding(
+                            get: { Double(amountText) ?? 0 },
+                            set: { amountText = String($0) }
+                        ),
+                        currency: currency,
+                        alignment: .center
+                    )
+                    .frame(height: amountRowHeight)
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(height: amountRowHeight)
-                .frame(maxWidth: .infinity)
+
+                // Plus button to toggle subexpenses mode
+                Button {
+                    if !showSubexpenses {
+                        // Convert current amount to first subexpense
+                        let currentAmount = Double(amountText) ?? 0
+                        let firstSub = Subexpense(amount: currentAmount)
+                        let secondSub = Subexpense(amount: 0) // Empty slot for next entry
+                        subexpenses = [firstSub, secondSub]
+                        
+                        withAnimation(AppAnimation.springy) {
+                            showSubexpenses = true
+                        }
+                        // Focus the second (empty) subexpense for entry
+                        focusedSubexpenseId = secondSub.id
+                    } else {
+                        // Collapse back - total becomes the amount
+                        amountText = String(format: "%.2f", totalFromSubexpenses)
+                        focusedSubexpenseId = nil
+                        withAnimation(AppAnimation.springy) {
+                            subexpenses = []
+                            showSubexpenses = false
+                        }
+                    }
+                    Haptics.impact(.light)
+                } label: {
+                    Image(systemName: showSubexpenses ? "minus.circle.fill" : "plus.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(AppTheme.brand)
+                }
+            }
+
+            // Subexpenses list (when expanded)
+            if showSubexpenses {
+                SubexpensesEditor(
+                    subexpenses: $subexpenses,
+                    amountText: $amountText,
+                    currency: currency,
+                    focusedId: $focusedSubexpenseId
+                )
+                .padding(.top, 12) // Added subtle gap here
             }
         }
         .padding(AppMetrics.AddExpense.centerInnerPadding)
@@ -417,6 +489,16 @@ private struct CenterEntryBubble: View {
         .shadow(color: AppTheme.brand.opacity(0.15), radius: AppMetrics.AddExpense.centerShadowRadius, y: 4)
         .padding(AppMetrics.AddExpense.centerOuterPadding)
         .task { await select(currency) }
+        .onChange(of: subexpenses) { _, _ in
+            // Keep amountText in sync with subexpenses total
+            if showSubexpenses {
+                amountText = String(format: "%.2f", totalFromSubexpenses)
+            }
+        }
+    }
+
+    private var totalFromSubexpenses: Double {
+        subexpenses.reduce(0) { $0 + $1.amount }
     }
 
     private func select(_ code: String) async {
@@ -426,6 +508,185 @@ private struct CenterEntryBubble: View {
         } else {
             do { rates = try await CurrencyService.shared.fetchRates(base: code) } catch { rates = [:] }
         }
+    }
+}
+
+// MARK: - Subexpenses Editor
+private struct SubexpensesEditor: View {
+    @Binding var subexpenses: [Subexpense]
+    @Binding var amountText: String
+    let currency: String
+    var focusedId: FocusState<UUID?>.Binding
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            // Flexible container that grows
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 8) {
+                        ForEach($subexpenses) { $sub in
+                            SubexpenseRow(
+                                subexpense: $sub,
+                                currency: currency,
+                                focusedId: focusedId,
+                                onDelete: {
+                                    withAnimation(AppAnimation.springy) {
+                                        subexpenses.removeAll { $0.id == sub.id }
+                                    }
+                                },
+                                onNext: {
+                                    // Only allow Next if current box has a value
+                                    guard sub.amount > 0 else { return }
+                                    
+                                    // Find current index
+                                    if let index = subexpenses.firstIndex(where: { $0.id == sub.id }) {
+                                        if index < subexpenses.count - 1 {
+                                            // Move to next existing subexpense
+                                            let nextId = subexpenses[index + 1].id
+                                            focusedId.wrappedValue = nextId
+                                            withAnimation {
+                                                proxy.scrollTo(nextId, anchor: .bottom)
+                                            }
+                                        } else {
+                                            // At the end - create new and focus it
+                                            addNewSubexpense(scrollProxy: proxy)
+                                        }
+                                    }
+                                },
+                                onFocusLost: {
+                                    // When focus is lost, ensure we have an empty slot at the end
+                                    ensureEmptySlotAtEnd(scrollProxy: proxy)
+                                }
+                            )
+                            .id(sub.id) // For ScrollViewReader
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(maxHeight: CGFloat(min(subexpenses.count * 60, 240))) // Dynamic height up to max
+            }
+        }
+        .padding(.top, 8)
+        .onAppear {
+            ensureEmptySlotAtEnd(scrollProxy: nil)
+        }
+        .onChange(of: subexpenses) { _, _ in
+           // ensureEmptySlotAtEnd() - triggering this on every change causes loops/UX issues while typing
+           // Instead we rely on specific triggers like onSubmit and Focus loss
+        }
+    }
+    
+    private func addNewSubexpense(scrollProxy: ScrollViewProxy?, shouldFocus: Bool = true) {
+        let newSub = Subexpense(amount: 0)
+        withAnimation(AppAnimation.springy) {
+            subexpenses.append(newSub)
+        }
+        
+        if shouldFocus {
+            // Set focus immediately
+            focusedId.wrappedValue = newSub.id
+        }
+        
+        // Scroll to new item after a brief delay to let view update
+        if let proxy = scrollProxy {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                withAnimation {
+                    proxy.scrollTo(newSub.id, anchor: .bottom)
+                }
+            }
+        }
+    }
+    
+    private func ensureEmptySlotAtEnd(scrollProxy: ScrollViewProxy?) {
+        if let last = subexpenses.last, last.amount > 0 {
+            // Don't focus when adding slot on focus lost - just create the slot
+            addNewSubexpense(scrollProxy: scrollProxy, shouldFocus: false)
+        } else if subexpenses.isEmpty {
+            addNewSubexpense(scrollProxy: scrollProxy, shouldFocus: false)
+        }
+    }
+}
+
+// MARK: - Subexpense Row
+private struct SubexpenseRow: View {
+    @Binding var subexpense: Subexpense
+    let currency: String
+    var focusedId: FocusState<UUID?>.Binding
+    let onDelete: () -> Void
+    let onNext: () -> Void
+    let onFocusLost: () -> Void
+    
+    // Computed property to check if this row is focused
+    private var isThisRowFocused: Bool {
+        focusedId.wrappedValue == subexpense.id
+    }
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // Amount field - Sleek full width look
+            HStack {
+                Text(CurrencySymbol.symbol(for: currency))
+                    .font(.system(.body, design: .rounded))
+                    .foregroundStyle(.secondary)
+                
+                // Smart Currency Input for Subexpense - using UUID-based focus
+                SmartCurrencyField(
+                    amount: $subexpense.amount,
+                    currency: currency,
+                    font: .system(size: 18, weight: .medium, design: .rounded),
+                    focusedId: focusedId,
+                    myId: subexpense.id
+                )
+                
+                Spacer()
+                
+                // Delete button - sleek and themed
+                if isThisRowFocused || subexpense.amount > 0 {
+                    Button(action: onDelete) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(AppTheme.brand)
+                            .symbolRenderingMode(.hierarchical)
+                    }
+                    .transition(.opacity.combined(with: .scale))
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+            )
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                if isThisRowFocused {
+                    Button("Done") {
+                        focusedId.wrappedValue = nil
+                    }
+                    
+                    Spacer()
+                    
+                    Button("Next") {
+                        onNext()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+        // Track when this row loses focus
+        .onChange(of: focusedId.wrappedValue) { oldVal, newVal in
+            if oldVal == subexpense.id && newVal != subexpense.id {
+                onFocusLost()
+            }
+        }
+    }
+}
+// Helper for currency symbol
+private struct CurrencySymbol {
+    static func symbol(for code: String) -> String {
+        let locale = Locale.availableIdentifiers.map(Locale.init).first { $0.currency?.identifier == code }
+        return locale?.currencySymbol ?? code
     }
 }
 
@@ -729,6 +990,7 @@ private struct SplitDetailView: View {
         .navigationTitle("Split")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .dismissKeyboardOnTap()
     }
 
     private var participants: [GroupMember] {
@@ -1206,16 +1468,16 @@ private struct SharesSplitView: View {
                         HStack(spacing: 12) {
                             Button {
                                 let current = shares[p.id] ?? 1
-                                if current > 1 {
+                                if current > 0 {
                                     shares[p.id] = current - 1
                                     Haptics.impact(.light)
                                 }
                             } label: {
                                 Image(systemName: "minus.circle.fill")
                                     .font(.title2)
-                                    .foregroundStyle((shares[p.id] ?? 1) > 1 ? AppTheme.brand : .secondary)
+                                    .foregroundStyle((shares[p.id] ?? 1) > 0 ? AppTheme.brand : .secondary)
                             }
-                            .disabled((shares[p.id] ?? 1) <= 1)
+                            .disabled((shares[p.id] ?? 1) <= 0)
                             
                             Text("\(memberShares)")
                                 .font(.system(size: 18, weight: .bold, design: .rounded))
