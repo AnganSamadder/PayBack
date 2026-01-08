@@ -155,30 +155,60 @@ create policy "account_friends_owner_rw"
   using (account_email = lower(jwt_email()))
   with check (account_email = lower(jwt_email()));
 
--- Groups: owner by account id or email
-create policy "groups_owner_rw"
+-- Groups: owner or linked member access
+create policy "groups_member_access"
   on groups
   for all
   using (
     owner_account_id = auth.uid()
     or lower(owner_email) = lower(jwt_email())
+    or exists (
+      select 1 from accounts a
+      where a.id = auth.uid()
+      and a.linked_member_id is not null
+      and (groups.members @> jsonb_build_array(jsonb_build_object('id', a.linked_member_id)))
+    )
   )
   with check (
     owner_account_id = auth.uid()
     or lower(owner_email) = lower(jwt_email())
+    or exists (
+      select 1 from accounts a
+      where a.id = auth.uid()
+      and a.linked_member_id is not null
+      and (groups.members @> jsonb_build_array(jsonb_build_object('id', a.linked_member_id)))
+    )
   );
 
--- Expenses: owner by account id or email
-create policy "expenses_owner_rw"
+-- Expenses: owner or participant access
+create policy "expenses_member_access"
   on expenses
   for all
   using (
     owner_account_id = auth.uid()
     or lower(owner_email) = lower(jwt_email())
+    or exists (
+      select 1 from accounts a
+      where a.id = auth.uid()
+      and a.linked_member_id is not null
+      and (
+        a.linked_member_id = expenses.paid_by_member_id
+        or a.linked_member_id = any(expenses.involved_member_ids)
+      )
+    )
   )
   with check (
     owner_account_id = auth.uid()
     or lower(owner_email) = lower(jwt_email())
+    or exists (
+      select 1 from accounts a
+      where a.id = auth.uid()
+      and a.linked_member_id is not null
+      and (
+        a.linked_member_id = expenses.paid_by_member_id
+        or a.linked_member_id = any(expenses.involved_member_ids)
+      )
+    )
   );
 
 -- Subexpenses: accessible if user owns the parent expense

@@ -331,7 +331,9 @@ final class SupabaseInviteLinkService: InviteLinkService, Sendable {
                 throw PayBackError.networkUnavailable // Or specific error
             }
             
-            previewResponse = try JSONDecoder().decode(PreviewResponse.self, from: data)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            previewResponse = try decoder.decode(PreviewResponse.self, from: data)
             
         } catch {
             print("[InviteLinkService] Failed to fetch preview: \(error)")
