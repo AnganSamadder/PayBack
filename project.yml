@@ -247,7 +247,18 @@ targets:
       # Pre/Post build scripts
     preBuildScripts:
       - name: Convex Backend Sync
-        basedOnDependencyAnalysis: false
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - $(SRCROOT)/convex/schema.ts
+          - $(SRCROOT)/convex/auth.config.ts
+          - $(SRCROOT)/convex/expenses.ts
+          - $(SRCROOT)/convex/friends.ts
+          - $(SRCROOT)/convex/groups.ts
+          - $(SRCROOT)/convex/inviteTokens.ts
+          - $(SRCROOT)/convex/linkRequests.ts
+          - $(SRCROOT)/convex/users.ts
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/convex_sync_timestamp
         script: |
           export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
 
@@ -266,6 +277,7 @@ targets:
           if command -v npx >/dev/null 2>&1; then
             echo "Syncing Convex backend..."
             npx convex deploy -y --cmd 'echo "Backend sync successful"'
+            touch "$DERIVED_FILE_DIR/convex_sync_timestamp"
           else
             echo "warning: npx not found in PATH. Skipping Convex backend sync."
             echo "Debug PATH: $PATH"

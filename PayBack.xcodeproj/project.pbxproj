@@ -1048,22 +1048,30 @@
 /* Begin PBXShellScriptBuildPhase section */
 		098175FE1924A1F5626768BE /* Convex Backend Sync */ = {
 			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(SRCROOT)/convex/schema.ts",
+				"$(SRCROOT)/convex/auth.config.ts",
+				"$(SRCROOT)/convex/expenses.ts",
+				"$(SRCROOT)/convex/friends.ts",
+				"$(SRCROOT)/convex/groups.ts",
+				"$(SRCROOT)/convex/inviteTokens.ts",
+				"$(SRCROOT)/convex/linkRequests.ts",
+				"$(SRCROOT)/convex/users.ts",
 			);
 			name = "Convex Backend Sync";
 			outputFileListPaths = (
 			);
 			outputPaths = (
+				"$(DERIVED_FILE_DIR)/convex_sync_timestamp",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Ensure npx is in the PATH. Trying multiple common locations.\nexport PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.nvm/current/bin\"\n\nif command -v npx >/dev/null 2>&1; then\n  echo \"Syncing Convex backend...\"\n  # Use 'deploy --yes' to sync functions non-interactively.\n  npx convex deploy -y --cmd 'echo \"Backend sync successful\"'\nelse\n  echo \"warning: npx not found. Skipping Convex backend sync.\"\nfi\n";
+			shellScript = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"\n\n# Try to find npx via nvm\nexport NVM_DIR=\"$HOME/.nvm\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\nelif [ -d \"$NVM_DIR/versions/node\" ]; then\n  # Fallback: add the latest node version to PATH\n  LATEST_NODE=$(ls -rd \"$NVM_DIR/versions/node\"/v* 2>/dev/null | head -n 1)\n  if [ -n \"$LATEST_NODE\" ]; then\n    export PATH=\"$LATEST_NODE/bin:$PATH\"\n  fi\nfi\n\nif command -v npx >/dev/null 2>&1; then\n  echo \"Syncing Convex backend...\"\n  npx convex deploy -y --cmd 'echo \"Backend sync successful\"'\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\nelse\n  echo \"warning: npx not found in PATH. Skipping Convex backend sync.\"\n  echo \"Debug PATH: $PATH\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
