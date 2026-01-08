@@ -381,7 +381,7 @@ struct DataImportService {
                 abs(e.date.timeIntervalSince(parsedExpense.date)) < 300 // within 5 mins
             }
 
-            if let existing = existingExpense {
+            if existingExpense != nil {
                 #if DEBUG
                 print("[DataImportService] Skipping duplicate expense: \(parsedExpense.description)")
                 #endif
