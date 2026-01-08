@@ -2,23 +2,18 @@ import SwiftUI
 import UIKit
 import Foundation
 import Network
-import Supabase
-
-private enum SupabaseConfigurator {
-    static func configureIfNeeded() {
-        SupabaseClientProvider.configureIfNeeded()
-    }
-}
+import Clerk
+import ConvexMobile
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
-        SupabaseConfigurator.configureIfNeeded()
         return true
     }
 }
 
 struct RootViewWithStore: View {
     @StateObject private var store = AppStore()
+    @Environment(\.clerk) private var clerk
     @State private var isCheckingAuth = true
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var networkMonitor = NetworkMonitor()
@@ -53,8 +48,13 @@ struct RootViewWithStore: View {
             } else if store.session != nil {
                 RootView(pendingInviteToken: $pendingInviteToken)
             } else {
+                // Show AuthFlowView directly when not authenticated (matching original UX)
                 AuthFlowView { session in
-                    store.completeAuthentication(with: session)
+                    store.completeAuthentication(
+                        id: session.account.id,
+                        email: session.account.email,
+                        name: session.account.displayName
+                    )
                 }
             }
         }
@@ -75,53 +75,45 @@ struct RootViewWithStore: View {
     }
     
     private func checkExistingSession() async {
-        SupabaseConfigurator.configureIfNeeded()
-        guard let client = SupabaseClientProvider.client else {
-            isCheckingAuth = false
-            return
-        }
-
-        let accountService = AccountServiceProvider.makeAccountService()
-
-        do {
-            var session = try await client.auth.session
-
-            if session.isExpired {
-                // Attempt to refresh; if it fails we'll drop to auth flow.
-                session = try await client.auth.refreshSession()
+        // Wait for Clerk to load
+        // If user is already signed in via Clerk, complete authentication
+        if let user = clerk.user {
+            // Authenticate Convex first
+            await Dependencies.authenticateConvex()
+            
+            let email = user.primaryEmailAddress?.emailAddress ?? ""
+            let displayName = [user.firstName, user.lastName].compactMap { $0 }.joined(separator: " ")
+            
+            let accountService = Dependencies.current.accountService
+            do {
+                if let account = try await accountService.lookupAccount(byEmail: email) {
+                    let session = UserSession(account: account)
+                    store.completeAuthentication(
+                        id: session.account.id,
+                        email: session.account.email,
+                        name: session.account.displayName
+                    )
+                } else {
+                    let account = try await accountService.createAccount(email: email, displayName: displayName)
+                    let session = UserSession(account: account)
+                    store.completeAuthentication(
+                        id: session.account.id,
+                        email: session.account.email,
+                        name: session.account.displayName
+                    )
+                }
+                
+                // Start real-time sync after successful authentication
+                Dependencies.syncManager?.startSync()
+                
+            } catch {
+                #if DEBUG
+                print("[Auth] Failed to restore session: \(error.localizedDescription)")
+                #endif
             }
-
-            let email = session.user.email ?? "\(session.user.id.uuidString)@payback.local"
-
-            if let account = try await accountService.lookupAccount(byEmail: email) {
-                let sessionModel = UserSession(account: account)
-                store.completeAuthentication(with: sessionModel)
-                isCheckingAuth = false
-                return
-            }
-
-            let displayName = resolvedDisplayName(from: session.user, fallbackEmail: email)
-            let account = try await accountService.createAccount(email: email, displayName: displayName)
-            let sessionModel = UserSession(account: account)
-            store.completeAuthentication(with: sessionModel)
-        } catch {
-            #if DEBUG
-            print("[Auth] Failed to restore Supabase session: \(error.localizedDescription)")
-            #endif
         }
-
+        
         isCheckingAuth = false
-    }
-
-    private func resolvedDisplayName(from user: User, fallbackEmail: String) -> String {
-        if let name = user.userMetadata["display_name"], case let .string(value) = name {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { return trimmed }
-        }
-        if let emailPrefix = fallbackEmail.split(separator: "@").first {
-            return String(emailPrefix)
-        }
-        return "User"
     }
     
     private func handleScenePhaseChange(oldPhase: ScenePhase, newPhase: ScenePhase) {
@@ -244,15 +236,34 @@ extension NWInterface.InterfaceType {
 @main
 struct PayBackApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @State private var clerk = Clerk.shared
+    
+    let convexClient: ConvexClientWithAuth<ClerkAuthResult>
 
     init() {
-        SupabaseConfigurator.configureIfNeeded()
+        let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
+        convexClient = ConvexClientWithAuth(
+            deploymentUrl: ConvexConfig.deploymentUrl,
+            authProvider: authProvider
+        )
+        Dependencies.configure(client: convexClient)
         AppAppearance.configure()
     }
 
     var body: some Scene {
         WindowGroup {
             RootViewWithStore()
+                .environment(\.clerk, clerk)
+                .task {
+                    clerk.configure(publishableKey: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA")
+                    try? await clerk.load()
+                    
+                    // Authenticate the Convex client after Clerk is ready
+                    if clerk.user != nil {
+                        _ = try? await convexClient.loginFromCache()
+                    }
+                }
         }
     }
 }
+
