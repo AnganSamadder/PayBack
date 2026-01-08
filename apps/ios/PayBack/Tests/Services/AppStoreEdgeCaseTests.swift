@@ -12,6 +12,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     var mockInviteLinkService: MockInviteLinkServiceForTests!
     
     override func setUp() async throws {
+        Dependencies.reset()
         try await super.setUp()
         
         mockPersistence = MockPersistenceService()

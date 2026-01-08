@@ -91,6 +91,10 @@ final class AuthCoordinator: ObservableObject {
                     let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: displayName)
                     self.route = .authenticated(UserSession(account: account))
                 }
+            } catch PayBackError.authSessionMissing {
+                // Determine if this was due to verification actually being needed but Clerk returning succes initially
+                self.infoMessage = "Please check your email to verify your account before signing in."
+                self.route = .login
             } catch {
                 self.handle(error: error)
             }
