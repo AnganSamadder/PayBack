@@ -47,13 +47,8 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         
         tokens[tokenId] = token
         
-        // Use HTTPS Edge Function URL when Supabase is configured, otherwise fall back to custom scheme
-        let url: URL
-        if let baseURL = SupabaseClientProvider.baseURL {
-            url = URL(string: "\(baseURL.absoluteString)/functions/v1/invite?token=\(tokenId.uuidString)")!
-        } else {
-            url = URL(string: "payback://link/claim?token=\(tokenId.uuidString)")!
-        }
+        // Default to custom scheme for tests
+        let url = URL(string: "payback://link/claim?token=\(tokenId.uuidString)")!
         let shareText = """
         Hi! I've added you to PayBack for tracking shared expenses.
         

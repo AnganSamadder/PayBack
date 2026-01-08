@@ -46,7 +46,7 @@ final class InviteDataPopulationTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-user-id", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Initial state: No groups locally
@@ -100,7 +100,7 @@ final class InviteDataPopulationTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-user-id", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         XCTAssertTrue(sut.expenses.isEmpty)

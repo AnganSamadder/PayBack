@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>SUPABASE_URL</key>
-	<string>https://your-project.supabase.co</string>
-	<key>SUPABASE_ANON_KEY</key>
-	<string>public-anon-key</string>
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>webcredentials:accurate-eagle-80.clerk.accounts.dev</string>
+	</array>
 </dict>
 </plist>

@@ -83,32 +83,12 @@ options:
 # Swift Package Manager Dependencies
 # ----------------------------------------------------------------------------
 packages:
-  Supabase:
-    url: https://github.com/supabase/supabase-swift.git
-    from: 2.0.0
-
-  # Other package dependency types:
-
-  # Version range
-  # Alamofire:
-  #   url: https://github.com/Alamofire/Alamofire.git
-  #   from: 5.8.0
-  #   # minorVersion: 5.8.0
-  #   # majorVersion: 5.0.0
-
-  # Branch
-  # MyPackage:
-  #   url: https://github.com/user/package.git
-  #   branch: develop
-
-  # Revision
-  # MyPackage:
-  #   url: https://github.com/user/package.git
-  #   revision: abc123def
-
-  # Local path
-  # LocalPackage:
-  #   path: ../LocalPackage
+  Convex:
+    url: https://github.com/get-convex/convex-swift
+    from: 0.1.0
+  Clerk:
+    url: https://github.com/clerk/clerk-ios
+    from: 0.1.0
 
 # ----------------------------------------------------------------------------
 # Project-wide Build Settings
@@ -237,8 +217,10 @@ targets:
 
     # Dependencies
     dependencies:
-      - package: Supabase
-        product: Supabase
+      - package: Convex
+        product: ConvexMobile
+      - package: Clerk
+        product: Clerk
 
       # Other dependency types:
 
@@ -262,10 +244,20 @@ targets:
       # CocoaPods
       # - pod: AFNetworking
 
-    # postCompileScripts:
-    #   - script: swiftlint
-    #     name: SwiftLint
-    #     runOnlyWhenInstalling: false
+    # Pre/Post build scripts
+    preBuildScripts:
+      - name: Convex Backend Sync
+        script: |
+          # Ensure npx is in the PATH
+          export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin
+
+          if command -v npx >/dev/null 2>&1; then
+            echo "Syncing Convex backend..."
+            # Use 'deploy --yes' to sync functions non-interactively.
+            npx convex deploy -y --cmd 'echo "Backend sync successful"'
+          else
+            echo "warning: npx not found. Skipping Convex backend sync."
+          fi
 
     # Build settings
     settings:
@@ -295,19 +287,19 @@ targets:
       #     SWIFT_COMPILATION_MODE: wholemodule
 
     # Pre/Post build scripts
-    preBuildScripts:
-      - script: |
-          "${SRCROOT}/scripts/generate_supabase_config.sh"
-        name: Generate Supabase Config
-        shell: /bin/sh
-        showEnvVars: false
-        basedOnDependencyAnalysis: false
-        inputFiles:
-          - $(SRCROOT)/scripts/generate_supabase_config.sh
-          - $(SRCROOT)/.env.supabase.local
-          - $(SRCROOT)/.env.local
-        outputFiles:
-          - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/SupabaseConfig.plist
+    # preBuildScripts:
+    #   - script: |
+    #       "${SRCROOT}/scripts/generate_supabase_config.sh"
+    #     name: Generate Supabase Config
+    #     shell: /bin/sh
+    #     showEnvVars: false
+    #     basedOnDependencyAnalysis: false
+    #     inputFiles:
+    #       - $(SRCROOT)/scripts/generate_supabase_config.sh
+    #       - $(SRCROOT)/.env.supabase.local
+    #       - $(SRCROOT)/.env.local
+    #     outputFiles:
+    #       - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/SupabaseConfig.plist
 
     # Info.plist configuration
     info:
@@ -344,16 +336,11 @@ targets:
         # ITSAppUsesNonExemptEncryption: false
 
     # Entitlements
-    # entitlements:
-    #   path: PayBack.entitlements
-    #   properties:
-    #     com.apple.security.application-groups:
-    #       - group.com.angansamadder.payback
-    #     com.apple.developer.icloud-container-identifiers:
-    #       - iCloud.com.angansamadder.PayBack
-    #     com.apple.developer.ubiquity-kvstore-identifier: $(AppIdentifierPrefix)com.angansamadder.PayBack
-    #     keychain-access-groups:
-    #       - $(AppIdentifierPrefix)com.angansamadder.PayBack
+    entitlements:
+      path: apps/ios/PayBack/PayBack.entitlements
+      properties:
+        com.apple.developer.associated-domains:
+          - webcredentials:accurate-eagle-80.clerk.accounts.dev
 
     # Scheme (target-specific)
     # scheme:

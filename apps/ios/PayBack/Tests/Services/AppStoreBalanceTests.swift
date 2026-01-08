@@ -33,7 +33,7 @@ final class AppStoreBalanceTests: XCTestCase {
         // Setup initial user
         let account = UserAccount(id: "user-123", email: "user@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         
         // Allow time for async setup
         try await Task.sleep(nanoseconds: 100_000_000)
