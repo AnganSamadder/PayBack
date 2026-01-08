@@ -40,6 +40,7 @@
 		2E1B98446BD6C5648AD74339 /* MockPersistenceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 827D825E3171FC289B879C98 /* MockPersistenceService.swift */; };
 		2E92D7157A4BDF2AE43C0F8A /* ImportExportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 049690E11813E755E5AD8ADE /* ImportExportView.swift */; };
 		2F8FB937FA518B818848CB2A /* MockLinkRequestService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0D5D8B74C37BC89EA3F970 /* MockLinkRequestService.swift */; };
+		301C45E4E5CB3D4A8E69DF24 /* ConvexClientWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF3768EB10020576D4376F8A /* ConvexClientWrapper.swift */; };
 		317F71AC4885C58ACF382357 /* ExpenseValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 704EDFE7EDD8245499170ED4 /* ExpenseValidationTests.swift */; };
 		322C24BA4E47FACDF055D60F /* GroupDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BFEFD97F3240D6B253DEDEE /* GroupDetailView.swift */; };
 		340D7AC16DE2663CC069B866 /* TabBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2655061A8DC6428A76F311E7 /* TabBarTests.swift */; };
@@ -58,6 +59,7 @@
 		4E4A0EB92A6530BB1A81DE03 /* TestHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8394D3CAB8B80195DB4C6A89 /* TestHelpers.swift */; };
 		4F31ECAFCC5740532A81AE12 /* Animations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 193A79CB2B5DED33F433E90E /* Animations.swift */; };
 		5349E0BDA5B979A0DC4BEF43 /* SmartIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E46479AB9B1ACE4165FC0C3 /* SmartIcon.swift */; };
+		53FCB148D862A0E631590159 /* ConvexClientWrapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 569D149828BA1FCE98EC6FC7 /* ConvexClientWrapperTests.swift */; };
 		548BBF301D04B442E50CD8FB /* Clerk in Frameworks */ = {isa = PBXBuildFile; productRef = 1723AF2F0527D04BCD586CC4 /* Clerk */; };
 		55FF23B001429E36808D4C9D /* AppStoreDataNormalizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C0166AE6D51E4712BBA9180 /* AppStoreDataNormalizationTests.swift */; };
 		560F46E426CF667CEBF58B45 /* CurrencyServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9F8AA8A820D9FB721FAA22 /* CurrencyServiceTests.swift */; };
@@ -270,6 +272,7 @@
 		52AEFA92954396252469BB8A /* NavigationTransitionSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationTransitionSettings.swift; sourceTree = "<group>"; };
 		552929851A5AD547D2879FBA /* TEST_REQUIREMENTS_MAPPING.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TEST_REQUIREMENTS_MAPPING.md; sourceTree = "<group>"; };
 		55512C199A3314C244C0B764 /* DetailContainerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailContainerTests.swift; sourceTree = "<group>"; };
+		569D149828BA1FCE98EC6FC7 /* ConvexClientWrapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexClientWrapperTests.swift; sourceTree = "<group>"; };
 		5AEFBDA3414831919896FB4E /* SignupViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignupViewTests.swift; sourceTree = "<group>"; };
 		5B716DF6C753362E081C4E53 /* XCTest+Async.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XCTest+Async.swift"; sourceTree = "<group>"; };
 		5C71E965AF224177D5DD4360 /* MockCurrencyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockCurrencyService.swift; sourceTree = "<group>"; };
@@ -393,6 +396,7 @@
 		F6D2BCF45BC9BAFEC4111C75 /* AccountLinkingSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLinkingSecurityTests.swift; sourceTree = "<group>"; };
 		FBD86925E14ABD5DD2E71C3B /* InviteLinkServiceExtendedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteLinkServiceExtendedTests.swift; sourceTree = "<group>"; };
 		FDA3E6B62DA262910AA5CADB /* PhoneAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAuthService.swift; sourceTree = "<group>"; };
+		FF3768EB10020576D4376F8A /* ConvexClientWrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexClientWrapper.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -528,6 +532,7 @@
 			isa = PBXGroup;
 			children = (
 				EC6DB99D36309203AAC73876 /* ConvexAccountService.swift */,
+				FF3768EB10020576D4376F8A /* ConvexClientWrapper.swift */,
 				B4041720D554190C0CF094EC /* ConvexConfig.swift */,
 				E7258351A698FF9050220F38 /* ConvexDTOs.swift */,
 				E1A20985C6A290C85118E743 /* ConvexExpenseService.swift */,
@@ -795,6 +800,7 @@
 				CC9AEB1DC55875B618DCE397 /* ClerkAuthProviderExtendedTests.swift */,
 				5EFE8F2047EEAF11D31E4F1B /* ClerkAuthProviderTests.swift */,
 				E7DEBED879A13D7226AA9E12 /* ConvexAccountServiceTests.swift */,
+				569D149828BA1FCE98EC6FC7 /* ConvexClientWrapperTests.swift */,
 				DB7DD7E0948CFF99E83B5087 /* ConvexDTOsTests.swift */,
 				6C76F4E25CEEAA132E3E49CD /* ConvexExpenseServiceTests.swift */,
 				E603E1CEAF680AD48C26FAFD /* ConvexGroupServiceTests.swift */,
@@ -1160,6 +1166,7 @@
 				06504D6552D9996303DFB7DE /* ClerkAuthProviderTests.swift in Sources */,
 				3640F819553618E9B914C75F /* CodableTests.swift in Sources */,
 				8991A1E3BFC240BC856258EE /* ConvexAccountServiceTests.swift in Sources */,
+				53FCB148D862A0E631590159 /* ConvexClientWrapperTests.swift in Sources */,
 				B31CD373CA12B26A13FD9002 /* ConvexDTOsTests.swift in Sources */,
 				B2DAE5BA38B5C7045B93D069 /* ConvexExpenseServiceTests.swift in Sources */,
 				7B78EC60EA8F0F660991AA11 /* ConvexGroupServiceTests.swift in Sources */,
@@ -1265,6 +1272,7 @@
 				86BA96DBECDC66236FAB1DA8 /* ClerkEmailAuthService.swift in Sources */,
 				F52B3FF9B3A4FCC8F5AF18D3 /* CodeVerificationView.swift in Sources */,
 				797869E42BB12F82D4FA3042 /* ConvexAccountService.swift in Sources */,
+				301C45E4E5CB3D4A8E69DF24 /* ConvexClientWrapper.swift in Sources */,
 				B4BDED949B033D81F6377B4E /* ConvexConfig.swift in Sources */,
 				608394750BEDC9AAB4E19497 /* ConvexDTOs.swift in Sources */,
 				C9F0223A05FE86CE85E1E9B8 /* ConvexExpenseService.swift in Sources */,
