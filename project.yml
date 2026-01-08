@@ -244,12 +244,13 @@ targets:
       # CocoaPods
       # - pod: AFNetworking
 
-    # Pre/Post build scripts
+      # Pre/Post build scripts
     preBuildScripts:
       - name: Convex Backend Sync
+        basedOnDependencyAnalysis: false
         script: |
-          # Ensure npx is in the PATH
-          export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin
+          # Ensure npx is in the PATH. Trying multiple common locations.
+          export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.nvm/current/bin"
 
           if command -v npx >/dev/null 2>&1; then
             echo "Syncing Convex backend..."
