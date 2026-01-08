@@ -1,5 +1,5 @@
 import Foundation
-import ConvexMobile
+@preconcurrency import ConvexMobile
 
 final class ConvexGroupService: GroupCloudService, Sendable {
     private let client: ConvexClient

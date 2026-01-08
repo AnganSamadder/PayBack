@@ -1,5 +1,5 @@
 import Foundation
-import ConvexMobile
+@preconcurrency import ConvexMobile
 
 final class ConvexExpenseService: ExpenseCloudService, Sendable {
     private let client: ConvexClient
