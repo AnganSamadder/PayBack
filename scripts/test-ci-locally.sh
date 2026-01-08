@@ -438,22 +438,22 @@ for path, cov in sorted_functional:
 
 print()
 
-# Supabase service coverage section
+# Service coverage section
 print(f"{MAGENTA}{'═' * 80}{NC}")
-print(f"{MAGENTA}SUPABASE SERVICE COVERAGE{NC}")
+print(f"{MAGENTA}SERVICE COVERAGE{NC}")
 print(f"{MAGENTA}{'═' * 80}{NC}\n")
 
-supabase_services = [
+services = [
     'EmailAuthService',
     'PhoneAuthService',
-    'SupabaseAccountService',
+    'AccountService',
     'GroupCloudService',
     'ExpenseCloudService',
     'InviteLinkService',
     'LinkRequestService',
 ]
 
-for service in supabase_services:
+for service in services:
     found = False
     for path, cov in functional_files:
         if service in path:
@@ -527,8 +527,8 @@ with open('coverage-report.txt', 'w') as f:
     f.write(f"Overall Coverage: {overall:.2f}%\n")
     f.write(f"Weighted Score: {weighted_actual:.2f}%\n\n")
     
-    f.write("Supabase Service Coverage:\n")
-    for service in supabase_services:
+    f.write("Service Coverage:\n")
+    for service in services:
         for path, cov in functional_files:
             if service in path:
                 f.write(f"  {service}: {cov:.1f}%\n")
