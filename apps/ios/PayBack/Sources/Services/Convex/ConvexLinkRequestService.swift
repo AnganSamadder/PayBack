@@ -77,20 +77,18 @@ actor ConvexLinkRequestService: LinkRequestService {
     func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult {
         let args: [String: ConvexEncodable?] = ["id": requestId.uuidString]
         
-        // Use subscribe for one-shot to get the result
-        for try await result in client.subscribe(to: "linkRequests:accept", with: args, yielding: LinkAcceptResultDTO.self).values {
-            guard let linkedMemberId = UUID(uuidString: result.linked_member_id) else {
-                throw PayBackError.linkInvalid
-            }
-            
-            return LinkAcceptResult(
-                linkedMemberId: linkedMemberId,
-                linkedAccountId: result.linked_account_id,
-                linkedAccountEmail: result.linked_account_email
-            )
+        // Use mutation for one-shot operation
+        let result: LinkAcceptResultDTO = try await client.mutation("linkRequests:accept", with: args)
+        
+        guard let linkedMemberId = UUID(uuidString: result.linked_member_id) else {
+            throw PayBackError.linkInvalid
         }
         
-        throw PayBackError.linkInvalid
+        return LinkAcceptResult(
+            linkedMemberId: linkedMemberId,
+            linkedAccountId: result.linked_account_id,
+            linkedAccountEmail: result.linked_account_email
+        )
     }
     
     func declineLinkRequest(_ requestId: UUID) async throws {
