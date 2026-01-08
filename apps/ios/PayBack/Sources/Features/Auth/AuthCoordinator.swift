@@ -86,7 +86,7 @@ final class AuthCoordinator: ObservableObject {
                     self.pendingDisplayName = displayName
                     self.route = .verification(email: email, displayName: displayName)
                     
-                case .complete(let authResult):
+                case .complete(_):
                     // No verification needed - create account and complete
                     let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: displayName)
                     self.route = .authenticated(UserSession(account: account))

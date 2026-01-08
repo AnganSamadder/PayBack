@@ -69,10 +69,9 @@ final class Dependencies: Sendable {
     }
     
     /// Trigger Convex authentication using the current Clerk session
-    @MainActor
     static func authenticateConvex() async {
         guard let client = convexClient as? ConvexClientWithAuth<ClerkAuthResult> else { return }
-        _ = try? await client.loginFromCache()
+        _ = await client.loginFromCache()
     }
 
     /// Creates the default expense service based on configuration
