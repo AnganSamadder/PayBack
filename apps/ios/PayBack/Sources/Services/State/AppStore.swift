@@ -139,7 +139,7 @@ final class AppStore: ObservableObject {
 
     func completeAuthentication(id: String, email: String, name: String?) {
         // Create initial account object
-        let account = UserAccount(
+        _ = UserAccount(
             id: id,
             email: email,
             displayName: name ?? "User"
