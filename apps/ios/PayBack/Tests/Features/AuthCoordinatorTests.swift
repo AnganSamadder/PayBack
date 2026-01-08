@@ -92,7 +92,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: testEmail,
-            displayName: "Test User"
+            firstName: "Test",
+            lastName: "User"
         )
         await mockAccountService.setExistingAccount(existingAccount)
         
@@ -116,7 +117,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "456",
             email: testEmail,
-            displayName: "New User"
+            firstName: "New",
+            lastName: "User"
         )
         await mockAccountService.setExistingAccount(nil)
         await mockAccountService.setCreatedAccount(UserAccount(
@@ -145,7 +147,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "789",
             email: testEmail,
-            displayName: ""
+            firstName: nil,
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(nil)
         await mockAccountService.setCreatedAccount(UserAccount(
@@ -180,7 +183,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         await mockAccountService.setShouldThrowOnLookup(true, error: PayBackError.networkUnavailable)
         
@@ -196,7 +200,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(UserAccount(
             id: "123",
@@ -215,7 +220,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(UserAccount(
             id: "123",
@@ -273,7 +279,7 @@ final class AuthCoordinatorTests: XCTestCase {
     func testSignup_TrimsDisplayName() async {
         let testEmail = "test@example.com"
         let testPassword = "password123"
-        let testDisplayName = "  Trimmed Name  "
+        _ = "  Trimmed Name  "
         
         mockEmailAuthService.signUpResult = .complete(EmailAuthSignInResult(
             uid: "123",
@@ -418,7 +424,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         
         await coordinator.login(emailInput: "test@example.com", password: "password")
@@ -453,7 +460,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "john@example.com",
-            displayName: ""
+            firstName: nil,
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(nil)
         await mockAccountService.setCreatedAccount(UserAccount(
@@ -472,7 +480,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "mary.jane.watson@example.com",
-            displayName: ""
+            firstName: nil,
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(nil)
         await mockAccountService.setCreatedAccount(UserAccount(
@@ -494,7 +503,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(UserAccount(
             id: "123",
@@ -539,7 +549,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(UserAccount(
             id: "123",

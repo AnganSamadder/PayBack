@@ -45,7 +45,7 @@ final class InviteDataPopulationTests: XCTestCase {
     func testClaimInviteToken_PopulatesGroupDataAutomatically() async throws {
         // Given
         let account = UserAccount(id: "test-user-id", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
+        _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -99,7 +99,7 @@ final class InviteDataPopulationTests: XCTestCase {
     func testClaimInviteToken_PopulatesExpenseDataAutomatically() async throws {
         // Given
         let account = UserAccount(id: "test-user-id", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
+        _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
