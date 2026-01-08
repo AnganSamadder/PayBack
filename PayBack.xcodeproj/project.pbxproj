@@ -93,7 +93,6 @@
 		8BF8EB213F51D8BC991DFC21 /* PhoneAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDA3E6B62DA262910AA5CADB /* PhoneAuthService.swift */; };
 		8F03C8B31BE2FE049D58F433 /* DomainModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5B4AADFDE2AA517AC12FC87 /* DomainModels.swift */; };
 		9032992644B9570D6FB3D745 /* PhoneNumberFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1FBE3342077415A70933D81 /* PhoneNumberFormatter.swift */; };
-		907497713E5A82BB03FC32CF /* BindableEmailAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 158A346EF0DB36920E8FBAC4 /* BindableEmailAuthService.swift */; };
 		90B4A0BDBF8D14A602F77D20 /* EmailValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 116F1E9C01A85A122B388140 /* EmailValidator.swift */; };
 		91E0DFA3990F2379C13865CD /* AppStoreLinkingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7FC224EB7703CCFAEBA1D36 /* AppStoreLinkingTests.swift */; };
 		922BE59BCE1A7768012B78AD /* ConvexGroupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DCD51A521233415E32F42D4 /* ConvexGroupService.swift */; };
@@ -202,7 +201,6 @@
 		104ABE14A97B8A00D7A3BCFD /* EmailAuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailAuthServiceTests.swift; sourceTree = "<group>"; };
 		113851BAEAD1EADFEE916193 /* ClerkAuthProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClerkAuthProvider.swift; sourceTree = "<group>"; };
 		116F1E9C01A85A122B388140 /* EmailValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailValidator.swift; sourceTree = "<group>"; };
-		158A346EF0DB36920E8FBAC4 /* BindableEmailAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BindableEmailAuthService.swift; sourceTree = "<group>"; };
 		17A3BE8746AD4D48BDCB0C1E /* PayBackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayBackTests.swift; sourceTree = "<group>"; };
 		193A79CB2B5DED33F433E90E /* Animations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Animations.swift; sourceTree = "<group>"; };
 		197A2B9C5F8F5B679EBA5627 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
@@ -444,7 +442,6 @@
 			isa = PBXGroup;
 			children = (
 				78175D1E7C19857E0A2B5BE8 /* AccountService.swift */,
-				158A346EF0DB36920E8FBAC4 /* BindableEmailAuthService.swift */,
 				113851BAEAD1EADFEE916193 /* ClerkAuthProvider.swift */,
 				387C17F0C12AF8DFD35B7123 /* ClerkEmailAuthService.swift */,
 				439C93064BA5C8A4E2A5F847 /* EmailAuthService.swift */,
@@ -1051,6 +1048,7 @@
 /* Begin PBXShellScriptBuildPhase section */
 		098175FE1924A1F5626768BE /* Convex Backend Sync */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -1065,7 +1063,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Ensure npx is in the PATH\nexport PATH=$PATH:/usr/local/bin:/opt/homebrew/bin\n\nif command -v npx >/dev/null 2>&1; then\n  echo \"Syncing Convex backend...\"\n  # Use 'deploy --yes' to sync functions non-interactively.\n  npx convex deploy -y --cmd 'echo \"Backend sync successful\"'\nelse\n  echo \"warning: npx not found. Skipping Convex backend sync.\"\nfi\n";
+			shellScript = "# Ensure npx is in the PATH. Trying multiple common locations.\nexport PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.nvm/current/bin\"\n\nif command -v npx >/dev/null 2>&1; then\n  echo \"Syncing Convex backend...\"\n  # Use 'deploy --yes' to sync functions non-interactively.\n  npx convex deploy -y --cmd 'echo \"Backend sync successful\"'\nelse\n  echo \"warning: npx not found. Skipping Convex backend sync.\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -1180,7 +1178,6 @@
 				6C400167B85A2E6656AA20B7 /* AppStore.swift in Sources */,
 				ACDF133A6051D04122578E60 /* AuthCoordinator.swift in Sources */,
 				C56DC46F7E46777128184E08 /* AuthFlowView.swift in Sources */,
-				907497713E5A82BB03FC32CF /* BindableEmailAuthService.swift in Sources */,
 				E883EF8BA4DF94E6409E4E11 /* ClerkAuthProvider.swift in Sources */,
 				86BA96DBECDC66236FAB1DA8 /* ClerkEmailAuthService.swift in Sources */,
 				F52B3FF9B3A4FCC8F5AF18D3 /* CodeVerificationView.swift in Sources */,
