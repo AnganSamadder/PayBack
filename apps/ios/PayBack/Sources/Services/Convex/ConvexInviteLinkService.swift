@@ -62,7 +62,7 @@ actor ConvexInviteLinkService: InviteLinkService {
     func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation {
         // Use subscribe for one-shot query
         let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString]
-        for try await result in client.subscribe(to: "inviteTokens:validate", with: args, yielding: InviteTokenValidationDTO.self).values {
+        for try await result in client.subscribe(to: "inviteTokens:validate", with: args, yielding: ConvexInviteTokenValidationDTO.self).values {
             let token = result.token?.toInviteToken()
             let preview = result.expense_preview.map { previewDTO in
                 ExpensePreview(
@@ -93,7 +93,7 @@ actor ConvexInviteLinkService: InviteLinkService {
         let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString]
         
         // Mutation returns the result directly
-        let result: LinkAcceptResultDTO = try await client.mutation("inviteTokens:claim", with: args)
+        let result: ConvexLinkAcceptResultDTO = try await client.mutation("inviteTokens:claim", with: args)
         
         guard let linkedMemberId = UUID(uuidString: result.linked_member_id) else {
             throw PayBackError.linkInvalid
@@ -107,7 +107,7 @@ actor ConvexInviteLinkService: InviteLinkService {
     }
     
     func fetchActiveInvites() async throws -> [InviteToken] {
-        for try await dtos in client.subscribe(to: "inviteTokens:listByCreator", yielding: [InviteTokenDTO].self).values {
+        for try await dtos in client.subscribe(to: "inviteTokens:listByCreator", yielding: [ConvexInviteTokenDTO].self).values {
             return dtos.compactMap { $0.toInviteToken() }
         }
         return []
@@ -117,56 +117,4 @@ actor ConvexInviteLinkService: InviteLinkService {
         let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString]
         _ = try await client.mutation("inviteTokens:revoke", with: args)
     }
-}
-
-// MARK: - DTOs
-
-private struct InviteTokenValidationDTO: Decodable {
-    let is_valid: Bool
-    let error: String?
-    let token: InviteTokenDTO?
-    let expense_preview: ExpensePreviewDTO?
-}
-
-private struct ExpensePreviewDTO: Decodable {
-    let expense_count: Int
-    let group_names: [String]
-    let total_balance: Double
-}
-
-private struct InviteTokenDTO: Decodable {
-    let id: String
-    let creator_id: String
-    let creator_email: String
-    let target_member_id: String
-    let target_member_name: String
-    let created_at: Double
-    let expires_at: Double
-    let claimed_by: String?
-    let claimed_at: Double?
-    
-    func toInviteToken() -> InviteToken? {
-        guard let id = UUID(uuidString: id),
-              let targetMemberId = UUID(uuidString: target_member_id) else {
-            return nil
-        }
-        
-        return InviteToken(
-            id: id,
-            creatorId: creator_id,
-            creatorEmail: creator_email,
-            targetMemberId: targetMemberId,
-            targetMemberName: target_member_name,
-            createdAt: Date(timeIntervalSince1970: created_at / 1000),
-            expiresAt: Date(timeIntervalSince1970: expires_at / 1000),
-            claimedBy: claimed_by,
-            claimedAt: claimed_at.map { Date(timeIntervalSince1970: $0 / 1000) }
-        )
-    }
-}
-
-private struct LinkAcceptResultDTO: Decodable {
-    let linked_member_id: String
-    let linked_account_id: String
-    let linked_account_email: String
 }

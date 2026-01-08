@@ -52,14 +52,14 @@ actor ConvexLinkRequestService: LinkRequestService {
     }
     
     func fetchIncomingRequests() async throws -> [LinkRequest] {
-        for try await dtos in client.subscribe(to: "linkRequests:listIncoming", yielding: [LinkRequestDTO].self).values {
+        for try await dtos in client.subscribe(to: "linkRequests:listIncoming", yielding: [ConvexLinkRequestDTO].self).values {
             return dtos.compactMap { $0.toLinkRequest() }
         }
         return []
     }
     
     func fetchOutgoingRequests() async throws -> [LinkRequest] {
-        for try await dtos in client.subscribe(to: "linkRequests:listOutgoing", yielding: [LinkRequestDTO].self).values {
+        for try await dtos in client.subscribe(to: "linkRequests:listOutgoing", yielding: [ConvexLinkRequestDTO].self).values {
             return dtos.compactMap { $0.toLinkRequest() }
         }
         return []
@@ -78,7 +78,7 @@ actor ConvexLinkRequestService: LinkRequestService {
         let args: [String: ConvexEncodable?] = ["id": requestId.uuidString]
         
         // Use mutation for one-shot operation
-        let result: LinkAcceptResultDTO = try await client.mutation("linkRequests:accept", with: args)
+        let result: ConvexLinkAcceptResultDTO = try await client.mutation("linkRequests:accept", with: args)
         
         guard let linkedMemberId = UUID(uuidString: result.linked_member_id) else {
             throw PayBackError.linkInvalid
@@ -100,49 +100,4 @@ actor ConvexLinkRequestService: LinkRequestService {
         let args: [String: ConvexEncodable?] = ["id": requestId.uuidString]
         _ = try await client.mutation("linkRequests:cancel", with: args)
     }
-}
-
-// MARK: - DTOs
-
-private struct LinkRequestDTO: Decodable {
-    let id: String
-    let requester_id: String
-    let requester_email: String
-    let requester_name: String
-    let recipient_email: String
-    let target_member_id: String
-    let target_member_name: String
-    let created_at: Double
-    let status: String
-    let expires_at: Double
-    let rejected_at: Double?
-    
-    func toLinkRequest() -> LinkRequest? {
-        guard let id = UUID(uuidString: id),
-              let targetMemberId = UUID(uuidString: target_member_id) else {
-            return nil
-        }
-        
-        let status = LinkRequestStatus(rawValue: status) ?? .pending
-        
-        return LinkRequest(
-            id: id,
-            requesterId: requester_id,
-            requesterEmail: requester_email,
-            requesterName: requester_name,
-            recipientEmail: recipient_email,
-            targetMemberId: targetMemberId,
-            targetMemberName: target_member_name,
-            createdAt: Date(timeIntervalSince1970: created_at / 1000),
-            status: status,
-            expiresAt: Date(timeIntervalSince1970: expires_at / 1000),
-            rejectedAt: rejected_at.map { Date(timeIntervalSince1970: $0 / 1000) }
-        )
-    }
-}
-
-private struct LinkAcceptResultDTO: Decodable {
-    let linked_member_id: String
-    let linked_account_id: String
-    let linked_account_email: String
 }
