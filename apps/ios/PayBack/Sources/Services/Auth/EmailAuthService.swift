@@ -11,6 +11,7 @@ protocol EmailAuthService: Sendable {
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult
     func signUp(email: String, password: String, displayName: String) async throws -> EmailAuthSignInResult
     func sendPasswordReset(email: String) async throws
+    func resendConfirmationEmail(email: String) async throws
     func signOut() throws
 }
 
@@ -18,6 +19,7 @@ protocol EmailAuthProviding: Sendable {
     func signIn(email: String, password: String) async throws -> Session
     func signUp(email: String, password: String, data: [String: AnyJSON]?) async throws -> User
     func resetPasswordForEmail(_ email: String) async throws
+    func resend(email: String, type: ResendEmailType) async throws
     func signOut() async throws
 }
 
@@ -35,6 +37,10 @@ private struct SupabaseEmailAuthProvider: EmailAuthProviding {
 
     func resetPasswordForEmail(_ email: String) async throws {
         try await client.auth.resetPasswordForEmail(email)
+    }
+
+    func resend(email: String, type: ResendEmailType) async throws {
+        try await client.auth.resend(email: email, type: type)
     }
 
     func signOut() async throws {
@@ -99,6 +105,15 @@ final class SupabaseEmailAuthService: EmailAuthService {
         }
     }
 
+    func resendConfirmationEmail(email: String) async throws {
+        try ensureConfigured()
+        do {
+            try await authProvider.resend(email: email, type: .signup)
+        } catch {
+            throw mapError(error)
+        }
+    }
+
     func signOut() throws {
         try ensureConfigured()
         let semaphore = DispatchSemaphore(value: 0)
@@ -155,7 +170,14 @@ final class SupabaseEmailAuthService: EmailAuthService {
                     return PayBackError.authAccountDisabled
                 case .overRequestRateLimit, .overEmailSendRateLimit, .overSMSSendRateLimit:
                     return PayBackError.authRateLimited
+                case .emailNotConfirmed:
+                    return PayBackError.authEmailNotConfirmed(email: "")
                 default:
+                    // Check if the error message indicates email not confirmed
+                    let errorMessage = authError.localizedDescription.lowercased()
+                    if errorMessage.contains("email not confirmed") || errorMessage.contains("confirm your email") {
+                        return PayBackError.authEmailNotConfirmed(email: "")
+                    }
                     return PayBackError.underlying(message: authError.localizedDescription)
                 }
             default:
@@ -201,6 +223,10 @@ actor MockEmailAuthService: EmailAuthService {
         guard users[normalizedEmail] != nil else {
             throw PayBackError.authInvalidCredentials(message: "")
         }
+    }
+
+    func resendConfirmationEmail(email: String) async throws {
+        // Mock: no-op for testing
     }
 
     nonisolated func signOut() throws {}

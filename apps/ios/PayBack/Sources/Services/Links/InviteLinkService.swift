@@ -67,7 +67,7 @@ actor MockInviteLinkService: InviteLinkService {
         tokens[token.id] = token
         claimedTokenIds.remove(token.id)
         
-        let url = URL(string: "payback://link/claim?token=\(token.id.uuidString)")!
+        let url = Self.makeInviteURL(tokenId: token.id)
         let shareText = """
         Hi! I've added you to PayBack for tracking shared expenses.
         
@@ -160,6 +160,18 @@ actor MockInviteLinkService: InviteLinkService {
         tokens.removeValue(forKey: tokenId)
         claimedTokenIds.remove(tokenId)
     }
+    
+    // MARK: - URL Generation
+    
+    /// Generates an HTTPS URL pointing to the Supabase Edge Function for invite redirects.
+    /// Falls back to the custom URL scheme if Supabase is not configured.
+    private static func makeInviteURL(tokenId: UUID) -> URL {
+        if let baseURL = SupabaseClientProvider.baseURL {
+            return URL(string: "\(baseURL.absoluteString)/functions/v1/invite?token=\(tokenId.uuidString)")!
+        }
+        // Fallback to custom scheme for local/mock testing
+        return URL(string: "payback://link/claim?token=\(tokenId.uuidString)")!
+    }
 }
 
 private struct InviteTokenRow: Codable {
@@ -236,7 +248,7 @@ final class SupabaseInviteLinkService: InviteLinkService, Sendable {
             .insert([row], returning: .minimal)
             .execute() as PostgrestResponse<Void>
         
-        let url = URL(string: "payback://link/claim?token=\(token.id.uuidString)")!
+        let url = Self.makeInviteURL(tokenId: token.id)
         let shareText = """
         Hi! I've added you to PayBack for tracking shared expenses.
         
@@ -290,14 +302,139 @@ final class SupabaseInviteLinkService: InviteLinkService, Sendable {
             )
         }
         
+        // Call Edge Function to get live preview data
+        struct PreviewResponse: Codable {
+            let token: InviteTokenRow
+            let expenses: [ExpenseRow]
+            let groups: [GroupRow]
+        }
+        
+        let previewResponse: PreviewResponse
+        do {
+            // Use manual URLSession to avoid SDK version ambiguities
+            guard let baseURL = SupabaseClientProvider.baseURL,
+                  let apiKey = SupabaseConfiguration.load().anonKey else {
+                 throw PayBackError.configurationMissing(service: "Supabase Invite Function")
+            }
+            
+            var request = URLRequest(url: baseURL.appendingPathComponent("functions/v1/preview-invite"))
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(["token": tokenId.uuidString])
+            
+            let (data, httpResponse) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResp = httpResponse as? HTTPURLResponse, (200...299).contains(httpResp.statusCode) else {
+                let errorMsg = String(data: data, encoding: .utf8) ?? "Unknown error"
+                print("[InviteLinkService] Function error: \(errorMsg)")
+                throw PayBackError.networkUnavailable // Or specific error
+            }
+            
+            previewResponse = try JSONDecoder().decode(PreviewResponse.self, from: data)
+            
+        } catch {
+            print("[InviteLinkService] Failed to fetch preview: \(error)")
+            // Fallback to basic validation without preview if function fails
+            return InviteTokenValidation(
+                isValid: true,
+                token: token,
+                expensePreview: nil,
+                errorMessage: nil
+            )
+        }
+        
+        // Map to domain models
+        let expenses = previewResponse.expenses.map { mapExpense($0) }
+        let groups = previewResponse.groups.map { mapGroup($0) }
+        let groupMap = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+        
+        let preview = calculatePreview(
+            expenses: expenses,
+            groupMap: groupMap,
+            targetMemberId: token.targetMemberId
+        )
+        
         return InviteTokenValidation(
             isValid: true,
             token: token,
-            expensePreview: nil,
+            expensePreview: preview,
             errorMessage: nil
         )
     }
     
+    private func calculatePreview(
+        expenses: [Expense],
+        groupMap: [UUID: SpendingGroup],
+        targetMemberId: UUID
+    ) -> ExpensePreview {
+        var personalExpenses: [Expense] = []
+        var groupExpenses: [Expense] = []
+        var balance: Double = 0
+        var groupNames = Set<String>()
+        
+        for expense in expenses {
+            guard let group = groupMap[expense.groupId] else { continue }
+            
+            if group.isDirect == true {
+                personalExpenses.append(expense)
+            } else {
+                groupExpenses.append(expense)
+                groupNames.insert(group.name)
+            }
+            
+            // Balance Calculation
+            if expense.paidByMemberId == targetMemberId {
+                // I paid -> others owe me -> positive balance
+                let othersOwe = expense.splits
+                    .filter { $0.memberId != targetMemberId }
+                    .reduce(0) { $0 + $1.amount }
+                balance += othersOwe
+            } else {
+                // Someone else paid -> I owe -> negative balance
+                let mySplit = expense.splits.first { $0.memberId == targetMemberId }?.amount ?? 0
+                balance -= mySplit
+            }
+        }
+        
+        return ExpensePreview(
+            personalExpenses: personalExpenses,
+            groupExpenses: groupExpenses,
+            totalBalance: balance,
+            groupNames: Array(groupNames).sorted()
+        )
+    }
+    
+    // MARK: - Mappers
+    
+    private func mapExpense(_ row: ExpenseRow) -> Expense {
+        Expense(
+            id: row.id,
+            groupId: row.groupId,
+            description: row.description,
+            date: row.date,
+            totalAmount: row.totalAmount,
+            paidByMemberId: row.paidByMemberId,
+            involvedMemberIds: row.involvedMemberIds,
+            splits: row.splits.map { ExpenseSplit(id: $0.id, memberId: $0.memberId, amount: $0.amount, isSettled: $0.isSettled) },
+            isSettled: row.isSettled,
+            participantNames: nil,
+            isDebug: false,
+            subexpenses: row.subexpenses?.map { Subexpense(id: $0.id, amount: $0.amount) }
+        )
+    }
+    
+    private func mapGroup(_ row: GroupRow) -> SpendingGroup {
+        SpendingGroup(
+            id: row.id,
+            name: row.name,
+            members: [], // Members not needed for preview logic (names only)
+            createdAt: row.createdAt,
+            isDirect: row.isDirect,
+            isDebug: false
+        )
+    }
+
     func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
         let context = try await userContextProvider()
         
@@ -409,6 +546,15 @@ final class SupabaseInviteLinkService: InviteLinkService, Sendable {
             throw PayBackError.authSessionMissing
         }
     }
+    
+    /// Generates an HTTPS URL pointing to the Supabase Edge Function for invite redirects.
+    private static func makeInviteURL(tokenId: UUID) -> URL {
+        if let baseURL = SupabaseClientProvider.baseURL {
+            return URL(string: "\(baseURL.absoluteString)/functions/v1/invite?token=\(tokenId.uuidString)")!
+        }
+        // Fallback to custom scheme (should never happen when Supabase is configured)
+        return URL(string: "payback://link/claim?token=\(tokenId.uuidString)")!
+    }
 }
 
 
@@ -422,4 +568,77 @@ enum InviteLinkServiceProvider {
         }
     }
 }
+
+// MARK: - Private Transfer Objects (Mirrors of CloudService rows)
+
+private struct ExpenseRow: Codable {
+    let id: UUID
+    let groupId: UUID
+    let description: String
+    let date: Date
+    let totalAmount: Double
+    let paidByMemberId: UUID
+    let involvedMemberIds: [UUID]
+    let splits: [ExpenseSplitRow]
+    let isSettled: Bool
+    // Optional/unused fields omitted for brevity if not strictly needed, 
+    // but better to match exactly to avoid decoding errors if API returns them.
+    // Edge function returns "select * from expenses", so we need to match broadly or set decoding strategy to ignore unknown keys?
+    // Swift Codable ignores extra keys by default? No! It ignores missing keys if optional. Any extra keys in JSON are ignored.
+    // So we only need to define what we need, as long as we don't have mismatching types.
+    
+    let subexpenses: [SubexpenseRow]?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case groupId = "group_id"
+        case description
+        case date
+        case totalAmount = "total_amount"
+        case paidByMemberId = "paid_by_member_id"
+        case involvedMemberIds = "involved_member_ids"
+        case splits
+        case isSettled = "is_settled"
+        case subexpenses
+    }
+}
+
+private struct ExpenseSplitRow: Codable {
+    let id: UUID
+    let memberId: UUID
+    let amount: Double
+    let isSettled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case memberId = "member_id"
+        case amount
+        case isSettled = "is_settled"
+    }
+}
+
+private struct SubexpenseRow: Codable {
+    let id: UUID
+    let amount: Double
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case amount
+    }
+}
+
+private struct GroupRow: Codable {
+    let id: UUID
+    let name: String
+    let isDirect: Bool?
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case isDirect = "is_direct"
+        case createdAt = "created_at"
+    }
+}
+
 

@@ -52,8 +52,12 @@ final class InviteLinkServiceTests: XCTestCase {
         )
         
         XCTAssertNotNil(inviteLink.url)
-        XCTAssertTrue(inviteLink.url.absoluteString.contains("payback://link/claim"))
-        XCTAssertTrue(inviteLink.url.absoluteString.contains(inviteLink.token.id.uuidString))
+        // URL should be either HTTPS Edge Function URL or custom scheme (fallback for tests)
+        let urlString = inviteLink.url.absoluteString
+        let isHTTPSUrl = urlString.contains("/functions/v1/invite?token=")
+        let isCustomScheme = urlString.contains("payback://link/claim?token=")
+        XCTAssertTrue(isHTTPSUrl || isCustomScheme, "URL should be either HTTPS or custom scheme: \(urlString)")
+        XCTAssertTrue(urlString.contains(inviteLink.token.id.uuidString))
     }
     
     func testGenerateInviteLinkCreatesShareText() async throws {
@@ -501,5 +505,462 @@ final class InviteLinkServiceTests: XCTestCase {
     func testServiceProvider_makeInviteLinkService() {
         let service = InviteLinkServiceProvider.makeInviteLinkService()
         XCTAssertNotNil(service)
+    }
+    
+    // MARK: - URL Format Tests
+    
+    func testGeneratedURLContainsValidTokenUUID() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "URLTest"
+        )
+        
+        let urlString = inviteLink.url.absoluteString
+        let tokenId = inviteLink.token.id.uuidString
+        
+        // Verify the token UUID is present in the URL
+        XCTAssertTrue(urlString.contains(tokenId))
+        
+        // Verify UUID format is uppercase (standard iOS format)
+        XCTAssertTrue(urlString.contains(tokenId.uppercased()))
+    }
+    
+    func testURLSchemeIsValidFormat() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "SchemeTest"
+        )
+        
+        let url = inviteLink.url
+        
+        // URL should have a valid scheme
+        XCTAssertNotNil(url.scheme)
+        
+        // Scheme should be either https or payback
+        let validSchemes = ["https", "payback"]
+        XCTAssertTrue(validSchemes.contains(url.scheme ?? ""), "Scheme should be https or payback, got: \(url.scheme ?? "nil")")
+    }
+    
+    func testURLContainsTokenQueryParameter() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "QueryTest"
+        )
+        
+        let urlString = inviteLink.url.absoluteString
+        
+        // URL should contain token= query parameter
+        XCTAssertTrue(urlString.contains("token="), "URL should contain token query parameter")
+    }
+    
+    func testMultipleLinksHaveUniqueURLs() async throws {
+        let invite1 = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "User1"
+        )
+        let invite2 = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "User2"
+        )
+        let invite3 = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "User3"
+        )
+        
+        // All URLs should be unique
+        let urls = [invite1.url.absoluteString, invite2.url.absoluteString, invite3.url.absoluteString]
+        let uniqueURLs = Set(urls)
+        XCTAssertEqual(uniqueURLs.count, 3, "All generated URLs should be unique")
+    }
+    
+    func testMultipleLinksHaveUniqueTokens() async throws {
+        var tokenIds: Set<UUID> = []
+        
+        for i in 0..<10 {
+            let invite = try await service.generateInviteLink(
+                targetMemberId: UUID(),
+                targetMemberName: "User\(i)"
+            )
+            tokenIds.insert(invite.token.id)
+        }
+        
+        XCTAssertEqual(tokenIds.count, 10, "All generated tokens should be unique")
+    }
+    
+    // MARK: - Share Text Tests
+    
+    func testShareTextContainsGreeting() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "ShareTest"
+        )
+        
+        XCTAssertTrue(inviteLink.shareText.contains("Hi!"), "Share text should contain greeting")
+    }
+    
+    func testShareTextContainsAppName() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "AppNameTest"
+        )
+        
+        XCTAssertTrue(inviteLink.shareText.contains("PayBack"), "Share text should mention PayBack")
+    }
+    
+    func testShareTextContainsCallToAction() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "CTATest"
+        )
+        
+        XCTAssertTrue(inviteLink.shareText.contains("Tap this link"), "Share text should have call to action")
+    }
+    
+    func testShareTextContainsFullURL() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "FullURLTest"
+        )
+        
+        let fullURL = inviteLink.url.absoluteString
+        XCTAssertTrue(inviteLink.shareText.contains(fullURL), "Share text should contain the full URL")
+    }
+    
+    func testShareTextContainsTargetMemberNameAsSignature() async throws {
+        let targetName = "SignatureTest"
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: targetName
+        )
+        
+        // The share text should end with the signature
+        XCTAssertTrue(inviteLink.shareText.contains("- \(targetName)"), "Share text should have signature with target name")
+    }
+    
+    func testShareTextWithSpecialCharactersInName() async throws {
+        let specialName = "José García-López"
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: specialName
+        )
+        
+        XCTAssertTrue(inviteLink.shareText.contains(specialName), "Share text should handle special characters")
+    }
+    
+    func testShareTextWithEmoji() async throws {
+        let emojiName = "Friend 👋"
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: emojiName
+        )
+        
+        XCTAssertTrue(inviteLink.shareText.contains(emojiName), "Share text should handle emoji")
+    }
+    
+    func testShareTextWithLongName() async throws {
+        let longName = "A Very Long Name That Goes On And On And On"
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: longName
+        )
+        
+        XCTAssertTrue(inviteLink.shareText.contains(longName), "Share text should handle long names")
+    }
+    
+    // MARK: - Token Expiration Tests
+    
+    func testTokenExpiresInFuture() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "ExpiryTest"
+        )
+        
+        XCTAssertTrue(inviteLink.token.expiresAt > Date(), "Token should expire in the future")
+    }
+    
+    func testTokenExpiresAfterCreation() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "CreationTest"
+        )
+        
+        XCTAssertTrue(inviteLink.token.expiresAt > inviteLink.token.createdAt, "Expiration should be after creation")
+    }
+    
+    func testTokenHasReasonableExpirationWindow() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "WindowTest"
+        )
+        
+        let expirationInterval = inviteLink.token.expiresAt.timeIntervalSince(inviteLink.token.createdAt)
+        
+        // Should expire between 1 day and 31 days
+        XCTAssertGreaterThanOrEqual(expirationInterval, 24 * 3600, "Token should be valid for at least 1 day")
+        XCTAssertLessThanOrEqual(expirationInterval, 31 * 24 * 3600, "Token should expire within 31 days")
+    }
+    
+    // MARK: - Token Creator Tests
+    
+    func testTokenHasCreatorId() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "CreatorTest"
+        )
+        
+        XCTAssertFalse(inviteLink.token.creatorId.isEmpty, "Token should have a creator ID")
+    }
+    
+    func testTokenHasCreatorEmail() async throws {
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "EmailTest"
+        )
+        
+        XCTAssertFalse(inviteLink.token.creatorEmail.isEmpty, "Token should have a creator email")
+        XCTAssertTrue(inviteLink.token.creatorEmail.contains("@"), "Creator email should be valid format")
+    }
+    
+    // MARK: - InviteLink Model Tests
+    
+    func testInviteLinkHasAllRequiredProperties() async throws {
+        let targetMemberId = UUID()
+        let targetMemberName = "ModelTest"
+        
+        let inviteLink = try await service.generateInviteLink(
+            targetMemberId: targetMemberId,
+            targetMemberName: targetMemberName
+        )
+        
+        // Verify all properties are set
+        XCTAssertNotNil(inviteLink.token)
+        XCTAssertNotNil(inviteLink.url)
+        XCTAssertFalse(inviteLink.shareText.isEmpty)
+        
+        // Verify token properties
+        XCTAssertEqual(inviteLink.token.targetMemberId, targetMemberId)
+        XCTAssertEqual(inviteLink.token.targetMemberName, targetMemberName)
+    }
+    
+    // MARK: - Validation Edge Cases
+    
+    func testValidateTokenWithNilClaimedBy() async throws {
+        let invite = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "NilClaimedTest"
+        )
+        
+        // Fresh token should not be claimed
+        let token = await service.getToken(invite.token.id)
+        XCTAssertNil(token?.claimedBy)
+        XCTAssertNil(token?.claimedAt)
+        
+        // Validation should pass
+        let validation = try await service.validateInviteToken(invite.token.id)
+        XCTAssertTrue(validation.isValid)
+    }
+    
+    func testValidatingMultipleTokensIndependently() async throws {
+        let invite1 = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "Independent1"
+        )
+        let invite2 = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "Independent2"
+        )
+        
+        // Claim first token
+        _ = try await service.claimInviteToken(invite1.token.id)
+        
+        // First should be invalid, second should still be valid
+        let validation1 = try await service.validateInviteToken(invite1.token.id)
+        let validation2 = try await service.validateInviteToken(invite2.token.id)
+        
+        XCTAssertFalse(validation1.isValid, "Claimed token should be invalid")
+        XCTAssertTrue(validation2.isValid, "Unclaimed token should still be valid")
+    }
+    
+    // MARK: - Claim Result Tests
+    
+    func testClaimResultHasCorrectLinkedMemberId() async throws {
+        let targetMemberId = UUID()
+        let invite = try await service.generateInviteLink(
+            targetMemberId: targetMemberId,
+            targetMemberName: "ResultTest"
+        )
+        
+        let result = try await service.claimInviteToken(invite.token.id)
+        
+        XCTAssertEqual(result.linkedMemberId, targetMemberId)
+    }
+    
+    func testClaimResultHasLinkedAccountInfo() async throws {
+        let invite = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "AccountInfoTest"
+        )
+        
+        let result = try await service.claimInviteToken(invite.token.id)
+        
+        XCTAssertFalse(result.linkedAccountId.isEmpty)
+        XCTAssertFalse(result.linkedAccountEmail.isEmpty)
+        XCTAssertTrue(result.linkedAccountEmail.contains("@"))
+    }
+    
+    // MARK: - Active Invites Tests
+    
+    func testFetchActiveInvitesWithMultipleStates() async throws {
+        // Generate 3 invites
+        let active1 = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "Active1"
+        )
+        let active2 = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "Active2"
+        )
+        let toClaim = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "ToClaim"
+        )
+        let toRevoke = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "ToRevoke"
+        )
+        
+        // Claim one and revoke another
+        _ = try await service.claimInviteToken(toClaim.token.id)
+        try await service.revokeInvite(toRevoke.token.id)
+        
+        // Fetch active
+        let activeInvites = try await service.fetchActiveInvites()
+        let activeIds = activeInvites.map { $0.id }
+        
+        // Should only contain the 2 active ones
+        XCTAssertTrue(activeIds.contains(active1.token.id))
+        XCTAssertTrue(activeIds.contains(active2.token.id))
+        XCTAssertFalse(activeIds.contains(toClaim.token.id), "Claimed invite should not be active")
+        XCTAssertFalse(activeIds.contains(toRevoke.token.id), "Revoked invite should not be active")
+    }
+    
+    // MARK: - Error Handling Tests
+    
+    func testClaimingRevokedTokenThrowsError() async throws {
+        let invite = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "RevokedClaimTest"
+        )
+        
+        // Revoke the token
+        try await service.revokeInvite(invite.token.id)
+        
+        // Try to claim - should fail
+        do {
+            _ = try await service.claimInviteToken(invite.token.id)
+            XCTFail("Should throw error when claiming revoked token")
+        } catch PayBackError.linkInvalid {
+            // Expected
+        }
+    }
+    
+    func testValidatingRevokedTokenReturnsInvalid() async throws {
+        let invite = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "RevokedValidateTest"
+        )
+        
+        // Revoke the token
+        try await service.revokeInvite(invite.token.id)
+        
+        // Validate - should be invalid
+        let validation = try await service.validateInviteToken(invite.token.id)
+        XCTAssertFalse(validation.isValid)
+    }
+    
+    // MARK: - Concurrent Operations Tests
+    
+    func testConcurrentLinkGeneration() async throws {
+        // Generate many links concurrently
+        let count = 20
+        let results = await withTaskGroup(of: Result<InviteLink, Error>.self) { group in
+            for i in 0..<count {
+                group.addTask {
+                    do {
+                        let result = try await self.service.generateInviteLink(
+                            targetMemberId: UUID(),
+                            targetMemberName: "Concurrent\(i)"
+                        )
+                        return .success(result)
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+            }
+            
+            var collected: [Result<InviteLink, Error>] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+        
+        // All should succeed
+        let successes = results.compactMap { try? $0.get() }
+        XCTAssertEqual(successes.count, count, "All concurrent generations should succeed")
+        
+        // All tokens should be unique
+        let tokenIds = Set(successes.map { $0.token.id })
+        XCTAssertEqual(tokenIds.count, count, "All tokens should be unique")
+    }
+    
+    func testConcurrentValidation() async throws {
+        // Generate a token
+        let invite = try await service.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "ConcurrentValidate"
+        )
+        
+        // Validate concurrently
+        let count = 10
+        let results = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<count {
+                group.addTask {
+                    do {
+                        let validation = try await self.service.validateInviteToken(invite.token.id)
+                        return validation.isValid
+                    } catch {
+                        return false
+                    }
+                }
+            }
+            
+            var collected: [Bool] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+        
+        // All validations should return true
+        XCTAssertTrue(results.allSatisfy { $0 }, "All concurrent validations should succeed")
+    }
+    
+    // MARK: - SupabaseClientProvider Tests
+    
+    func testSupabaseClientProviderIsConfiguredProperty() {
+        // This tests the isConfigured property behavior
+        let isConfigured = SupabaseClientProvider.isConfigured
+        // Should return a boolean (true or false depending on environment)
+        XCTAssertNotNil(isConfigured as Bool?)
+    }
+    
+    func testSupabaseClientProviderBaseURL() {
+        // Test baseURL property
+        let baseURL = SupabaseClientProvider.baseURL
+        // May be nil if not configured, which is valid
+        if let url = baseURL {
+            XCTAssertTrue(url.absoluteString.hasPrefix("http"), "Base URL should be HTTP/HTTPS")
+        }
     }
 }

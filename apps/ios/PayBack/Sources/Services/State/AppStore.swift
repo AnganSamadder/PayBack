@@ -1793,6 +1793,11 @@ final class AppStore: ObservableObject {
             accountId: result.linkedAccountId,
             accountEmail: result.linkedAccountEmail
         )
+        
+        // 🚀 CRITICAL FIX: Fetch new data (groups/expenses) that we now have access to!
+        // The cloud services have been updated to rely on RLS, so fetching now will return
+        // the shared groups/expenses associated with this new link.
+        await loadRemoteData()
     }
     
     /// Generates an expense preview for a member

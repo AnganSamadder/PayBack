@@ -130,57 +130,18 @@ final class SupabaseExpenseCloudService: ExpenseCloudService, Sendable {
         print("[ExpenseCloud] 🔍 Fetching expenses for account_id: \(context.id), email: \(context.email)")
         #endif
 
-        // Fetch expenses WITHOUT join (more reliable)
+        // Rely on RLS to filter expenses (ownership OR involvement)
+        // We select all expenses that the current user is allowed to see.
         let primary: PostgrestResponse<[ExpenseRow]> = try await client
             .from(table)
             .select("*")
-            .eq("owner_account_id", value: context.id)
             .execute()
 
         #if DEBUG
-        print("[ExpenseCloud] 📊 Primary query (by account_id) returned \(primary.value.count) expenses")
+        print("[ExpenseCloud] 📊 Query returned \(primary.value.count) expenses")
         #endif
 
-        var expenseRows: [ExpenseRow] = []
-        
-        if !primary.value.isEmpty {
-            expenseRows = primary.value
-        } else {
-            // Secondary query by email
-            let secondary: PostgrestResponse<[ExpenseRow]> = try await client
-                .from(table)
-                .select("*")
-                .eq("owner_email", value: context.email)
-                .execute()
-
-            #if DEBUG
-            print("[ExpenseCloud] 📊 Secondary query (by email) returned \(secondary.value.count) expenses")
-            #endif
-
-            if !secondary.value.isEmpty {
-                expenseRows = secondary.value
-            } else {
-                // Fallback
-                #if DEBUG
-                print("[ExpenseCloud] ⚠️ No expenses found by account_id or email, trying fallback...")
-                #endif
-                
-                let fallback: PostgrestResponse<[ExpenseRow]> = try await client
-                    .from(table)
-                    .select("*")
-                    .execute()
-
-                expenseRows = fallback.value.filter { row in
-                    row.ownerAccountId == context.id ||
-                    row.ownerEmail.lowercased() == context.email ||
-                    (row.ownerAccountId.isEmpty && row.ownerEmail.isEmpty)
-                }
-                
-                #if DEBUG
-                print("[ExpenseCloud] 📊 Fallback query returned \(fallback.value.count) total, \(expenseRows.count) after filtering")
-                #endif
-            }
-        }
+        var expenseRows: [ExpenseRow] = primary.value
         
         // Now fetch subexpenses separately for all expense IDs
         let expenseIds = expenseRows.map { $0.id }

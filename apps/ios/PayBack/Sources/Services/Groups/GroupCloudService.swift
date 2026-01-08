@@ -66,67 +66,19 @@ final class SupabaseGroupCloudService: GroupCloudService, Sendable {
         print("[GroupCloud] 🔍 Fetching groups for account_id: \(context.id), email: \(context.email)")
         #endif
 
-        let primary: PostgrestResponse<[GroupRow]> = try await client
-            .from(table)
-            .select()
-            .eq("owner_account_id", value: context.id)
-            .execute()
-
-        #if DEBUG
-        print("[GroupCloud] 📊 Primary query (by account_id) returned \(primary.value.count) groups")
-        #endif
-
-        if !primary.value.isEmpty {
-            let groups = primary.value.map(group(from:))
-            #if DEBUG
-            print("[GroupCloud] ✅ Returning \(groups.count) groups from primary query")
-            for group in groups {
-                print("[GroupCloud]   - \(group.name): \(group.members.count) members")
-            }
-            #endif
-            return groups
-        }
-
-        let secondary: PostgrestResponse<[GroupRow]> = try await client
-            .from(table)
-            .select()
-            .eq("owner_email", value: context.email)
-            .execute()
-
-        #if DEBUG
-        print("[GroupCloud] 📊 Secondary query (by email) returned \(secondary.value.count) groups")
-        #endif
-
-        if !secondary.value.isEmpty {
-            let groups = secondary.value.map(group(from:))
-            #if DEBUG
-            print("[GroupCloud] ✅ Returning \(groups.count) groups from secondary query")
-            #endif
-            return groups
-        }
-
-        #if DEBUG
-        print("[GroupCloud] ⚠️ No groups found by account_id or email, trying fallback...")
-        #endif
-
-        let fallback: PostgrestResponse<[GroupRow]> = try await client
+        // Rely on RLS to filter groups (ownership OR membership)
+        // We select all groups that the current user is allowed to see.
+        let response: PostgrestResponse<[GroupRow]> = try await client
             .from(table)
             .select()
             .execute()
 
-        let filtered = fallback.value
-            .filter { row in
-                row.ownerAccountId == context.id ||
-                row.ownerEmail.lowercased() == context.email ||
-                (row.ownerAccountId.isEmpty && row.ownerEmail.isEmpty)
-            }
-            .map(group(from:))
-        
         #if DEBUG
-        print("[GroupCloud] 📊 Fallback query returned \(fallback.value.count) total, \(filtered.count) after filtering")
+        print("[GroupCloud] 📊 Query returned \(response.value.count) groups")
         #endif
-        
-        return filtered
+
+        let groups = response.value.map(group(from:))
+        return groups
     }
 
     func upsertGroup(_ group: SpendingGroup) async throws {

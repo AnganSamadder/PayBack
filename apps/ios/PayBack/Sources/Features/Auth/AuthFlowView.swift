@@ -41,6 +41,7 @@ struct AuthFlowView: View {
                 isBusy: coordinator.isBusy,
                 errorMessage: coordinator.errorMessage,
                 infoMessage: coordinator.infoMessage,
+                showResendConfirmation: coordinator.unconfirmedEmail != nil,
                 onLogin: { email, password in
                     Task { await coordinator.login(emailInput: email, password: password) }
                 },
@@ -49,6 +50,9 @@ struct AuthFlowView: View {
                 },
                 onPrefillSignup: { input in
                     coordinator.openSignup(with: input)
+                },
+                onResendConfirmation: {
+                    Task { await coordinator.resendConfirmationEmail() }
                 }
             )
             .frame(maxWidth: 520)
