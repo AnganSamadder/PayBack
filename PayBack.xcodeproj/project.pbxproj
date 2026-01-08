@@ -39,6 +39,7 @@
 		28C79620AABAA8EF8A8A834B /* AccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78175D1E7C19857E0A2B5BE8 /* AccountService.swift */; };
 		2D04A34E469AAD6679A9088B /* SplitInvariantsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6F89CFF95A85828D0327CFF /* SplitInvariantsTests.swift */; };
 		2E1B98446BD6C5648AD74339 /* MockPersistenceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 827D825E3171FC289B879C98 /* MockPersistenceService.swift */; };
+		2E8E157B5EA44B0454308765 /* PayBackErrorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBE00D63C85FA54A6240DB18 /* PayBackErrorTests.swift */; };
 		2E92D7157A4BDF2AE43C0F8A /* ImportExportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 049690E11813E755E5AD8ADE /* ImportExportView.swift */; };
 		2F8FB937FA518B818848CB2A /* MockLinkRequestService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0D5D8B74C37BC89EA3F970 /* MockLinkRequestService.swift */; };
 		301C45E4E5CB3D4A8E69DF24 /* ConvexClientWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF3768EB10020576D4376F8A /* ConvexClientWrapper.swift */; };
@@ -397,6 +398,7 @@
 		F49C78DD426C127AEC3C0BBB /* NavigationHeaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationHeaderTests.swift; sourceTree = "<group>"; };
 		F6D2BCF45BC9BAFEC4111C75 /* AccountLinkingSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLinkingSecurityTests.swift; sourceTree = "<group>"; };
 		FBD86925E14ABD5DD2E71C3B /* InviteLinkServiceExtendedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteLinkServiceExtendedTests.swift; sourceTree = "<group>"; };
+		FBE00D63C85FA54A6240DB18 /* PayBackErrorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayBackErrorTests.swift; sourceTree = "<group>"; };
 		FDA3E6B62DA262910AA5CADB /* PhoneAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAuthService.swift; sourceTree = "<group>"; };
 		FF3768EB10020576D4376F8A /* ConvexClientWrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexClientWrapper.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -709,6 +711,14 @@
 			path = Links;
 			sourceTree = "<group>";
 		};
+		7C02765C1D81849C09BDB256 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				FBE00D63C85FA54A6240DB18 /* PayBackErrorTests.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
 		81E42A1CD3BDC991DB92A63B /* Sources */ = {
 			isa = PBXGroup;
 			children = (
@@ -940,6 +950,7 @@
 				552929851A5AD547D2879FBA /* TEST_REQUIREMENTS_MAPPING.md */,
 				101F4FFF651AD967C45F97BE /* BusinessLogic */,
 				1852817E90C0FC3CC92D00D9 /* Concurrency */,
+				7C02765C1D81849C09BDB256 /* Core */,
 				8BEE3893E39397179F3B6548 /* DesignSystem */,
 				9EF0B442AB6C15286A1A90D5 /* ErrorHandling */,
 				2174FDEE4FDAC8C3A2D33836 /* Extensions */,
@@ -1231,6 +1242,7 @@
 				AB3549D159163181B1AFB160 /* NetworkErrorTests.swift in Sources */,
 				A397EFAFD4D6778A64BB2D84 /* PIIRedactionTests.swift in Sources */,
 				B570E75CBE06309F378FE148 /* PayBackErrorExtendedTests.swift in Sources */,
+				2E8E157B5EA44B0454308765 /* PayBackErrorTests.swift in Sources */,
 				4BD63B213C7A3C656EDE5B6F /* PayBackTests.swift in Sources */,
 				F7EFB1917D314A7BD6225999 /* PersistenceServiceTests.swift in Sources */,
 				A81AA3BCF4FC47BAFDA34581 /* PhoneAuthServiceExtendedTests.swift in Sources */,
