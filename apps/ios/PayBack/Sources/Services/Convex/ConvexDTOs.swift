@@ -227,3 +227,26 @@ struct ConvexInviteTokenDTO: Decodable, Sendable {
         )
     }
 }
+
+/// Internal DTO for invite token validation response
+struct ConvexInviteTokenValidationDTO: Decodable, Sendable {
+    let is_valid: Bool
+    let error: String?
+    let token: ConvexInviteTokenDTO?
+    let expense_preview: ConvexExpensePreviewDTO?
+}
+
+/// Internal DTO for expense preview in invite validation
+struct ConvexExpensePreviewDTO: Decodable, Sendable {
+    let expense_count: Int
+    let group_names: [String]
+    let total_balance: Double
+}
+
+/// Internal DTO for link accept result
+struct ConvexLinkAcceptResultDTO: Decodable, Sendable {
+    let linked_member_id: String
+    let linked_account_id: String
+    let linked_account_email: String
+}
+

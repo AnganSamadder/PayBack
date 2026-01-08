@@ -76,7 +76,7 @@ final class ConvexSyncManager: ObservableObject {
             guard let self = self else { return }
             
             do {
-                for try await groupDTOs in self.client.subscribe(to: "groups:list", yielding: [GroupDTO].self).values {
+                for try await groupDTOs in self.client.subscribe(to: "groups:list", yielding: [ConvexGroupDTO].self).values {
                     await MainActor.run {
                         self.groups = groupDTOs.compactMap { $0.toSpendingGroup() }
                     }
@@ -91,7 +91,7 @@ final class ConvexSyncManager: ObservableObject {
             guard let self = self else { return }
             
             do {
-                for try await expenseDTOs in self.client.subscribe(to: "expenses:list", yielding: [ExpenseDTO].self).values {
+                for try await expenseDTOs in self.client.subscribe(to: "expenses:list", yielding: [ConvexExpenseDTO].self).values {
                     await MainActor.run {
                         self.expenses = expenseDTOs.compactMap { $0.toExpense() }
                     }
@@ -105,7 +105,7 @@ final class ConvexSyncManager: ObservableObject {
         friendsTask = Task { [weak self] in
             guard let self = self else { return }
             do {
-                for try await dtos in self.client.subscribe(to: "friends:list", yielding: [FriendDTO].self).values {
+                for try await dtos in self.client.subscribe(to: "friends:list", yielding: [ConvexAccountFriendDTO].self).values {
                     await MainActor.run {
                         self.friends = dtos.compactMap { $0.toAccountFriend() }
                     }
@@ -119,7 +119,7 @@ final class ConvexSyncManager: ObservableObject {
         incomingRequestsTask = Task { [weak self] in
             guard let self = self else { return }
             do {
-                for try await dtos in self.client.subscribe(to: "linkRequests:listIncoming", yielding: [LinkRequestDTO].self).values {
+                for try await dtos in self.client.subscribe(to: "linkRequests:listIncoming", yielding: [ConvexLinkRequestDTO].self).values {
                     await MainActor.run {
                         self.incomingLinkRequests = dtos.compactMap { $0.toLinkRequest() }
                     }
@@ -133,7 +133,7 @@ final class ConvexSyncManager: ObservableObject {
         outgoingRequestsTask = Task { [weak self] in
             guard let self = self else { return }
             do {
-                for try await dtos in self.client.subscribe(to: "linkRequests:listOutgoing", yielding: [LinkRequestDTO].self).values {
+                for try await dtos in self.client.subscribe(to: "linkRequests:listOutgoing", yielding: [ConvexLinkRequestDTO].self).values {
                     await MainActor.run {
                         self.outgoingLinkRequests = dtos.compactMap { $0.toLinkRequest() }
                     }
@@ -147,7 +147,7 @@ final class ConvexSyncManager: ObservableObject {
         inviteTokensTask = Task { [weak self] in
             guard let self = self else { return }
             do {
-                for try await dtos in self.client.subscribe(to: "inviteTokens:listByCreator", yielding: [InviteTokenSyncDTO].self).values {
+                for try await dtos in self.client.subscribe(to: "inviteTokens:listByCreator", yielding: [ConvexInviteTokenDTO].self).values {
                     await MainActor.run {
                         self.activeInviteTokens = dtos.compactMap { $0.toInviteToken() }
                     }
@@ -193,182 +193,3 @@ final class ConvexSyncManager: ObservableObject {
     }
 }
 
-// MARK: - DTOs
-
-private struct GroupDTO: Decodable {
-    let id: String
-    let name: String
-    let created_at: Double
-    let members: [GroupMemberDTO]
-    let is_direct: Bool?
-    let is_payback_generated_mock_data: Bool?
-    
-    func toSpendingGroup() -> SpendingGroup? {
-        guard let id = UUID(uuidString: id) else { return nil }
-        let createdAt = Date(timeIntervalSince1970: created_at / 1000)
-        
-        let members = members.compactMap { mDto -> GroupMember? in
-            guard let mId = UUID(uuidString: mDto.id) else { return nil }
-            return GroupMember(id: mId, name: mDto.name)
-        }
-        
-        return SpendingGroup(
-            id: id,
-            name: name,
-            members: members,
-            createdAt: createdAt,
-            isDirect: is_direct ?? false,
-            isDebug: is_payback_generated_mock_data ?? false
-        )
-    }
-}
-
-private struct GroupMemberDTO: Decodable {
-    let id: String
-    let name: String
-}
-
-private struct ExpenseDTO: Decodable {
-    let id: String
-    let group_id: String
-    let description: String
-    let date: Double
-    let total_amount: Double
-    let paid_by_member_id: String
-    let involved_member_ids: [String]
-    let splits: [SplitDTO]
-    let is_settled: Bool
-    let subexpenses: [SubexpenseDTO]?
-    
-    struct SplitDTO: Decodable {
-        let id: String
-        let member_id: String
-        let amount: Double
-        let is_settled: Bool
-    }
-
-    struct SubexpenseDTO: Decodable {
-        let id: String
-        let amount: Double
-    }
-    
-    func toExpense() -> Expense? {
-        guard let id = UUID(uuidString: id),
-              let groupId = UUID(uuidString: group_id),
-              let paidByMemberId = UUID(uuidString: paid_by_member_id) else { return nil }
-        
-        let subRes: [Subexpense]? = subexpenses?.compactMap { sDto in
-            guard let sId = UUID(uuidString: sDto.id) else { return nil }
-            return Subexpense(id: sId, amount: sDto.amount)
-        }
-
-        return Expense(
-            id: id,
-            groupId: groupId,
-            description: description,
-            date: Date(timeIntervalSince1970: date / 1000),
-            totalAmount: total_amount,
-            paidByMemberId: paidByMemberId,
-            involvedMemberIds: involved_member_ids.compactMap { UUID(uuidString: $0) },
-            splits: splits.compactMap { splitDTO -> ExpenseSplit? in
-                guard let splitId = UUID(uuidString: splitDTO.id),
-                      let memberId = UUID(uuidString: splitDTO.member_id) else { return nil }
-                return ExpenseSplit(
-                    id: splitId,
-                    memberId: memberId,
-                    amount: splitDTO.amount,
-                    isSettled: splitDTO.is_settled
-                )
-            },
-            isSettled: is_settled,
-            subexpenses: (subRes?.isEmpty ?? true) ? nil : subRes
-        )
-    }
-}
-
-private struct FriendDTO: Decodable {
-    let member_id: String
-    let name: String
-    let nickname: String?
-    let has_linked_account: Bool
-    let linked_account_id: String?
-    let linked_account_email: String?
-    
-    func toAccountFriend() -> AccountFriend? {
-        guard let memberId = UUID(uuidString: member_id) else { return nil }
-        return AccountFriend(
-            memberId: memberId,
-            name: name,
-            nickname: nickname,
-            hasLinkedAccount: has_linked_account,
-            linkedAccountId: linked_account_id,
-            linkedAccountEmail: linked_account_email
-        )
-    }
-}
-
-private struct LinkRequestDTO: Decodable {
-    let id: String
-    let requester_id: String
-    let requester_email: String
-    let requester_name: String
-    let recipient_email: String
-    let target_member_id: String
-    let target_member_name: String
-    let created_at: Double
-    let status: String
-    let expires_at: Double
-    let rejected_at: Double?
-    
-    func toLinkRequest() -> LinkRequest? {
-        guard let id = UUID(uuidString: id),
-              let targetMemberId = UUID(uuidString: target_member_id) else { return nil }
-        
-        let status = LinkRequestStatus(rawValue: status) ?? .pending
-        
-        return LinkRequest(
-            id: id,
-            requesterId: requester_id,
-            requesterEmail: requester_email,
-            requesterName: requester_name,
-            recipientEmail: recipient_email,
-            targetMemberId: targetMemberId,
-            targetMemberName: target_member_name,
-            createdAt: Date(timeIntervalSince1970: created_at / 1000),
-            status: status,
-            expiresAt: Date(timeIntervalSince1970: expires_at / 1000),
-            rejectedAt: rejected_at != nil ? Date(timeIntervalSince1970: rejected_at! / 1000) : nil
-        )
-    }
-}
-
-private struct InviteTokenSyncDTO: Decodable {
-    let id: String
-    let creator_id: String
-    let creator_email: String
-    let target_member_id: String
-    let target_member_name: String
-    let created_at: Double
-    let expires_at: Double
-    let claimed_by: String?
-    let claimed_at: Double?
-    
-    func toInviteToken() -> InviteToken? {
-        guard let id = UUID(uuidString: id),
-              let targetMemberId = UUID(uuidString: target_member_id) else {
-            return nil
-        }
-        
-        return InviteToken(
-            id: id,
-            creatorId: creator_id,
-            creatorEmail: creator_email,
-            targetMemberId: targetMemberId,
-            targetMemberName: target_member_name,
-            createdAt: Date(timeIntervalSince1970: created_at / 1000),
-            expiresAt: Date(timeIntervalSince1970: expires_at / 1000),
-            claimedBy: claimed_by,
-            claimedAt: claimed_at.map { Date(timeIntervalSince1970: $0 / 1000) }
-        )
-    }
-}
