@@ -68,6 +68,7 @@
 		5E0159FDF1DEDAC28CCA17AA /* group_v1.json in Resources */ = {isa = PBXBuildFile; fileRef = 7292278D52D651A5715E663D /* group_v1.json */; };
 		5FAF3CF5985B7FE4DE95BBBA /* RetryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72BCA36322E94D84FA897534 /* RetryPolicy.swift */; };
 		6073EABB79E63D6A95466525 /* ActorIsolationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F0F2E290BC24912E65E9B9D /* ActorIsolationTests.swift */; };
+		608394750BEDC9AAB4E19497 /* ConvexDTOs.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7258351A698FF9050220F38 /* ConvexDTOs.swift */; };
 		64689DAF2BC3B129F8DB5BFD /* ConvexMobile in Frameworks */ = {isa = PBXBuildFile; productRef = AB093BE470D7E915758A7F0E /* ConvexMobile */; };
 		64B058D9385B12FCA7090CB1 /* GroupMemberDeletionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D8348781E9DAF0FDEB6DB3A /* GroupMemberDeletionTests.swift */; };
 		6507F770321F7F9A5B3B1B67 /* NavigationTransitionSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AEFA92954396252469BB8A /* NavigationTransitionSettings.swift */; };
@@ -124,6 +125,7 @@
 		AF5D94363D3A4098859AFF83 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 197A2B9C5F8F5B679EBA5627 /* ActivityView.swift */; };
 		B2DAE5BA38B5C7045B93D069 /* ConvexExpenseServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C76F4E25CEEAA132E3E49CD /* ConvexExpenseServiceTests.swift */; };
 		B3100B114852E4D7B5784FEE /* AddHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4014E818C9EE7667E5E37F16 /* AddHomeView.swift */; };
+		B31CD373CA12B26A13FD9002 /* ConvexDTOsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB7DD7E0948CFF99E83B5087 /* ConvexDTOsTests.swift */; };
 		B4BDED949B033D81F6377B4E /* ConvexConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4041720D554190C0CF094EC /* ConvexConfig.swift */; };
 		B570E75CBE06309F378FE148 /* PayBackErrorExtendedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6088EB896CC2CD0779C8FE9 /* PayBackErrorExtendedTests.swift */; };
 		B7234C6E10B3F504700692DB /* GroupMemberTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DC75D835D8DFD1138E7BF41 /* GroupMemberTests.swift */; };
@@ -141,6 +143,7 @@
 		C848554E441E06DBD67DEFF6 /* HapticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 344A547A75671AF313B917FF /* HapticsTests.swift */; };
 		C8A0C9A7D5E1D007079280C3 /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C0C5EF7CC500E28F3D7F4D9 /* ProfileView.swift */; };
 		C9F0223A05FE86CE85E1E9B8 /* ConvexExpenseService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A20985C6A290C85118E743 /* ConvexExpenseService.swift */; };
+		CA0EC7226FE1104C9DE7CEA9 /* DataImportServiceIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0EA48A392D280985E2F5583 /* DataImportServiceIntegrationTests.swift */; };
 		CBEB437F695671D918ADC0E2 /* MockGroupCloudService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3811CBA2B4CF4B3BB0D4663 /* MockGroupCloudService.swift */; };
 		CC3327C4297272DE372CB14D /* ExpenseCalculationIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96259FD127215099B28FCC7D /* ExpenseCalculationIntegrationTests.swift */; };
 		CCB27E3223C20524828B2EED /* AppStoreEdgeCaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A36C9829B835054B1CB6AB38 /* AppStoreEdgeCaseTests.swift */; };
@@ -318,6 +321,7 @@
 		9E4BA859040FC8BA2482C2CA /* UIModelsAndEnumsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIModelsAndEnumsTests.swift; sourceTree = "<group>"; };
 		9E7960D5968137F6AA54F9F0 /* DataImportServiceExtendedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataImportServiceExtendedTests.swift; sourceTree = "<group>"; };
 		A05EDF5E485AD430FBF6CF11 /* GoldenFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoldenFixtureTests.swift; sourceTree = "<group>"; };
+		A0EA48A392D280985E2F5583 /* DataImportServiceIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataImportServiceIntegrationTests.swift; sourceTree = "<group>"; };
 		A1E29DE5E4C6450E5F765D4B /* GroupCloudService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupCloudService.swift; sourceTree = "<group>"; };
 		A36C9829B835054B1CB6AB38 /* AppStoreEdgeCaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreEdgeCaseTests.swift; sourceTree = "<group>"; };
 		A3811CBA2B4CF4B3BB0D4663 /* MockGroupCloudService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockGroupCloudService.swift; sourceTree = "<group>"; };
@@ -364,10 +368,12 @@
 		D3F37533AED2D7280A27B266 /* currency_minor_units.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = currency_minor_units.json; sourceTree = "<group>"; };
 		D4873A17CDB9081DD848BD44 /* ExpenseModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpenseModelTests.swift; sourceTree = "<group>"; };
 		D4A249BB3EF0FE576BDBD00A /* SettleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettleView.swift; sourceTree = "<group>"; };
+		DB7DD7E0948CFF99E83B5087 /* ConvexDTOsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexDTOsTests.swift; sourceTree = "<group>"; };
 		DDB89C25C1CA586A46CC62B6 /* DataImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataImportService.swift; sourceTree = "<group>"; };
 		E1A20985C6A290C85118E743 /* ConvexExpenseService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexExpenseService.swift; sourceTree = "<group>"; };
 		E4FF32FE561ECFA78CA2DB06 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E603E1CEAF680AD48C26FAFD /* ConvexGroupServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexGroupServiceTests.swift; sourceTree = "<group>"; };
+		E7258351A698FF9050220F38 /* ConvexDTOs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexDTOs.swift; sourceTree = "<group>"; };
 		E7DEBED879A13D7226AA9E12 /* ConvexAccountServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexAccountServiceTests.swift; sourceTree = "<group>"; };
 		E83E29039BA183D157EE01C2 /* CodeVerificationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeVerificationView.swift; sourceTree = "<group>"; };
 		E900FEE76F00FFCDD85BDBD1 /* Dependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Dependencies.swift; sourceTree = "<group>"; };
@@ -519,6 +525,7 @@
 			children = (
 				EC6DB99D36309203AAC73876 /* ConvexAccountService.swift */,
 				B4041720D554190C0CF094EC /* ConvexConfig.swift */,
+				E7258351A698FF9050220F38 /* ConvexDTOs.swift */,
 				E1A20985C6A290C85118E743 /* ConvexExpenseService.swift */,
 				3DCD51A521233415E32F42D4 /* ConvexGroupService.swift */,
 				102036A9B91896A6E8315357 /* ConvexInviteLinkService.swift */,
@@ -783,10 +790,12 @@
 				C07F44F1F87534BB9B11564B /* AppStoreTests.swift */,
 				5EFE8F2047EEAF11D31E4F1B /* ClerkAuthProviderTests.swift */,
 				E7DEBED879A13D7226AA9E12 /* ConvexAccountServiceTests.swift */,
+				DB7DD7E0948CFF99E83B5087 /* ConvexDTOsTests.swift */,
 				6C76F4E25CEEAA132E3E49CD /* ConvexExpenseServiceTests.swift */,
 				E603E1CEAF680AD48C26FAFD /* ConvexGroupServiceTests.swift */,
 				EEE1EDF0CFD53C649020C894 /* DataExportServiceTests.swift */,
 				9E7960D5968137F6AA54F9F0 /* DataImportServiceExtendedTests.swift */,
+				A0EA48A392D280985E2F5583 /* DataImportServiceIntegrationTests.swift */,
 				8AE837AA216916E0F55FC490 /* DataImportServiceTests.swift */,
 				439913163059BAA529B1647C /* DependenciesTests.swift */,
 				104ABE14A97B8A00D7A3BCFD /* EmailAuthServiceTests.swift */,
@@ -1144,6 +1153,7 @@
 				06504D6552D9996303DFB7DE /* ClerkAuthProviderTests.swift in Sources */,
 				3640F819553618E9B914C75F /* CodableTests.swift in Sources */,
 				8991A1E3BFC240BC856258EE /* ConvexAccountServiceTests.swift in Sources */,
+				B31CD373CA12B26A13FD9002 /* ConvexDTOsTests.swift in Sources */,
 				B2DAE5BA38B5C7045B93D069 /* ConvexExpenseServiceTests.swift in Sources */,
 				7B78EC60EA8F0F660991AA11 /* ConvexGroupServiceTests.swift in Sources */,
 				236E8F740AC0C9F3B9827F17 /* CreateGroupViewTests.swift in Sources */,
@@ -1151,6 +1161,7 @@
 				560F46E426CF667CEBF58B45 /* CurrencyServiceTests.swift in Sources */,
 				1C137ACFC17CDAEB031B58F8 /* DataExportServiceTests.swift in Sources */,
 				C71E654C75DBB70C99B67C3F /* DataImportServiceExtendedTests.swift in Sources */,
+				CA0EC7226FE1104C9DE7CEA9 /* DataImportServiceIntegrationTests.swift in Sources */,
 				94143EE8E926A39485EE51C2 /* DataImportServiceTests.swift in Sources */,
 				F2A0CC1125DE5EFF472C3BFF /* DateExtensionTests.swift in Sources */,
 				9A4EACCD8DF36760A81C4673 /* DateFormatterTests.swift in Sources */,
@@ -1247,6 +1258,7 @@
 				F52B3FF9B3A4FCC8F5AF18D3 /* CodeVerificationView.swift in Sources */,
 				797869E42BB12F82D4FA3042 /* ConvexAccountService.swift in Sources */,
 				B4BDED949B033D81F6377B4E /* ConvexConfig.swift in Sources */,
+				608394750BEDC9AAB4E19497 /* ConvexDTOs.swift in Sources */,
 				C9F0223A05FE86CE85E1E9B8 /* ConvexExpenseService.swift in Sources */,
 				922BE59BCE1A7768012B78AD /* ConvexGroupService.swift in Sources */,
 				027400746245C2E3CE677FB2 /* ConvexInviteLinkService.swift in Sources */,
