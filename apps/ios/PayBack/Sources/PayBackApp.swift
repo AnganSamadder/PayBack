@@ -260,7 +260,7 @@ struct PayBackApp: App {
                     
                     // Authenticate the Convex client after Clerk is ready
                     if clerk.user != nil {
-                        _ = try? await convexClient.loginFromCache()
+                        await convexClient.loginFromCache()
                     }
                 }
         }
