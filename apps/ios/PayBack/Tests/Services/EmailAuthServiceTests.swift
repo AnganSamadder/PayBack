@@ -15,6 +15,18 @@ final class EmailAuthServiceTests: XCTestCase {
         super.tearDown()
     }
     
+    // MARK: - Helper
+    
+    private func unwrapResult(_ result: SignUpResult) throws -> EmailAuthSignInResult {
+        switch result {
+        case .complete(let authResult):
+            return authResult
+        case .needsVerification:
+            XCTFail("Expected complete signup")
+            throw PayBackError.underlying(message: "Verification needed")
+        }
+    }
+    
     // MARK: - Sign In Tests
     
     func testSignInSuccess() async throws {
@@ -23,7 +35,7 @@ final class EmailAuthServiceTests: XCTestCase {
         let displayName = "Test User"
         
         // First sign up to create the user
-        _ = try await sut.signUp(email: email, password: password, displayName: displayName)
+        _ = try await sut.signUp(email: email, password: password, firstName: "Test", lastName: "User")
         
         // Then sign in
         let result = try await sut.signIn(email: email, password: password)
@@ -39,7 +51,7 @@ final class EmailAuthServiceTests: XCTestCase {
         let displayName = "Sign In User"
         
         // Create user first
-        _ = try await sut.signUp(email: email, password: password, displayName: displayName)
+        _ = try await sut.signUp(email: email, password: password, firstName: "Sign In", lastName: "User")
         
         // Sign in
         let result = try await sut.signIn(email: email, password: password)
@@ -55,11 +67,10 @@ final class EmailAuthServiceTests: XCTestCase {
         let correctPassword = "correctpass123"
         
         // Create user
-        _ = try? await sut.signUp(email: email, password: correctPassword, displayName: "Test")
+        _ = try? await sut.signUp(email: email, password: correctPassword, firstName: "Test", lastName: nil)
         
         do {
             _ = try await sut.signIn(email: email, password: "wrongpassword")
-            XCTFail("Should throw invalid credentials error")
             XCTFail("Should throw invalid credentials error")
         } catch let error as PayBackError {
             if case .authInvalidCredentials = error {
@@ -76,7 +87,6 @@ final class EmailAuthServiceTests: XCTestCase {
         do {
             _ = try await sut.signIn(email: "unknown@example.com", password: "anypassword")
             XCTFail("Should throw invalid credentials error")
-            XCTFail("Should throw invalid credentials error")
         } catch let error as PayBackError {
             if case .authInvalidCredentials = error {
                 // Expected
@@ -91,7 +101,6 @@ final class EmailAuthServiceTests: XCTestCase {
     func testSignInInvalidCredentials() async {
         do {
             _ = try await sut.signIn(email: "notexist@example.com", password: "wrong")
-            XCTFail("Should throw invalid credentials error")
             XCTFail("Should throw invalid credentials error")
         } catch let error as PayBackError {
             if case .authInvalidCredentials = error {
@@ -109,11 +118,10 @@ final class EmailAuthServiceTests: XCTestCase {
         let password = "correctpass123"
         
         // Create user
-        _ = try? await sut.signUp(email: email, password: password, displayName: "Test")
+        _ = try? await sut.signUp(email: email, password: password, firstName: "Test", lastName: nil)
         
         do {
             _ = try await sut.signIn(email: email, password: "wrongpass")
-            XCTFail("Should throw invalid credentials error")
             XCTFail("Should throw invalid credentials error")
         } catch let error as PayBackError {
             if case .authInvalidCredentials = error {
@@ -133,7 +141,8 @@ final class EmailAuthServiceTests: XCTestCase {
         let password = "SecurePass123"
         let displayName = "New User"
         
-        let result = try await sut.signUp(email: email, password: password, displayName: displayName)
+        let signUpResult = try await sut.signUp(email: email, password: password, firstName: "New", lastName: "User")
+        let result = try unwrapResult(signUpResult)
         
         XCTAssertEqual(result.email, email)
         XCTAssertEqual(result.displayName, displayName)
@@ -145,7 +154,8 @@ final class EmailAuthServiceTests: XCTestCase {
         let password = "ValidPass123!"
         let displayName = "Valid User"
         
-        let result = try await sut.signUp(email: email, password: password, displayName: displayName)
+        let signUpResult = try await sut.signUp(email: email, password: password, firstName: "Valid", lastName: "User")
+        let result = try unwrapResult(signUpResult)
         
         XCTAssertNotNil(result)
         XCTAssertEqual(result.email, email)
@@ -165,15 +175,16 @@ final class EmailAuthServiceTests: XCTestCase {
         let displayName = "Test User"
         
         // Mock service accepts any string as email
-        let result = try await sut.signUp(email: invalidEmail, password: password, displayName: displayName)
+        let signUpResult = try await sut.signUp(email: invalidEmail, password: password, firstName: displayName, lastName: nil)
+        let result = try unwrapResult(signUpResult)
+
         XCTAssertNotNil(result)
         XCTAssertEqual(result.email, invalidEmail)
     }
     
     func testSignUpWeakPassword() async {
         do {
-            _ = try await sut.signUp(email: "test@example.com", password: "weak", displayName: "Test")
-            XCTFail("Should throw weak password error")
+            _ = try await sut.signUp(email: "test@example.com", password: "weak", firstName: "Test", lastName: nil)
             XCTFail("Should throw weak password error")
         } catch let error as PayBackError {
             if case .authWeakPassword = error {
@@ -188,8 +199,7 @@ final class EmailAuthServiceTests: XCTestCase {
     
     func testSignUpPasswordTooShort() async {
         do {
-            _ = try await sut.signUp(email: "test@example.com", password: "Pass1", displayName: "Test")
-            XCTFail("Should throw weak password error")
+            _ = try await sut.signUp(email: "test@example.com", password: "Pass1", firstName: "Test", lastName: nil)
             XCTFail("Should throw weak password error")
         } catch let error as PayBackError {
             if case .authWeakPassword = error {
@@ -206,11 +216,10 @@ final class EmailAuthServiceTests: XCTestCase {
         let email = "duplicate@example.com"
         
         // Create first user
-        _ = try? await sut.signUp(email: email, password: "password123", displayName: "First")
+        _ = try? await sut.signUp(email: email, password: "password123", firstName: "First", lastName: nil)
         
         do {
-            _ = try await sut.signUp(email: email, password: "password456", displayName: "Second")
-            XCTFail("Should throw email in use error")
+            _ = try await sut.signUp(email: email, password: "password456", firstName: "Second", lastName: nil)
             XCTFail("Should throw email in use error")
         } catch let error as PayBackError {
             if case .accountDuplicate = error {
@@ -225,7 +234,8 @@ final class EmailAuthServiceTests: XCTestCase {
     
     func testSignUpMinimumPasswordLength() async throws {
         let password = "Pass12"  // Exactly 6 characters
-        let result = try await sut.signUp(email: "test@example.com", password: password, displayName: "Test")
+        let signUpResult = try await sut.signUp(email: "test@example.com", password: password, firstName: "Test", lastName: nil)
+        let result = try unwrapResult(signUpResult)
         XCTAssertNotNil(result)
     }
     
@@ -237,8 +247,9 @@ final class EmailAuthServiceTests: XCTestCase {
         let displayName = "Persist User"
         
         // Sign up
-        let signUpResult = try await sut.signUp(email: email, password: password, displayName: displayName)
-        XCTAssertNotNil(signUpResult.uid)
+        let signUpResult = try await sut.signUp(email: email, password: password, firstName: "Persist", lastName: "User")
+        let result = try unwrapResult(signUpResult)
+        XCTAssertNotNil(result.uid)
         
         // Sign in again - should get a new session
         let signInResult = try await sut.signIn(email: email, password: password)
@@ -252,7 +263,7 @@ final class EmailAuthServiceTests: XCTestCase {
         let password = "password123"
         
         // Create and sign in user
-        _ = try await sut.signUp(email: email, password: password, displayName: "Test")
+        _ = try await sut.signUp(email: email, password: password, firstName: "Test", lastName: nil)
         _ = try await sut.signIn(email: email, password: password)
         
         // Sign out
@@ -276,7 +287,7 @@ final class EmailAuthServiceTests: XCTestCase {
         let email = "reset@example.com"
         
         // Create user first
-        _ = try await sut.signUp(email: email, password: "password123", displayName: "Test")
+        _ = try await sut.signUp(email: email, password: "password123", firstName: "Test", lastName: nil)
         
         // Send password reset
         try await sut.sendPasswordReset(email: email)
@@ -286,7 +297,6 @@ final class EmailAuthServiceTests: XCTestCase {
     func testPasswordResetUserNotFound() async {
         do {
             try await sut.sendPasswordReset(email: "nonexistent@example.com")
-            XCTFail("Should throw error for non-existent user")
             XCTFail("Should throw error for non-existent user")
         } catch let error as PayBackError {
             if case .authInvalidCredentials = error {
@@ -303,20 +313,21 @@ final class EmailAuthServiceTests: XCTestCase {
     
     func testMultipleUsers() async throws {
         let users = [
-            ("user1@example.com", "password1", "User One"),
-            ("user2@example.com", "password2", "User Two"),
-            ("user3@example.com", "password3", "User Three")
+            ("user1@example.com", "password1", "User One", "User", "One"),
+            ("user2@example.com", "password2", "User Two", "User", "Two"),
+            ("user3@example.com", "password3", "User Three", "User", "Three")
         ]
         
         // Sign up all users
-        for (email, password, displayName) in users {
-            let result = try await sut.signUp(email: email, password: password, displayName: displayName)
+        for (email, password, displayName, firstName, lastName) in users {
+            let signUpResult = try await sut.signUp(email: email, password: password, firstName: firstName, lastName: lastName)
+            let result = try unwrapResult(signUpResult)
             XCTAssertEqual(result.email, email)
             XCTAssertEqual(result.displayName, displayName)
         }
         
         // Verify all can sign in
-        for (email, password, displayName) in users {
+        for (email, password, displayName, _, _) in users {
             let result = try await sut.signIn(email: email, password: password)
             XCTAssertEqual(result.email, email)
             XCTAssertEqual(result.displayName, displayName)
@@ -326,31 +337,33 @@ final class EmailAuthServiceTests: XCTestCase {
     // MARK: - Edge Cases
     
     func testEmptyDisplayName() async throws {
-        let result = try await sut.signUp(email: "test@example.com", password: "password123", displayName: "")
+        let signUpResult = try await sut.signUp(email: "test@example.com", password: "password123", firstName: "", lastName: nil)
+        let result = try unwrapResult(signUpResult)
         XCTAssertNotNil(result)
         XCTAssertEqual(result.displayName, "")
     }
     
     func testVeryLongDisplayName() async throws {
         let longName = String(repeating: "a", count: 500)
-        let result = try await sut.signUp(email: "test@example.com", password: "password123", displayName: longName)
+        let signUpResult = try await sut.signUp(email: "test@example.com", password: "password123", firstName: longName, lastName: nil)
+        let result = try unwrapResult(signUpResult)
         XCTAssertEqual(result.displayName, longName)
     }
     
     func testSpecialCharactersInDisplayName() async throws {
         let specialName = "Test User! @#$%^&*() 你好"
-        let result = try await sut.signUp(email: "test@example.com", password: "password123", displayName: specialName)
+        let signUpResult = try await sut.signUp(email: "test@example.com", password: "password123", firstName: specialName, lastName: nil)
+        let result = try unwrapResult(signUpResult)
         XCTAssertEqual(result.displayName, specialName)
     }
     
     func testCaseSensitiveEmail() async throws {
         // Emails should be case-insensitive - normalized to lowercase
-        _ = try await sut.signUp(email: "Test@Example.com", password: "password1", displayName: "User1")
+        _ = try await sut.signUp(email: "Test@Example.com", password: "password1", firstName: "User1", lastName: nil)
         
         // Trying to sign up with different case should fail (duplicate)
         do {
-            _ = try await sut.signUp(email: "test@example.com", password: "password2", displayName: "User2")
-            XCTFail("Should have thrown emailAlreadyInUse error")
+            _ = try await sut.signUp(email: "test@example.com", password: "password2", firstName: "User2", lastName: nil)
             XCTFail("Should have thrown emailAlreadyInUse error")
         } catch let error as PayBackError {
             if case .accountDuplicate = error {
