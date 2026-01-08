@@ -83,6 +83,15 @@ struct AddExpenseView: View {
                             withAnimation(AppAnimation.springy) { dragOffset = 0 }
                         }
                     }
+                    .alert("Duplicate Expense?", isPresented: $showExactDupeWarning) {
+                        Button("Save Anyway") {
+                            skipDupeCheck = true
+                            save()
+                        }
+                        Button("Cancel", role: .cancel) { }
+                    } message: {
+                        Text("This looks like a duplicate of an existing expense in this group. Are you sure you want to save it?")
+                    }
                     .gesture(dragGesture)
                     .offset(y: dragOffset)
                 .ignoresSafeArea()
@@ -169,6 +178,9 @@ struct AddExpenseView: View {
         return baseSplits
     }
 
+    @State private var showExactDupeWarning: Bool = false
+    @State private var skipDupeCheck: Bool = false
+
     private func save() {
         let splits = computedSplits()
         guard !descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -176,6 +188,22 @@ struct AddExpenseView: View {
               !participants.isEmpty,
               !splits.isEmpty,
               participants.contains(where: { !store.isCurrentUser($0) }) else { return }
+
+        // DEDUPLICATION: Check for exact/similar duplicates unless skipped
+        if !skipDupeCheck {
+            let existing = store.expenses.first { e in
+                e.groupId == group.id &&
+                e.description.localizedCaseInsensitiveCompare(descriptionText) == .orderedSame &&
+                abs(e.totalAmount - totalAmount) < 0.01 &&
+                abs(e.date.timeIntervalSince(date)) < 3600 // within 1 hour
+            }
+            
+            if existing != nil {
+                Haptics.notify(.warning)
+                showExactDupeWarning = true
+                return
+            }
+        }
 
         let expense = Expense(
             groupId: group.id,
