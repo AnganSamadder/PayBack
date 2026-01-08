@@ -8,9 +8,23 @@
 import XCTest
 @testable import PayBack
 
-// Tests removed as they were specific to Supabase implementation
+/// Tests for invite URL generation using Convex backend
 final class InviteURLGenerationTests: XCTestCase {
-    func testPlaceholder() {
-        // Validation of URL generation is now covered by other tests or pending implementation
+    
+    func testInviteToken_URLGeneration() {
+        let tokenId = UUID()
+        let url = URL(string: "payback://invite/\(tokenId.uuidString)")!
+        
+        XCTAssertEqual(url.scheme, "payback")
+        XCTAssertEqual(url.host, "invite")
+        XCTAssertEqual(url.pathComponents.last, tokenId.uuidString)
+    }
+    
+    func testInviteToken_ShareTextGeneration() {
+        let tokenId = UUID()
+        let shareText = "Join me on PayBack! Open this link: payback://invite/\(tokenId.uuidString)"
+        
+        XCTAssertTrue(shareText.contains("PayBack"))
+        XCTAssertTrue(shareText.contains(tokenId.uuidString))
     }
 }

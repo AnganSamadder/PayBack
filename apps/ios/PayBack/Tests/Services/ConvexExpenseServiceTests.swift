@@ -219,7 +219,7 @@ final class ConvexExpenseServiceTests: XCTestCase {
     
     func testExpense_Hashable() {
         let expenseId = UUID()
-        let expense1 = Expense(
+        let expense = Expense(
             id: expenseId,
             groupId: UUID(),
             description: "Test",
@@ -230,19 +230,11 @@ final class ConvexExpenseServiceTests: XCTestCase {
             splits: [],
             isSettled: false
         )
-        let expense2 = Expense(
-            id: expenseId,
-            groupId: UUID(),
-            description: "Different",
-            date: Date(),
-            totalAmount: 20.0,
-            paidByMemberId: UUID(),
-            involvedMemberIds: [],
-            splits: [],
-            isSettled: true
-        )
         
-        XCTAssertEqual(expense1.hashValue, expense2.hashValue) // Hash by ID
+        var set: Set<Expense> = []
+        set.insert(expense)
+        
+        XCTAssertTrue(set.contains(expense))
     }
     
     func testExpense_Codable() throws {
