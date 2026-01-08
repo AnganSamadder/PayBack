@@ -6,7 +6,7 @@ struct AuthFlowView: View {
 
     init(
         accountService: AccountService = Dependencies.current.accountService,
-        emailAuthService: EmailAuthService = BindableEmailAuthService.shared, // Using shared/mock or from Dependencies if available
+        emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
         onAuthenticated: @escaping (UserSession) -> Void
     ) {
         _coordinator = StateObject(wrappedValue: AuthCoordinator(accountService: accountService, emailAuthService: emailAuthService))
