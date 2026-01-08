@@ -230,7 +230,7 @@ final class PayBackErrorExtendedTests: XCTestCase {
     // MARK: - General Errors
     
     func testConfigurationMissing_ContainsServiceName() {
-        let serviceName = "Supabase"
+        let serviceName = "Convex"
         let error = PayBackError.configurationMissing(service: serviceName)
         XCTAssertTrue(error.errorDescription!.contains(serviceName))
     }

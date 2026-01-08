@@ -170,9 +170,9 @@ final class ConvexGroupServiceTests: XCTestCase {
             createdAt: Date()
         )
         
-        // isDirect and isDebug should default to nil or false
-        XCTAssertNil(group.isDirect)
-        XCTAssertNil(group.isDebug)
+        // isDirect and isDebug should default to false
+        XCTAssertEqual(group.isDirect, false)
+        XCTAssertEqual(group.isDebug, false)
     }
     
     func testSpendingGroup_WithManyMembers() {
