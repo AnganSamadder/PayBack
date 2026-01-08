@@ -291,6 +291,17 @@ struct DataImportService {
                 let newMemberId = UUID()
                 memberIdMapping[parsedFriend.memberId] = newMemberId
                 nameToExistingId[parsedFriend.name.lowercased()] = newMemberId
+                
+                let newFriend = AccountFriend(
+                    memberId: newMemberId,
+                    name: parsedFriend.name,
+                    nickname: parsedFriend.nickname,
+                    hasLinkedAccount: parsedFriend.hasLinkedAccount,
+                    linkedAccountId: parsedFriend.linkedAccountId,
+                    linkedAccountEmail: parsedFriend.linkedAccountEmail
+                )
+                store.addImportedFriend(newFriend)
+                
                 friendsAdded += 1
             }
         }

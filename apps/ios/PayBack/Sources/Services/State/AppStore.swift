@@ -613,6 +613,29 @@ final class AppStore: ObservableObject {
     
     /// Removes a member from a group and deletes all expenses involving that member from that group only.
 
+    // MARK: - Friend Management
+    
+    func addImportedFriend(_ friend: AccountFriend) {
+        // Check if already exists
+        if !friends.contains(where: { $0.memberId == friend.memberId }) {
+            friends.append(friend)
+            persistCurrentState()
+            
+            // Sync to cloud
+            guard let session else { return }
+            friendSyncTask?.cancel()
+            friendSyncTask = Task { [friends] in
+                do {
+                    try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: friends)
+                } catch {
+                    #if DEBUG
+                    print("⚠️ Failed to sync friends after import: \(error.localizedDescription)")
+                    #endif
+                }
+            }
+        }
+    }
+
     // MARK: - Expenses
     func addExpense(_ expense: Expense) {
         expenses.append(expense)
