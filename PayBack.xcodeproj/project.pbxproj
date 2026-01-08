@@ -21,6 +21,7 @@
 		10E3135765AF30DCDA82BCCA /* InviteLinkServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5172CD1D2C8D0A943B65679 /* InviteLinkServiceTests.swift */; };
 		11EF07FF65E48C37FD16D087 /* DomainModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2D609442013353E2172F080 /* DomainModelsTests.swift */; };
 		1329ECB45CB17C29E6B09B16 /* ExpenseModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4873A17CDB9081DD848BD44 /* ExpenseModelTests.swift */; };
+		14E00A1F166CFAF936756910 /* LinkStateReconciliationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B17BE28CDE16EE29A18A323 /* LinkStateReconciliationTests.swift */; };
 		164F62F10803AFFB65525652 /* MemoryUsageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 023E904F1698DC350103251D /* MemoryUsageTests.swift */; };
 		18FDD59853D2D60E9E0E6E50 /* RetryPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2EEAB9077F4A19C50DD93B /* RetryPolicyTests.swift */; };
 		191EFD18ADF51854E04911F3 /* AsyncCancellationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF43F02D69F85F5596A1EA75 /* AsyncCancellationTests.swift */; };
@@ -92,7 +93,6 @@
 		790BD182748949C4951DC46A /* RoundingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD7F24953C25F1A82303FC1F /* RoundingTests.swift */; };
 		797869E42BB12F82D4FA3042 /* ConvexAccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC6DB99D36309203AAC73876 /* ConvexAccountService.swift */; };
 		7A2959BCE393F89E5AD69565 /* ClerkAuthProviderExtendedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC9AEB1DC55875B618DCE397 /* ClerkAuthProviderExtendedTests.swift */; };
-		7AC89FC6624A066E03A0A15D /* LinkStateReconciliationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2316FD3F64BA77CF6AE264AB /* LinkStateReconciliationTests.swift */; };
 		7B78EC60EA8F0F660991AA11 /* ConvexGroupServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E603E1CEAF680AD48C26FAFD /* ConvexGroupServiceTests.swift */; };
 		7DDE13F673F2ABCFDDFFEB8A /* AuthCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E2250695D4B911B5C06F64D /* AuthCoordinatorTests.swift */; };
 		7E72C939A5F5E258E08DEE56 /* AppStoreRemoteDataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF1FC9D96C48BDEB7D0BA172 /* AppStoreRemoteDataTests.swift */; };
@@ -165,6 +165,7 @@
 		DB8BE817A85BD85191BF3E4E /* CurrencyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1764C08C2441F553EE42E73 /* CurrencyService.swift */; };
 		DBDE72E8897F0A745837FBE6 /* MockAccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3640B3D4C3D7B38B254BA727 /* MockAccountService.swift */; };
 		DF147F930256301E628A240A /* InviteURLGenerationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE8839AAF1CFE425F1A0510C /* InviteURLGenerationTests.swift */; };
+		DF9604234AD78AFA612D3678 /* MockInviteLinkServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC7D0344E0D7A82C3E5FC103 /* MockInviteLinkServiceTests.swift */; };
 		E35BE6589DB9D7C34660C318 /* SpendingGroupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2247A7BA9118E6F03DD62FA0 /* SpendingGroupTests.swift */; };
 		E3732A559287438FD2DB677D /* SettlementLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 619FE261337FC8D415DEF876 /* SettlementLogicTests.swift */; };
 		E40DD7BDCC2B8963F285E380 /* MockCurrencyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C71E965AF224177D5DD4360 /* MockCurrencyService.swift */; };
@@ -232,13 +233,13 @@
 		222F58948A5563D677558140 /* PIIRedactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PIIRedactionTests.swift; sourceTree = "<group>"; };
 		2247A7BA9118E6F03DD62FA0 /* SpendingGroupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpendingGroupTests.swift; sourceTree = "<group>"; };
 		230D91E194DB7716254085D4 /* InviteLinkService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteLinkService.swift; sourceTree = "<group>"; };
-		2316FD3F64BA77CF6AE264AB /* LinkStateReconciliationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkStateReconciliationTests.swift; sourceTree = "<group>"; };
 		251525EBCD9286300851844F /* AuthCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthCoordinator.swift; sourceTree = "<group>"; };
 		2655061A8DC6428A76F311E7 /* TabBarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarTests.swift; sourceTree = "<group>"; };
 		27B995267D99C697CE9BA59E /* AppStoreBalanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreBalanceTests.swift; sourceTree = "<group>"; };
 		27DC865991DE806047491A0F /* SwipeBackModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwipeBackModifier.swift; sourceTree = "<group>"; };
 		29A8B642930616D624DFF4D8 /* AccountServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountServiceTests.swift; sourceTree = "<group>"; };
 		2A242E800C5D09A343BB5B46 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		2B17BE28CDE16EE29A18A323 /* LinkStateReconciliationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkStateReconciliationTests.swift; sourceTree = "<group>"; };
 		2C9F8AA8A820D9FB721FAA22 /* CurrencyServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrencyServiceTests.swift; sourceTree = "<group>"; };
 		2D0D5D8B74C37BC89EA3F970 /* MockLinkRequestService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockLinkRequestService.swift; sourceTree = "<group>"; };
 		2E7454AB57C5F3EE37FBF4D0 /* MockInviteLinkService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockInviteLinkService.swift; sourceTree = "<group>"; };
@@ -387,6 +388,7 @@
 		E98186DD09D32BF012D32E71 /* LinkingModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkingModelsTests.swift; sourceTree = "<group>"; };
 		EB5543CCD24E2C842D2C96E9 /* DateExtensionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateExtensionTests.swift; sourceTree = "<group>"; };
 		EC6DB99D36309203AAC73876 /* ConvexAccountService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexAccountService.swift; sourceTree = "<group>"; };
+		EC7D0344E0D7A82C3E5FC103 /* MockInviteLinkServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockInviteLinkServiceTests.swift; sourceTree = "<group>"; };
 		EE8839AAF1CFE425F1A0510C /* InviteURLGenerationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteURLGenerationTests.swift; sourceTree = "<group>"; };
 		EE9802D978566E5804C627C2 /* CurrencyFormatterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrencyFormatterTests.swift; sourceTree = "<group>"; };
 		EEE1EDF0CFD53C649020C894 /* DataExportServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataExportServiceTests.swift; sourceTree = "<group>"; };
@@ -814,6 +816,8 @@
 				DF043139AD8FC2D7A7961B8E /* ExpenseCloudServiceExtendedTests.swift */,
 				7D8348781E9DAF0FDEB6DB3A /* GroupMemberDeletionTests.swift */,
 				302B806511ECBF6DB0275D55 /* InviteDataPopulationTests.swift */,
+				2B17BE28CDE16EE29A18A323 /* LinkStateReconciliationTests.swift */,
+				EC7D0344E0D7A82C3E5FC103 /* MockInviteLinkServiceTests.swift */,
 				A6088EB896CC2CD0779C8FE9 /* PayBackErrorExtendedTests.swift */,
 				D0CAF7AE9F5FA8C2AD6195D3 /* PhoneAuthServiceExtendedTests.swift */,
 				456EBFF34CFB76014B0AB3BD /* PhoneAuthServiceTests.swift */,
@@ -899,7 +903,6 @@
 				EE8839AAF1CFE425F1A0510C /* InviteURLGenerationTests.swift */,
 				030B8441B1B0DF77E032AC4B /* LinkRequestServiceExtendedTests.swift */,
 				862238F952FBEC309CB1E16C /* LinkRequestServiceTests.swift */,
-				2316FD3F64BA77CF6AE264AB /* LinkStateReconciliationTests.swift */,
 			);
 			path = Links;
 			sourceTree = "<group>";
@@ -1208,7 +1211,7 @@
 				FB1972A197EFF84B5EA09D01 /* LeakCheckingTestCase.swift in Sources */,
 				C221F8B5710EC82B486A6470 /* LinkRequestServiceExtendedTests.swift in Sources */,
 				96E84818EF41BA196D1562A6 /* LinkRequestServiceTests.swift in Sources */,
-				7AC89FC6624A066E03A0A15D /* LinkStateReconciliationTests.swift in Sources */,
+				14E00A1F166CFAF936756910 /* LinkStateReconciliationTests.swift in Sources */,
 				3E4AA414E3307D962A2C3BB6 /* LinkingModelsTests.swift in Sources */,
 				FC8A6FA1183C1103F5921B61 /* LoginViewTests.swift in Sources */,
 				6C0F72232A2A57F096C570C5 /* MainSerialExecutor.swift in Sources */,
@@ -1220,6 +1223,7 @@
 				66534E22EA7C14510742B4FA /* MockExpenseCloudService.swift in Sources */,
 				CBEB437F695671D918ADC0E2 /* MockGroupCloudService.swift in Sources */,
 				EAB6E8D7E95DE89CC8FBE9EC /* MockInviteLinkService.swift in Sources */,
+				DF9604234AD78AFA612D3678 /* MockInviteLinkServiceTests.swift in Sources */,
 				2F8FB937FA518B818848CB2A /* MockLinkRequestService.swift in Sources */,
 				2E1B98446BD6C5648AD74339 /* MockPersistenceService.swift in Sources */,
 				FF06EA68505AAD6E594B4E00 /* NavigationHeaderTests.swift in Sources */,
