@@ -93,20 +93,17 @@ actor ConvexInviteLinkService: InviteLinkService {
         let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString]
         
         // Mutation returns the result directly
-        for try await result in client.subscribe(to: "inviteTokens:claim", with: args, yielding: LinkAcceptResultDTO.self).values {
-            guard let linkedMemberId = UUID(uuidString: result.linked_member_id) else {
-                throw PayBackError.linkInvalid
-            }
-            
-            return LinkAcceptResult(
-                linkedMemberId: linkedMemberId,
-                linkedAccountId: result.linked_account_id,
-                linkedAccountEmail: result.linked_account_email
-            )
+        let result: LinkAcceptResultDTO = try await client.mutation("inviteTokens:claim", with: args)
+        
+        guard let linkedMemberId = UUID(uuidString: result.linked_member_id) else {
+            throw PayBackError.linkInvalid
         }
         
-        // This shouldn't happen but needed for compiler
-        throw PayBackError.linkInvalid
+        return LinkAcceptResult(
+            linkedMemberId: linkedMemberId,
+            linkedAccountId: result.linked_account_id,
+            linkedAccountEmail: result.linked_account_email
+        )
     }
     
     func fetchActiveInvites() async throws -> [InviteToken] {
