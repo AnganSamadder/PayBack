@@ -68,7 +68,7 @@ final class ConvexSyncManager: ObservableObject {
         syncError = nil
         
         #if DEBUG
-        print("[ConvexSyncManager] Starting real-time sync...")
+// print("[ConvexSyncManager] Starting real-time sync...")
         #endif
         
         // Subscribe to groups
