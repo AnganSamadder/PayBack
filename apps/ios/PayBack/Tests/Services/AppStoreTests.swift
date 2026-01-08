@@ -80,7 +80,7 @@ final class AppStoreTests: XCTestCase {
         let session = UserSession(account: account)
         
         // When
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         
         // Then
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -92,7 +92,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // When
@@ -612,7 +612,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let recipientAccount = UserAccount(id: "recipient-456", email: "recipient@example.com", displayName: "Recipient")
@@ -631,7 +631,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let friend = GroupMember(name: "Alice")
@@ -656,7 +656,7 @@ final class AppStoreTests: XCTestCase {
         
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
@@ -686,7 +686,7 @@ final class AppStoreTests: XCTestCase {
         
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
@@ -708,7 +708,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Set the mock service's user email to match the session
@@ -757,7 +757,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Set the mock service's user email to match the session
@@ -794,7 +794,7 @@ final class AppStoreTests: XCTestCase {
         
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Set the mock service's user email to match the session
@@ -842,7 +842,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Set the mock service's user email to match the session
@@ -877,7 +877,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Set the mock service's user email to match the session
@@ -915,7 +915,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let friend = GroupMember(name: "Alice")
@@ -932,7 +932,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         sut.addGroup(name: "Test", memberNames: ["Alice"])
@@ -950,7 +950,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let tokenId = UUID()
@@ -1017,7 +1017,7 @@ final class AppStoreTests: XCTestCase {
         
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
@@ -1048,7 +1048,7 @@ final class AppStoreTests: XCTestCase {
         
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
@@ -1078,7 +1078,7 @@ final class AppStoreTests: XCTestCase {
         
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
@@ -1195,7 +1195,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // When
@@ -1211,7 +1211,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let memberId = UUID()
@@ -1251,7 +1251,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let tokenId = UUID()
@@ -1370,7 +1370,7 @@ final class AppStoreTests: XCTestCase {
         
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
@@ -1814,7 +1814,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         sut.addGroup(name: "Group", memberNames: ["Alice", "Bob"])
@@ -1855,7 +1855,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         sut.addGroup(name: "Old Name", memberNames: ["Alice"])
@@ -1880,7 +1880,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         sut.addGroup(name: "Group", memberNames: ["Alice"])
@@ -1932,7 +1932,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         sut.addGroup(name: "Group 1", memberNames: ["Alice"])
@@ -1986,7 +1986,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         sut.addGroup(name: "Group", memberNames: ["Alice", "Bob"])

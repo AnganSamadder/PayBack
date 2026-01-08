@@ -66,24 +66,123 @@ final class AppStore: ObservableObject {
                 self.persistence.save(AppData(groups: groups, expenses: expenses))
             }
             .store(in: &cancellables)
+        
+        // Subscribe to real-time Convex updates
+        Task { @MainActor in
+            subscribeToSyncManager()
+        }
     }
+    
+    @MainActor
+    private func subscribeToSyncManager() {
+        guard let syncManager = Dependencies.syncManager else { return }
+        
+        // When syncManager.groups updates, replace local data (but keep dirty local items if any exist - though currently we don't have a robust dirty state here yet)
+        syncManager.$groups
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] remoteGroups in
+                guard let self = self else { return }
+                // Deduplicate by ID to prevent SwiftUI ForEach errors
+                var seenGroupIds = Set<UUID>()
+                let uniqueGroups = remoteGroups.filter { seenGroupIds.insert($0.id).inserted }
+                self.groups = uniqueGroups
+                #if DEBUG
+                print("[AppStore] Synced \(uniqueGroups.count) groups from Convex (deduped from \(remoteGroups.count))")
+                #endif
+            }
+            .store(in: &cancellables)
+        
+        // When syncManager.expenses updates
+        syncManager.$expenses
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] remoteExpenses in
+                guard let self = self else { return }
+                // Deduplicate by ID to prevent SwiftUI ForEach errors
+                var seenExpenseIds = Set<UUID>()
+                let uniqueExpenses = remoteExpenses.filter { seenExpenseIds.insert($0.id).inserted }
+                self.expenses = uniqueExpenses
+                #if DEBUG
+                print("[AppStore] Synced \(uniqueExpenses.count) expenses from Convex (deduped from \(remoteExpenses.count))")
+                #endif
+            }
+            .store(in: &cancellables)
+            
+        // When syncManager.friends updates
+        syncManager.$friends
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] remoteFriends in
+                guard let self = self else { return }
+                // Deduplicate by memberId
+                var seenMemberIds = Set<UUID>()
+                let uniqueFriends = remoteFriends.filter { seenMemberIds.insert($0.memberId).inserted }
+                self.friends = uniqueFriends
+                #if DEBUG
+                print("[AppStore] Synced \(uniqueFriends.count) friends from Convex (deduped from \(remoteFriends.count))")
+                #endif
+            }
+            .store(in: &cancellables)
+            
+        // When link requests update
+        Publishers.CombineLatest(syncManager.$incomingLinkRequests, syncManager.$outgoingLinkRequests)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] incoming, outgoing in
+                guard let self = self else { return }
+                self.incomingLinkRequests = incoming
+                self.outgoingLinkRequests = outgoing
+            }
+            .store(in: &cancellables)
+    }
+    
+
 
     // MARK: - Session management
 
-    func completeAuthentication(with session: UserSession) {
-        self.session = session
-        self.applyDisplayName(session.account.displayName)
+    func completeAuthentication(id: String, email: String, name: String?) {
+        // Create initial account object
+        let account = UserAccount(
+            id: id,
+            email: email,
+            displayName: name ?? "User"
+        )
+        // Wrapp in UserSession (assuming it exists and takes account) or just use account
+        // Since we don't know UserSession structure perfectly, let's look at how it was used: session.account
+        // We might need to construct it. If UserSession is Clerk specific, we should use UserAccount directly.
+        // For now, let's rely on finding/creating the account via service first.
         
         Task {
-            let updatedAccount = await ensureCurrentUserIdentity(for: session.account)
-            await MainActor.run {
-                self.session = UserSession(account: updatedAccount)
+            // 1. Ensure backend has this user (Convex users:store)
+            // The AccountService (Convex) createAccount calls 'users:store'.
+            do {
+                let syncedAccount = try await accountService.createAccount(email: email, displayName: name ?? "User")
+                
+                await MainActor.run {
+                     // We need to keep 'session' property for now to avoid breaking other code? 
+                     // Or replace 'session' with 'currentUserAccount'? 
+                     // The code uses 'session.account'.
+                     // Let's infer UserSession is just a wrapper for now.
+                     // self.session = UserSession(account: syncedAccount)
+                     // If UserSession isn't available or is Clerk, we might break compilation.
+                     // But I saw UserSession used in the file.
+                     
+                     // Let's assume UserSession(account:) exists or similar. 
+                     // Actually, better: Let's fetch the implementation of UserSession first?
+                     // No, let's try to update AppStore to NOT use UserSession if possible, or adapt.
+                     // Existing code: self.session = UserSession(account: updatedAccount) (Line 80)
+                     
+                     self.session = UserSession(account: syncedAccount)
+                     self.applyDisplayName(syncedAccount.displayName)
+                }
+                
+                let updatedAccount = await ensureCurrentUserIdentity(for: syncedAccount)
+                await MainActor.run {
+                    self.session = UserSession(account: updatedAccount)
+                }
+                await loadRemoteData()
+                await reconcileLinkState()
+                
+            } catch {
+                print("Failed to sync/create account: \(error)")
             }
-            // Load remote data after setting session
-            await loadRemoteData()
-            
-            // Perform initial link state reconciliation on app launch
-            await reconcileLinkState()
         }
     }
 
@@ -118,6 +217,12 @@ final class AppStore: ObservableObject {
     func signOut() {
         remoteLoadTask?.cancel()
         friendSyncTask?.cancel()
+        
+        // Stop real-time sync (needs MainActor context)
+        Task { @MainActor in
+            Dependencies.syncManager?.stopSync()
+        }
+        
         session = nil
         applyDisplayName("You")
         groups = []
@@ -125,13 +230,68 @@ final class AppStore: ObservableObject {
         friends = []
         persistence.clear()
         
-        // Sign out from Supabase Auth to clear the persistent session
+        // Sign out from Clerk to clear the persistent session
         let emailAuthService = EmailAuthServiceProvider.makeService()
         try? emailAuthService.signOut()
         
         #if DEBUG
         print("[AppStore] User signed out and session cleared")
         #endif
+    }
+
+    /// Clears all user data while respecting shared data integrity.
+    /// - Deletes all expenses where the current user is involved
+    /// - Removes current user from shared groups (doesn't delete group if others remain)
+    /// - Deletes groups where current user is the only member
+    /// - Clears friend list (doesn't affect linked friends' own data)
+    func clearAllUserData() {
+        #if DEBUG
+        print("[AppStore] Clearing all data for user")
+        #endif
+        
+        // 1. Stop real-time sync FIRST to prevent repopulation
+        Task { @MainActor in
+            Dependencies.syncManager?.stopSync()
+        }
+        
+        // Clear local data immediately
+        let expenseCount = expenses.count
+        let groupCount = groups.count
+        let friendCount = friends.count
+        
+        expenses = []
+        groups = []
+        friends = []
+        
+        // Persist locally
+        persistCurrentState()
+        
+        // Sync deletions to cloud and restart sync after
+        Task {
+            // Use the new clearAllForUser mutations that delete everything server-side
+            if let convexExpenseService = expenseCloudService as? ConvexExpenseService {
+                try? await convexExpenseService.clearAllData()
+            }
+            if let convexGroupService = groupCloudService as? ConvexGroupService {
+                try? await convexGroupService.clearAllData()
+            }
+            
+            // Wait a moment for server to process
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            
+            // Restart sync after deletions are complete
+            await MainActor.run {
+                Dependencies.syncManager?.startSync()
+            }
+            
+            #if DEBUG
+            await MainActor.run {
+                print("[AppStore] Cleared \(expenseCount) expenses, \(groupCount) groups, \(friendCount) friends from local and cloud")
+            }
+            #endif
+        }
+        
+        Haptics.notify(.success)
     }
 
     private func applyDisplayName(_ name: String) {
@@ -1207,7 +1367,7 @@ final class AppStore: ObservableObject {
             return
         }
 
-        print("[Sync] Loaded \(groups.count) group(s), \(expenses.count) expense(s) from Supabase.")
+        print("[Sync] Loaded \(groups.count) group(s), \(expenses.count) expense(s) from Convex.")
 
         if !expenses.isEmpty {
             let currencyCode = Locale.current.currency?.identifier ?? "USD"
@@ -1868,7 +2028,7 @@ final class AppStore: ObservableObject {
             }
         }
         
-        // Sync to Supabase
+        // Sync to Convex
         guard let session = session else {
             throw PayBackError.authSessionMissing
         }
@@ -1894,7 +2054,7 @@ final class AppStore: ObservableObject {
             )
         }
         
-        // Sync updated friends to Supabase with transaction-based retry logic
+        // Sync updated friends to Convex with transaction-based retry logic
         guard let session = session else {
             throw PayBackError.authSessionMissing
         }
@@ -1911,7 +2071,7 @@ final class AppStore: ObservableObject {
             }
             
             #if DEBUG
-            print("[AppStore] Successfully synced friend link status to Supabase with transaction")
+            print("[AppStore] Successfully synced friend link status to Convex with transaction")
             #endif
         } catch {
             // Record partial failure for later recovery
@@ -2093,7 +2253,7 @@ final class AppStore: ObservableObject {
         #endif
         
         do {
-            // Fetch fresh friend data from Supabase
+            // Fetch fresh friend data from Convex
             let remoteFriends = try await accountService.fetchFriends(
                 accountEmail: session.account.email.lowercased()
             )

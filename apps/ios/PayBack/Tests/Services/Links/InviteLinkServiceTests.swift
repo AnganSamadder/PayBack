@@ -946,21 +946,4 @@ final class InviteLinkServiceTests: XCTestCase {
         XCTAssertTrue(results.allSatisfy { $0 }, "All concurrent validations should succeed")
     }
     
-    // MARK: - SupabaseClientProvider Tests
-    
-    func testSupabaseClientProviderIsConfiguredProperty() {
-        // This tests the isConfigured property behavior
-        let isConfigured = SupabaseClientProvider.isConfigured
-        // Should return a boolean (true or false depending on environment)
-        XCTAssertNotNil(isConfigured as Bool?)
-    }
-    
-    func testSupabaseClientProviderBaseURL() {
-        // Test baseURL property
-        let baseURL = SupabaseClientProvider.baseURL
-        // May be nil if not configured, which is valid
-        if let url = baseURL {
-            XCTAssertTrue(url.absoluteString.hasPrefix("http"), "Base URL should be HTTP/HTTPS")
-        }
-    }
 }

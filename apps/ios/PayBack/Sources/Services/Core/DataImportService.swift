@@ -259,9 +259,21 @@ struct DataImportService {
         // Build member ID mapping from parsed data to existing/new IDs
         var memberIdMapping: [UUID: UUID] = [:]
         
+        // Build a name -> existing ID mapping from BOTH friends and ALL group members
+        var nameToExistingId: [String: UUID] = [:]
+        for friend in store.friends {
+            nameToExistingId[friend.name.lowercased()] = friend.memberId
+        }
+        for group in store.groups {
+            for member in group.members {
+                nameToExistingId[member.name.lowercased()] = member.id
+            }
+        }
+        
         // Map current user
         if let parsedCurrentUserId = parsedData.currentUserId {
             memberIdMapping[parsedCurrentUserId] = store.currentUser.id
+            nameToExistingId[store.currentUser.name.lowercased()] = store.currentUser.id
         }
         
         // Import friends (match by name, add if new)
@@ -271,56 +283,59 @@ struct DataImportService {
                 continue
             }
             
-            // Check if friend already exists by name
-            let existingFriend = store.friends.first { 
-                $0.name.localizedCaseInsensitiveCompare(parsedFriend.name) == .orderedSame 
-            }
-            
-            if let existing = existingFriend {
-                // Map the old ID to the existing friend's ID
-                memberIdMapping[parsedFriend.memberId] = existing.memberId
+            // Check if friend already exists by name (globally)
+            if let existingId = nameToExistingId[parsedFriend.name.lowercased()] {
+                memberIdMapping[parsedFriend.memberId] = existingId
             } else {
-                // Create new friend with new ID
+                // Create new friend with new ID and track it for subsequent name lookups
                 let newMemberId = UUID()
                 memberIdMapping[parsedFriend.memberId] = newMemberId
+                nameToExistingId[parsedFriend.name.lowercased()] = newMemberId
                 friendsAdded += 1
             }
         }
         
-        // Import groups (match by name, add if new)
+        // Import groups
         var groupIdMapping: [UUID: UUID] = [:]
         
         for parsedGroup in parsedData.groups {
-            // Check if group already exists by name
-            let existingGroup = store.groups.first {
-                $0.name.localizedCaseInsensitiveCompare(parsedGroup.name) == .orderedSame
+            // Build member list for logic duplicate check
+            let groupMemberEntries = parsedData.groupMembers.filter { $0.groupId == parsedGroup.id }
+            var members: [GroupMember] = []
+            
+            for entry in groupMemberEntries {
+                var resId = memberIdMapping[entry.memberId]
+                if resId == nil { resId = nameToExistingId[entry.memberName.lowercased()] }
+                if resId == nil {
+                    resId = UUID()
+                    nameToExistingId[entry.memberName.lowercased()] = resId
+                }
+                let resolvedId = resId!
+                memberIdMapping[entry.memberId] = resolvedId
+                if entry.memberId == parsedData.currentUserId {
+                    members.append(GroupMember(id: store.currentUser.id, name: store.currentUser.name))
+                } else {
+                    members.append(GroupMember(id: resolvedId, name: entry.memberName))
+                }
+            }
+            if !members.contains(where: { $0.id == store.currentUser.id }) {
+                members.insert(GroupMember(id: store.currentUser.id, name: store.currentUser.name), at: 0)
+            }
+
+            // DEDUPLICATION: Check if group already exists (by name + members)
+            let existingGroup = store.groups.first { g in
+                g.name.localizedCaseInsensitiveCompare(parsedGroup.name) == .orderedSame &&
+                Set(g.members.map(\.id)) == Set(members.map(\.id))
             }
             
             if let existing = existingGroup {
                 groupIdMapping[parsedGroup.id] = existing.id
+                #if DEBUG
+                print("[DataImportService] Skipping duplicate group: \(parsedGroup.name)")
+                #endif
             } else {
-                // Build member list for this group
-                let groupMemberEntries = parsedData.groupMembers.filter { $0.groupId == parsedGroup.id }
-                var members: [GroupMember] = []
-                
-                for entry in groupMemberEntries {
-                    let newMemberId = memberIdMapping[entry.memberId] ?? entry.memberId
-                    // Check if this is the current user
-                    if entry.memberId == parsedData.currentUserId {
-                        members.append(GroupMember(id: store.currentUser.id, name: store.currentUser.name))
-                    } else {
-                        members.append(GroupMember(id: newMemberId, name: entry.memberName))
-                    }
-                }
-                
-                // Ensure current user is in the group
-                if !members.contains(where: { $0.id == store.currentUser.id }) {
-                    members.insert(GroupMember(id: store.currentUser.id, name: store.currentUser.name), at: 0)
-                }
-                
                 let newGroupId = UUID()
                 groupIdMapping[parsedGroup.id] = newGroupId
-                
                 let newGroup = SpendingGroup(
                     id: newGroupId,
                     name: parsedGroup.name,
@@ -329,29 +344,39 @@ struct DataImportService {
                     isDirect: parsedGroup.isDirect,
                     isDebug: parsedGroup.isDebug
                 )
-                
                 store.addExistingGroup(newGroup)
                 groupsAdded += 1
             }
         }
         
-        // Import expenses (always create new)
+        // Import expenses
         for parsedExpense in parsedData.expenses {
             guard let newGroupId = groupIdMapping[parsedExpense.groupId] else {
                 errors.append("Skipped expense '\(parsedExpense.description)': group not found")
                 continue
             }
             
-            // Map member IDs
             let newPaidByMemberId = memberIdMapping[parsedExpense.paidByMemberId] ?? parsedExpense.paidByMemberId
-            
-            // Get involved members
             let involvedEntries = parsedData.expenseInvolvedMembers.filter { $0.expenseId == parsedExpense.id }
             let newInvolvedMemberIds = involvedEntries.map { entry in
                 memberIdMapping[entry.memberId] ?? entry.memberId
             }
+
+            // DEDUPLICATION: Check if expense already exists in the TARGET group
+            let existingExpense = store.expenses.first { e in
+                e.groupId == newGroupId &&
+                e.description == parsedExpense.description &&
+                abs(e.totalAmount - parsedExpense.totalAmount) < 0.01 &&
+                abs(e.date.timeIntervalSince(parsedExpense.date)) < 300 // within 5 mins
+            }
+
+            if let existing = existingExpense {
+                #if DEBUG
+                print("[DataImportService] Skipping duplicate expense: \(parsedExpense.description)")
+                #endif
+                continue
+            }
             
-            // Get splits
             let splitEntries = parsedData.expenseSplits.filter { $0.expenseId == parsedExpense.id }
             let newSplits = splitEntries.map { entry in
                 ExpenseSplit(
@@ -362,7 +387,6 @@ struct DataImportService {
                 )
             }
             
-            // Get participant names
             let nameEntries = parsedData.participantNames.filter { $0.expenseId == parsedExpense.id }
             var participantNames: [UUID: String]? = nil
             if !nameEntries.isEmpty {
@@ -373,7 +397,6 @@ struct DataImportService {
                 }
             }
             
-            // Get subexpenses
             let subEntries = parsedData.expenseSubexpenses.filter { $0.expenseId == parsedExpense.id }
             let subexpenses: [Subexpense]? = subEntries.isEmpty ? nil : subEntries.map { entry in
                 Subexpense(id: UUID(), amount: entry.amount)

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Unified domain error type for PayBack following supabase-swift conventions.
+/// Unified domain error type for PayBack.
 /// Provides clear, specific error cases with associated values for context.
 public enum PayBackError: Error, Sendable, Equatable {
     // MARK: - Auth Errors
