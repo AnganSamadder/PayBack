@@ -135,6 +135,7 @@ final class Dependencies: Sendable {
     /// Useful for cleaning up after tests.
     static func reset() {
         convexClient = nil
+        _syncManager = nil
         current = Dependencies()
     }
 }
