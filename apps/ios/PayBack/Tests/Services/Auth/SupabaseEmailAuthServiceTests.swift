@@ -11,6 +11,7 @@ private struct FakeEmailAuthProvider: EmailAuthProviding, Sendable {
     var signInHandler: (@Sendable (String, String) async throws -> Session)?
     var signUpHandler: (@Sendable (String, String, [String: AnyJSON]?) async throws -> User)?
     var resetPasswordHandler: (@Sendable (String) async throws -> Void)?
+    var resendHandler: (@Sendable (String, ResendEmailType) async throws -> Void)?
     var signOutHandler: (@Sendable () async throws -> Void)?
 
     func signIn(email: String, password: String) async throws -> Session {
@@ -25,6 +26,10 @@ private struct FakeEmailAuthProvider: EmailAuthProviding, Sendable {
 
     func resetPasswordForEmail(_ email: String) async throws {
         if let handler = resetPasswordHandler { try await handler(email) }
+    }
+
+    func resend(email: String, type: ResendEmailType) async throws {
+        if let handler = resendHandler { try await handler(email, type) }
     }
 
     func signOut() async throws {

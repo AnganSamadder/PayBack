@@ -71,6 +71,14 @@ enum SupabaseClientProvider {
         client != nil
     }
 
+    /// Returns the base Supabase URL for constructing Edge Function URLs
+    static var baseURL: URL? {
+        SupabaseClientLock.lock.lock()
+        defer { SupabaseClientLock.lock.unlock() }
+        let configuration = SupabaseConfiguration.load()
+        return configuration.url
+    }
+
     /// Allows tests to override the shared client.
     static func injectForTesting(_ client: SupabaseClient?) {
         SupabaseClientLock.lock.lock()

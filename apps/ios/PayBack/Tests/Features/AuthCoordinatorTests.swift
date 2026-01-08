@@ -718,4 +718,8 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
             throw PayBackError.underlying(message: "Sign out error")
         }
     }
+    
+    func resendConfirmationEmail(email: String) async throws {
+        // Mock implementation for testing
+    }
 }

@@ -87,6 +87,9 @@ public enum PayBackError: Error, Sendable, Equatable {
     
     /// Password is too weak
     case authWeakPassword
+    
+    /// Email address has not been confirmed yet
+    case authEmailNotConfirmed(email: String)
 
     // MARK: - General Errors
 
@@ -112,6 +115,8 @@ extension PayBackError: LocalizedError {
             return "Too many attempts. Please wait a moment and try again."
         case .authWeakPassword:
             return "Please choose a stronger password (at least 6 characters)."
+        case .authEmailNotConfirmed:
+            return "Please verify your email address before signing in."
 
         case .accountNotFound:
             return "No account found for the provided email address."
@@ -173,6 +178,8 @@ extension PayBackError: LocalizedError {
             return "Wait a few minutes before trying again."
         case .authWeakPassword:
             return "Try adding numbers or special characters."
+        case .authEmailNotConfirmed:
+            return "Check your inbox for a confirmation email, or request a new one."
 
         case .accountNotFound:
             return "Check the email address or create a new account."

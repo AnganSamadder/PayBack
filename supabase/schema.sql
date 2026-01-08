@@ -221,13 +221,17 @@ create policy "link_requests_write"
   using (requester_id = auth.uid())
   with check (requester_id = auth.uid());
 
--- Invite tokens: creator owns write; creator or claimed user can read
+-- Invite tokens: 
+-- - Any authenticated user can read unclaimed tokens (needed for validation before claiming)
+-- - Creator can always read their own tokens
+-- - Claimer can read tokens they've claimed
 create policy "invite_tokens_read"
   on invite_tokens
   for select
   using (
     creator_id = auth.uid()
     or claimed_by = auth.uid()
+    or (claimed_by is null and auth.uid() is not null)  -- Allow any authenticated user to read unclaimed tokens
   );
 
 create policy "invite_tokens_write"
@@ -235,3 +239,4 @@ create policy "invite_tokens_write"
   for all
   using (creator_id = auth.uid())
   with check (creator_id = auth.uid());
+

@@ -12,6 +12,8 @@ final class AuthCoordinator: ObservableObject {
     @Published private(set) var isBusy: Bool = false
     @Published var errorMessage: String?
     @Published var infoMessage: String?
+    /// Email that needs confirmation - when set, shows the "Resend confirmation" option
+    @Published var unconfirmedEmail: String?
 
     private let accountService: AccountService
     private let emailAuthService: EmailAuthService
@@ -54,6 +56,11 @@ final class AuthCoordinator: ObservableObject {
                     let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: fallbackName)
                     self.route = .authenticated(UserSession(account: account))
                 }
+            } catch PayBackError.authEmailNotConfirmed {
+                // Special handling: offer to resend confirmation
+                let normalizedEmail = (try? self.accountService.normalizedEmail(from: emailInput)) ?? emailInput
+                self.unconfirmedEmail = normalizedEmail
+                self.errorMessage = "Please verify your email address before signing in."
             } catch {
                 self.handle(error: error)
             }
@@ -93,6 +100,21 @@ final class AuthCoordinator: ObservableObject {
         }
     }
 
+    func resendConfirmationEmail() async {
+        guard let email = unconfirmedEmail else { return }
+        
+        await runBusyTask(allowsConcurrent: true) {
+            do {
+                try await self.emailAuthService.resendConfirmationEmail(email: email)
+                self.unconfirmedEmail = nil
+                self.errorMessage = nil
+                self.infoMessage = "Confirmation email sent! Please check your inbox."
+            } catch {
+                self.handle(error: error)
+            }
+        }
+    }
+
     private func runBusyTask(allowsConcurrent: Bool = false, _ operation: @escaping () async -> Void) async {
         if isBusy && !allowsConcurrent { return }
         if !allowsConcurrent {
@@ -100,6 +122,7 @@ final class AuthCoordinator: ObservableObject {
         }
         errorMessage = nil
         infoMessage = nil
+        unconfirmedEmail = nil
         await operation()
         if !allowsConcurrent {
             isBusy = false
