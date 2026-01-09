@@ -20,6 +20,8 @@ final class ConvexGroupService: GroupCloudService, Sendable {
     private struct GroupMemberDTO: Decodable {
         let id: String
         let name: String
+        let profile_image_url: String?
+        let profile_avatar_color: String?
     }
 
     func fetchGroups() async throws -> [SpendingGroup] {
@@ -31,7 +33,12 @@ final class ConvexGroupService: GroupCloudService, Sendable {
                  
                  let members = dto.members.compactMap { mDto -> GroupMember? in
                      guard let mId = UUID(uuidString: mDto.id) else { return nil }
-                     return GroupMember(id: mId, name: mDto.name)
+                     return GroupMember(
+                         id: mId,
+                         name: mDto.name,
+                         profileImageUrl: mDto.profile_image_url,
+                         profileColorHex: mDto.profile_avatar_color
+                     )
                  }
                  
                  return SpendingGroup(
@@ -58,12 +65,19 @@ final class ConvexGroupService: GroupCloudService, Sendable {
     private struct GroupMemberArg: Codable, ConvexEncodable {
         let id: String
         let name: String
+        let profile_image_url: String?
+        let profile_avatar_color: String?
     }
     
     private func createGroup(_ group: SpendingGroup) async throws {
          // Must map to [ConvexEncodable?] to satisfy library extension conformance
          let membersArgs: [ConvexEncodable?] = group.members.map { 
-             GroupMemberArg(id: $0.id.uuidString, name: $0.name) 
+             GroupMemberArg(
+                 id: $0.id.uuidString,
+                 name: $0.name,
+                 profile_image_url: $0.profileImageUrl,
+                 profile_avatar_color: $0.profileColorHex
+             ) 
          }
          
          let args: [String: ConvexEncodable?] = [

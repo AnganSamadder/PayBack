@@ -6,19 +6,25 @@ struct UserAccount: Identifiable, Codable, Hashable, Sendable {
     var displayName: String
     var linkedMemberId: UUID?
     var createdAt: Date
+    var profileImageUrl: String?
+    var profileColorHex: String?
 
     init(
         id: String,
         email: String,
         displayName: String,
         linkedMemberId: UUID? = nil,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        profileImageUrl: String? = nil,
+        profileColorHex: String? = nil
     ) {
         self.id = id
         self.email = email
         self.displayName = displayName
         self.linkedMemberId = linkedMemberId
         self.createdAt = createdAt
+        self.profileImageUrl = profileImageUrl
+        self.profileColorHex = profileColorHex
     }
 }
 
@@ -33,6 +39,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     var hasLinkedAccount: Bool
     var linkedAccountId: String?
     var linkedAccountEmail: String?
+    var profileImageUrl: String?
+    var profileColorHex: String?
     
     var id: UUID { memberId }
     
@@ -78,7 +86,9 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         nickname: String? = nil,
         hasLinkedAccount: Bool = false,
         linkedAccountId: String? = nil,
-        linkedAccountEmail: String? = nil
+        linkedAccountEmail: String? = nil,
+        profileImageUrl: String? = nil,
+        profileColorHex: String? = nil
     ) {
         self.memberId = memberId
         self.name = name
@@ -86,6 +96,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         self.hasLinkedAccount = hasLinkedAccount
         self.linkedAccountId = linkedAccountId
         self.linkedAccountEmail = linkedAccountEmail
+        self.profileImageUrl = profileImageUrl
+        self.profileColorHex = profileColorHex
     }
     
     // Codable implementation with backward compatibility
@@ -96,6 +108,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         case hasLinkedAccount
         case linkedAccountId
         case linkedAccountEmail
+        case profileImageUrl
+        case profileColorHex
     }
     
     init(from decoder: Decoder) throws {
@@ -107,6 +121,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         hasLinkedAccount = try container.decode(Bool.self, forKey: .hasLinkedAccount)
         linkedAccountId = try container.decodeIfPresent(String.self, forKey: .linkedAccountId)
         linkedAccountEmail = try container.decodeIfPresent(String.self, forKey: .linkedAccountEmail)
+        profileImageUrl = try container.decodeIfPresent(String.self, forKey: .profileImageUrl)
+        profileColorHex = try container.decodeIfPresent(String.self, forKey: .profileColorHex)
     }
     
     func encode(to encoder: Encoder) throws {
@@ -117,5 +133,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         try container.encode(hasLinkedAccount, forKey: .hasLinkedAccount)
         try container.encodeIfPresent(linkedAccountId, forKey: .linkedAccountId)
         try container.encodeIfPresent(linkedAccountEmail, forKey: .linkedAccountEmail)
+        try container.encodeIfPresent(profileImageUrl, forKey: .profileImageUrl)
+        try container.encodeIfPresent(profileColorHex, forKey: .profileColorHex)
     }
 }

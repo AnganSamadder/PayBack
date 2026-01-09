@@ -3,10 +3,14 @@ import Foundation
 struct GroupMember: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var name: String
+    var profileImageUrl: String?
+    var profileColorHex: String?
 
-    init(id: UUID = UUID(), name: String) {
+    init(id: UUID = UUID(), name: String, profileImageUrl: String? = nil, profileColorHex: String? = nil) {
         self.id = id
         self.name = name
+        self.profileImageUrl = profileImageUrl
+        self.profileColorHex = profileColorHex
     }
     
     func hash(into hasher: inout Hasher) {
