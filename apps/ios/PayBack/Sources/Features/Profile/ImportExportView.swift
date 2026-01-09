@@ -20,6 +20,9 @@ struct ImportExportView: View {
     @State private var importResultMessage = ""
     @State private var importResultIsSuccess = false
     @State private var showFilePickerDialog = false
+    @State private var showConflictResolution = false
+    @State private var importConflicts: [ImportConflict] = []
+    @State private var pendingImportText: String?
     
     var body: some View {
         NavigationStack {
@@ -66,6 +69,24 @@ struct ImportExportView: View {
         }
         .sheet(isPresented: $showShareSheet) {
             ExportShareSheet(text: exportText)
+        }
+        .sheet(isPresented: $showConflictResolution) {
+            if let conflicts = importConflicts {
+                ImportResolutionView(
+                    conflicts: conflicts,
+                    onResolve: { resolutions in
+                        showConflictResolution = false
+                        if let text = pendingImportText {
+                            performImport(from: text, resolutions: resolutions)
+                        }
+                    },
+                    onCancel: {
+                        showConflictResolution = false
+                        pendingImportText = nil
+                        importConflicts = []
+                    }
+                )
+            }
         }
         .fileExporter(
             isPresented: $showFileSaveDialog,
@@ -306,11 +327,11 @@ struct ImportExportView: View {
         }
     }
     
-    private func performImport(from text: String) {
+    private func performImport(from text: String, resolutions: [UUID: ImportResolution]? = nil) {
         isImporting = true
         
         Task {
-            let result = await DataImportService.importData(from: text, into: store)
+            let result = await DataImportService.importData(from: text, into: store, resolutions: resolutions)
             
             await MainActor.run {
                 isImporting = false
@@ -333,6 +354,11 @@ struct ImportExportView: View {
                         "Import Completed with Issues",
                         "\(summary.description)\n\nSome items could not be imported:\n\(errorText)\(moreText)"
                     )
+                    
+                case .needsResolution(let conflicts):
+                    self.importConflicts = conflicts
+                    self.pendingImportText = text
+                    self.showConflictResolution = true
                 }
             }
         }
