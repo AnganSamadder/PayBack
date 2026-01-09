@@ -58,6 +58,8 @@ final class DataImportServiceIntegrationTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(summary.totalItems, 0)
         case .incompatibleFormat(let message):
             XCTFail("Import failed: \(message)")
+        case .needsResolution:
+            XCTFail("Unexpected resolution needed")
         }
     }
     
@@ -76,6 +78,8 @@ final class DataImportServiceIntegrationTests: XCTestCase {
             XCTAssertTrue(store.friends.contains { $0.name == "Test Friend" })
         case .incompatibleFormat(let msg):
             XCTFail("Import failed: \(msg)")
+        case .needsResolution:
+            XCTFail("Unexpected resolution needed")
         }
     }
     
@@ -100,6 +104,8 @@ final class DataImportServiceIntegrationTests: XCTestCase {
             XCTAssertEqual(summary.groupsAdded, 1)
         case .incompatibleFormat(let msg):
             XCTFail("Import failed: \(msg)")
+        case .needsResolution:
+            XCTFail("Unexpected resolution needed")
         }
     }
     
@@ -120,6 +126,9 @@ final class DataImportServiceIntegrationTests: XCTestCase {
             XCTAssertEqual(store.friends.count, initialFriendCount)
         case .partialSuccess, .incompatibleFormat:
             XCTAssertEqual(store.friends.count, initialFriendCount)
+        case .needsResolution(let conflicts):
+             XCTAssertEqual(conflicts.count, 1)
+             XCTAssertEqual(store.friends.count, initialFriendCount)
         }
     }
     

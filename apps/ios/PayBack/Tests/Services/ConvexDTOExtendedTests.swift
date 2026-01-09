@@ -20,7 +20,8 @@ final class ConvexDTOExtendedTests: XCTestCase {
             owner_email: nil,
             owner_account_id: nil,
             participant_member_ids: nil,
-            participants: nil
+            participants: nil,
+            subexpenses: nil
         )
         
         let expense = dto.toExpense()
@@ -44,7 +45,8 @@ final class ConvexDTOExtendedTests: XCTestCase {
             owner_email: nil,
             owner_account_id: nil,
             participant_member_ids: nil,
-            participants: nil
+            participants: nil,
+            subexpenses: nil
         )
         
         let expense = dto.toExpense()
@@ -168,7 +170,9 @@ final class ConvexDTOExtendedTests: XCTestCase {
     func testConvexGroupMemberDTO_toGroupMember_ValidId_ReturnsMember() {
         let dto = ConvexGroupMemberDTO(
             id: "550e8400-e29b-41d4-a716-446655440000",
-            name: "Alice"
+            name: "Alice",
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let member = dto.toGroupMember()
@@ -180,7 +184,9 @@ final class ConvexDTOExtendedTests: XCTestCase {
     func testConvexGroupMemberDTO_toGroupMember_InvalidId_ReturnsNil() {
         let dto = ConvexGroupMemberDTO(
             id: "invalid",
-            name: "Bob"
+            name: "Bob",
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         XCTAssertNil(dto.toGroupMember())
@@ -195,7 +201,9 @@ final class ConvexDTOExtendedTests: XCTestCase {
             nickname: "Ali",
             has_linked_account: true,
             linked_account_id: "account-123",
-            linked_account_email: "alice@example.com"
+            linked_account_email: "alice@example.com",
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let friend = dto.toAccountFriend()
@@ -213,7 +221,9 @@ final class ConvexDTOExtendedTests: XCTestCase {
             nickname: nil,
             has_linked_account: nil,
             linked_account_id: nil,
-            linked_account_email: nil
+            linked_account_email: nil,
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         XCTAssertNil(dto.toAccountFriend())
@@ -226,7 +236,9 @@ final class ConvexDTOExtendedTests: XCTestCase {
             nickname: nil,
             has_linked_account: nil,
             linked_account_id: nil,
-            linked_account_email: nil
+            linked_account_email: nil,
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let friend = dto.toAccountFriend()
@@ -241,7 +253,9 @@ final class ConvexDTOExtendedTests: XCTestCase {
         let dto = ConvexUserAccountDTO(
             id: "user-123",
             email: "test@example.com",
-            display_name: "Test User"
+            display_name: "Test User",
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let account = dto.toUserAccount()
@@ -255,7 +269,9 @@ final class ConvexDTOExtendedTests: XCTestCase {
         let dto = ConvexUserAccountDTO(
             id: "user-456",
             email: "fallback@example.com",
-            display_name: nil
+            display_name: nil,
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let account = dto.toUserAccount()

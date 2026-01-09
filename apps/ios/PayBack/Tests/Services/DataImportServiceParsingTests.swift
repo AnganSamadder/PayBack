@@ -400,7 +400,9 @@ final class DataImportServiceParsingTests: XCTestCase {
             nickname: "Ali",
             hasLinkedAccount: true,
             linkedAccountId: "account-123",
-            linkedAccountEmail: "alice@example.com"
+            linkedAccountEmail: "alice@example.com",
+            profileImageUrl: nil,
+            profileColorHex: nil
         )
         XCTAssertEqual(friend.memberId, friendId)
         XCTAssertEqual(friend.name, "Alice")
@@ -452,7 +454,9 @@ final class DataImportServiceParsingTests: XCTestCase {
         let member = ParsedGroupMember(
             groupId: groupId,
             memberId: memberId,
-            memberName: "Alice"
+            memberName: "Alice",
+            profileImageUrl: nil,
+            profileColorHex: nil
         )
         XCTAssertEqual(member.groupId, groupId)
         XCTAssertEqual(member.memberId, memberId)
