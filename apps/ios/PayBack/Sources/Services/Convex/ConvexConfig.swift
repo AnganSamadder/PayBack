@@ -19,17 +19,15 @@ enum ConvexEnvironment {
 
 /// Helper struct to access the current Convex configuration.
 struct ConvexConfig {
-    /// Change this value to switch between environments.
-    /// .development points to flippant-bobcat-304
-    /// .production points to tacit-marmot-746
-    #if DEBUG
-    static let current: ConvexEnvironment = .development
-    #else
-    static let current: ConvexEnvironment = .production
-    #endif
+    /// The current environment, determined by AppConfig
+    /// - DEBUG builds → development
+    /// - Release/CI builds → production
+    static var current: ConvexEnvironment {
+        AppConfig.environment
+    }
     
     /// The current active deployment URL.
     static var deploymentUrl: String {
-        return current.url
+        current.url
     }
 }

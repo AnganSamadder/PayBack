@@ -432,6 +432,46 @@ struct DataImportService {
             expensesAdded += 1
         }
         
+        // Ensure all group members (who aren't the current user) are added as friends
+        for parsedGroup in parsedData.groups {
+            let groupMemberEntries = parsedData.groupMembers.filter { $0.groupId == parsedGroup.id }
+            for entry in groupMemberEntries {
+                // Skip current user
+                if entry.memberId == parsedData.currentUserId || entry.memberName.lowercased() == store.currentUser.name.lowercased() {
+                    continue
+                }
+                
+                // Get the resolved ID for this member (must match what's in the group)
+                let resolvedId = memberIdMapping[entry.memberId] ?? nameToExistingId[entry.memberName.lowercased()] ?? UUID()
+                
+                // Check if already a friend by ID
+                if store.friends.contains(where: { $0.memberId == resolvedId }) {
+                    #if DEBUG
+                    print("[DataImportService] \(entry.memberName) already in friends list with ID \(resolvedId)")
+                    #endif
+                    continue
+                }
+                
+                // Add as new friend with the SAME ID used in the group
+                let newFriend = AccountFriend(
+                    memberId: resolvedId,
+                    name: entry.memberName,
+                    nickname: nil,
+                    hasLinkedAccount: false,
+                    linkedAccountId: nil,
+                    linkedAccountEmail: nil
+                )
+                store.addImportedFriend(newFriend)
+                friendsAdded += 1
+                #if DEBUG
+                print("[DataImportService] Added \(entry.memberName) as friend with ID \(resolvedId)")
+                #endif
+            }
+        }
+        
+        // Trigger a final bulk sync of all friends to ensure they're saved to Convex
+        await store.syncFriendsToCloud()
+        
         let summary = ImportSummary(
             friendsAdded: friendsAdded,
             groupsAdded: groupsAdded,
