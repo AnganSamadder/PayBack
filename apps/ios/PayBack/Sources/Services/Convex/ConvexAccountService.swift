@@ -14,6 +14,8 @@ actor ConvexAccountService: AccountService {
         let id: String
         let email: String
         let display_name: String
+        let profile_image_url: String?
+        let profile_avatar_color: String?
     }
 
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
@@ -34,7 +36,13 @@ actor ConvexAccountService: AccountService {
         // Using subscribe with DTO
         for try await value in client.subscribe(to: "users:viewer", yielding: UserViewerDTO?.self).values {
              guard let dto = value else { return nil }
-             return UserAccount(id: dto.id, email: dto.email, displayName: dto.display_name)
+             return UserAccount(
+                 id: dto.id,
+                 email: dto.email,
+                 displayName: dto.display_name,
+                 profileImageUrl: dto.profile_image_url,
+                 profileColorHex: dto.profile_avatar_color
+             )
         }
         return nil
     }
@@ -66,6 +74,8 @@ actor ConvexAccountService: AccountService {
         let has_linked_account: Bool
         let linked_account_id: String?
         let linked_account_email: String?
+        let profile_image_url: String?
+        let profile_avatar_color: String?
         
         func toAccountFriend() -> AccountFriend? {
             guard let memberId = UUID(uuidString: member_id) else { return nil }
@@ -75,7 +85,9 @@ actor ConvexAccountService: AccountService {
                 nickname: nickname,
                 hasLinkedAccount: has_linked_account,
                 linkedAccountId: linked_account_id,
-                linkedAccountEmail: linked_account_email
+                linkedAccountEmail: linked_account_email,
+                profileImageUrl: profile_image_url,
+                profileColorHex: profile_avatar_color
             )
         }
     }
@@ -193,5 +205,13 @@ actor ConvexAccountService: AccountService {
     func clearFriends() async throws {
         _ = try await client.mutation("friends:clearAllForUser", with: [:])
         cachedFriends = []
+    }
+    
+    func updateProfile(colorHex: String?, imageUrl: String?) async throws {
+        let args: [String: ConvexEncodable?] = [
+            "profile_avatar_color": colorHex,
+            "profile_image_url": imageUrl
+        ]
+        _ = try await client.mutation("users:updateProfile", with: args)
     }
 }

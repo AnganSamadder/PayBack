@@ -120,11 +120,18 @@ struct ConvexGroupDTO: Decodable, Sendable {
 struct ConvexGroupMemberDTO: Decodable, Sendable {
     let id: String
     let name: String
+    let profile_image_url: String?
+    let profile_avatar_color: String?
     
     /// Maps to domain GroupMember
     func toGroupMember() -> GroupMember? {
         guard let id = UUID(uuidString: id) else { return nil }
-        return GroupMember(id: id, name: name)
+        return GroupMember(
+            id: id,
+            name: name,
+            profileImageUrl: profile_image_url,
+            profileColorHex: profile_avatar_color
+        )
     }
 }
 
@@ -138,6 +145,8 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
     let has_linked_account: Bool?
     let linked_account_id: String?
     let linked_account_email: String?
+    let profile_image_url: String?
+    let profile_avatar_color: String?
     
     /// Maps to domain AccountFriend
     func toAccountFriend() -> AccountFriend? {
@@ -148,7 +157,9 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
             nickname: nickname,
             hasLinkedAccount: has_linked_account ?? false,
             linkedAccountId: linked_account_id,
-            linkedAccountEmail: linked_account_email
+            linkedAccountEmail: linked_account_email,
+            profileImageUrl: profile_image_url,
+            profileColorHex: profile_avatar_color
         )
     }
 }
@@ -158,13 +169,17 @@ struct ConvexUserAccountDTO: Decodable, Sendable {
     let id: String
     let email: String
     let display_name: String?
+    let profile_image_url: String?
+    let profile_avatar_color: String?
     
     /// Maps to domain UserAccount
     func toUserAccount() -> UserAccount {
         UserAccount(
             id: id,
             email: email,
-            displayName: display_name ?? email
+            displayName: display_name ?? email,
+            profileImageUrl: profile_image_url,
+            profileColorHex: profile_avatar_color
         )
     }
 }
