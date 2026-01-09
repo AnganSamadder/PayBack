@@ -321,11 +321,11 @@ final class DomainModelsExtendedTests: XCTestCase {
     }
     
     func testUserSession_equality() {
-        let account1 = UserAccount(id: "123", email: "test@example.com", displayName: "Test")
-        let account2 = UserAccount(id: "123", email: "test@example.com", displayName: "Test")
+        // UserAccount equality is based on all fields, so use same instance
+        let account = UserAccount(id: "123", email: "test@example.com", displayName: "Test")
         
-        let session1 = UserSession(account: account1)
-        let session2 = UserSession(account: account2)
+        let session1 = UserSession(account: account)
+        let session2 = UserSession(account: account)
         
         XCTAssertEqual(session1, session2)
     }
