@@ -29,28 +29,31 @@ struct ActivityView: View {
 
                 Spacer()
 
-                // Temporary test data button
-                Button(action: addTestData) {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.orange)
-                        .padding(8)
-                        .background(
-                            Circle()
-                                .fill(.orange.opacity(0.1))
-                        )
-                }
+                // Debug buttons - only visible in local debug builds
+                if AppConfig.showDebugUI {
+                    // Add test data button (orange)
+                    Button(action: addTestData) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.orange)
+                            .padding(8)
+                            .background(
+                                Circle()
+                                    .fill(.orange.opacity(0.1))
+                            )
+                    }
 
-                // Temporary trash button
-                Button(action: clearAllData) {
-                    Image(systemName: "trash.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.red)
-                        .padding(8)
-                        .background(
-                            Circle()
-                                .fill(.red.opacity(0.1))
-                        )
+                    // Clear debug data button (red)
+                    Button(action: clearAllData) {
+                        Image(systemName: "trash.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.red)
+                            .padding(8)
+                            .background(
+                                Circle()
+                                    .fill(.red.opacity(0.1))
+                            )
+                    }
                 }
             }
             .padding(.horizontal, 16)
@@ -67,6 +70,10 @@ struct ActivityView: View {
                     onFriendTap: { friend in
                         friendDetailReturnState = .home
                         navigationState = .friendDetail(friend)
+                    },
+                    onExpenseTap: { expense in
+                        expenseDetailReturnState = .home
+                        navigationState = .expenseDetail(expense)
                     }
                 )
                 .tag(0)
@@ -407,13 +414,16 @@ struct DashboardView: View {
     @EnvironmentObject var store: AppStore
     let onGroupTap: (SpendingGroup) -> Void
     let onFriendTap: (GroupMember) -> Void
+    let onExpenseTap: (Expense) -> Void
 
     init(
         onGroupTap: @escaping (SpendingGroup) -> Void = { _ in },
-        onFriendTap: @escaping (GroupMember) -> Void = { _ in }
+        onFriendTap: @escaping (GroupMember) -> Void = { _ in },
+        onExpenseTap: @escaping (Expense) -> Void = { _ in }
     ) {
         self.onGroupTap = onGroupTap
         self.onFriendTap = onFriendTap
+        self.onExpenseTap = onExpenseTap
     }
     
     var body: some View {
@@ -541,7 +551,10 @@ struct DashboardView: View {
                 let sortedExpenses = store.expenses.sorted(by: { $0.date > $1.date }).prefix(10)
                 
                 ForEach(Array(sortedExpenses.enumerated()), id: \.element.id) { index, expense in
-                    ActivityRow(expense: expense)
+                    Button(action: { onExpenseTap(expense) }) {
+                        ActivityRow(expense: expense)
+                    }
+                    .buttonStyle(.plain)
                     
                     if index < sortedExpenses.count - 1 {
                         Divider()
