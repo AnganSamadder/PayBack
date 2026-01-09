@@ -73,3 +73,24 @@ export const upsert = mutation({
     }
   },
 });
+
+/**
+ * Clears all friends for the current authenticated user.
+ */
+export const clearAllForUser = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Unauthenticated");
+
+    const friends = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email", (q) => q.eq("account_email", identity.email!))
+      .collect();
+
+    for (const friend of friends) {
+      await ctx.db.delete(friend._id);
+    }
+    return null;
+  },
+});

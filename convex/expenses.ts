@@ -235,6 +235,6 @@ export const clearAllForUser = mutation({
             await ctx.db.delete(_id as any);
         }
         
-        return allExpenseIds.size;
+        return null;
     }
 });

@@ -201,6 +201,6 @@ export const clearAllForUser = mutation({
             await ctx.db.delete(_id as any);
         }
         
-        return allGroupIds.size;
+        return null;
     }
 });
