@@ -3,8 +3,15 @@ import Foundation
 /// Result of an import operation
 enum ImportResult: Sendable {
     case success(ImportSummary)
+    case success(ImportSummary)
     case incompatibleFormat(String)
+    case needsResolution([ImportConflict])
     case partialSuccess(ImportSummary, errors: [String])
+}
+
+struct ImportAnalysis: Sendable {
+    let conflicts: [ImportConflict]
+    let parsedData: ParsedExportData
 }
 
 /// Summary of what was imported
@@ -241,7 +248,14 @@ struct DataImportService {
     ///   - store: The AppStore to import into
     /// - Returns: The result of the import operation
     @MainActor
-    static func importData(from text: String, into store: AppStore) async -> ImportResult {
+    /// Imports parsed data into the app store
+    /// - Parameters:
+    ///   - text: The export text to import
+    ///   - store: The AppStore to import into
+    ///   - resolutions: Optional map of resolutions for conflicts
+    /// - Returns: The result of the import operation
+    @MainActor
+    static func importData(from text: String, into store: AppStore, resolutions: [UUID: ImportResolution]? = nil) async -> ImportResult {
         // Validate format
         guard validateFormat(text) else {
             return .incompatibleFormat("The data format is not compatible with PayBack. Please ensure you're importing a valid PayBack export file.")
@@ -280,6 +294,62 @@ struct DataImportService {
             nameToExistingId[store.currentUser.name.lowercased()] = store.currentUser.id
         }
         
+        // 1. First Pass: Identify Conflicts if no resolutions provided
+        if resolutions == nil {
+            var conflicts: [ImportConflict] = []
+            var checkedIds = Set<UUID>()
+            
+            // Check friends in export
+            for parsedFriend in parsedData.friends {
+                // Skip self
+                if parsedFriend.memberId == parsedData.currentUserId { continue }
+                
+                // If name matches existing friend
+                if let existingId = nameToExistingId[parsedFriend.name.lowercased()],
+                   let existingFriend = store.friends.first(where: { $0.memberId == existingId }) {
+                    
+                    if !checkedIds.contains(parsedFriend.memberId) {
+                        conflicts.append(ImportConflict(
+                            importMemberId: parsedFriend.memberId,
+                            importName: parsedFriend.name,
+                            importProfileImageUrl: parsedFriend.profileImageUrl,
+                            importProfileColorHex: parsedFriend.profileColorHex,
+                            existingFriend: existingFriend
+                        ))
+                        checkedIds.insert(parsedFriend.memberId)
+                    }
+                }
+            }
+            
+            // Check group members in export
+            for parsedGroup in parsedData.groups {
+                let groupMemberEntries = parsedData.groupMembers.filter { $0.groupId == parsedGroup.id }
+                for entry in groupMemberEntries {
+                    if entry.memberId == parsedData.currentUserId { continue }
+                    
+                    // IF name matches and we haven't checked this ID yet
+                    if let existingId = nameToExistingId[entry.memberName.lowercased()],
+                       let existingFriend = store.friends.first(where: { $0.memberId == existingId }) {
+                        
+                        if !checkedIds.contains(entry.memberId) {
+                            conflicts.append(ImportConflict(
+                                importMemberId: entry.memberId,
+                                importName: entry.memberName,
+                                importProfileImageUrl: entry.profileImageUrl,
+                                importProfileColorHex: entry.profileColorHex,
+                                existingFriend: existingFriend
+                            ))
+                            checkedIds.insert(entry.memberId)
+                        }
+                    }
+                }
+            }
+            
+            if !conflicts.isEmpty {
+                return .needsResolution(conflicts)
+            }
+        }
+        
         // Import friends (match by name, add if new)
         for parsedFriend in parsedData.friends {
             // Skip if this is the current user from the export
@@ -288,7 +358,23 @@ struct DataImportService {
             }
             
             // Check if friend already exists by name (globally)
-            if let existingId = nameToExistingId[parsedFriend.name.lowercased()] {
+            // Check if friend already exists by name (globally) or has a resolution
+            var matchedExistingId: UUID? = nil
+            
+            // Check resolution first
+            if let resolution = resolutions?[parsedFriend.memberId] {
+                switch resolution {
+                case .linkToExisting(let id):
+                    matchedExistingId = id
+                case .createNew:
+                    matchedExistingId = nil // Explicitly create new
+                }
+            } else {
+                // Fallback to auto-match by name if no resolution context (legacy behavior)
+                matchedExistingId = nameToExistingId[parsedFriend.name.lowercased()]
+            }
+
+            if let existingId = matchedExistingId {
                 memberIdMapping[parsedFriend.memberId] = existingId
             } else {
                 // Create new friend with new ID and track it for subsequent name lookups
@@ -322,9 +408,27 @@ struct DataImportService {
             
             for entry in groupMemberEntries {
                 var resId = memberIdMapping[entry.memberId]
-                if resId == nil { resId = nameToExistingId[entry.memberName.lowercased()] }
+                
+                // If NOT mapped yet (via friends list), try to resolve now
+                if resId == nil {
+                    // Check resolution
+                    if let resolution = resolutions?[entry.memberId] {
+                        switch resolution {
+                        case .linkToExisting(let id):
+                            resId = id
+                        case .createNew:
+                            resId = nil
+                        }
+                    } else {
+                         // Auto-match fallback
+                        resId = nameToExistingId[entry.memberName.lowercased()]
+                    }
+                }
+
                 if resId == nil {
                     resId = UUID()
+                    // Track this new ID so other members with same name in this import map to it?
+                    // Or keep them separate? User asked for "smart". Usually if same name in same import, same person.
                     nameToExistingId[entry.memberName.lowercased()] = resId
                 }
                 let resolvedId = resId!
