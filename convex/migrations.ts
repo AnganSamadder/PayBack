@@ -51,3 +51,47 @@ export const backfillProfileColors = mutation({
     return { accountsUpdated, friendsUpdated, groupsUpdated };
   },
 });
+
+export const backfillFriendsFromGroups = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const groups = await ctx.db.query("groups").collect();
+    let newFriendsCreated = 0;
+
+    for (const group of groups) {
+      const ownerEmail = group.owner_email;
+      
+      // Try to find owner account to skip "self"
+      const ownerAccount = await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) => q.eq("email", ownerEmail))
+        .unique();
+
+      for (const member of group.members) {
+         // Skip if member is self
+         if (ownerAccount && ownerAccount.linked_member_id === member.id) {
+             continue;
+         }
+
+         const existingFriend = await ctx.db
+            .query("account_friends")
+            .withIndex("by_account_email_and_member_id", (q) => q.eq("account_email", ownerEmail).eq("member_id", member.id))
+            .unique();
+
+         if (!existingFriend) {
+             await ctx.db.insert("account_friends", {
+                account_email: ownerEmail,
+                member_id: member.id,
+                name: member.name,
+                profile_avatar_color: member.profile_avatar_color || getRandomAvatarColor(),
+                profile_image_url: member.profile_image_url,
+                has_linked_account: false,
+                updated_at: Date.now(),
+             });
+             newFriendsCreated++;
+         }
+      }
+    }
+    return { newFriendsCreated };
+  },
+});

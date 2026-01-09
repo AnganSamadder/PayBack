@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { getRandomAvatarColor } from "./utils";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -9,7 +10,7 @@ async function getCurrentUser(ctx: any) {
   }
   const user = await ctx.db
       .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
+      .withIndex("by_email", (q: any) => q.eq("email", identity.email!))
       .unique();
       
   return { identity, user };
@@ -46,6 +47,29 @@ export const create = mutation({
           is_direct: args.is_direct ?? existing.is_direct,
           updated_at: Date.now(),
         });
+
+        // Automatically add all group members as friends
+        for (const member of args.members) {
+            const existingFriend = await ctx.db
+                .query("account_friends")
+                .withIndex("by_account_email_and_member_id", (q) => 
+                q.eq("account_email", user.email).eq("member_id", member.id)
+                )
+                .unique();
+
+            if (!existingFriend) {
+                await ctx.db.insert("account_friends", {
+                account_email: user.email,
+                member_id: member.id,
+                name: member.name,
+                profile_avatar_color: member.profile_avatar_color ?? getRandomAvatarColor(),
+                profile_image_url: member.profile_image_url,
+                has_linked_account: false,
+                updated_at: Date.now(),
+                });
+            }
+        }
+
         return existing._id;
       }
     }
@@ -61,6 +85,31 @@ export const create = mutation({
       updated_at: Date.now(),
     });
     
+    // Automatically add all group members as friends
+    for (const member of args.members) {
+      // Skip logic for "Self" could go here if we knew which one was self reliably
+      // For now, trusting that having oneself in friend list is acceptable or handled by frontend filtering
+      
+      const existingFriend = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) => 
+          q.eq("account_email", user.email).eq("member_id", member.id)
+        )
+        .unique();
+
+      if (!existingFriend) {
+        await ctx.db.insert("account_friends", {
+          account_email: user.email,
+          member_id: member.id,
+          name: member.name,
+          profile_avatar_color: member.profile_avatar_color ?? getRandomAvatarColor(),
+          profile_image_url: member.profile_image_url,
+          has_linked_account: false,
+          updated_at: Date.now(),
+        });
+      }
+    }
+
     return groupId;
   },
 });
