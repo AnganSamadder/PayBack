@@ -13,7 +13,9 @@ import type * as friends from "../friends.js";
 import type * as groups from "../groups.js";
 import type * as inviteTokens from "../inviteTokens.js";
 import type * as linkRequests from "../linkRequests.js";
+import type * as migrations from "../migrations.js";
 import type * as users from "../users.js";
+import type * as utils from "../utils.js";
 
 import type {
   ApiFromModules,
@@ -27,7 +29,9 @@ declare const fullApi: ApiFromModules<{
   groups: typeof groups;
   inviteTokens: typeof inviteTokens;
   linkRequests: typeof linkRequests;
+  migrations: typeof migrations;
   users: typeof users;
+  utils: typeof utils;
 }>;
 
 /**

@@ -3,10 +3,25 @@ import Foundation
 /// Result of an import operation
 enum ImportResult: Sendable {
     case success(ImportSummary)
-    case success(ImportSummary)
     case incompatibleFormat(String)
     case needsResolution([ImportConflict])
     case partialSuccess(ImportSummary, errors: [String])
+}
+
+// Support Types for Conflict Resolution
+struct ImportConflict: Identifiable, Sendable {
+    let importMemberId: UUID
+    let importName: String
+    let importProfileImageUrl: String?
+    let importProfileColorHex: String?
+    let existingFriend: AccountFriend
+    
+    var id: UUID { importMemberId }
+}
+
+enum ImportResolution: Hashable, Sendable {
+    case createNew
+    case linkToExisting(UUID) // existing member UUID
 }
 
 struct ImportAnalysis: Sendable {
@@ -242,12 +257,6 @@ struct DataImportService {
         return data
     }
     
-    /// Imports parsed data into the app store
-    /// - Parameters:
-    ///   - text: The export text to import
-    ///   - store: The AppStore to import into
-    /// - Returns: The result of the import operation
-    @MainActor
     /// Imports parsed data into the app store
     /// - Parameters:
     ///   - text: The export text to import

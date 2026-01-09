@@ -161,10 +161,10 @@ struct ConflictRow: View {
                 } label: {
                     VStack(spacing: 8) {
                         AvatarView(
-                            profileImageUrl: conflict.existingFriend.profileImageUrl,
-                            profileColorHex: conflict.existingFriend.profileColorHex,
                             name: conflict.existingFriend.name,
-                            size: 40
+                            size: 40,
+                            imageUrl: conflict.existingFriend.profileImageUrl,
+                            colorHex: conflict.existingFriend.profileColorHex
                         )
                         .overlay(
                             Circle()
@@ -200,10 +200,10 @@ struct ConflictRow: View {
                 } label: {
                     VStack(spacing: 8) {
                         AvatarView(
-                            profileImageUrl: conflict.importProfileImageUrl,
-                            profileColorHex: conflict.importProfileColorHex,
                             name: conflict.importName,
-                            size: 40
+                            size: 40,
+                            imageUrl: conflict.importProfileImageUrl,
+                            colorHex: conflict.importProfileColorHex
                         )
                         .overlay(
                             Circle()
@@ -244,18 +244,4 @@ struct ConflictRow: View {
     }
 }
 
-// Support Types
-struct ImportConflict: Identifiable, Sendable {
-    let importMemberId: UUID
-    let importName: String
-    let importProfileImageUrl: String?
-    let importProfileColorHex: String?
-    let existingFriend: AccountFriend
-    
-    var id: UUID { importMemberId }
-}
-
-enum ImportResolution: Hashable, Sendable {
-    case createNew
-    case linkToExisting(UUID) // existing member UUID
-}
+// Support Types moved to DataImportService.swift

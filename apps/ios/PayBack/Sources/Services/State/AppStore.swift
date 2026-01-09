@@ -10,11 +10,11 @@ final class AppStore: ObservableObject {
         let dirtyExpenses: [Expense]
     }
 
-    @Published private(set) var groups: [SpendingGroup]
-    @Published private(set) var expenses: [Expense]
-    @Published private(set) var currentUser: GroupMember
-    @Published private(set) var session: UserSession?
-    @Published private(set) var friends: [AccountFriend]
+    @Published var groups: [SpendingGroup]
+    @Published var expenses: [Expense]
+    @Published var currentUser: GroupMember
+    @Published var session: UserSession?
+    @Published var friends: [AccountFriend]
     @Published private(set) var incomingLinkRequests: [LinkRequest] = []
     @Published private(set) var outgoingLinkRequests: [LinkRequest] = []
     @Published private(set) var previousLinkRequests: [LinkRequest] = []
