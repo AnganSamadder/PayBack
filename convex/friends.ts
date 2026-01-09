@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { getRandomAvatarColor } from "./utils";
 
 /**
  * Lists all friends for the current authenticated user.
@@ -65,6 +66,7 @@ export const upsert = mutation({
         member_id: args.member_id,
         name: args.name,
         nickname: args.nickname,
+        profile_avatar_color: getRandomAvatarColor(),
         has_linked_account: args.has_linked_account,
         linked_account_id: args.linked_account_id,
         linked_account_email: args.linked_account_email,

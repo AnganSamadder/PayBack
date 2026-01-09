@@ -22,6 +22,8 @@ export const create = mutation({
     members: v.array(v.object({
         id: v.string(), // UUID
         name: v.string(),
+        profile_image_url: v.optional(v.string()),
+        profile_avatar_color: v.optional(v.string()),
     })),
     is_direct: v.optional(v.boolean()),
   },

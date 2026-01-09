@@ -6,6 +6,8 @@ export default defineSchema({
     id: v.string(), // Keeping query-able ID, likely matching Auth provider ID
     email: v.string(),
     display_name: v.string(),
+    profile_image_url: v.optional(v.string()), // URL to uploaded image
+    profile_avatar_color: v.optional(v.string()), // Hex code for consistent generated avatar
     linked_member_id: v.optional(v.string()), // UUID string
     created_at: v.number(),
     updated_at: v.optional(v.number()),
@@ -17,13 +19,16 @@ export default defineSchema({
     member_id: v.string(), // UUID string
     name: v.string(),
     nickname: v.optional(v.string()),
+    profile_image_url: v.optional(v.string()),
+    profile_avatar_color: v.optional(v.string()),
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
     updated_at: v.number(),
   })
     .index("by_account_email", ["account_email"])
-    .index("by_account_email_and_member_id", ["account_email", "member_id"]),
+    .index("by_account_email_and_member_id", ["account_email", "member_id"])
+    .index("by_linked_account_id", ["linked_account_id"]),
 
   groups: defineTable({
     id: v.string(), // UUID string from client
@@ -32,6 +37,8 @@ export default defineSchema({
       v.object({
         id: v.string(),
         name: v.string(),
+        profile_image_url: v.optional(v.string()),
+        profile_avatar_color: v.optional(v.string()),
       })
     ),
     owner_email: v.string(),
