@@ -127,6 +127,8 @@ struct ProfileView: View {
     
     // MARK: - Data Management Section
     
+    @State private var showClearDataConfirmation = false
+    
     private var dataManagementSection: some View {
         VStack(spacing: 16) {
             Text("Data Management")
@@ -134,43 +136,90 @@ struct ProfileView: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             
-            Button(action: {
-                showImportExport = true
-            }) {
-                HStack(spacing: 12) {
-                    Image(systemName: "arrow.up.arrow.down.square")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(AppTheme.brand)
-                        .frame(width: 32, height: 32)
-                        .background(
-                            Circle()
-                                .fill(AppTheme.brand.opacity(0.1))
-                        )
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Import & Export Data")
-                            .font(.system(.body, design: .rounded, weight: .medium))
-                            .foregroundStyle(.primary)
+            VStack(spacing: 12) {
+                // Import/Export button
+                Button(action: {
+                    showImportExport = true
+                }) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "arrow.up.arrow.down.square")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(AppTheme.brand)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                Circle()
+                                    .fill(AppTheme.brand.opacity(0.1))
+                            )
                         
-                        Text("Backup or transfer your expenses")
-                            .font(.system(.caption, design: .rounded))
-                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Import & Export Data")
+                                .font(.system(.body, design: .rounded, weight: .medium))
+                                .foregroundStyle(.primary)
+                            
+                            Text("Backup or transfer your expenses")
+                                .font(.system(.caption, design: .rounded))
+                                .foregroundStyle(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.tertiary)
                     }
-                    
-                    Spacer()
-                    
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.tertiary)
                 }
-                .padding(16)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(AppTheme.card)
-                        .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
-                )
+                .buttonStyle(.plain)
+                
+                Divider()
+                    .padding(.horizontal, 8)
+                
+                // Clear All Data button
+                Button(action: {
+                    showClearDataConfirmation = true
+                }) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.red)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                Circle()
+                                    .fill(.red.opacity(0.1))
+                            )
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Clear All My Data")
+                                .font(.system(.body, design: .rounded, weight: .medium))
+                                .foregroundStyle(.red)
+                            
+                            Text("Remove all your expenses, groups & friends")
+                                .font(.system(.caption, design: .rounded))
+                                .foregroundStyle(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(AppTheme.card)
+                    .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
+            )
+        }
+        .alert("Clear All Data?", isPresented: $showClearDataConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear All", role: .destructive) {
+                store.clearAllUserData()
+            }
+        } message: {
+            Text("This will delete all your expenses, remove you from groups, and clear your friends list. Other users in shared groups will keep their data. This cannot be undone.")
         }
     }
     

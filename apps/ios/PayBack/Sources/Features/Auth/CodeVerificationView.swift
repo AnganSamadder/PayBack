@@ -4,7 +4,7 @@ struct CodeVerificationView: View {
     @State private var codeInput: String = ""
     @FocusState private var isInputFocused: Bool
 
-    let phoneNumber: String
+    let email: String
     let isBusy: Bool
     let errorMessage: String?
     let onSubmit: (String) -> Void
@@ -14,14 +14,14 @@ struct CodeVerificationView: View {
     private let codeLength: Int = 6
 
     init(
-        phoneNumber: String,
+        email: String,
         isBusy: Bool,
         errorMessage: String?,
         onSubmit: @escaping (String) -> Void,
         onBack: @escaping () -> Void,
         onResend: (() -> Void)? = nil
     ) {
-        self.phoneNumber = phoneNumber
+        self.email = email
         self.isBusy = isBusy
         self.errorMessage = errorMessage
         self.onSubmit = onSubmit
@@ -45,15 +45,15 @@ struct CodeVerificationView: View {
             .disabled(isBusy)
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("Enter the code")
+                Text("Verify your email")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("We texted a 6-digit code to")
+                    Text("We sent a 6-digit code to")
                         .font(.system(.subheadline, design: .rounded))
                         .foregroundStyle(.white.opacity(0.8))
-                    Text(phoneNumber)
+                    Text(email)
                         .font(.system(.headline, design: .rounded))
                         .foregroundStyle(.white)
                 }
@@ -88,6 +88,10 @@ struct CodeVerificationView: View {
                                 codeInput = String(filtered.prefix(codeLength))
                             } else if filtered != newValue {
                                 codeInput = filtered
+                            }
+                            // Auto-submit when code is complete
+                            if codeInput.count == codeLength {
+                                submit()
                             }
                         }
                 }
@@ -167,13 +171,17 @@ struct CodeVerificationView: View {
 
 struct CodeVerificationView_Previews: PreviewProvider {
     static var previews: some View {
-        CodeVerificationView(
-            phoneNumber: "+1 310 555 0148",
-            isBusy: false,
-            errorMessage: nil,
-            onSubmit: { _ in },
-            onBack: {},
-            onResend: nil
-        )
+        ZStack {
+            LinearGradient(colors: [.purple, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
+                .ignoresSafeArea()
+            CodeVerificationView(
+                email: "user@example.com",
+                isBusy: false,
+                errorMessage: nil,
+                onSubmit: { _ in },
+                onBack: {},
+                onResend: nil
+            )
+        }
     }
 }

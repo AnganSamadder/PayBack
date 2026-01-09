@@ -15,24 +15,30 @@ struct LoginView: View {
     let isBusy: Bool
     let errorMessage: String?
     let infoMessage: String?
+    let showResendConfirmation: Bool
     let onLogin: (String, String) -> Void
     let onForgotPassword: (String) -> Void
     let onPrefillSignup: (String) -> Void
+    let onResendConfirmation: () -> Void
 
     init(
         isBusy: Bool,
         errorMessage: String?,
         infoMessage: String?,
+        showResendConfirmation: Bool = false,
         onLogin: @escaping (String, String) -> Void,
         onForgotPassword: @escaping (String) -> Void,
-        onPrefillSignup: @escaping (String) -> Void
+        onPrefillSignup: @escaping (String) -> Void,
+        onResendConfirmation: @escaping () -> Void = {}
     ) {
         self.isBusy = isBusy
         self.errorMessage = errorMessage
         self.infoMessage = infoMessage
+        self.showResendConfirmation = showResendConfirmation
         self.onLogin = onLogin
         self.onForgotPassword = onForgotPassword
         self.onPrefillSignup = onPrefillSignup
+        self.onResendConfirmation = onResendConfirmation
     }
 
     var body: some View {
@@ -78,6 +84,32 @@ struct LoginView: View {
                         color: .yellow,
                         text: errorMessage
                     )
+                    
+                    // Show resend confirmation button when email is unconfirmed
+                    if showResendConfirmation {
+                        Button(action: onResendConfirmation) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "envelope.arrow.triangle.branch.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text("Resend confirmation email")
+                                    .font(.system(.callout, design: .rounded, weight: .medium))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(
+                                LinearGradient(
+                                    colors: [Color.orange.opacity(0.8), Color.yellow.opacity(0.7)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .shadow(color: .orange.opacity(0.3), radius: 6, y: 2)
+                        }
+                        .disabled(isBusy)
+                        .transition(.scale.combined(with: .opacity))
+                    }
                 }
             }
 

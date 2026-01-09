@@ -47,6 +47,7 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         
         tokens[tokenId] = token
         
+        // Default to custom scheme for tests
         let url = URL(string: "payback://link/claim?token=\(tokenId.uuidString)")!
         let shareText = """
         Hi! I've added you to PayBack for tracking shared expenses.

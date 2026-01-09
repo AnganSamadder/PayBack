@@ -47,7 +47,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testCompleteAuthentication_LoadsRemoteData() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
+        _ = UserSession(account: account)
         
         // Add remote data
         let remoteGroup = SpendingGroup(name: "Remote Group", members: [GroupMember(name: "Alice")])
@@ -64,7 +64,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         await mockExpenseCloudService.addExpense(remoteExpense)
         
         // When
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         
         // Then - wait for remote data to load
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -74,10 +74,10 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testCompleteAuthentication_UpdatesDisplayName() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "John Doe")
-        let session = UserSession(account: account)
+        _ = UserSession(account: account)
         
         // When
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         
         // Then
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -87,10 +87,10 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testCompleteAuthentication_EnsuresLinkedMemberId() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User", linkedMemberId: nil)
-        let session = UserSession(account: account)
+        _ = UserSession(account: account)
         
         // When
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         
         // Then - wait for linked member ID to be set
         try await Task.sleep(nanoseconds: 300_000_000)
@@ -102,8 +102,8 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testApplyDisplayName_UpdatesCurrentUser() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Old Name")
-        let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        _ = UserSession(account: account)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Create group with current user
@@ -111,8 +111,8 @@ final class AppStoreRemoteDataTests: XCTestCase {
         
         // When - change display name
         let newAccount = UserAccount(id: "test-123", email: "test@example.com", displayName: "New Name")
-        let newSession = UserSession(account: newAccount)
-        sut.completeAuthentication(with: newSession)
+        _ = UserSession(account: newAccount)
+        sut.completeAuthentication(id: newAccount.id, email: newAccount.email, name: newAccount.displayName)
         
         // Then
         try await Task.sleep(nanoseconds: 300_000_000)
@@ -122,8 +122,8 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testApplyDisplayName_UpdatesGroupMembers() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Old Name")
-        let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        _ = UserSession(account: account)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Create group with current user
@@ -132,8 +132,8 @@ final class AppStoreRemoteDataTests: XCTestCase {
         
         // When - change display name
         let newAccount = UserAccount(id: "test-123", email: "test@example.com", displayName: "New Name")
-        let newSession = UserSession(account: newAccount)
-        sut.completeAuthentication(with: newSession)
+        _ = UserSession(account: newAccount)
+        sut.completeAuthentication(id: newAccount.id, email: newAccount.email, name: newAccount.displayName)
         
         // Then
         try await Task.sleep(nanoseconds: 300_000_000)
@@ -208,8 +208,8 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testPersistence_ClearsOnSignOut() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        _ = UserSession(account: account)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         sut.addGroup(name: "Test", memberNames: ["Alice"])
@@ -229,8 +229,8 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testFriendSync_TriggeredOnGroupAdd() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        _ = UserSession(account: account)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // When
@@ -244,8 +244,8 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testFriendSync_TriggeredOnGroupUpdate() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        _ = UserSession(account: account)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         sut.addGroup(name: "Test", memberNames: ["Alice"])
@@ -263,8 +263,8 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testFriendSync_TriggeredOnGroupDelete() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        _ = UserSession(account: account)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         sut.addGroup(name: "Test", memberNames: ["Alice"])
@@ -280,8 +280,8 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testFriendSync_TriggeredOnClearAllData() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        _ = UserSession(account: account)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         sut.addGroup(name: "Test", memberNames: ["Alice"])
@@ -343,7 +343,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testCompleteAuthentication_WithCurrentUserAliasInGroup() async throws {
         // Given: Remote group has member with current user's name but different ID (alias)
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
+        _ = UserSession(account: account)
         
         let alice = GroupMember(name: "Alice")
         let userAlias = GroupMember(name: "Test User") // Same name as current user, different ID
@@ -356,7 +356,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         await mockGroupCloudService.addGroup(remoteGroup)
         
         // When: Complete authentication (triggers normalization)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 1_000_000_000)
         
         // Then: Alias should be replaced with actual current user
@@ -372,10 +372,10 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testCompleteAuthentication_WithComplexAliasChain() async throws {
         // Given: Remote data with expenses using different IDs for same person
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
+        _ = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let alice1 = GroupMember(name: "Alice")
@@ -431,7 +431,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense3)
         
         // When: Trigger reload (triggers normalization)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 seconds for complex data
         
         // Then: Data should be loaded and normalized
@@ -450,10 +450,10 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testCompleteAuthentication_WithOrphanExpensesRequiringSynthesis() async throws {
         // Given: Expenses without a group (orphans)
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
+        _ = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let bob = GroupMember(name: "Bob")
@@ -483,7 +483,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense1)
         
         // When: Trigger reload (triggers group synthesis)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
         
         // Then: Group should be synthesized
@@ -500,10 +500,10 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testCompleteAuthentication_WithEmptyRemoteData() async throws {
         // Given: No remote data
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
+        _ = UserSession(account: account)
         
         // When: Complete authentication
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 300_000_000)
         
         // Then: Should handle gracefully
@@ -514,10 +514,10 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testCompleteAuthentication_WithLargeDataSet() async throws {
         // Given: Many groups and expenses
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
+        _ = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Create 10 groups with 5 expenses each
@@ -548,7 +548,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         }
         
         // When: Trigger reload
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds for large dataset
         
         // Then: All data should be loaded

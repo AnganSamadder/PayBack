@@ -5,6 +5,7 @@ final class AuthCoordinator: ObservableObject {
     enum Route: Equatable {
         case login
         case signup(presetEmail: String)
+        case verification(email: String, displayName: String)
         case authenticated(UserSession)
     }
 
@@ -12,9 +13,13 @@ final class AuthCoordinator: ObservableObject {
     @Published private(set) var isBusy: Bool = false
     @Published var errorMessage: String?
     @Published var infoMessage: String?
+    /// Email that needs confirmation - when set, shows the "Resend confirmation" option
+    @Published var unconfirmedEmail: String?
 
     private let accountService: AccountService
     private let emailAuthService: EmailAuthService
+    /// Stores the display name during signup flow for use after verification
+    private var pendingDisplayName: String = ""
 
     init(
         accountService: AccountService = Dependencies.current.accountService,
@@ -54,27 +59,77 @@ final class AuthCoordinator: ObservableObject {
                     let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: fallbackName)
                     self.route = .authenticated(UserSession(account: account))
                 }
+            } catch PayBackError.authEmailNotConfirmed {
+                // Special handling: offer to resend confirmation
+                let normalizedEmail = (try? self.accountService.normalizedEmail(from: emailInput)) ?? emailInput
+                self.unconfirmedEmail = normalizedEmail
+                self.errorMessage = "Please verify your email address before signing in."
             } catch {
                 self.handle(error: error)
             }
         }
     }
 
-    func signup(emailInput: String, displayName: String, password: String) async {
+    func signup(emailInput: String, firstName: String, lastName: String?, password: String) async {
         await runBusyTask {
             do {
                 let normalizedEmail = try self.accountService.normalizedEmail(from: emailInput)
-                let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-                _ = try await self.emailAuthService.signUp(email: normalizedEmail, password: password, displayName: trimmedName)
+                let trimmedFirstName = firstName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmedLastName = lastName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let displayName = [trimmedFirstName, trimmedLastName].compactMap { $0 }.joined(separator: " ")
                 
-                do {
-                    let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: trimmedName)
+                let result = try await self.emailAuthService.signUp(email: normalizedEmail, password: password, firstName: trimmedFirstName, lastName: trimmedLastName)
+                
+                switch result {
+                case .needsVerification(let email):
+                    // Store display name for later and show verification screen
+                    self.pendingDisplayName = displayName
+                    self.route = .verification(email: email, displayName: displayName)
+                    
+                case .complete(_):
+                    // No verification needed - create account and complete
+                    let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: displayName)
                     self.route = .authenticated(UserSession(account: account))
-                } catch PayBackError.authSessionMissing {
-                    // Sign up succeeded but session is missing -> Email confirmation likely required
-                    self.infoMessage = "Account created! Please check your email to verify your account."
-                    self.route = .login
                 }
+            } catch PayBackError.authSessionMissing {
+                // Determine if this was due to verification actually being needed but Clerk returning succes initially
+                self.infoMessage = "Please check your email to verify your account before signing in."
+                self.route = .login
+            } catch {
+                self.handle(error: error)
+            }
+        }
+    }
+    
+    func verifyCode(_ code: String) async {
+        await runBusyTask {
+            do {
+                let authResult = try await self.emailAuthService.verifyCode(code: code)
+                
+                // Authenticate Convex client with the new Clerk session
+                await Dependencies.authenticateConvex()
+                
+                // Create account in Convex now that we have an authenticated session
+                let displayName = self.pendingDisplayName.isEmpty ? authResult.displayName : self.pendingDisplayName
+                let account = try await self.accountService.createAccount(email: authResult.email, displayName: displayName)
+                
+                // Start real-time sync
+                Dependencies.syncManager?.startSync()
+                
+                self.route = .authenticated(UserSession(account: account))
+            } catch {
+                self.handle(error: error)
+            }
+        }
+    }
+    
+    func resendVerificationCode() async {
+        guard case .verification(let email, _) = route else { return }
+        
+        await runBusyTask(allowsConcurrent: true) {
+            do {
+                try await self.emailAuthService.resendConfirmationEmail(email: email)
+                self.infoMessage = "A new code has been sent to your email."
             } catch {
                 self.handle(error: error)
             }
@@ -93,6 +148,21 @@ final class AuthCoordinator: ObservableObject {
         }
     }
 
+    func resendConfirmationEmail() async {
+        guard let email = unconfirmedEmail else { return }
+        
+        await runBusyTask(allowsConcurrent: true) {
+            do {
+                try await self.emailAuthService.resendConfirmationEmail(email: email)
+                self.unconfirmedEmail = nil
+                self.errorMessage = nil
+                self.infoMessage = "Confirmation email sent! Please check your inbox."
+            } catch {
+                self.handle(error: error)
+            }
+        }
+    }
+
     private func runBusyTask(allowsConcurrent: Bool = false, _ operation: @escaping () async -> Void) async {
         if isBusy && !allowsConcurrent { return }
         if !allowsConcurrent {
@@ -100,6 +170,7 @@ final class AuthCoordinator: ObservableObject {
         }
         errorMessage = nil
         infoMessage = nil
+        unconfirmedEmail = nil
         await operation()
         if !allowsConcurrent {
             isBusy = false

@@ -4,13 +4,15 @@ import UIKit
 struct SignupView: View {
     private enum Field {
         case email
-        case name
+        case firstName
+        case lastName
         case password
         case confirm
     }
 
     @State private var emailInput: String
-    @State private var nameInput: String = ""
+    @State private var firstNameInput: String = ""
+    @State private var lastNameInput: String = ""
     @State private var passwordInput: String = ""
     @State private var confirmPasswordInput: String = ""
     @State private var isPasswordVisible: Bool = false
@@ -23,14 +25,14 @@ struct SignupView: View {
 
     let isBusy: Bool
     let errorMessage: String?
-    let onSubmit: (String, String, String) -> Void
+    let onSubmit: (String, String, String?, String) -> Void  // email, firstName, lastName, password
     let onBack: () -> Void
 
     init(
         email: String,
         isBusy: Bool,
         errorMessage: String?,
-        onSubmit: @escaping (String, String, String) -> Void,
+        onSubmit: @escaping (String, String, String?, String) -> Void,
         onBack: @escaping () -> Void
     ) {
         _emailInput = State(initialValue: email)
@@ -77,30 +79,45 @@ struct SignupView: View {
                     textContentType: .username,
                     autocapitalization: .never
                 ) {
-                    focusedField = .name
+                    focusedField = .firstName
                 }
                 .focused($focusedField, equals: .email)
 
                 AuthTextField(
-                    title: "Full name",
+                    title: "First name",
                     systemImage: "person.fill",
-                    placeholder: "Alex Johnson",
-                    text: $nameInput,
-                    isFocused: focusedField == .name,
+                    placeholder: "Alex",
+                    text: $firstNameInput,
+                    isFocused: focusedField == .firstName,
                     keyboardType: .default,
                     submitLabel: .next,
-                    textContentType: .name,
+                    textContentType: .givenName,
+                    autocapitalization: .words
+                ) {
+                    focusedField = .lastName
+                }
+                .focused($focusedField, equals: .firstName)
+
+                AuthTextField(
+                    title: "Last name",
+                    systemImage: "person.fill",
+                    placeholder: "Johnson",
+                    text: $lastNameInput,
+                    isFocused: focusedField == .lastName,
+                    keyboardType: .default,
+                    submitLabel: .next,
+                    textContentType: .familyName,
                     autocapitalization: .words
                 ) {
                     focusedField = .password
                 }
-                .focused($focusedField, equals: .name)
+                .focused($focusedField, equals: .lastName)
 
                 passwordField(
                     title: "Password",
                     text: $passwordInput,
                     isVisible: $isPasswordVisible,
-                    placeholder: "At least 6 characters",
+                    placeholder: "At least 8 characters",
                     field: .password,
                     onSubmit: { focusedField = .confirm }
                 )
@@ -191,23 +208,25 @@ struct SignupView: View {
             }
         }
         .onAppear {
-            if nameInput.isEmpty {
-                focusedField = .name
+            if firstNameInput.isEmpty {
+                focusedField = .firstName
             }
         }
     }
 
     private var isFormValid: Bool {
         let normalizedEmail = EmailValidator.normalized(emailInput)
-        let trimmedName = nameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedFirstName = firstNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let passwordMatches = !passwordInput.isEmpty && passwordInput == confirmPasswordInput
-        return EmailValidator.isValid(normalizedEmail) && !trimmedName.isEmpty && passwordInput.count >= 6 && passwordMatches
+        return EmailValidator.isValid(normalizedEmail) && !trimmedFirstName.isEmpty && passwordInput.count >= 8 && passwordMatches
     }
 
     private func submit() {
         guard isFormValid else { return }
-        let trimmedName = nameInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        onSubmit(emailInput, trimmedName, passwordInput)
+        let trimmedFirstName = firstNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedLastName = lastNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lastName: String? = trimmedLastName.isEmpty ? nil : trimmedLastName
+        onSubmit(emailInput, trimmedFirstName, lastName, passwordInput)
     }
 
     @ViewBuilder
@@ -334,7 +353,7 @@ struct SignupView_Previews: PreviewProvider {
                 email: "you@example.com",
                 isBusy: false,
                 errorMessage: "",
-                onSubmit: { _, _, _ in },
+                onSubmit: { _, _, _, _ in },
                 onBack: {}
             )
             .frame(maxWidth: 520)
