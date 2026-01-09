@@ -315,7 +315,12 @@ private struct FriendSelectionCard: View {
         Button(action: onTap) {
             VStack(spacing: 8) {
                 ZStack(alignment: .bottomTrailing) {
-                    AvatarView(name: friend.name, size: 48)
+                    AvatarView(
+                        name: friend.name,
+                        size: 48,
+                        imageUrl: friend.profileImageUrl,
+                        colorHex: friend.profileColorHex
+                    )
                     
                     // Selection checkmark
                     if isSelected {
