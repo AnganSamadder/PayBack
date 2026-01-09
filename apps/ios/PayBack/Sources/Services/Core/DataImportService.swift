@@ -59,6 +59,8 @@ struct ParsedFriend: Sendable {
     let hasLinkedAccount: Bool
     let linkedAccountId: String?
     let linkedAccountEmail: String?
+    let profileImageUrl: String?
+    let profileColorHex: String?
 }
 
 struct ParsedGroup: Sendable {
@@ -74,6 +76,8 @@ struct ParsedGroupMember: Sendable {
     let groupId: UUID
     let memberId: UUID
     let memberName: String
+    let profileImageUrl: String?
+    let profileColorHex: String?
 }
 
 struct ParsedExpense: Sendable {
@@ -298,7 +302,9 @@ struct DataImportService {
                     nickname: parsedFriend.nickname,
                     hasLinkedAccount: parsedFriend.hasLinkedAccount,
                     linkedAccountId: parsedFriend.linkedAccountId,
-                    linkedAccountEmail: parsedFriend.linkedAccountEmail
+                    linkedAccountEmail: parsedFriend.linkedAccountEmail,
+                    profileImageUrl: parsedFriend.profileImageUrl,
+                    profileColorHex: parsedFriend.profileColorHex
                 )
                 store.addImportedFriend(newFriend)
                 
@@ -326,7 +332,7 @@ struct DataImportService {
                 if entry.memberId == parsedData.currentUserId {
                     members.append(GroupMember(id: store.currentUser.id, name: store.currentUser.name))
                 } else {
-                    members.append(GroupMember(id: resolvedId, name: entry.memberName))
+                    members.append(GroupMember(id: resolvedId, name: entry.memberName, profileImageUrl: entry.profileImageUrl, profileColorHex: entry.profileColorHex))
                 }
             }
             if !members.contains(where: { $0.id == store.currentUser.id }) {
@@ -459,7 +465,9 @@ struct DataImportService {
                     nickname: nil,
                     hasLinkedAccount: false,
                     linkedAccountId: nil,
-                    linkedAccountEmail: nil
+                    linkedAccountEmail: nil,
+                    profileImageUrl: entry.profileImageUrl,
+                    profileColorHex: entry.profileColorHex
                 )
                 store.addImportedFriend(newFriend)
                 friendsAdded += 1
@@ -546,7 +554,9 @@ struct DataImportService {
             nickname: fields[2].isEmpty ? nil : unescapeCSV(fields[2]),
             hasLinkedAccount: fields[3].lowercased() == "true",
             linkedAccountId: fields[4].isEmpty ? nil : fields[4],
-            linkedAccountEmail: fields[5].isEmpty ? nil : fields[5]
+            linkedAccountEmail: fields[5].isEmpty ? nil : fields[5],
+            profileImageUrl: fields.count > 6 && !fields[6].isEmpty ? unescapeCSV(fields[6]) : nil,
+            profileColorHex: fields.count > 7 && !fields[7].isEmpty ? unescapeCSV(fields[7]) : nil
         )
     }
     
@@ -578,7 +588,9 @@ struct DataImportService {
         return ParsedGroupMember(
             groupId: groupId,
             memberId: memberId,
-            memberName: unescapeCSV(fields[2])
+            memberName: unescapeCSV(fields[2]),
+            profileImageUrl: fields.count > 3 && !fields[3].isEmpty ? unescapeCSV(fields[3]) : nil,
+            profileColorHex: fields.count > 4 && !fields[4].isEmpty ? unescapeCSV(fields[4]) : nil
         )
     }
     
