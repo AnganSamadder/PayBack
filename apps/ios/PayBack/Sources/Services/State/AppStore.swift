@@ -429,9 +429,9 @@ final class AppStore: ObservableObject {
         Haptics.notify(.success)
     }
 
-    private func applyDisplayName(_ name: String) {
+    func applyDisplayName(_ name: String) {
         guard currentUser.name != name else { return }
-        currentUser = GroupMember(id: currentUser.id, name: name)
+        currentUser = GroupMember(id: currentUser.id, name: name, profileImageUrl: currentUser.profileImageUrl, profileColorHex: currentUser.profileColorHex)
         groups = groups.map { group in
             var group = group
             group.members = group.members.map { member in
@@ -449,6 +449,25 @@ final class AppStore: ObservableObject {
         Task {
             for group in affectedGroups {
                 try? await groupCloudService.upsertGroup(group)
+            }
+        }
+    }
+    
+    func updateUserProfile(color: String?, imageUrl: String?) {
+        // Optimistic update
+        if let color { currentUser.profileColorHex = color }
+        if let imageUrl { currentUser.profileImageUrl = imageUrl }
+        
+        if var account = session?.account {
+            if let color { account.profileColorHex = color }
+            if let imageUrl { account.profileImageUrl = imageUrl }
+            session = UserSession(account: account)
+        }
+        persistCurrentState()
+        
+        Task {
+            if let convexAccountService = accountService as? ConvexAccountService {
+                 try? await convexAccountService.updateProfile(colorHex: color, imageUrl: imageUrl)
             }
         }
     }

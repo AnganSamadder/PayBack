@@ -5,6 +5,7 @@ struct ProfileView: View {
     @State private var showLogoutConfirmation = false
     @State private var showSettings = false
     @State private var showImportExport = false
+    @State private var profileColor: Color = .blue
     
     var body: some View {
         NavigationStack {
@@ -79,7 +80,12 @@ struct ProfileView: View {
     private var profileHeader: some View {
         VStack(spacing: 16) {
             // Avatar
-            AvatarView(name: store.currentUser.name, size: 100)
+            AvatarView(
+                name: store.currentUser.name,
+                size: 100,
+                imageUrl: store.currentUser.profileImageUrl,
+                colorHex: store.currentUser.profileColorHex
+            )
             
             // User name
             Text(store.currentUser.name)
@@ -115,6 +121,33 @@ struct ProfileView: View {
                         value: account.email
                     )
                 }
+                
+                // Avatar Color Picker
+                HStack(spacing: 12) {
+                    Image(systemName: "paintpalette.fill")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(AppTheme.brand)
+                        .frame(width: 32, height: 32)
+                        .background(
+                            Circle()
+                                .fill(AppTheme.brand.opacity(0.1))
+                        )
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Avatar Color")
+                            .font(.system(.caption, design: .rounded, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        
+                        Text("Customize your look")
+                            .font(.system(.body, design: .rounded, weight: .medium))
+                            .foregroundStyle(.primary)
+                    }
+                    
+                    Spacer()
+                    
+                    ColorPicker("", selection: $profileColor, supportsOpacity: false)
+                        .labelsHidden()
+                }
             }
             .padding(16)
             .background(
@@ -122,6 +155,22 @@ struct ProfileView: View {
                     .fill(AppTheme.card)
                     .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
             )
+        }
+        .onAppear {
+            if let hex = store.currentUser.profileColorHex, let color = Color(hex: hex) {
+                profileColor = color
+            }
+        }
+        .onChange(of: profileColor) { newColor in
+            // Basic debounce could be added here, but for now direct update
+            if let hex = newColor.toHex(), hex != store.currentUser.profileColorHex {
+                store.updateUserProfile(color: hex, imageUrl: nil)
+            }
+        }
+        .onChange(of: store.currentUser.profileColorHex) { newHex in
+            if let newHex, let color = Color(hex: newHex), color != profileColor {
+                profileColor = color
+            }
         }
     }
     
