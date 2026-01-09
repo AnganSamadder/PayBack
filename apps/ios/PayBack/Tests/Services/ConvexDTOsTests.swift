@@ -170,8 +170,8 @@ final class ConvexDTOsTests: XCTestCase {
             name: "Roommates",
             created_at: 1704067200000,
             members: [
-                ConvexGroupMemberDTO(id: "550e8400-e29b-41d4-a716-446655440002", name: "Alice"),
-                ConvexGroupMemberDTO(id: "550e8400-e29b-41d4-a716-446655440003", name: "Bob")
+                ConvexGroupMemberDTO(id: "550e8400-e29b-41d4-a716-446655440002", name: "Alice", profile_image_url: nil, profile_avatar_color: nil),
+                ConvexGroupMemberDTO(id: "550e8400-e29b-41d4-a716-446655440003", name: "Bob", profile_image_url: nil, profile_avatar_color: nil)
             ],
             is_direct: false,
             is_payback_generated_mock_data: false
@@ -192,8 +192,8 @@ final class ConvexDTOsTests: XCTestCase {
             name: "Friend",
             created_at: 1704067200000,
             members: [
-                ConvexGroupMemberDTO(id: "550e8400-e29b-41d4-a716-446655440002", name: "Me"),
-                ConvexGroupMemberDTO(id: "550e8400-e29b-41d4-a716-446655440003", name: "Friend")
+                ConvexGroupMemberDTO(id: "550e8400-e29b-41d4-a716-446655440002", name: "Me", profile_image_url: nil, profile_avatar_color: nil),
+                ConvexGroupMemberDTO(id: "550e8400-e29b-41d4-a716-446655440003", name: "Friend", profile_image_url: nil, profile_avatar_color: nil)
             ],
             is_direct: true,
             is_payback_generated_mock_data: nil
@@ -256,7 +256,9 @@ final class ConvexDTOsTests: XCTestCase {
     func testConvexGroupMemberDTO_toGroupMember_InvalidUUID_ReturnsNil() {
         let dto = ConvexGroupMemberDTO(
             id: "invalid",
-            name: "Name"
+            name: "Name",
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let member = dto.toGroupMember()
@@ -266,7 +268,9 @@ final class ConvexDTOsTests: XCTestCase {
     func testConvexGroupMemberDTO_toGroupMember_EmptyName() {
         let dto = ConvexGroupMemberDTO(
             id: "550e8400-e29b-41d4-a716-446655440001",
-            name: ""
+            name: "",
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let member = dto.toGroupMember()
@@ -284,7 +288,9 @@ final class ConvexDTOsTests: XCTestCase {
             nickname: "BFF",
             has_linked_account: true,
             linked_account_id: "account-123",
-            linked_account_email: "friend@test.com"
+            linked_account_email: "friend@test.com",
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let friend = dto.toAccountFriend()
@@ -304,7 +310,9 @@ final class ConvexDTOsTests: XCTestCase {
             nickname: nil,
             has_linked_account: nil,
             linked_account_id: nil,
-            linked_account_email: nil
+            linked_account_email: nil,
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let friend = dto.toAccountFriend()
@@ -321,7 +329,9 @@ final class ConvexDTOsTests: XCTestCase {
             nickname: nil,
             has_linked_account: nil,
             linked_account_id: nil,
-            linked_account_email: nil
+            linked_account_email: nil,
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let friend = dto.toAccountFriend()
@@ -334,7 +344,9 @@ final class ConvexDTOsTests: XCTestCase {
         let dto = ConvexUserAccountDTO(
             id: "account-id-123",
             email: "user@example.com",
-            display_name: "User Name"
+            display_name: "User Name",
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let account = dto.toUserAccount()
@@ -348,7 +360,9 @@ final class ConvexDTOsTests: XCTestCase {
         let dto = ConvexUserAccountDTO(
             id: "account-id",
             email: "minimal@test.com",
-            display_name: nil
+            display_name: nil,
+            profile_image_url: nil,
+            profile_avatar_color: nil
         )
         
         let account = dto.toUserAccount()

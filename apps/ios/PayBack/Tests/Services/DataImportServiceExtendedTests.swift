@@ -153,7 +153,9 @@ final class DataImportServiceExtendedTests: XCTestCase {
             nickname: "Testy",
             hasLinkedAccount: true,
             linkedAccountId: "acc123",
-            linkedAccountEmail: "linked@test.com"
+            linkedAccountEmail: "linked@test.com",
+            profileImageUrl: nil,
+            profileColorHex: nil
         )
         
         XCTAssertEqual(friend.memberId, memberId)
@@ -171,7 +173,9 @@ final class DataImportServiceExtendedTests: XCTestCase {
             nickname: nil,
             hasLinkedAccount: false,
             linkedAccountId: nil,
-            linkedAccountEmail: nil
+            linkedAccountEmail: nil,
+            profileImageUrl: nil,
+            profileColorHex: nil
         )
         
         XCTAssertFalse(friend.hasLinkedAccount)
@@ -222,7 +226,9 @@ final class DataImportServiceExtendedTests: XCTestCase {
         let member = ParsedGroupMember(
             groupId: groupId,
             memberId: memberId,
-            memberName: "Group Member"
+            memberName: "Group Member",
+            profileImageUrl: nil,
+            profileColorHex: nil
         )
         
         XCTAssertEqual(member.groupId, groupId)
@@ -313,7 +319,9 @@ final class DataImportServiceExtendedTests: XCTestCase {
             nickname: nil,
             hasLinkedAccount: false,
             linkedAccountId: nil,
-            linkedAccountEmail: nil
+            linkedAccountEmail: nil,
+            profileImageUrl: nil,
+            profileColorHex: nil
         )
         XCTAssertEqual(friend.name, "")
     }
