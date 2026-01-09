@@ -23,7 +23,8 @@ final class ConvexDTOsTests: XCTestCase {
             owner_email: "owner@test.com",
             owner_account_id: "owner-account-id",
             participant_member_ids: nil,
-            participants: nil
+            participants: nil,
+            subexpenses: nil
         )
         
         let expense = dto.toExpense()
@@ -51,7 +52,8 @@ final class ConvexDTOsTests: XCTestCase {
             owner_email: nil,
             owner_account_id: nil,
             participant_member_ids: nil,
-            participants: nil
+            participants: nil,
+            subexpenses: nil
         )
         
         let expense = dto.toExpense()
@@ -76,7 +78,8 @@ final class ConvexDTOsTests: XCTestCase {
             owner_email: nil,
             owner_account_id: nil,
             participant_member_ids: nil,
-            participants: nil
+            participants: nil,
+            subexpenses: nil
         )
         
         let expense = dto.toExpense()
@@ -237,13 +240,17 @@ final class ConvexDTOsTests: XCTestCase {
     func testConvexGroupMemberDTO_toGroupMember_Success() {
         let dto = ConvexGroupMemberDTO(
             id: "550e8400-e29b-41d4-a716-446655440001",
-            name: "Member Name"
+            name: "Member Name",
+            profile_image_url: "http://img.com",
+            profile_avatar_color: "#123"
         )
         
         let member = dto.toGroupMember()
         
         XCTAssertNotNil(member)
         XCTAssertEqual(member?.name, "Member Name")
+        XCTAssertEqual(member?.profileImageUrl, "http://img.com")
+        XCTAssertEqual(member?.profileColorHex, "#123")
     }
     
     func testConvexGroupMemberDTO_toGroupMember_InvalidUUID_ReturnsNil() {
