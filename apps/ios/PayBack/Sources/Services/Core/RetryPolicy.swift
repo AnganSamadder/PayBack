@@ -112,4 +112,11 @@ extension RetryPolicy {
         maxDelay: 10.0,
         multiplier: 2.0
     )
+    
+    static let startup = RetryPolicy(
+        maxAttempts: 3,
+        baseDelay: 0.5,
+        maxDelay: 5.0,
+        multiplier: 2.0
+    )
 }
