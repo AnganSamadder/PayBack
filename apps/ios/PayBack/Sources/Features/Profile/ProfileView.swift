@@ -161,13 +161,13 @@ struct ProfileView: View {
                 profileColor = color
             }
         }
-        .onChange(of: profileColor) { newColor in
+        .onChange(of: profileColor) { _, newColor in
             // Basic debounce could be added here, but for now direct update
             if let hex = newColor.toHex(), hex != store.currentUser.profileColorHex {
                 store.updateUserProfile(color: hex, imageUrl: nil)
             }
         }
-        .onChange(of: store.currentUser.profileColorHex) { newHex in
+        .onChange(of: store.currentUser.profileColorHex) { _, newHex in
             if let newHex, let color = Color(hex: newHex), color != profileColor {
                 profileColor = color
             }

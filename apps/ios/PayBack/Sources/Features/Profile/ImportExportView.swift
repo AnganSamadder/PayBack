@@ -71,9 +71,9 @@ struct ImportExportView: View {
             ExportShareSheet(text: exportText)
         }
         .sheet(isPresented: $showConflictResolution) {
-            if let conflicts = importConflicts {
+            if !importConflicts.isEmpty {
                 ImportResolutionView(
-                    conflicts: conflicts,
+                    conflicts: importConflicts,
                     onResolve: { resolutions in
                         showConflictResolution = false
                         if let text = pendingImportText {
