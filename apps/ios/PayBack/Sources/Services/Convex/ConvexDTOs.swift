@@ -18,6 +18,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
     let owner_account_id: String?
     let participant_member_ids: [String]?
     let participants: [ConvexParticipantDTO]?
+    let subexpenses: [ConvexSubexpenseDTO]?
     
     /// Maps Convex DTO to domain Expense model
     func toExpense() -> Expense {
@@ -30,7 +31,8 @@ struct ConvexExpenseDTO: Decodable, Sendable {
             paidByMemberId: UUID(uuidString: paid_by_member_id) ?? UUID(),
             involvedMemberIds: involved_member_ids.compactMap { UUID(uuidString: $0) },
             splits: splits.map { $0.toExpenseSplit() },
-            isSettled: is_settled
+            isSettled: is_settled,
+            subexpenses: subexpenses?.map { $0.toSubexpense() }
         )
     }
 }
@@ -67,6 +69,20 @@ struct ConvexParticipantDTO: Decodable, Sendable {
             name: name,
             linkedAccountId: linked_account_id,
             linkedAccountEmail: linked_account_email
+        )
+    }
+}
+
+/// Internal DTO for subexpenses (cost breakdown items)
+struct ConvexSubexpenseDTO: Decodable, Sendable {
+    let id: String
+    let amount: Double
+    
+    /// Maps to domain Subexpense
+    func toSubexpense() -> Subexpense {
+        Subexpense(
+            id: UUID(uuidString: id) ?? UUID(),
+            amount: amount
         )
     }
 }
