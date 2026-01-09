@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { getRandomAvatarColor } from "./utils";
 
 /**
  * Stores or updates the current user in the `accounts` table.
@@ -34,6 +35,7 @@ export const store = mutation({
         id: identity.subject, // Using Clerk ID as our specific ID field if useful, or just reliance on _id
         email: identity.email!,
         display_name: identity.name || identity.email!.split("@")[0] || "User",
+        profile_avatar_color: getRandomAvatarColor(),
         created_at: Date.now(),
         updated_at: Date.now(),
     });
@@ -89,5 +91,45 @@ export const updateLinkedMemberId = mutation({
     });
 
     return user._id;
+  },
+});
+
+/**
+ * Updates the user's profile information.
+ */
+export const updateProfile = mutation({
+  args: {
+    profile_avatar_color: v.optional(v.string()),
+    profile_image_url: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Unauthenticated");
+
+    const user = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", identity.email!))
+      .unique();
+
+    if (!user) throw new Error("User not found");
+
+    const patches: any = { updated_at: Date.now() };
+    if (args.profile_avatar_color !== undefined) patches.profile_avatar_color = args.profile_avatar_color;
+    if (args.profile_image_url !== undefined) patches.profile_image_url = args.profile_image_url;
+
+    await ctx.db.patch(user._id, patches);
+
+    // Propagate to linked friends
+    const friendsToUpdate = await ctx.db
+      .query("account_friends")
+      .withIndex("by_linked_account_id", (q) => q.eq("linked_account_id", user.id))
+      .collect();
+
+    for (const friend of friendsToUpdate) {
+      const friendPatches: any = { updated_at: Date.now() };
+      if (args.profile_avatar_color !== undefined) friendPatches.profile_avatar_color = args.profile_avatar_color;
+      if (args.profile_image_url !== undefined) friendPatches.profile_image_url = args.profile_image_url;
+      await ctx.db.patch(friend._id, friendPatches);
+    }
   },
 });
