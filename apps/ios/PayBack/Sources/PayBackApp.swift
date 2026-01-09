@@ -7,21 +7,34 @@ import ConvexMobile
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
+        AppConfig.markTiming("AppDelegate.didFinishLaunching")
         return true
     }
 }
 
 struct RootViewWithStore: View {
-    @StateObject private var store = AppStore()
+    @StateObject private var store: AppStore
     @Environment(\.clerk) private var clerk
-    @State private var isCheckingAuth = true
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var networkMonitor = NetworkMonitor()
     @State private var pendingInviteToken: UUID?
 
+    init() {
+        AppConfig.markTiming("RootViewWithStore init started")
+        // Initialize StateObject manually to track timing
+        let storeInstance = AppStore()
+        _store = StateObject(wrappedValue: storeInstance)
+        AppConfig.markTiming("RootViewWithStore init completed")
+        
+        AppConfig.markTiming("NetworkMonitor init started")
+        _networkMonitor = StateObject(wrappedValue: NetworkMonitor())
+        AppConfig.markTiming("NetworkMonitor init completed")
+    }
+
     var body: some View {
         Group {
-            if isCheckingAuth {
+            // Use store's state instead of local state to avoid view lifecycle delays
+            if store.isCheckingAuth {
                 // Show loading state while checking for existing session
                 ZStack {
                     LinearGradient(
@@ -44,9 +57,15 @@ struct RootViewWithStore: View {
                             .font(.system(size: 32, weight: .bold, design: .rounded))
                             .foregroundStyle(.white)
                     }
+                    .onAppear {
+                         AppConfig.markTiming("Loading Screen appeared")
+                    }
                 }
             } else if store.session != nil {
                 RootView(pendingInviteToken: $pendingInviteToken)
+                    .onAppear {
+                         AppConfig.markTiming("RootView appeared")
+                    }
             } else {
                 // Show AuthFlowView directly when not authenticated (matching original UX)
                 AuthFlowView { session in
@@ -56,12 +75,15 @@ struct RootViewWithStore: View {
                         name: session.account.displayName
                     )
                 }
+                .onAppear {
+                     AppConfig.markTiming("AuthFlowView appeared")
+                }
             }
         }
         .environmentObject(store)
         .animation(.easeInOut(duration: 0.25), value: store.session != nil)
         .task {
-            await checkExistingSession()
+            AppConfig.markTiming("RootViewWithStore.task triggered (Auth check already running in AppStore)")
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             handleScenePhaseChange(oldPhase: oldPhase, newPhase: newPhase)
@@ -74,49 +96,8 @@ struct RootViewWithStore: View {
         }
     }
     
-    private func checkExistingSession() async {
-        // Wait for Clerk to load
-        // If user is already signed in via Clerk, complete authentication
-        if let user = clerk.user {
-            // Authenticate Convex first
-            await Dependencies.authenticateConvex()
-            
-            let email = user.primaryEmailAddress?.emailAddress ?? ""
-            let displayName = [user.firstName, user.lastName].compactMap { $0 }.joined(separator: " ")
-            
-            let accountService = Dependencies.current.accountService
-            do {
-                if let account = try await accountService.lookupAccount(byEmail: email) {
-                    let session = UserSession(account: account)
-                    store.completeAuthentication(
-                        id: session.account.id,
-                        email: session.account.email,
-                        name: session.account.displayName
-                    )
-                } else {
-                    let account = try await accountService.createAccount(email: email, displayName: displayName)
-                    let session = UserSession(account: account)
-                    store.completeAuthentication(
-                        id: session.account.id,
-                        email: session.account.email,
-                        name: session.account.displayName
-                    )
-                }
-                
-                // Start real-time sync after successful authentication
-                Dependencies.syncManager?.startSync()
-                
-            } catch {
-                #if DEBUG
-                print("[Auth] Failed to restore session: \(error.localizedDescription)")
-                #endif
-            }
-        }
-        
-        isCheckingAuth = false
-    }
-    
     private func handleScenePhaseChange(oldPhase: ScenePhase, newPhase: ScenePhase) {
+        AppConfig.markTiming("ScenePhase changed: \(oldPhase) -> \(newPhase)")
         // Trigger reconciliation when app becomes active
         if oldPhase != .active && newPhase == .active {
             #if DEBUG
@@ -198,21 +179,23 @@ class NetworkMonitor: ObservableObject {
     @Published var connectionType: NWInterface.InterfaceType?
     
     init() {
+        AppConfig.markTiming("NetworkMonitor init started")
         monitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
                 self?.isConnected = path.status == .satisfied
                 self?.connectionType = path.availableInterfaces.first?.type
                 
                 #if DEBUG
-                if path.status == .satisfied {
+                if path.status == .satisfied && AppConfig.verboseLogging {
                     print("[Network] Connection available: \(path.availableInterfaces.first?.type.debugDescription ?? "unknown")")
-                } else {
+                } else if AppConfig.verboseLogging {
                     print("[Network] Connection unavailable")
                 }
                 #endif
             }
         }
         monitor.start(queue: queue)
+        AppConfig.markTiming("NetworkMonitor init completed")
     }
     
     deinit {
@@ -241,28 +224,35 @@ struct PayBackApp: App {
     let convexClient: ConvexClientWithAuth<ClerkAuthResult>
 
     init() {
+        // Start performance tracking
+        AppConfig.markAppStart()
+        
+        // Log startup configuration
+        AppConfig.logStartupInfo()
+        AppConfig.markTiming("Configuration logged")
+        
         let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
+        AppConfig.markTiming("ClerkAuthProvider created")
+        
         convexClient = ConvexClientWithAuth(
             deploymentUrl: ConvexConfig.deploymentUrl,
             authProvider: authProvider
         )
+        AppConfig.markTiming("ConvexClient created")
+        
         Dependencies.configure(client: convexClient)
+        AppConfig.markTiming("Dependencies configured")
+        
         AppAppearance.configure()
+        AppConfig.markTiming("Appearance configured")
+        
+        AppConfig.log("PayBack initialization complete")
     }
 
     var body: some Scene {
         WindowGroup {
             RootViewWithStore()
                 .environment(\.clerk, clerk)
-                .task {
-                    clerk.configure(publishableKey: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA")
-                    try? await clerk.load()
-                    
-                    // Authenticate the Convex client after Clerk is ready
-                    if clerk.user != nil {
-                        _ = await convexClient.loginFromCache()
-                    }
-                }
         }
     }
 }
