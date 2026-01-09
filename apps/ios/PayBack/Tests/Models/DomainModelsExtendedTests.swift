@@ -329,4 +329,36 @@ final class DomainModelsExtendedTests: XCTestCase {
         
         XCTAssertEqual(session1, session2)
     }
+
+    // MARK: - Profile Picture Fields Tests
+
+    func testGroupMember_profileFields_arePersisted() {
+        let member = GroupMember(name: "Test", profileImageUrl: "http://test.com/img.jpg", profileColorHex: "#ABCDEF")
+        XCTAssertEqual(member.profileImageUrl, "http://test.com/img.jpg")
+        XCTAssertEqual(member.profileColorHex, "#ABCDEF")
+    }
+
+    func testAccountFriend_profileFields_arePersisted() {
+        let memberId = UUID()
+        let friend = AccountFriend(
+            memberId: memberId,
+            name: "Alice",
+            profileImageUrl: "http://test.com/img.jpg",
+            profileColorHex: "#123456"
+        )
+        XCTAssertEqual(friend.profileImageUrl, "http://test.com/img.jpg")
+        XCTAssertEqual(friend.profileColorHex, "#123456")
+    }
+    
+    func testUserAccount_profileFields_arePersisted() {
+        let account = UserAccount(
+            id: "user-123",
+            email: "test@example.com",
+            displayName: "Test User",
+            profileImageUrl: "http://test.com/me.jpg",
+            profileColorHex: "#FFFFFF"
+        )
+        XCTAssertEqual(account.profileImageUrl, "http://test.com/me.jpg")
+        XCTAssertEqual(account.profileColorHex, "#FFFFFF")
+    }
 }
