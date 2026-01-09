@@ -188,4 +188,10 @@ actor ConvexAccountService: AccountService {
         let args: [String: ConvexEncodable?] = ["linked_member_id": memberId.uuidString]
         _ = try await client.mutation("users:updateLinkedMemberId", with: args)
     }
+    
+    /// Clears all friends from Convex for the current user
+    func clearFriends() async throws {
+        _ = try await client.mutation("friends:clearAllForUser", with: [:])
+        cachedFriends = []
+    }
 }
