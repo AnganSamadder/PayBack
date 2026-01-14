@@ -216,7 +216,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         try await Task.sleep(nanoseconds: 300_000_000)
         
         // When
-        sut.signOut()
+        await sut.signOut()
         
         // Then
         let saved = mockPersistence.load()
