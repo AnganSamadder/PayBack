@@ -1508,18 +1508,32 @@ final class AppStore: ObservableObject {
         let overrides = friendNameOverrides()
         var seen: Set<UUID> = []
         var results: [GroupMember] = []
-
-        // Only add friends from the Convex-synced friends array
-        // This makes Convex the single source of truth for friend data
+        
+        // Build a lookup from the Convex-synced friends array for metadata (linking status, profile, etc.)
+        // Key by name (lowercased) since memberId in friends array might not match group member UUIDs
+        var friendMetadataByName: [String: AccountFriend] = [:]
         for friend in friends where !isCurrentUserFriend(friend) {
-            guard seen.insert(friend.memberId).inserted else { continue }
-            let name = sanitizedFriendName(friend, overrides: overrides)
-            let member = GroupMember(id: friend.memberId, name: name)
-            
-            // Extra safety check: never include current user
-            guard !isCurrentUser(member) else { continue }
-            
-            results.append(member)
+            friendMetadataByName[friend.name.lowercased().trimmingCharacters(in: .whitespaces)] = friend
+        }
+
+        // Derive friends from actual group members (which have correct UUIDs matching expenses)
+        for group in groups {
+            for member in group.members where !isCurrentUser(member) {
+                guard seen.insert(member.id).inserted else { continue }
+                
+                // Look up AccountFriend metadata by name for enrichment
+                let memberNameKey = member.name.lowercased().trimmingCharacters(in: .whitespaces)
+                if let friendData = friendMetadataByName[memberNameKey] {
+                    // Enrich with AccountFriend data (profile color, linking status, etc.)
+                    let name = sanitizedFriendName(friendData, overrides: overrides)
+                    var enrichedMember = GroupMember(id: member.id, name: name)
+                    enrichedMember.profileColorHex = friendData.profileColorHex ?? member.profileColorHex
+                    results.append(enrichedMember)
+                } else {
+                    // Use group member as-is
+                    results.append(member)
+                }
+            }
         }
 
         return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
