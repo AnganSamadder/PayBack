@@ -234,8 +234,11 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     // MARK: - Friend Members Edge Cases
     
     func testFriendMembers_WithoutSession_DeriveFromGroups() async throws {
-        // Given - no session
-        sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
+        // Given - friendMembers now returns from Convex-synced friends array
+        let aliceId = UUID()
+        let bobId = UUID()
+        sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false))
+        sut.addImportedFriend(AccountFriend(memberId: bobId, name: "Bob", hasLinkedAccount: false))
         
         // When
         let friends = sut.friendMembers
