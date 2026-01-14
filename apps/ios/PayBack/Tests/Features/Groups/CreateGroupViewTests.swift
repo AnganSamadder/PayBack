@@ -141,9 +141,14 @@ final class CreateGroupViewTests: XCTestCase {
     // MARK: - Friend Selection Tests
     
     func testFriendMembers_ReturnsUniqueMembers() async throws {
-        // Given
-        sut.addGroup(name: "Trip 1", memberNames: ["Alice", "Bob"])
-        sut.addGroup(name: "Trip 2", memberNames: ["Alice", "Charlie"])
+        // Given - friendMembers returns from Convex-synced friends array
+        let aliceId = UUID()
+        let bobId = UUID()
+        let charlieId = UUID()
+        
+        sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false))
+        sut.addImportedFriend(AccountFriend(memberId: bobId, name: "Bob", hasLinkedAccount: false))
+        sut.addImportedFriend(AccountFriend(memberId: charlieId, name: "Charlie", hasLinkedAccount: false))
         
         // When
         let friends = sut.friendMembers
@@ -166,8 +171,14 @@ final class CreateGroupViewTests: XCTestCase {
     }
     
     func testFriendMembers_SortedAlphabetically() async throws {
-        // Given
-        sut.addGroup(name: "Trip", memberNames: ["Zoe", "Alice", "Mike"])
+        // Given - friendMembers returns from Convex-synced friends array, sorted
+        let zoeId = UUID()
+        let aliceId = UUID()
+        let mikeId = UUID()
+        
+        sut.addImportedFriend(AccountFriend(memberId: zoeId, name: "Zoe", hasLinkedAccount: false))
+        sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false))
+        sut.addImportedFriend(AccountFriend(memberId: mikeId, name: "Mike", hasLinkedAccount: false))
         
         // When
         let friends = sut.friendMembers
