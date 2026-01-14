@@ -27,7 +27,8 @@ final class AppStoreQueryTests: XCTestCase {
             expenseCloudService: mockExpenseCloudService,
             groupCloudService: mockGroupCloudService,
             linkRequestService: mockLinkRequestService,
-            inviteLinkService: mockInviteLinkService
+            inviteLinkService: mockInviteLinkService,
+            skipClerkInit: true
         )
     }
     

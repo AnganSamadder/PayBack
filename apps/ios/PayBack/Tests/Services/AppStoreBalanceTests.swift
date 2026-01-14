@@ -27,7 +27,8 @@ final class AppStoreBalanceTests: XCTestCase {
             expenseCloudService: mockExpenseCloudService,
             groupCloudService: mockGroupCloudService,
             linkRequestService: mockLinkRequestService,
-            inviteLinkService: mockInviteLinkService
+            inviteLinkService: mockInviteLinkService,
+            skipClerkInit: true
         )
         
         // Setup initial user not needed for sync logic tests as they use sut.currentUser dynamic ID
