@@ -25,6 +25,7 @@ export const create = mutation({
         name: v.string(),
         profile_image_url: v.optional(v.string()),
         profile_avatar_color: v.optional(v.string()),
+        is_current_user: v.optional(v.boolean()),
     })),
     is_direct: v.optional(v.boolean()),
   },
@@ -87,9 +88,11 @@ export const create = mutation({
     
     // Automatically add all group members as friends
     for (const member of args.members) {
-      // Skip logic for "Self" could go here if we knew which one was self reliably
-      // For now, trusting that having oneself in friend list is acceptable or handled by frontend filtering
-      
+      // Logic for "Self": If this member IS the current user (e.g. flagged by client), skip adding as friend.
+      if (member.is_current_user) {
+          continue;
+      }
+
       const existingFriend = await ctx.db
         .query("account_friends")
         .withIndex("by_account_email_and_member_id", (q) => 

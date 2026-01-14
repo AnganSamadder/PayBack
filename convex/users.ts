@@ -1,4 +1,4 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, action } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 
@@ -41,6 +41,17 @@ export const store = mutation({
     });
 
     return newUserId;
+  },
+});
+
+/**
+ * Checks if the user is authenticated on the server.
+ * Used for client-side verification before attempting mutations.
+ */
+export const isAuthenticated = query({
+  args: {},
+  handler: async (ctx) => {
+    return (await ctx.auth.getUserIdentity()) !== null;
   },
 });
 
@@ -97,10 +108,26 @@ export const updateLinkedMemberId = mutation({
 /**
  * Updates the user's profile information.
  */
+/**
+ * Generates a URL for uploading a file to Convex storage.
+ */
+export const generateUploadUrl = action({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Unauthenticated");
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+/**
+ * Updates the user's profile information.
+ */
 export const updateProfile = mutation({
   args: {
     profile_avatar_color: v.optional(v.string()),
     profile_image_url: v.optional(v.string()),
+    storage_id: v.optional(v.id("_storage")),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -115,7 +142,18 @@ export const updateProfile = mutation({
 
     const patches: any = { updated_at: Date.now() };
     if (args.profile_avatar_color !== undefined) patches.profile_avatar_color = args.profile_avatar_color;
-    if (args.profile_image_url !== undefined) patches.profile_image_url = args.profile_image_url;
+    
+    // Handle storage ID to URL conversion
+    if (args.storage_id) {
+      const url = await ctx.storage.getUrl(args.storage_id);
+      if (url) {
+        patches.profile_image_url = url;
+        // Update args so propagation uses the new URL
+        args.profile_image_url = url;
+      }
+    } else if (args.profile_image_url !== undefined) {
+      patches.profile_image_url = args.profile_image_url;
+    }
 
     await ctx.db.patch(user._id, patches);
 
@@ -128,8 +166,11 @@ export const updateProfile = mutation({
     for (const friend of friendsToUpdate) {
       const friendPatches: any = { updated_at: Date.now() };
       if (args.profile_avatar_color !== undefined) friendPatches.profile_avatar_color = args.profile_avatar_color;
-      if (args.profile_image_url !== undefined) friendPatches.profile_image_url = args.profile_image_url;
+      // Use the resolved URL (from storage or direct arg)
+      if (patches.profile_image_url !== undefined) friendPatches.profile_image_url = patches.profile_image_url;
       await ctx.db.patch(friend._id, friendPatches);
     }
+    
+    return patches.profile_image_url;
   },
 });
