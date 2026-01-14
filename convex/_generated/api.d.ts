@@ -8,6 +8,8 @@
  * @module
  */
 
+import type * as cleanup from "../cleanup.js";
+import type * as debug from "../debug.js";
 import type * as expenses from "../expenses.js";
 import type * as friends from "../friends.js";
 import type * as groups from "../groups.js";
@@ -24,6 +26,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  cleanup: typeof cleanup;
+  debug: typeof debug;
   expenses: typeof expenses;
   friends: typeof friends;
   groups: typeof groups;
