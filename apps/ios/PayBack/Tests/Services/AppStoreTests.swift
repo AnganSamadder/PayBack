@@ -538,9 +538,14 @@ final class AppStoreTests: XCTestCase {
     // MARK: - Friend Management Tests
     
     func testFriendMembers_ReturnsUniqueMembers() async throws {
-        // Given
-        sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
-        sut.addGroup(name: "Work", memberNames: ["Alice", "Charlie"])
+        // Given - friendMembers now returns from Convex-synced friends array
+        let aliceId = UUID()
+        let bobId = UUID()
+        let charlieId = UUID()
+        
+        sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false))
+        sut.addImportedFriend(AccountFriend(memberId: bobId, name: "Bob", hasLinkedAccount: false))
+        sut.addImportedFriend(AccountFriend(memberId: charlieId, name: "Charlie", hasLinkedAccount: false))
         
         // When
         let friends = sut.friendMembers
@@ -1508,8 +1513,11 @@ final class AppStoreTests: XCTestCase {
     // MARK: - Friend Members Edge Cases
     
     func testFriendMembers_WithoutSession_ReturnsFromGroups() async throws {
-        // Given - no session
-        sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
+        // Given - friendMembers returns from Convex-synced friends array, not groups
+        let aliceId = UUID()
+        let bobId = UUID()
+        sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false))
+        sut.addImportedFriend(AccountFriend(memberId: bobId, name: "Bob", hasLinkedAccount: false))
         
         // When
         let friends = sut.friendMembers
