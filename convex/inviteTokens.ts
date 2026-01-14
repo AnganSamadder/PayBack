@@ -95,13 +95,23 @@ export const validate = query({
       };
     }
 
+    // Fetch creator's profile info
+    const creatorAccount = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", token.creator_email))
+      .unique();
+
     const now = Date.now();
 
     if (token.expires_at < now) {
       return {
         is_valid: false,
         error: "Token has expired",
-        token,
+        token: {
+          ...token,
+          creator_name: creatorAccount?.display_name,
+          creator_profile_image_url: creatorAccount?.profile_image_url,
+        },
         expense_preview: null,
       };
     }
@@ -110,7 +120,11 @@ export const validate = query({
       return {
         is_valid: false,
         error: "Token has already been claimed",
-        token,
+        token: {
+          ...token,
+          creator_name: creatorAccount?.display_name,
+          creator_profile_image_url: creatorAccount?.profile_image_url,
+        },
         expense_preview: null,
       };
     }
@@ -159,7 +173,11 @@ export const validate = query({
     return {
       is_valid: true,
       error: null,
-      token,
+      token: {
+        ...token,
+        creator_name: creatorAccount?.display_name,
+        creator_profile_image_url: creatorAccount?.profile_image_url,
+      },
       expense_preview: {
         expense_count: memberExpenses.length,
         group_names: groupNames,
@@ -172,6 +190,8 @@ export const validate = query({
 /**
  * Claims an invite token for the current user.
  * This links the current user's account to the target member.
+ * Also performs transitive linking - if other users share a group with the target member,
+ * their friend records are also updated.
  */
 export const claim = mutation({
   args: { id: v.string() },
@@ -210,21 +230,183 @@ export const claim = mutation({
       updated_at: now,
     });
 
-    // Update the friend record to mark as linked
-    const friendRecord = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email_and_member_id", (q) =>
-        q.eq("account_email", token.creator_email).eq("member_id", token.target_member_id)
-      )
+    // Get the creator's account info for creating the claimant's friend record
+    const creatorAccount = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", token.creator_email))
       .unique();
 
-    if (friendRecord) {
-      await ctx.db.patch(friendRecord._id, {
-        has_linked_account: true,
-        linked_account_id: user.id,
-        linked_account_email: user.email,
-        updated_at: now,
+    // Helper function to update a friend record with linking info
+    const updateFriendRecord = async (accountEmail: string) => {
+      const friendRecord = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", accountEmail).eq("member_id", token.target_member_id)
+        )
+        .unique();
+
+      if (friendRecord && !friendRecord.has_linked_account) {
+        // Store original name only if it differs from the new name
+        const shouldStoreOriginalName = friendRecord.name !== user.display_name;
+        
+        await ctx.db.patch(friendRecord._id, {
+          has_linked_account: true,
+          linked_account_id: user.id,
+          linked_account_email: user.email,
+          // Update name to the linked user's real display name
+          name: user.display_name,
+          // Store the original name they had for this friend (for "Originally X" display)
+          original_name: shouldStoreOriginalName ? friendRecord.name : undefined,
+          updated_at: now,
+        });
+      }
+    };
+
+    // 1. Update the creator's friend record
+    await updateFriendRecord(token.creator_email);
+
+    // 2. Create/update friend record for the CLAIMANT to see the CREATOR
+    // This ensures the claimant has the creator in their friends list
+    if (creatorAccount) {
+      // Use creator's linked_member_id if available, otherwise they might not have linked yet
+      // In that case, we can still create a friend record using the creator's account info
+      const creatorMemberId = creatorAccount.linked_member_id;
+      
+      if (creatorMemberId) {
+        // Check if claimant already has a friend record for the creator
+        const claimantFriendRecord = await ctx.db
+          .query("account_friends")
+          .withIndex("by_account_email_and_member_id", (q) =>
+            q.eq("account_email", user.email).eq("member_id", creatorMemberId)
+          )
+          .unique();
+
+        if (claimantFriendRecord) {
+          // Update existing record
+          await ctx.db.patch(claimantFriendRecord._id, {
+            has_linked_account: true,
+            linked_account_id: creatorAccount.id,
+            linked_account_email: creatorAccount.email,
+            name: creatorAccount.display_name,
+            updated_at: now,
+          });
+        } else {
+          // Create new friend record for claimant
+          await ctx.db.insert("account_friends", {
+            account_email: user.email,
+            member_id: creatorMemberId,
+            name: creatorAccount.display_name,
+            has_linked_account: true,
+            linked_account_id: creatorAccount.id,
+            linked_account_email: creatorAccount.email,
+            updated_at: now,
+          });
+        }
+      }
+      // Note: If creator doesn't have a linked_member_id, they'll appear 
+      // in the claimant's friends list once they sync through shared groups
+    }
+
+    // 3. Transitive linking: Find all groups containing the target member
+    const allGroups = await ctx.db.query("groups").collect();
+    const memberGroups = allGroups.filter((g) =>
+      g.members.some((m) => m.id === token.target_member_id)
+    );
+
+    // 4. Collect all unique account emails that share a group with target member
+    const sharedAccountEmails = new Set<string>();
+    for (const group of memberGroups) {
+      // Add the group owner
+      if (group.owner_email && group.owner_email !== token.creator_email) {
+        sharedAccountEmails.add(group.owner_email);
+      }
+      
+      // Find linked accounts for all group members
+      for (const member of group.members) {
+        if (member.id !== token.target_member_id) {
+          // Find account that has this member as their linked_member_id
+          const linkedAccount = await ctx.db
+            .query("accounts")
+            .filter((q) => q.eq(q.field("linked_member_id"), member.id))
+            .first();
+          
+          if (linkedAccount && linkedAccount.email !== token.creator_email) {
+            sharedAccountEmails.add(linkedAccount.email);
+          }
+        }
+      }
+    }
+
+    // 5. Update friend records for all shared group members
+    for (const accountEmail of sharedAccountEmails) {
+      await updateFriendRecord(accountEmail);
+    }
+
+    // 6. Update group member names to use the linked user's display_name
+    // This ensures the real name shows in groups instead of the old nickname
+    for (const group of memberGroups) {
+      const updatedMembers = group.members.map((m) => {
+        if (m.id === token.target_member_id) {
+          return {
+            ...m,
+            name: user.display_name,
+          };
+        }
+        return m;
       });
+      
+      // Only update if there was actually a change
+      const hadChange = group.members.some(
+        (m) => m.id === token.target_member_id && m.name !== user.display_name
+      );
+      
+      if (hadChange) {
+        await ctx.db.patch(group._id, {
+          members: updatedMembers,
+          updated_at: now,
+        });
+      }
+    }
+
+    // 7. Backfill participant_emails on expenses involving the target member
+    // This allows the claimant to see expenses they're involved in
+    const memberGroupIds = memberGroups.map(g => g.id);
+    for (const groupId of memberGroupIds) {
+      const groupExpenses = await ctx.db
+        .query("expenses")
+        .withIndex("by_group_id", (q) => q.eq("group_id", groupId))
+        .collect();
+      
+      for (const expense of groupExpenses) {
+        // Check if this expense involves the target member
+        if (expense.involved_member_ids.includes(token.target_member_id)) {
+          const currentEmails = expense.participant_emails || [];
+          if (!currentEmails.includes(user.email)) {
+            await ctx.db.patch(expense._id, {
+              participant_emails: [...currentEmails, user.email],
+              updated_at: now,
+            });
+          }
+          
+          // Also update participant info with linking details
+          const updatedParticipants = expense.participants.map((p: any) => {
+            if (p.member_id === token.target_member_id) {
+              return {
+                ...p,
+                name: user.display_name,
+                linked_account_id: user.id,
+                linked_account_email: user.email,
+              };
+            }
+            return p;
+          });
+          
+          await ctx.db.patch(expense._id, {
+            participants: updatedParticipants,
+            updated_at: now,
+          });
+        }
+      }
     }
 
     return {
@@ -234,6 +416,7 @@ export const claim = mutation({
     };
   },
 });
+
 
 /**
  * Lists all active (unclaimed, unexpired) invite tokens created by the current user.
