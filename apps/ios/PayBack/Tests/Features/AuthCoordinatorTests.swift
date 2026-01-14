@@ -6,12 +6,15 @@ final class AuthCoordinatorTests: XCTestCase {
     var coordinator: AuthCoordinator!
     var mockAccountService: TestAccountService!
     var mockEmailAuthService: TestEmailAuthService!
+    var mockStore: AppStore!
     
     override func setUp() async throws {
         try await super.setUp()
         mockAccountService = TestAccountService()
         mockEmailAuthService = TestEmailAuthService()
+        mockStore = AppStore()
         coordinator = AuthCoordinator(
+            store: mockStore,
             accountService: mockAccountService,
             emailAuthService: mockEmailAuthService
         )
@@ -21,6 +24,7 @@ final class AuthCoordinatorTests: XCTestCase {
         coordinator = nil
         mockAccountService = nil
         mockEmailAuthService = nil
+        mockStore = nil
         try await super.tearDown()
     }
     
@@ -48,15 +52,15 @@ final class AuthCoordinatorTests: XCTestCase {
     
     // MARK: - SignOut Tests
     
-    func testSignOut_Success() {
-        coordinator.signOut()
+    func testSignOut_Success() async {
+        await coordinator.signOut()
         XCTAssertEqual(coordinator.route, .login)
         XCTAssertTrue(mockEmailAuthService.signOutCalled)
     }
     
-    func testSignOut_WhenEmailAuthServiceThrows_StillSetsLoginRoute() {
+    func testSignOut_WhenEmailAuthServiceThrows_StillSetsLoginRoute() async {
         mockEmailAuthService.shouldThrowOnSignOut = true
-        coordinator.signOut()
+        await coordinator.signOut()
         XCTAssertEqual(coordinator.route, .login)
     }
     
@@ -536,6 +540,7 @@ final class AuthCoordinatorTests: XCTestCase {
     
     func testRunBusyTask_ClearsErrorAndInfoMessages() async {
         coordinator = AuthCoordinator(
+            store: mockStore,
             accountService: mockAccountService,
             emailAuthService: mockEmailAuthService
         )
@@ -764,7 +769,7 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
         }
     }
     
-    func signOut() throws {
+    func signOut() async throws {
         signOutCalled = true
         
         if shouldThrowOnSignOut {

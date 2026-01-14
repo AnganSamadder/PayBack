@@ -273,8 +273,8 @@ final class AppStoreExtendedTests: XCTestCase {
         XCTAssertNil(store.session)
     }
     
-    func testSignOut_ClearsSession() {
-        store.signOut()
+    func testSignOut_ClearsSession() async {
+        await store.signOut()
         XCTAssertNil(store.session)
     }
     

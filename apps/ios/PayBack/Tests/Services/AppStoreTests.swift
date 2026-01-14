@@ -96,7 +96,7 @@ final class AppStoreTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // When
-        sut.signOut()
+        await sut.signOut()
         
         // Then
         XCTAssertNil(sut.session)
