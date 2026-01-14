@@ -91,4 +91,19 @@ actor MockAccountServiceForAppStore: AccountService {
         friends.removeAll()
         shouldFail = false
     }
+    
+    func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        return imageUrl
+    }
+    
+    func uploadProfileImage(_ data: Data) async throws -> String {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        return "https://example.com/mock.jpg"
+    }
+    
+    func checkAuthentication() async throws -> Bool {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        return true
+    }
 }

@@ -267,7 +267,7 @@ final class EmailAuthServiceTests: XCTestCase {
         _ = try await sut.signIn(email: email, password: password)
         
         // Sign out
-        try sut.signOut()
+        try await sut.signOut()
         
         // Should be able to sign in again after sign out
         let result = try await sut.signIn(email: email, password: password)
@@ -277,7 +277,7 @@ final class EmailAuthServiceTests: XCTestCase {
     // MARK: - Sign Out Tests
     
     func testSignOutSuccess() async throws {
-        try sut.signOut()
+        try await sut.signOut()
         // Mock service doesn't throw, so just verify no crash
     }
     

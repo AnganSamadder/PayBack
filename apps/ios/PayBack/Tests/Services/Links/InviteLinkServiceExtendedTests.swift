@@ -19,6 +19,8 @@ final class InviteLinkServiceExtendedTests: XCTestCase {
             id: id,
             creatorId: creatorId,
             creatorEmail: creatorEmail,
+            creatorName: nil,
+            creatorProfileImageUrl: nil,
             targetMemberId: targetMemberId,
             targetMemberName: targetMemberName,
             createdAt: createdAt,
@@ -88,6 +90,7 @@ final class InviteLinkServiceExtendedTests: XCTestCase {
         let preview = ExpensePreview(
             personalExpenses: [],
             groupExpenses: [],
+            expenseCount: 0,
             totalBalance: 150.50,
             groupNames: ["Group 1", "Group 2"]
         )
@@ -114,6 +117,7 @@ final class InviteLinkServiceExtendedTests: XCTestCase {
         let preview = ExpensePreview(
             personalExpenses: [expense],
             groupExpenses: [expense],
+            expenseCount: 2,
             totalBalance: 100.0,
             groupNames: ["Test Group"]
         )
@@ -126,6 +130,7 @@ final class InviteLinkServiceExtendedTests: XCTestCase {
         let preview = ExpensePreview(
             personalExpenses: [],
             groupExpenses: [],
+            expenseCount: 0,
             totalBalance: -50.0,
             groupNames: []
         )
@@ -182,6 +187,7 @@ final class InviteLinkServiceExtendedTests: XCTestCase {
         let preview = ExpensePreview(
             personalExpenses: [],
             groupExpenses: [],
+            expenseCount: 0,
             totalBalance: 50.0,
             groupNames: ["Group"]
         )
@@ -222,6 +228,8 @@ final class InviteLinkServiceExtendedTests: XCTestCase {
             id: id,
             creatorId: "creator-id",
             creatorEmail: "creator@test.com",
+            creatorName: nil,
+            creatorProfileImageUrl: nil,
             targetMemberId: UUID(),
             targetMemberName: "Target",
             createdAt: Date(),
@@ -231,3 +239,119 @@ final class InviteLinkServiceExtendedTests: XCTestCase {
         )
     }
 }
+
+// MARK: - ExpensePreview expenseCount Tests
+
+extension InviteLinkServiceExtendedTests {
+    
+    func testExpensePreview_expenseCount_Initialization() {
+        let preview = ExpensePreview(
+            personalExpenses: [],
+            groupExpenses: [],
+            expenseCount: 15,
+            totalBalance: 100.0,
+            groupNames: ["Group1"]
+        )
+        
+        XCTAssertEqual(preview.expenseCount, 15)
+    }
+    
+    func testExpensePreview_expenseCount_ZeroWhenEmpty() {
+        let preview = ExpensePreview(
+            personalExpenses: [],
+            groupExpenses: [],
+            expenseCount: 0,
+            totalBalance: 0.0,
+            groupNames: []
+        )
+        
+        XCTAssertEqual(preview.expenseCount, 0)
+    }
+    
+    func testExpensePreview_expenseCount_LargeValue() {
+        let preview = ExpensePreview(
+            personalExpenses: [],
+            groupExpenses: [],
+            expenseCount: 1000,
+            totalBalance: 999999.99,
+            groupNames: ["Group1", "Group2", "Group3"]
+        )
+        
+        XCTAssertEqual(preview.expenseCount, 1000)
+    }
+    
+    func testExpensePreview_expenseCount_IndependentOfArrays() {
+        // expenseCount can be different from personalExpenses.count + groupExpenses.count
+        // because the backend may not return full expense arrays
+        let expense = Expense(
+            id: UUID(),
+            groupId: UUID(),
+            description: "Test",
+            date: Date(),
+            totalAmount: 50.0,
+            paidByMemberId: UUID(),
+            involvedMemberIds: [],
+            splits: [],
+            isSettled: false
+        )
+        
+        let preview = ExpensePreview(
+            personalExpenses: [expense],
+            groupExpenses: [],
+            expenseCount: 25,  // Different from array count
+            totalBalance: 50.0,
+            groupNames: ["Group"]
+        )
+        
+        XCTAssertEqual(preview.personalExpenses.count, 1)
+        XCTAssertEqual(preview.groupExpenses.count, 0)
+        XCTAssertEqual(preview.expenseCount, 25)  // From backend, not from arrays
+    }
+}
+
+// MARK: - SubscribeToInviteValidation Tests
+
+extension InviteLinkServiceExtendedTests {
+    
+    func testSubscribeToInviteValidation_ReturnsStream() async throws {
+        // Use the mock service to test the subscription
+        let mockService = MockInviteLinkService.shared
+        let tokenId = UUID()
+        
+        // Generate a valid token first
+        let _ = try await mockService.generateInviteLink(
+            targetMemberId: UUID(),
+            targetMemberName: "Test Member"
+        )
+        
+        // The subscription should return an AsyncThrowingStream
+        let stream = mockService.subscribeToInviteValidation(tokenId)
+        
+        // Collect first value from stream
+        var receivedValidation: InviteTokenValidation?
+        for try await validation in stream {
+            receivedValidation = validation
+            break  // Only get first value
+        }
+        
+        // Should have received a validation (invalid since tokenId doesn't match)
+        XCTAssertNotNil(receivedValidation)
+        XCTAssertFalse(receivedValidation!.isValid)
+    }
+    
+    func testSubscribeToInviteValidation_StreamCompletion() async throws {
+        let mockService = MockInviteLinkService.shared
+        let tokenId = UUID()
+        
+        let stream = mockService.subscribeToInviteValidation(tokenId)
+        
+        var count = 0
+        for try await _ in stream {
+            count += 1
+        }
+        
+        // Mock implementation yields one value then finishes
+        XCTAssertEqual(count, 1)
+    }
+}
+
