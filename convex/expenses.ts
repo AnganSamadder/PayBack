@@ -55,6 +55,14 @@ export const create = mutation({
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
+    // Build participant_emails from linked participants
+    const participantEmails: string[] = [user.email]; // Always include owner
+    for (const p of args.participants) {
+      if (p.linked_account_email && !participantEmails.includes(p.linked_account_email)) {
+        participantEmails.push(p.linked_account_email);
+      }
+    }
+
     // Deduplication check: Check if expense with this ID already exists
     const existing = await ctx.db
       .query("expenses")
@@ -73,6 +81,7 @@ export const create = mutation({
         is_settled: args.is_settled,
         participants: args.participants,
         participant_member_ids: args.participant_member_ids,
+        participant_emails: participantEmails,
         subexpenses: args.subexpenses,
         updated_at: Date.now(),
       });
@@ -93,6 +102,7 @@ export const create = mutation({
       owner_account_id: user.id,
       participant_member_ids: args.participant_member_ids,
       participants: args.participants,
+      participant_emails: participantEmails,
       linked_participants: args.linked_participants,
       subexpenses: args.subexpenses,
       created_at: Date.now(),
@@ -150,10 +160,17 @@ export const list = query({
         }
     }
 
+    // 3. Get expenses where user's email is in participant_emails
+    const allExpenses = await ctx.db.query("expenses").collect();
+    const participantExpenses = allExpenses.filter(e => 
+        e.participant_emails?.includes(user.email)
+    );
+
     // Merge and deduplicate
     const expenseMap = new Map();
     ownedExpenses.forEach(e => expenseMap.set(e._id, e));
     sharedExpenses.forEach(e => expenseMap.set(e._id, e));
+    participantExpenses.forEach(e => expenseMap.set(e._id, e));
         
     return Array.from(expenseMap.values());
   },
