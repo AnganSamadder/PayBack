@@ -1524,7 +1524,7 @@ final class AppStore: ObservableObject {
             }
         }
 
-        // Derive friends from actual group members (which have correct UUIDs matching expenses)
+        // First, derive friends from actual group members (which have correct UUIDs matching expenses)
         for group in groups {
             for member in group.members where !isCurrentUser(member) {
                 guard seen.insert(member.id).inserted else { continue }
@@ -1546,6 +1546,17 @@ final class AppStore: ObservableObject {
                     results.append(member)
                 }
             }
+        }
+        
+        // Second, include friends from the friends array that don't exist in any group
+        // (e.g., friends synced from Convex that haven't been added to a group yet)
+        for friend in friends where !isCurrentUserFriend(friend) {
+            guard seen.insert(friend.memberId).inserted else { continue }
+            
+            let name = sanitizedFriendName(friend, overrides: overrides)
+            var member = GroupMember(id: friend.memberId, name: name)
+            member.profileColorHex = friend.profileColorHex
+            results.append(member)
         }
 
         return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
