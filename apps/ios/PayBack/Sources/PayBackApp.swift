@@ -68,12 +68,12 @@ struct RootViewWithStore: View {
                     }
             } else {
                 // Show AuthFlowView directly when not authenticated (matching original UX)
-                AuthFlowView { session in
-                    store.completeAuthentication(
-                        id: session.account.id,
-                        email: session.account.email,
-                        name: session.account.displayName
-                    )
+                // Show AuthFlowView directly when not authenticated (matching original UX)
+                AuthFlowView(store: store) { session in
+                    // Session setup is handled internally by AppStore.login/signup
+                    #if DEBUG
+                    print("Auth flow completed for: \(session.account.email)")
+                    #endif
                 }
                 .onAppear {
                      AppConfig.markTiming("AuthFlowView appeared")

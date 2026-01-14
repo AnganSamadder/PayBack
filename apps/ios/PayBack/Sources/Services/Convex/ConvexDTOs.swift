@@ -142,6 +142,7 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
     let member_id: String
     let name: String
     let nickname: String?
+    let original_name: String?
     let has_linked_account: Bool?
     let linked_account_id: String?
     let linked_account_email: String?
@@ -155,6 +156,7 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
             memberId: memberId,
             name: name,
             nickname: nickname,
+            originalName: original_name,
             hasLinkedAccount: has_linked_account ?? false,
             linkedAccountId: linked_account_id,
             linkedAccountEmail: linked_account_email,
@@ -231,6 +233,8 @@ struct ConvexInviteTokenDTO: Decodable, Sendable {
     let id: String
     let creator_id: String
     let creator_email: String
+    let creator_name: String?
+    let creator_profile_image_url: String?
     let target_member_id: String
     let target_member_name: String
     let created_at: Double
@@ -249,6 +253,8 @@ struct ConvexInviteTokenDTO: Decodable, Sendable {
             id: id,
             creatorId: creator_id,
             creatorEmail: creator_email,
+            creatorName: creator_name,
+            creatorProfileImageUrl: creator_profile_image_url,
             targetMemberId: targetMemberId,
             targetMemberName: target_member_name,
             createdAt: Date(timeIntervalSince1970: created_at / 1000),

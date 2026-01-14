@@ -70,8 +70,21 @@ final class Dependencies: Sendable {
     
     /// Trigger Convex authentication using the current Clerk session
     static func authenticateConvex() async {
-        guard let client = convexClient as? ConvexClientWithAuth<ClerkAuthResult> else { return }
+        print("[AuthDebug] Dependencies.authenticateConvex called")
+        guard let client = convexClient as? ConvexClientWithAuth<ClerkAuthResult> else {
+             print("[AuthDebug] convexClient is NOT ConvexClientWithAuth")
+             return
+        }
         _ = await client.loginFromCache()
+        print("[AuthDebug] Dependencies.authenticateConvex completed")
+    }
+
+    /// Trigger Convex logout
+    static func logoutConvex() async {
+        print("[AuthDebug] Dependencies.logoutConvex called")
+        guard let client = convexClient as? ConvexClientWithAuth<ClerkAuthResult> else { return }
+        await client.logout()
+        print("[AuthDebug] Dependencies.logoutConvex completed")
     }
 
     /// Creates the default expense service based on configuration

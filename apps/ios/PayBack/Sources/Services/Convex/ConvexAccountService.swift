@@ -16,6 +16,7 @@ actor ConvexAccountService: AccountService {
         let display_name: String
         let profile_image_url: String?
         let profile_avatar_color: String?
+        let linked_member_id: String?
     }
 
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
@@ -40,6 +41,7 @@ actor ConvexAccountService: AccountService {
                  id: dto.id,
                  email: dto.email,
                  displayName: dto.display_name,
+                 linkedMemberId: dto.linked_member_id.flatMap { UUID(uuidString: $0) },
                  profileImageUrl: dto.profile_image_url,
                  profileColorHex: dto.profile_avatar_color
              )
@@ -207,11 +209,58 @@ actor ConvexAccountService: AccountService {
         cachedFriends = []
     }
     
-    func updateProfile(colorHex: String?, imageUrl: String?) async throws {
+    func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
         let args: [String: ConvexEncodable?] = [
             "profile_avatar_color": colorHex,
             "profile_image_url": imageUrl
         ]
         _ = try await client.mutation("users:updateProfile", with: args)
+        return imageUrl
+    }
+    
+    private struct UploadResponse: Decodable {
+        let storageId: String
+    }
+
+    func uploadProfileImage(_ data: Data) async throws -> String {
+        // 1. Generate URL via Action
+        // Trying explicit return type since inference returns ()
+        let urlString: String = try await client.action("users:generateUploadUrl", with: [:])
+        guard let uploadUrl = URL(string: urlString) else {
+             throw PayBackError.underlying(message: "Failed to generate upload URL")
+        }
+        
+        // 2. Upload
+        var request = URLRequest(url: uploadUrl)
+        request.httpMethod = "POST"
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type") 
+        
+        let (responseData, response) = try await URLSession.shared.upload(for: request, from: data)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+             throw PayBackError.underlying(message: "Upload failed: \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+        }
+        
+        let uploadResponse = try JSONDecoder().decode(UploadResponse.self, from: responseData)
+        
+        // 3. Update Profile with storageId
+        return try await updateProfileWithStorageId(uploadResponse.storageId)
+    }
+
+    private func updateProfileWithStorageId(_ storageId: String) async throws -> String {
+         let args: [String: ConvexEncodable?] = ["storage_id": storageId]
+         _ = try await client.mutation("users:updateProfile", with: args)
+         
+         // Construct URL manually
+         let baseUrl = ConvexConfig.deploymentUrl
+         return "\(baseUrl)/api/storage/\(storageId)"
+    }
+    
+    func checkAuthentication() async throws -> Bool {
+        // Run query "users:isAuthenticated"
+        // ConvexClient in Swift typically uses subscribe for queries. We get the first value.
+        for try await isAuth in client.subscribe(to: "users:isAuthenticated", yielding: Bool.self).values {
+            return isAuth
+        }
+        return false
     }
 }

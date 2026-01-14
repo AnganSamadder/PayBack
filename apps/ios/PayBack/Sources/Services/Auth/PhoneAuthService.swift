@@ -53,7 +53,7 @@ struct PhoneVerificationSignInResult {
 protocol PhoneAuthService {
     func requestVerificationCode(for phoneNumber: String) async throws -> String
     func signIn(verificationID: String, smsCode: String) async throws -> PhoneVerificationSignInResult
-    func signOut() throws
+    func signOut() async throws
 }
 
 final class MockPhoneAuthService: PhoneAuthService {
@@ -107,7 +107,7 @@ final class MockPhoneAuthService: PhoneAuthService {
         return PhoneVerificationSignInResult(uid: verificationID, phoneNumber: stored.phoneNumber)
     }
 
-    func signOut() throws {}
+    func signOut() async throws {}
 }
 
 enum PhoneAuthServiceProvider {

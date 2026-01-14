@@ -36,6 +36,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     let memberId: UUID
     var name: String
     var nickname: String?
+    var originalName: String?     // Name before linking (for "Originally X" display)
     var hasLinkedAccount: Bool
     var linkedAccountId: String?
     var linkedAccountEmail: String?
@@ -84,6 +85,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         memberId: UUID,
         name: String,
         nickname: String? = nil,
+        originalName: String? = nil,
         hasLinkedAccount: Bool = false,
         linkedAccountId: String? = nil,
         linkedAccountEmail: String? = nil,
@@ -93,6 +95,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         self.memberId = memberId
         self.name = name
         self.nickname = nickname
+        self.originalName = originalName
         self.hasLinkedAccount = hasLinkedAccount
         self.linkedAccountId = linkedAccountId
         self.linkedAccountEmail = linkedAccountEmail
@@ -105,6 +108,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         case memberId
         case name
         case nickname
+        case originalName
         case hasLinkedAccount
         case linkedAccountId
         case linkedAccountEmail
@@ -118,6 +122,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         name = try container.decode(String.self, forKey: .name)
         // Nickname defaults to nil for backward compatibility
         nickname = try container.decodeIfPresent(String.self, forKey: .nickname)
+        originalName = try container.decodeIfPresent(String.self, forKey: .originalName)
         hasLinkedAccount = try container.decode(Bool.self, forKey: .hasLinkedAccount)
         linkedAccountId = try container.decodeIfPresent(String.self, forKey: .linkedAccountId)
         linkedAccountEmail = try container.decodeIfPresent(String.self, forKey: .linkedAccountEmail)
@@ -130,6 +135,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         try container.encode(memberId, forKey: .memberId)
         try container.encode(name, forKey: .name)
         try container.encodeIfPresent(nickname, forKey: .nickname)
+        try container.encodeIfPresent(originalName, forKey: .originalName)
         try container.encode(hasLinkedAccount, forKey: .hasLinkedAccount)
         try container.encodeIfPresent(linkedAccountId, forKey: .linkedAccountId)
         try container.encodeIfPresent(linkedAccountEmail, forKey: .linkedAccountEmail)
