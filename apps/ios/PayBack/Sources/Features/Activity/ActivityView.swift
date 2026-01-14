@@ -643,10 +643,10 @@ struct CompactGroupCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 if group.isDirect == true {
-                    AvatarView(name: group.name)
+                    AvatarView(name: store.groupDisplayName(group))
                         .frame(width: 40, height: 40)
                 } else {
-                    GroupIcon(name: group.name)
+                    GroupIcon(name: store.groupDisplayName(group))
                         .frame(width: 40, height: 40)
                 }
                 
@@ -664,7 +664,7 @@ struct CompactGroupCard: View {
             }
             
             VStack(alignment: .leading, spacing: 4) {
-                Text(group.name)
+                Text(store.groupDisplayName(group))
                     .font(.system(.subheadline, design: .rounded, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
