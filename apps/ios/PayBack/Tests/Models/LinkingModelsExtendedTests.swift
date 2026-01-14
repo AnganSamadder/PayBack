@@ -105,6 +105,8 @@ final class LinkingModelsExtendedTests: XCTestCase {
             id: id,
             creatorId: "creator-123",
             creatorEmail: "creator@example.com",
+            creatorName: nil,
+            creatorProfileImageUrl: nil,
             targetMemberId: targetMemberId,
             targetMemberName: "Bob",
             createdAt: now,
@@ -210,6 +212,7 @@ final class LinkingModelsExtendedTests: XCTestCase {
         let preview = ExpensePreview(
             personalExpenses: [expense],
             groupExpenses: [expense],
+            expenseCount: 2,
             totalBalance: 100.50,
             groupNames: ["Trip", "Dinner"]
         )
@@ -224,6 +227,7 @@ final class LinkingModelsExtendedTests: XCTestCase {
         let preview = ExpensePreview(
             personalExpenses: [],
             groupExpenses: [],
+            expenseCount: 0,
             totalBalance: 0,
             groupNames: []
         )
@@ -260,6 +264,8 @@ final class LinkingModelsExtendedTests: XCTestCase {
             id: id,
             creatorId: "creator-123",
             creatorEmail: "creator@example.com",
+            creatorName: nil,
+            creatorProfileImageUrl: nil,
             targetMemberId: UUID(),
             targetMemberName: "Bob",
             createdAt: Date(),
@@ -280,3 +286,68 @@ final class LinkingModelsExtendedTests: XCTestCase {
         )
     }
 }
+
+// MARK: - ExpensePreview expenseCount Extended Tests
+
+extension LinkingModelsExtendedTests {
+    
+    func testExpensePreview_expenseCount_isCorrect() {
+        let expense = createTestExpense()
+        let preview = ExpensePreview(
+            personalExpenses: [expense, expense],
+            groupExpenses: [expense],
+            expenseCount: 5,  // Backend may return different count
+            totalBalance: 100.50,
+            groupNames: ["Trip"]
+        )
+        
+        XCTAssertEqual(preview.expenseCount, 5)
+    }
+    
+    func testExpensePreview_expenseCount_canBeZero() {
+        let preview = ExpensePreview(
+            personalExpenses: [],
+            groupExpenses: [],
+            expenseCount: 0,
+            totalBalance: 0,
+            groupNames: []
+        )
+        
+        XCTAssertEqual(preview.expenseCount, 0)
+    }
+    
+    func testExpensePreview_expenseCount_usedForDisplay() {
+        // This test verifies that expenseCount is the property that should be used
+        // for display purposes, not the array counts
+        let preview = ExpensePreview(
+            personalExpenses: [],  // Empty arrays
+            groupExpenses: [],
+            expenseCount: 42,  // But count is 42 from backend
+            totalBalance: 500.0,
+            groupNames: ["Group1", "Group2"]
+        )
+        
+        // The view should display expenseCount, not array counts
+        XCTAssertEqual(preview.expenseCount, 42)
+        XCTAssertEqual(preview.personalExpenses.count, 0)
+        XCTAssertEqual(preview.groupExpenses.count, 0)
+    }
+    
+    func testExpensePreview_withAllProperties() {
+        let expense = createTestExpense()
+        let preview = ExpensePreview(
+            personalExpenses: [expense],
+            groupExpenses: [expense, expense],
+            expenseCount: 10,
+            totalBalance: 250.75,
+            groupNames: ["Vacation", "Dinner", "Shopping"]
+        )
+        
+        XCTAssertEqual(preview.personalExpenses.count, 1)
+        XCTAssertEqual(preview.groupExpenses.count, 2)
+        XCTAssertEqual(preview.expenseCount, 10)
+        XCTAssertEqual(preview.totalBalance, 250.75)
+        XCTAssertEqual(preview.groupNames.count, 3)
+    }
+}
+

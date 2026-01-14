@@ -37,6 +37,8 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
             id: tokenId,
             creatorId: mockCreatorId,
             creatorEmail: mockCreatorEmail,
+            creatorName: nil,
+            creatorProfileImageUrl: nil,
             targetMemberId: targetMemberId,
             targetMemberName: targetMemberName,
             createdAt: createdAt,
@@ -93,6 +95,7 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         let preview = ExpensePreview(
             personalExpenses: [],
             groupExpenses: [],
+            expenseCount: 0,
             totalBalance: 0.0,
             groupNames: []
         )
@@ -150,6 +153,20 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         claims.remove(tokenId)
     }
     
+    nonisolated func subscribeToInviteValidation(_ tokenId: UUID) -> AsyncThrowingStream<InviteTokenValidation, Error> {
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let validation = try await self.validateInviteToken(tokenId)
+                    continuation.yield(validation)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+    
     // MARK: - Test Helper Methods
     
     /// Check if a token has been claimed (test helper)
@@ -182,6 +199,8 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
             id: tokenId,
             creatorId: mockCreatorId,
             creatorEmail: creatorEmail,
+            creatorName: nil,
+            creatorProfileImageUrl: nil,
             targetMemberId: targetMemberId,
             targetMemberName: targetMemberName,
             createdAt: createdAt,

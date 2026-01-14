@@ -77,8 +77,9 @@ final class PhoneAuthServiceExtendedTests: XCTestCase {
         }
     }
     
-    func testSignOut_DoesNotThrow() {
-        XCTAssertNoThrow(try service.signOut())
+    func testSignOut_DoesNotThrow() async throws {
+        try await service.signOut()
+        // If we get here, sign out didn't throw
     }
     
     // MARK: - PhoneVerificationSignInResult Tests

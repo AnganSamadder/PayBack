@@ -654,6 +654,18 @@ actor TestAccountService: AccountService {
     ) async throws {
         // No-op for tests
     }
+    
+    func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
+        return imageUrl
+    }
+    
+    func uploadProfileImage(_ data: Data) async throws -> String {
+        return "https://example.com/mock.jpg"
+    }
+    
+    func checkAuthentication() async throws -> Bool {
+        return true
+    }
 }
 
 final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
