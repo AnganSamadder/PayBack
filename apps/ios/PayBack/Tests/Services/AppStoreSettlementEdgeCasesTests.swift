@@ -27,7 +27,8 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
             expenseCloudService: mockExpenseCloudService,
             groupCloudService: mockGroupCloudService,
             linkRequestService: mockLinkRequestService,
-            inviteLinkService: mockInviteLinkService
+            inviteLinkService: mockInviteLinkService,
+            skipClerkInit: true
         )
     }
     

@@ -25,6 +25,7 @@ final class AppStore: ObservableObject {
     private let groupCloudService: GroupCloudService
     private let linkRequestService: LinkRequestService
     private let inviteLinkService: InviteLinkService
+    private let emailAuthService: EmailAuthService
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
@@ -42,7 +43,9 @@ final class AppStore: ObservableObject {
         expenseCloudService: ExpenseCloudService = Dependencies.current.expenseService,
         groupCloudService: GroupCloudService = Dependencies.current.groupService,
         linkRequestService: LinkRequestService = Dependencies.current.linkRequestService,
-        inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService
+        inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService,
+        emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
+        skipClerkInit: Bool = false
     ) {
         AppConfig.markTiming("AppStore init started")
         
@@ -52,6 +55,7 @@ final class AppStore: ObservableObject {
         self.groupCloudService = groupCloudService
         self.linkRequestService = linkRequestService
         self.inviteLinkService = inviteLinkService
+        self.emailAuthService = emailAuthService
         
         // Load local data
         let localData = persistence.load()
@@ -79,8 +83,11 @@ final class AppStore: ObservableObject {
         }
         
         // 2. Kick off Auth Check (Concurrent, OFF-MAIN-THREAD to bypass UI blocking)
-        Task.detached(priority: .userInitiated) { [weak self] in
-            await self?.checkSession()
+        // Skip for tests to avoid Clerk API rate limiting
+        if !skipClerkInit {
+            Task.detached(priority: .userInitiated) { [weak self] in
+                await self?.checkSession()
+            }
         }
         
         AppConfig.markTiming("AppStore init completed")
@@ -280,7 +287,7 @@ final class AppStore: ObservableObject {
     /// Centralized login that handles Clerk sign-in, robust Convex auth, and session setup.
     func login(email: String, password: String) async throws -> UserAccount {
         let normalizedEmail = try accountService.normalizedEmail(from: email)
-        let result = try await Dependencies.current.emailAuthService.signIn(email: normalizedEmail, password: password)
+        let result = try await emailAuthService.signIn(email: normalizedEmail, password: password)
         
         return try await performConvexAuthAndSetup(email: normalizedEmail, name: result.displayName)
     }
@@ -291,7 +298,7 @@ final class AppStore: ObservableObject {
         let trimmedFirstName = firstName.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedLastName = lastName?.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        let result = try await Dependencies.current.emailAuthService.signUp(
+        let result = try await emailAuthService.signUp(
             email: normalizedEmail,
             password: password,
             firstName: trimmedFirstName,
@@ -308,7 +315,7 @@ final class AppStore: ObservableObject {
     
     /// Verifies code and completes authentication
     func verifyCode(_ code: String, pendingDisplayName: String? = nil) async throws -> UserAccount {
-        let authResult = try await Dependencies.current.emailAuthService.verifyCode(code: code)
+        let authResult = try await emailAuthService.verifyCode(code: code)
         let displayName = pendingDisplayName?.isEmpty == false ? pendingDisplayName : authResult.displayName
         
         return try await performConvexAuthAndSetup(email: authResult.email, name: displayName)
@@ -322,9 +329,14 @@ final class AppStore: ObservableObject {
         // 2. Robust Wait
         try await waitForServerAuthentication()
         
-        // 3. Create/Sync Account
-        let displayName = name ?? "User"
-        let fallbackName = displayName.isEmpty ? "User" : displayName
+        // 3. Create/Sync Account - generate display name from email if not provided
+        let fallbackName: String
+        if let name = name, !name.isEmpty {
+            fallbackName = name
+        } else {
+            // Generate name from email (e.g., "john.doe@example.com" -> "John Doe")
+            fallbackName = Self.displayNameFromEmail(email)
+        }
         
         // Lookup or Create
         let account: UserAccount
@@ -2797,5 +2809,17 @@ final class AppStore: ObservableObject {
             guard let linkedEmail = friend.linkedAccountEmail else { return false }
             return linkedEmail.lowercased() == normalizedEmail
         }
+    }
+    
+    /// Generates a display name from an email address
+    /// Example: "john.doe@example.com" -> "John Doe"
+    private static func displayNameFromEmail(_ email: String) -> String {
+        guard let username = email.split(separator: "@").first else {
+            return "User"
+        }
+        return username
+            .split(separator: ".")
+            .map { $0.capitalized }
+            .joined(separator: " ")
     }
 }

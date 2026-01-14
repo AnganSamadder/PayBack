@@ -12,7 +12,11 @@ final class AuthCoordinatorTests: XCTestCase {
         try await super.setUp()
         mockAccountService = TestAccountService()
         mockEmailAuthService = TestEmailAuthService()
-        mockStore = AppStore()
+        mockStore = AppStore(
+            accountService: mockAccountService,
+            emailAuthService: mockEmailAuthService,
+            skipClerkInit: true
+        )
         coordinator = AuthCoordinator(
             store: mockStore,
             accountService: mockAccountService,
