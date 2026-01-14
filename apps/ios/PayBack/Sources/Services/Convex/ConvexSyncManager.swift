@@ -68,7 +68,7 @@ final class ConvexSyncManager: ObservableObject {
         syncError = nil
         
         #if DEBUG
-// print("[ConvexSyncManager] Starting real-time sync...")
+        print("[ConvexSyncManager] Starting real-time sync...")
         #endif
         
         // Subscribe to groups
@@ -77,6 +77,9 @@ final class ConvexSyncManager: ObservableObject {
             
             do {
                 for try await groupDTOs in self.client.subscribe(to: "groups:list", yielding: [ConvexGroupDTO].self).values {
+                    #if DEBUG
+                    print("[ConvexSyncManager] Received \(groupDTOs.count) groups from Convex")
+                    #endif
                     await MainActor.run {
                         self.groups = groupDTOs.compactMap { $0.toSpendingGroup() }
                     }
@@ -92,6 +95,9 @@ final class ConvexSyncManager: ObservableObject {
             
             do {
                 for try await expenseDTOs in self.client.subscribe(to: "expenses:list", yielding: [ConvexExpenseDTO].self).values {
+                    #if DEBUG
+                    print("[ConvexSyncManager] Received \(expenseDTOs.count) expenses from Convex")
+                    #endif
                     await MainActor.run {
                         self.expenses = expenseDTOs.compactMap { $0.toExpense() }
                     }
@@ -106,6 +112,9 @@ final class ConvexSyncManager: ObservableObject {
             guard let self = self else { return }
             do {
                 for try await dtos in self.client.subscribe(to: "friends:list", yielding: [ConvexAccountFriendDTO].self).values {
+                    #if DEBUG
+                    print("[ConvexSyncManager] Received \(dtos.count) friends from Convex")
+                    #endif
                     await MainActor.run {
                         self.friends = dtos.compactMap { $0.toAccountFriend() }
                     }
@@ -158,8 +167,16 @@ final class ConvexSyncManager: ObservableObject {
         }
     }
     
-    /// Stop all subscriptions
+    /// Stop all subscriptions and clear cached data
     func stopSync() {
+        // Clear all cached data immediately to prevent stale data showing for new users
+        groups = []
+        expenses = []
+        friends = []
+        incomingLinkRequests = []
+        outgoingLinkRequests = []
+        activeInviteTokens = []
+        
         groupsTask?.cancel(); groupsTask = nil
         expensesTask?.cancel(); expensesTask = nil
         friendsTask?.cancel(); friendsTask = nil
@@ -167,6 +184,10 @@ final class ConvexSyncManager: ObservableObject {
         outgoingRequestsTask?.cancel(); outgoingRequestsTask = nil
         inviteTokensTask?.cancel(); inviteTokensTask = nil
         isSyncing = false
+        
+        #if DEBUG
+        print("[ConvexSyncManager] Sync stopped and data cleared")
+        #endif
     }
     
     /// Restart sync (useful after auth changes)

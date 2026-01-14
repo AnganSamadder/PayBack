@@ -18,13 +18,17 @@ final class AuthCoordinator: ObservableObject {
 
     private let accountService: AccountService
     private let emailAuthService: EmailAuthService
+    private let store: AppStore
+    
     /// Stores the display name during signup flow for use after verification
     private var pendingDisplayName: String = ""
 
     init(
+        store: AppStore,
         accountService: AccountService = Dependencies.current.accountService,
         emailAuthService: EmailAuthService = Dependencies.current.emailAuthService
     ) {
+        self.store = store
         self.accountService = accountService
         self.emailAuthService = emailAuthService
     }
@@ -36,8 +40,8 @@ final class AuthCoordinator: ObservableObject {
         route = .login
     }
 
-    func signOut() {
-        try? emailAuthService.signOut()
+    func signOut() async {
+        try? await emailAuthService.signOut()
         route = .login
     }
 
@@ -49,16 +53,8 @@ final class AuthCoordinator: ObservableObject {
     func login(emailInput: String, password: String) async {
         await runBusyTask {
             do {
-                let normalizedEmail = try self.accountService.normalizedEmail(from: emailInput)
-                let result = try await self.emailAuthService.signIn(email: normalizedEmail, password: password)
-
-                if let account = try await self.accountService.lookupAccount(byEmail: normalizedEmail) {
-                    self.route = .authenticated(UserSession(account: account))
-                } else {
-                    let fallbackName = Self.defaultDisplayName(for: normalizedEmail, suggested: result.displayName)
-                    let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: fallbackName)
-                    self.route = .authenticated(UserSession(account: account))
-                }
+                let account = try await self.store.login(email: emailInput, password: password)
+                self.route = .authenticated(UserSession(account: account))
             } catch PayBackError.authEmailNotConfirmed {
                 // Special handling: offer to resend confirmation
                 let normalizedEmail = (try? self.accountService.normalizedEmail(from: emailInput)) ?? emailInput
@@ -73,23 +69,37 @@ final class AuthCoordinator: ObservableObject {
     func signup(emailInput: String, firstName: String, lastName: String?, password: String) async {
         await runBusyTask {
             do {
-                let normalizedEmail = try self.accountService.normalizedEmail(from: emailInput)
-                let trimmedFirstName = firstName.trimmingCharacters(in: .whitespacesAndNewlines)
-                let trimmedLastName = lastName?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let displayName = [trimmedFirstName, trimmedLastName].compactMap { $0 }.joined(separator: " ")
-                
-                let result = try await self.emailAuthService.signUp(email: normalizedEmail, password: password, firstName: trimmedFirstName, lastName: trimmedLastName)
+                let result = try await self.store.signup(
+                    email: emailInput, 
+                    firstName: firstName, 
+                    lastName: lastName, 
+                    password: password
+                )
                 
                 switch result {
                 case .needsVerification(let email):
                     // Store display name for later and show verification screen
-                    self.pendingDisplayName = displayName
-                    self.route = .verification(email: email, displayName: displayName)
+                    let firstNameTrimmed = firstName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let lastNameTrimmed = lastName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.pendingDisplayName = [firstNameTrimmed, lastNameTrimmed]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
+                        
+                    self.route = .verification(email: email, displayName: self.pendingDisplayName)
                     
                 case .complete(_):
-                    // No verification needed - create account and complete
-                    let account = try await self.accountService.createAccount(email: normalizedEmail, displayName: displayName)
-                    self.route = .authenticated(UserSession(account: account))
+                    // Auto-login logic inside store handles session setup, we just update route
+                    // We need to fetch the account to populate UserSession
+                    // store.session should be set by store.signup -> performConvexAuthAndSetup
+                    if let session = self.store.session {
+                        self.route = .authenticated(session)
+                    } else {
+                        // Fallback lookup if race condition (shouldn't happen with await)
+                        let normalized = try self.accountService.normalizedEmail(from: emailInput)
+                        if let account = try await self.accountService.lookupAccount(byEmail: normalized) {
+                             self.route = .authenticated(UserSession(account: account))
+                        }
+                    }
                 }
             } catch PayBackError.authSessionMissing {
                 // Determine if this was due to verification actually being needed but Clerk returning succes initially
@@ -104,18 +114,7 @@ final class AuthCoordinator: ObservableObject {
     func verifyCode(_ code: String) async {
         await runBusyTask {
             do {
-                let authResult = try await self.emailAuthService.verifyCode(code: code)
-                
-                // Authenticate Convex client with the new Clerk session
-                await Dependencies.authenticateConvex()
-                
-                // Create account in Convex now that we have an authenticated session
-                let displayName = self.pendingDisplayName.isEmpty ? authResult.displayName : self.pendingDisplayName
-                let account = try await self.accountService.createAccount(email: authResult.email, displayName: displayName)
-                
-                // Start real-time sync
-                Dependencies.syncManager?.startSync()
-                
+                let account = try await self.store.verifyCode(code, pendingDisplayName: self.pendingDisplayName)
                 self.route = .authenticated(UserSession(account: account))
             } catch {
                 self.handle(error: error)

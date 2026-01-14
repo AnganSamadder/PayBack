@@ -44,6 +44,8 @@ struct InviteToken: Identifiable, Codable, Hashable, Sendable {
     let id: UUID // Used as the token in the URL
     let creatorId: String // Auth user id
     let creatorEmail: String
+    let creatorName: String? // Display name of the sender
+    let creatorProfileImageUrl: String? // Profile picture URL
     let targetMemberId: UUID
     let targetMemberName: String
     let createdAt: Date
@@ -82,6 +84,7 @@ struct InviteTokenValidation: Sendable {
 struct ExpensePreview: Sendable {
     let personalExpenses: [Expense]
     let groupExpenses: [Expense]
+    let expenseCount: Int  // From backend expense_count - used for display when full expense arrays aren't available
     let totalBalance: Double
     let groupNames: [String]
 }

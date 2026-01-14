@@ -30,6 +30,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         let owner_account_id: String
         let participant_member_ids: [String]
         let participants: [ParticipantDTO]
+        let subexpenses: [SubexpenseDTO]?
         
         struct SplitDTO: Decodable {
             let id: String
@@ -43,6 +44,18 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
             let name: String
             let linked_account_id: String?
             let linked_account_email: String?
+        }
+        
+        struct SubexpenseDTO: Decodable {
+            let id: String
+            let amount: Double
+            
+            func toSubexpense() -> Subexpense {
+                Subexpense(
+                    id: UUID(uuidString: id) ?? UUID(),
+                    amount: amount
+                )
+            }
         }
         
         func toExpense() -> Expense {
@@ -62,7 +75,8 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
                         isSettled: $0.is_settled
                     )
                 },
-                isSettled: is_settled
+                isSettled: is_settled,
+                subexpenses: subexpenses?.map { $0.toSubexpense() }
             )
         }
     }

@@ -10,7 +10,7 @@ import ConvexMobile
 
 /// Convex-backed implementation of InviteLinkService for production use.
 actor ConvexInviteLinkService: InviteLinkService {
-    private let client: ConvexClient
+    private nonisolated(unsafe) let client: ConvexClient
     
     init(client: ConvexClient) {
         self.client = client
@@ -38,6 +38,8 @@ actor ConvexInviteLinkService: InviteLinkService {
             id: tokenId,
             creatorId: "",
             creatorEmail: "",
+            creatorName: nil,
+            creatorProfileImageUrl: nil,
             targetMemberId: targetMemberId,
             targetMemberName: targetMemberName,
             createdAt: createdAt,
@@ -68,6 +70,7 @@ actor ConvexInviteLinkService: InviteLinkService {
                 ExpensePreview(
                     personalExpenses: [],
                     groupExpenses: [],
+                    expenseCount: previewDTO.expense_count,
                     totalBalance: previewDTO.total_balance,
                     groupNames: previewDTO.group_names
                 )
@@ -87,6 +90,42 @@ actor ConvexInviteLinkService: InviteLinkService {
             expensePreview: nil,
             errorMessage: PayBackError.linkInvalid.errorDescription
         )
+    }
+    
+    /// Subscribe to live updates for invite validation - updates whenever expenses change
+    nonisolated func subscribeToInviteValidation(_ tokenId: UUID) -> AsyncThrowingStream<InviteTokenValidation, Error> {
+        let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString]
+        
+        return AsyncThrowingStream { [client] continuation in
+            Task {
+                do {
+                    for try await result in client.subscribe(to: "inviteTokens:validate", with: args, yielding: ConvexInviteTokenValidationDTO.self).values {
+                        let token = result.token?.toInviteToken()
+                        let preview = result.expense_preview.map { previewDTO in
+                            ExpensePreview(
+                                personalExpenses: [],
+                                groupExpenses: [],
+                                expenseCount: previewDTO.expense_count,
+                                totalBalance: previewDTO.total_balance,
+                                groupNames: previewDTO.group_names
+                            )
+                        }
+                        
+                        let validation = InviteTokenValidation(
+                            isValid: result.is_valid,
+                            token: token,
+                            expensePreview: preview,
+                            errorMessage: result.error
+                        )
+                        
+                        continuation.yield(validation)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
     }
     
     func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {

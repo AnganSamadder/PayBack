@@ -5,11 +5,12 @@ struct AuthFlowView: View {
     let onAuthenticated: (UserSession) -> Void
 
     init(
+        store: AppStore,
         accountService: AccountService = Dependencies.current.accountService,
         emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
         onAuthenticated: @escaping (UserSession) -> Void
     ) {
-        _coordinator = StateObject(wrappedValue: AuthCoordinator(accountService: accountService, emailAuthService: emailAuthService))
+        _coordinator = StateObject(wrappedValue: AuthCoordinator(store: store, accountService: accountService, emailAuthService: emailAuthService))
         self.onAuthenticated = onAuthenticated
     }
 
@@ -138,6 +139,6 @@ private struct AuthBackground: View {
 
 struct AuthFlowView_Previews: PreviewProvider {
     static var previews: some View {
-        AuthFlowView(accountService: MockAccountService(), emailAuthService: MockEmailAuthService()) { _ in }
+        AuthFlowView(store: AppStore(), accountService: MockAccountService(), emailAuthService: MockEmailAuthService()) { _ in }
     }
 }

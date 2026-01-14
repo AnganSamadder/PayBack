@@ -67,16 +67,17 @@ final class ConvexGroupService: GroupCloudService, Sendable {
         let name: String
         let profile_image_url: String?
         let profile_avatar_color: String?
+        let is_current_user: Bool?
     }
     
     private func createGroup(_ group: SpendingGroup) async throws {
-         // Must map to [ConvexEncodable?] to satisfy library extension conformance
          let membersArgs: [ConvexEncodable?] = group.members.map { 
              GroupMemberArg(
                  id: $0.id.uuidString,
                  name: $0.name,
                  profile_image_url: $0.profileImageUrl,
-                 profile_avatar_color: $0.profileColorHex
+                 profile_avatar_color: $0.profileColorHex,
+                 is_current_user: $0.isMe
              ) 
          }
          

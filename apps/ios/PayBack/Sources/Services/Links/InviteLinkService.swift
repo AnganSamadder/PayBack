@@ -17,6 +17,9 @@ protocol InviteLinkService: Sendable {
     /// Validates an invite token and returns validation result with expense preview
     func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation
     
+    /// Subscribe to live updates for invite validation - updates whenever expenses change
+    func subscribeToInviteValidation(_ tokenId: UUID) -> AsyncThrowingStream<InviteTokenValidation, Error>
+    
     /// Claims an invite token and links the account to the member
     func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult
     
@@ -49,6 +52,8 @@ actor MockInviteLinkService: InviteLinkService {
             id: UUID(),
             creatorId: mockCreatorId,
             creatorEmail: mockCreatorEmail,
+            creatorName: nil,
+            creatorProfileImageUrl: nil,
             targetMemberId: targetMemberId,
             targetMemberName: targetMemberName,
             createdAt: createdAt,
@@ -102,6 +107,7 @@ actor MockInviteLinkService: InviteLinkService {
         let preview = ExpensePreview(
             personalExpenses: [],
             groupExpenses: [],
+            expenseCount: 0,
             totalBalance: 0.0,
             groupNames: []
         )
@@ -150,6 +156,20 @@ actor MockInviteLinkService: InviteLinkService {
     func revokeInvite(_ tokenId: UUID) async throws {
         tokens.removeValue(forKey: tokenId)
         claimedTokenIds.remove(tokenId)
+    }
+    
+    nonisolated func subscribeToInviteValidation(_ tokenId: UUID) -> AsyncThrowingStream<InviteTokenValidation, Error> {
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let validation = try await self.validateInviteToken(tokenId)
+                    continuation.yield(validation)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
     }
 }
 

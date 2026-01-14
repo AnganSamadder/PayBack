@@ -6,14 +6,24 @@ final class ClerkEmailAuthService: EmailAuthService {
     nonisolated init() {}
     
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
+        print("[AuthDebug] ClerkEmailAuthService.signIn called for \(email)")
         // First check if already signed in
         if let user = Clerk.shared.user {
-            return EmailAuthSignInResult(
-                uid: user.id,
-                email: user.primaryEmailAddress?.emailAddress ?? email,
-                firstName: user.firstName,
-                lastName: user.lastName
-            )
+            // Check if existing session matches requested email
+            let currentEmail = user.primaryEmailAddress?.emailAddress ?? ""
+            print("[AuthDebug] Existing Clerk user found: \(user.id) (\(currentEmail))")
+            if currentEmail.localizedCaseInsensitiveCompare(email) == .orderedSame {
+                print("[AuthDebug] Existing session matches requested email. Returning existing session.")
+                return EmailAuthSignInResult(
+                    uid: user.id,
+                    email: currentEmail,
+                    firstName: user.firstName,
+                    lastName: user.lastName
+                )
+            }
+            // Session mismatch - sign out first
+            print("[AuthDebug] Session mismatch. Signing out old user.")
+            try await Clerk.shared.signOut()
         }
         
         do {
@@ -59,12 +69,18 @@ final class ClerkEmailAuthService: EmailAuthService {
     func signUp(email: String, password: String, firstName: String, lastName: String?) async throws -> SignUpResult {
         // First check if already signed in
         if let user = Clerk.shared.user {
-            return .complete(EmailAuthSignInResult(
-                uid: user.id,
-                email: user.primaryEmailAddress?.emailAddress ?? email,
-                firstName: user.firstName,
-                lastName: user.lastName
-            ))
+            let currentEmail = user.primaryEmailAddress?.emailAddress ?? ""
+            // Verify if the signed-in user matches the requested email
+            if currentEmail.localizedCaseInsensitiveCompare(email) == .orderedSame {
+                return .complete(EmailAuthSignInResult(
+                    uid: user.id,
+                    email: currentEmail,
+                    firstName: user.firstName,
+                    lastName: user.lastName
+                ))
+            }
+            // Session mismatch - sign out first
+            try await Clerk.shared.signOut()
         }
         
         do {
@@ -191,10 +207,10 @@ final class ClerkEmailAuthService: EmailAuthService {
         }
     }
     
-    nonisolated func signOut() throws {
-        Task { @MainActor in
-            try await Clerk.shared.signOut()
-        }
+    func signOut() async throws {
+        print("[AuthDebug] ClerkEmailAuthService.signOut calling Clerk.shared.signOut()")
+        try await Clerk.shared.signOut()
+        print("[AuthDebug] ClerkEmailAuthService.signOut completed")
     }
     
     private func mapClerkError(_ error: Error) -> Error {

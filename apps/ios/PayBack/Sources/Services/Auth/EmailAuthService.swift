@@ -23,7 +23,7 @@ protocol EmailAuthService: Sendable {
     func verifyCode(code: String) async throws -> EmailAuthSignInResult
     func sendPasswordReset(email: String) async throws
     func resendConfirmationEmail(email: String) async throws
-    func signOut() throws
+    func signOut() async throws
 }
 
 final class MockEmailAuthService: EmailAuthService, @unchecked Sendable {
@@ -91,7 +91,7 @@ final class MockEmailAuthService: EmailAuthService, @unchecked Sendable {
         // No-op
     }
     
-    func signOut() throws {
+    func signOut() async throws {
         // No-op
     }
 }
