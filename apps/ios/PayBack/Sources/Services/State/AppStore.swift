@@ -1509,11 +1509,19 @@ final class AppStore: ObservableObject {
         var seen: Set<UUID> = []
         var results: [GroupMember] = []
         
-        // Build a lookup from the Convex-synced friends array for metadata (linking status, profile, etc.)
-        // Key by name (lowercased) since memberId in friends array might not match group member UUIDs
+        // Build lookups from the Convex-synced friends array for metadata
+        // Primary key: memberId (most reliable for linked friends)
+        // Secondary key: name (lowercased) for unlinked or newly created members
+        var friendMetadataById: [UUID: AccountFriend] = [:]
         var friendMetadataByName: [String: AccountFriend] = [:]
+        var friendMetadataByNickname: [String: AccountFriend] = [:]
+        
         for friend in friends where !isCurrentUserFriend(friend) {
+            friendMetadataById[friend.memberId] = friend
             friendMetadataByName[friend.name.lowercased().trimmingCharacters(in: .whitespaces)] = friend
+            if let nickname = friend.nickname?.lowercased().trimmingCharacters(in: .whitespaces), !nickname.isEmpty {
+                friendMetadataByNickname[nickname] = friend
+            }
         }
 
         // Derive friends from actual group members (which have correct UUIDs matching expenses)
@@ -1521,16 +1529,20 @@ final class AppStore: ObservableObject {
             for member in group.members where !isCurrentUser(member) {
                 guard seen.insert(member.id).inserted else { continue }
                 
-                // Look up AccountFriend metadata by name for enrichment
+                // Look up AccountFriend metadata - prioritize memberId, fall back to name or nickname
                 let memberNameKey = member.name.lowercased().trimmingCharacters(in: .whitespaces)
-                if let friendData = friendMetadataByName[memberNameKey] {
+                let friendData = friendMetadataById[member.id] 
+                    ?? friendMetadataByName[memberNameKey]
+                    ?? friendMetadataByNickname[memberNameKey]
+                
+                if let friendData = friendData {
                     // Enrich with AccountFriend data (profile color, linking status, etc.)
                     let name = sanitizedFriendName(friendData, overrides: overrides)
                     var enrichedMember = GroupMember(id: member.id, name: name)
                     enrichedMember.profileColorHex = friendData.profileColorHex ?? member.profileColorHex
                     results.append(enrichedMember)
                 } else {
-                    // Use group member as-is
+                    // No metadata found - use group member as-is with its existing profile color
                     results.append(member)
                 }
             }
