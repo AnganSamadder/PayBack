@@ -19,6 +19,7 @@ export default defineSchema({
     member_id: v.string(), // UUID string
     name: v.string(),
     nickname: v.optional(v.string()),
+    original_name: v.optional(v.string()), // Name before linking (for "Originally X" display)
     profile_image_url: v.optional(v.string()),
     profile_avatar_color: v.optional(v.string()),
     has_linked_account: v.boolean(),
@@ -39,6 +40,7 @@ export default defineSchema({
         name: v.string(),
         profile_image_url: v.optional(v.string()),
         profile_avatar_color: v.optional(v.string()),
+        is_current_user: v.optional(v.boolean()),
       })
     ),
     owner_email: v.string(),
@@ -80,6 +82,8 @@ export default defineSchema({
         linked_account_email: v.optional(v.string()),
       })
     ),
+    // Array of ALL account emails involved (for cross-account visibility)
+    participant_emails: v.optional(v.array(v.string())),
     linked_participants: v.optional(v.any()), // Keeping as any for flexibility if structure varies
     subexpenses: v.optional(v.array(
       v.object({
@@ -95,16 +99,6 @@ export default defineSchema({
     .index("by_owner_email", ["owner_email"])
     .index("by_group_id", ["group_id"])
     .index("by_client_id", ["id"]),
-
-  subexpenses: defineTable({
-    id: v.string(), // UUID string
-    expense_id: v.string(),
-    amount: v.number(),
-    created_at: v.number(),
-  })
-    .index("by_expense_id", ["expense_id"])
-    .index("by_client_id", ["id"]),
-
   link_requests: defineTable({
     id: v.string(),
     requester_id: v.string(),
