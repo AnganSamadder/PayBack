@@ -451,12 +451,22 @@ struct AvatarView: View {
     }
     
     private var avatarColor: Color {
-        // Generate a consistent color based on the name (fallback)
-        let hash = abs(name.hashValue)
+        // Generate a consistent color based on the name using stable DJB2 hash
+        // Note: Swift's hashValue is NOT stable across app launches, so we use a custom hash
+        let hash = stableHash(name)
         let colors: [Color] = [
             .blue, .green, .orange, .purple, .pink, .red, .indigo, .teal, .cyan, .mint
         ]
-        return colors[hash % colors.count]
+        return colors[Int(hash) % colors.count]
+    }
+    
+    /// DJB2 hash algorithm - produces stable hash values across app launches
+    private func stableHash(_ string: String) -> UInt {
+        var hash: UInt = 5381
+        for char in string.utf8 {
+            hash = ((hash << 5) &+ hash) &+ UInt(char)
+        }
+        return hash
     }
 }
 
