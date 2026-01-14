@@ -129,8 +129,8 @@ final class ClaimFriendRecordTests: XCTestCase {
         // When showing real names
         let secondaryName = friend.secondaryDisplayName(showRealNames: true)
         
-        // Then: Secondary should show "aka nickname"
-        XCTAssertEqual(secondaryName, "aka \"Johnny\"")
+        // Then: Secondary shows just the nickname (primary shows real name)
+        XCTAssertEqual(secondaryName, "Johnny")
     }
     
     func testAccountFriend_SecondaryDisplayName_ShowsRealNameWhenShowingNickname() {
