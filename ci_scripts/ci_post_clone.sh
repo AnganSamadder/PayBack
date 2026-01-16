@@ -16,6 +16,19 @@ echo "Working directory: $(pwd)"
 echo "Runner architecture: $(uname -m)"
 
 # ----------------------------------------------------------------------------
+# Clean up unavailable simulators (prevents stale UDID issues)
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- Cleaning Simulators ---"
+xcrun simctl delete unavailable 2>/dev/null || true
+echo "Cleaned unavailable simulators"
+
+# Show available iPhone simulators
+echo ""
+echo "--- Available iPhone Simulators ---"
+xcrun simctl list devices iPhone available 2>/dev/null | head -20 || echo "Could not list simulators"
+
+# ----------------------------------------------------------------------------
 # Install Node.js via Homebrew (XcodeCloud has Homebrew pre-installed)
 # ----------------------------------------------------------------------------
 echo ""
