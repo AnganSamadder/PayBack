@@ -416,7 +416,7 @@ struct AvatarView: View {
     }
     
     private var initials: String {
-        let components = name.components(separatedBy: .whitespaces)
+        let components = name.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
         let firstInitial = components.first?.first.map(String.init) ?? ""
         let lastInitial = components.count > 1 ? components.last?.first.map(String.init) ?? "" : ""
         return (firstInitial + lastInitial).uppercased()
