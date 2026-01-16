@@ -11,8 +11,10 @@ struct InviteLinkClaimView: View {
     @State private var isProcessing = false
     @State private var errorMessage: String?
     @State private var showSuccess = false
+    @State private var claimSucceeded = false  // Prevents error showing after success
     @State private var successScale: CGFloat = 0.5
     @State private var successOpacity: Double = 0
+    @State private var subscriptionTask: Task<Void, Never>?
     
     private var needsAuthentication: Bool {
         store.session == nil
@@ -25,6 +27,14 @@ struct InviteLinkClaimView: View {
                     authenticationRequiredView
                 } else if isLoading {
                     loadingView
+                } else if claimSucceeded || showSuccess {
+                    // Show ONLY success after claim completes
+                    ScrollView {
+                        VStack(spacing: 24) {
+                            successSection
+                        }
+                        .padding()
+                    }
                 } else if let validation = validation {
                     ScrollView {
                         VStack(spacing: 24) {
@@ -32,16 +42,6 @@ struct InviteLinkClaimView: View {
                                 validTokenView(token: token, preview: validation.expensePreview)
                             } else {
                                 errorView(message: validation.errorMessage ?? "Invalid invite link")
-                            }
-                            
-                            // Error message
-                            if let error = errorMessage {
-                                errorSection(message: error)
-                            }
-                            
-                            // Success message
-                            if showSuccess {
-                                successSection
                             }
                         }
                         .padding()
@@ -59,8 +59,11 @@ struct InviteLinkClaimView: View {
             }
             .task {
                 if !needsAuthentication {
-                    await validateToken()
+                    await subscribeToValidation()
                 }
+            }
+            .onDisappear {
+                subscriptionTask?.cancel()
             }
         }
     }
@@ -148,15 +151,27 @@ struct InviteLinkClaimView: View {
     @ViewBuilder
     private func senderInfoSection(token: InviteToken) -> some View {
         VStack(spacing: 16) {
-            // Avatar
-            ZStack {
-                Circle()
-                    .fill(AppTheme.brand.opacity(0.2))
-                    .frame(width: 80, height: 80)
-                
-                Text(token.creatorEmail.prefix(1).uppercased())
-                    .font(.system(size: 36, weight: .semibold))
-                    .foregroundStyle(AppTheme.brand)
+            // Avatar - show real profile pic if available
+            if let imageUrl = token.creatorProfileImageUrl, let url = URL(string: imageUrl) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 80, height: 80)
+                            .clipShape(Circle())
+                    case .failure(_):
+                        fallbackAvatar(for: token)
+                    case .empty:
+                        ProgressView()
+                            .frame(width: 80, height: 80)
+                    @unknown default:
+                        fallbackAvatar(for: token)
+                    }
+                }
+            } else {
+                fallbackAvatar(for: token)
             }
             
             VStack(spacing: 4) {
@@ -164,8 +179,16 @@ struct InviteLinkClaimView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 
-                Text(token.creatorEmail)
+                // Show name if available, fallback to email
+                Text(token.creatorName ?? token.creatorEmail)
                     .font(.headline)
+                
+                // Show email as subtitle if we have a name
+                if token.creatorName != nil {
+                    Text(token.creatorEmail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .frame(maxWidth: .infinity)
@@ -173,6 +196,19 @@ struct InviteLinkClaimView: View {
         .background(Color(.systemBackground))
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 2)
+    }
+    
+    @ViewBuilder
+    private func fallbackAvatar(for token: InviteToken) -> some View {
+        ZStack {
+            Circle()
+                .fill(AppTheme.brand.opacity(0.2))
+                .frame(width: 80, height: 80)
+            
+            Text((token.creatorName ?? token.creatorEmail).prefix(1).uppercased())
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(AppTheme.brand)
+        }
     }
     
     // MARK: - Name Confirmation Section
@@ -220,17 +256,17 @@ struct InviteLinkClaimView: View {
             // Balance card
             balanceCard(balance: preview.totalBalance)
             
-            // Expense counts
+            // Expense and group counts
             HStack(spacing: 16) {
                 expenseCountCard(
-                    count: preview.personalExpenses.count,
-                    label: "Personal",
-                    icon: "person.2"
+                    count: preview.expenseCount,
+                    label: "Expenses",
+                    icon: "dollarsign.circle"
                 )
                 
                 expenseCountCard(
-                    count: preview.groupExpenses.count,
-                    label: "Group",
+                    count: preview.groupNames.count,
+                    label: "Groups",
                     icon: "person.3"
                 )
             }
@@ -437,6 +473,36 @@ struct InviteLinkClaimView: View {
     
     // MARK: - Helper Methods
     
+    /// Subscribe to live updates for the invite validation
+    private func subscribeToValidation() async {
+        isLoading = true
+        errorMessage = nil
+        
+        subscriptionTask = Task {
+            do {
+                for try await result in store.subscribeToInviteValidation(tokenId) {
+                    await MainActor.run {
+                        validation = result
+                        isLoading = false
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    validation = InviteTokenValidation(
+                        isValid: false,
+                        token: nil,
+                        expensePreview: nil,
+                        errorMessage: error.localizedDescription
+                    )
+                    isLoading = false
+                }
+            }
+        }
+        
+        await subscriptionTask?.value
+    }
+    
+    /// One-shot validation (kept for backward compatibility)
     private func validateToken() async {
         isLoading = true
         errorMessage = nil
@@ -471,6 +537,14 @@ struct InviteLinkClaimView: View {
             await MainActor.run {
                 isProcessing = false
                 
+                // Mark claim as succeeded FIRST to prevent error view from showing
+                claimSucceeded = true
+                
+                // Cancel the subscription to prevent it from receiving "claimed" status
+                // which would show as an error alongside the success message
+                subscriptionTask?.cancel()
+                subscriptionTask = nil
+                
                 // Trigger success haptic
                 Haptics.notify(.success)
                 
@@ -486,7 +560,15 @@ struct InviteLinkClaimView: View {
         } catch {
             await MainActor.run {
                 isProcessing = false
-                errorMessage = error.localizedDescription
+                
+                // Set the validation to invalid to hide the expense preview
+                // and show the error view instead
+                validation = InviteTokenValidation(
+                    isValid: false,
+                    token: validation?.token,
+                    expensePreview: nil,
+                    errorMessage: error.localizedDescription
+                )
                 
                 // Trigger error haptic
                 Haptics.notify(.error)

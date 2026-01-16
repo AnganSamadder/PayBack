@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# Local CI Test Script for PayBack with Supabase
-# This script runs the complete test suite exactly as GitHub Actions would:
+# Local CI Test Script for PayBack
+# This script runs the complete test suite:
 # - Unit tests
-# - Supabase integration tests (with mock network)
 # - Coverage analysis with functional/UI separation
 # - Comprehensive reporting
 #
@@ -12,8 +11,6 @@
 #
 # Environment Variables:
 #   SANITIZER: none (default, enables coverage), thread, or address
-#   SUPABASE_URL: Supabase project URL (loaded from .env.supabase.local if not set)
-#   SUPABASE_ANON_KEY: Supabase anonymous key (loaded from .env.supabase.local if not set)
 
 set -e
 
@@ -32,44 +29,25 @@ SANITIZER="${SANITIZER:-none}"
 
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}  PayBack CI Test - Complete GitHub Actions Simulation${NC}"
-echo -e "${BLUE}  Unit Tests + Supabase Integration + Coverage Analysis${NC}"
+echo -e "${BLUE}  Unit Tests + Coverage Analysis${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo ""
 
 cd "$PROJECT_ROOT"
 
-# Step 1: Load Supabase configuration
-echo -e "${YELLOW}[1/9] Loading Supabase configuration...${NC}"
-
-if [ -f ".env.supabase.local" ]; then
-  set -a
-  . ".env.supabase.local"
-  set +a
-  echo -e "${GREEN}✓ Loaded from .env.supabase.local${NC}"
-else
-  echo -e "${YELLOW}⚠ No .env.supabase.local found, using environment variables${NC}"
-fi
-
-if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_ANON_KEY:-}" ]; then
-  echo -e "${YELLOW}⚠ SUPABASE_URL or SUPABASE_ANON_KEY not set${NC}"
-  echo "  Tests using mock Supabase responses will still work"
-  echo "  Set them in .env.supabase.local for full integration testing"
-fi
-echo ""
-
-# Step 2: Show Xcode version
-echo -e "${YELLOW}[2/9] Checking Xcode version...${NC}"
+# Step 1: Show Xcode version
+echo -e "${YELLOW}[1/8] Checking Xcode version...${NC}"
 xcodebuild -version | head -1
 echo ""
 
 # Step 3: Clean simulators
-echo -e "${YELLOW}[3/9] Cleaning simulators...${NC}"
+echo -e "${YELLOW}[2/8] Cleaning simulators...${NC}"
 xcrun simctl delete unavailable 2>/dev/null || true
 echo -e "${GREEN}✓ Cleaned${NC}"
 echo ""
 
 # Step 4: Check xcpretty
-echo -e "${YELLOW}[4/9] Checking xcpretty...${NC}"
+echo -e "${YELLOW}[3/8] Checking xcpretty...${NC}"
 if ! command -v xcpretty &> /dev/null; then
   echo "xcpretty not found - output will be raw"
   echo "Install it with: gem install xcpretty"
@@ -81,7 +59,7 @@ fi
 echo ""
 
 # Step 5: Generate Xcode project
-echo -e "${YELLOW}[5/9] Generating project...${NC}"
+echo -e "${YELLOW}[4/8] Generating project...${NC}"
 if command -v xcodegen &> /dev/null; then
   if xcodegen generate > /dev/null 2>&1; then
     echo -e "${GREEN}✓ Generated${NC}"
@@ -94,7 +72,7 @@ fi
 echo ""
 
 # Step 6: Resolve dependencies
-echo -e "${YELLOW}[6/9] Resolving dependencies...${NC}"
+echo -e "${YELLOW}[5/8] Resolving dependencies...${NC}"
 
 # Check if gtimeout is available (from coreutils)
 TIMEOUT_CMD=""
@@ -151,7 +129,7 @@ fi
 echo ""
 
 # Step 7: Select simulator
-echo -e "${YELLOW}[7/9] Selecting iPhone simulator...${NC}"
+echo -e "${YELLOW}[6/8] Selecting iPhone simulator...${NC}"
 SIMULATOR_INFO=$(python3 <<'PY'
 import json
 import subprocess
@@ -250,14 +228,14 @@ echo -e "  UDID: ${SIMULATOR_UDID}"
 echo ""
 
 # Step 8: Boot simulator
-echo -e "${YELLOW}[8/9] Booting simulator...${NC}"
+echo -e "${YELLOW}[7/8] Booting simulator...${NC}"
 xcrun simctl boot "$SIMULATOR_UDID" 2>/dev/null || echo "Already booted"
 xcrun simctl bootstatus "$SIMULATOR_UDID" -b 2>/dev/null || true
 echo -e "${GREEN}✓ Ready${NC}"
 echo ""
 
 # Step 9: Run tests
-echo -e "${YELLOW}[9/9] Running tests (sanitizer: ${SANITIZER})...${NC}"
+echo -e "${YELLOW}[8/8] Running tests (sanitizer: ${SANITIZER})...${NC}"
 echo ""
 rm -rf TestResults.xcresult coverage-report.txt coverage.json test_output.log 2>/dev/null || true
 
@@ -274,7 +252,7 @@ fi
 # Run tests
 export NSUnbufferedIO=YES
 
-echo "Running all tests (unit + Supabase integration)..."
+echo "Running all tests..."
 echo "This may take 2-5 minutes depending on your machine..."
 echo "Progress will be shown below..."
 echo ""
@@ -420,7 +398,7 @@ functional_cov = sum(c for _, c in functional_files) / len(functional_files) if 
 ui_cov = sum(c for _, c in ui_files) / len(ui_files) if ui_files else 0
 
 print(f"\n{BLUE}{'=' * 80}{NC}")
-print(f"{BLUE}COMPREHENSIVE COVERAGE REPORT (Unit + Supabase Integration Tests){NC}")
+print(f"{BLUE}COMPREHENSIVE COVERAGE REPORT (Unit Tests){NC}")
 print(f"{BLUE}{'=' * 80}{NC}\n")
 
 # Functional code section
@@ -460,22 +438,22 @@ for path, cov in sorted_functional:
 
 print()
 
-# Supabase service coverage section
+# Service coverage section
 print(f"{MAGENTA}{'═' * 80}{NC}")
-print(f"{MAGENTA}SUPABASE SERVICE COVERAGE{NC}")
+print(f"{MAGENTA}SERVICE COVERAGE{NC}")
 print(f"{MAGENTA}{'═' * 80}{NC}\n")
 
-supabase_services = [
+services = [
     'EmailAuthService',
     'PhoneAuthService',
-    'SupabaseAccountService',
+    'AccountService',
     'GroupCloudService',
     'ExpenseCloudService',
     'InviteLinkService',
     'LinkRequestService',
 ]
 
-for service in supabase_services:
+for service in services:
     found = False
     for path, cov in functional_files:
         if service in path:
@@ -542,15 +520,15 @@ print(f"Files analyzed: {len(functional_files)} functional, {len(ui_files)} UI")
 
 # Save text report
 with open('coverage-report.txt', 'w') as f:
-    f.write("PayBack Coverage Report (Supabase)\n")
+    f.write("PayBack Coverage Report\n")
     f.write("=" * 50 + "\n\n")
     f.write(f"Functional Code Coverage: {functional_cov:.2f}%\n")
     f.write(f"UI Code Coverage: {ui_cov:.2f}%\n")
     f.write(f"Overall Coverage: {overall:.2f}%\n")
     f.write(f"Weighted Score: {weighted_actual:.2f}%\n\n")
     
-    f.write("Supabase Service Coverage:\n")
-    for service in supabase_services:
+    f.write("Service Coverage:\n")
+    for service in services:
         for path, cov in functional_files:
             if service in path:
                 f.write(f"  {service}: {cov:.1f}%\n")

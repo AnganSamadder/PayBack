@@ -17,9 +17,14 @@ final class PersistenceService: PersistenceServiceProtocol {
     private init() {}
 
     func load() -> AppData {
+        let start = Date()
         do {
             let data = try Data(contentsOf: fileURL)
             let decoded = try JSONDecoder().decode(AppData.self, from: data)
+            let elapsed = Date().timeIntervalSince(start) * 1000
+            if elapsed > 10.0 { // Log if slower than 10ms
+                 AppConfig.log("Persistence load took \(String(format: "%.1f", elapsed))ms")
+            }
             return decoded
         } catch {
             return AppData(groups: [], expenses: [])

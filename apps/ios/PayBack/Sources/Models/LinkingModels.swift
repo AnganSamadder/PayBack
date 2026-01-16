@@ -4,7 +4,7 @@ import Foundation
 
 public struct LinkRequest: Identifiable, Codable, Hashable, Sendable {
     public let id: UUID
-    public let requesterId: String // Supabase Auth user id
+    public let requesterId: String // Auth user id
     public let requesterEmail: String
     public let requesterName: String
     public let recipientEmail: String
@@ -42,13 +42,15 @@ public enum LinkRequestStatus: String, Codable, Sendable {
 
 struct InviteToken: Identifiable, Codable, Hashable, Sendable {
     let id: UUID // Used as the token in the URL
-    let creatorId: String // Supabase Auth user id
+    let creatorId: String // Auth user id
     let creatorEmail: String
+    let creatorName: String? // Display name of the sender
+    let creatorProfileImageUrl: String? // Profile picture URL
     let targetMemberId: UUID
     let targetMemberName: String
     let createdAt: Date
     var expiresAt: Date
-    var claimedBy: String? // Supabase Auth user id when claimed
+    var claimedBy: String? // Auth user id when claimed
     var claimedAt: Date?
 }
 
@@ -82,6 +84,7 @@ struct InviteTokenValidation: Sendable {
 struct ExpensePreview: Sendable {
     let personalExpenses: [Expense]
     let groupExpenses: [Expense]
+    let expenseCount: Int  // From backend expense_count - used for display when full expense arrays aren't available
     let totalBalance: Double
     let groupNames: [String]
 }

@@ -27,17 +27,14 @@ final class AppStoreBalanceTests: XCTestCase {
             expenseCloudService: mockExpenseCloudService,
             groupCloudService: mockGroupCloudService,
             linkRequestService: mockLinkRequestService,
-            inviteLinkService: mockInviteLinkService
+            inviteLinkService: mockInviteLinkService,
+            skipClerkInit: true
         )
         
-        // Setup initial user
-        let account = UserAccount(id: "user-123", email: "user@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
-        
-        // Allow time for async setup
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // Setup initial user not needed for sync logic tests as they use sut.currentUser dynamic ID
+        // Not calling completeAuthentication avoids triggering loadRemoteData race condition
     }
+
     
     override func tearDown() async throws {
         mockPersistence.reset()

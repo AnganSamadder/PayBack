@@ -67,6 +67,10 @@ struct CreateGroupView: View {
                     .disabled(!canCreate)
                 }
             }
+            .groupDuplicateAlert(isPresented: $showExactDupeWarning) {
+                skipDupeCheck = true
+                createGroup()
+            }
         }
     }
     
@@ -252,10 +256,28 @@ struct CreateGroupView: View {
         isNewFriendFocused = false
     }
     
+    @State private var showExactDupeWarning = false
+    @State private var skipDupeCheck = false
+
     private func createGroup() {
         let trimmedName = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty, !selectedFriendIds.isEmpty else { return }
         
+        // DEDUPLICATION Check
+        if !skipDupeCheck {
+            let membersSet = Set(allFriends.filter { selectedFriendIds.contains($0.id) }.map { $0.name.lowercased() })
+            let existing = store.groups.first { g in
+                g.name.localizedCaseInsensitiveCompare(trimmedName) == .orderedSame &&
+                Set(g.members.map { $0.name.lowercased() }) == membersSet
+            }
+            
+            if existing != nil {
+                Haptics.notify(.warning)
+                showExactDupeWarning = true
+                return
+            }
+        }
+
         // Get member names for the selected friends
         let memberNames = allFriends
             .filter { selectedFriendIds.contains($0.id) }
@@ -271,6 +293,17 @@ struct CreateGroupView: View {
     }
 }
 
+extension View {
+    func groupDuplicateAlert(isPresented: Binding<Bool>, onConfirm: @escaping () -> Void) -> some View {
+        self.alert("Duplicate Group?", isPresented: isPresented) {
+            Button("Create Anyway") { onConfirm() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("A group with this name and members already exists. Are you sure you want to create another one?")
+        }
+    }
+}
+
 // MARK: - Friend Selection Card
 
 private struct FriendSelectionCard: View {
@@ -282,7 +315,12 @@ private struct FriendSelectionCard: View {
         Button(action: onTap) {
             VStack(spacing: 8) {
                 ZStack(alignment: .bottomTrailing) {
-                    AvatarView(name: friend.name, size: 48)
+                    AvatarView(
+                        name: friend.name,
+                        size: 48,
+                        imageUrl: friend.profileImageUrl,
+                        colorHex: friend.profileColorHex
+                    )
                     
                     // Selection checkmark
                     if isSelected {

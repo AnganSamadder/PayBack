@@ -397,38 +397,109 @@ struct EmptyStateView: View {
 struct AvatarView: View {
     let name: String
     let size: CGFloat
+    let imageUrl: String?
+    let colorHex: String?
     
-    init(name: String, size: CGFloat = 40) {
+    init(name: String, size: CGFloat = 40, imageUrl: String? = nil, colorHex: String? = nil) {
         self.name = name
         self.size = size
+        self.imageUrl = imageUrl
+        self.colorHex = colorHex
     }
     
     var body: some View {
         ZStack {
+            if let imageUrl, let url = URL(string: imageUrl) {
+                AsyncImage(url: url) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    fallbackView
+                }
+            } else {
+                fallbackView
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+    }
+    
+    private var fallbackView: some View {
+        ZStack {
             Circle()
-                .fill(avatarColor)
+                .fill(resolveColor)
             
             Text(initials)
                 .font(.system(size: size * 0.4, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
         }
-        .frame(width: size, height: size)
     }
     
     private var initials: String {
-        let components = name.components(separatedBy: .whitespaces)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = trimmedName.split(whereSeparator: { $0.isWhitespace })
         let firstInitial = components.first?.first.map(String.init) ?? ""
         let lastInitial = components.count > 1 ? components.last?.first.map(String.init) ?? "" : ""
         return (firstInitial + lastInitial).uppercased()
     }
     
+    private var resolveColor: Color {
+        if let colorHex, let color = Color(hex: colorHex) {
+            return color
+        }
+        return avatarColor
+    }
+    
     private var avatarColor: Color {
-        // Generate a consistent color based on the name
-        let hash = abs(name.hashValue)
+        // Generate a consistent color based on the name using stable DJB2 hash
+        // Note: Swift's hashValue is NOT stable across app launches, so we use a custom hash
+        let hash = stableHash(name)
         let colors: [Color] = [
             .blue, .green, .orange, .purple, .pink, .red, .indigo, .teal, .cyan, .mint
         ]
-        return colors[hash % colors.count]
+        // Use modulo on UInt first to avoid overflow when converting to Int
+        let index = Int(hash % UInt(colors.count))
+        return colors[index]
+    }
+    
+    /// DJB2 hash algorithm - produces stable hash values across app launches
+    private func stableHash(_ string: String) -> UInt {
+        var hash: UInt = 5381
+        for char in string.utf8 {
+            hash = ((hash << 5) &+ hash) &+ UInt(char)
+        }
+        return hash
+    }
+}
+
+extension Color {
+    init?(hex: String) {
+        var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        hexSanitized = hexSanitized.replacingOccurrences(of: "#", with: "")
+
+        var rgb: UInt64 = 0
+
+        guard Scanner(string: hexSanitized).scanHexInt64(&rgb) else { return nil }
+
+        let length = hexSanitized.count
+
+        guard length == 6 else { return nil }
+
+        let r = CGFloat((rgb & 0xFF0000) >> 16) / 255.0
+        let g = CGFloat((rgb & 0x00FF00) >> 8) / 255.0
+        let b = CGFloat(rgb & 0x0000FF) / 255.0
+
+        self.init(red: Double(r), green: Double(g), blue: Double(b))
+    }
+    
+    func toHex() -> String? {
+        let uic = UIColor(self)
+        guard let components = uic.cgColor.components, components.count >= 3 else { return nil }
+        let r = Float(components[0])
+        let g = Float(components[1])
+        let b = Float(components[2])
+        return String(format: "#%02lX%02lX%02lX", lroundf(r * 255), lroundf(g * 255), lroundf(b * 255))
     }
 }
 

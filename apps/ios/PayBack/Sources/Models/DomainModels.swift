@@ -3,11 +3,21 @@ import Foundation
 struct GroupMember: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var name: String
+    var profileImageUrl: String?
+    var profileColorHex: String?
+    // Optional to support loading old data where this field didn't exist
+    var isCurrentUser: Bool?
 
-    init(id: UUID = UUID(), name: String) {
+    init(id: UUID = UUID(), name: String, profileImageUrl: String? = nil, profileColorHex: String? = nil, isCurrentUser: Bool? = nil) {
         self.id = id
         self.name = name
+        self.profileImageUrl = profileImageUrl
+        self.profileColorHex = profileColorHex
+        self.isCurrentUser = isCurrentUser
     }
+    
+    // Helper to safely check if this is the current user
+    var isMe: Bool { isCurrentUser ?? false }
     
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)

@@ -579,7 +579,7 @@ struct FriendDetailView: View {
         VStack(spacing: AppMetrics.FriendDetail.heroCardSpacing) {
             // Avatar and name
             VStack(spacing: AppMetrics.FriendDetail.avatarNameSpacing) {
-                AvatarView(name: friend.name, size: AppMetrics.FriendDetail.avatarSize)
+                AvatarView(name: friend.name, size: AppMetrics.FriendDetail.avatarSize, colorHex: friend.profileColorHex)
                 
                 // Name display with nickname support
                 VStack(spacing: 4) {
@@ -598,6 +598,15 @@ struct FriendDetailView: View {
                         Text(displayName)
                             .font(.system(.title2, design: .rounded, weight: .bold))
                             .foregroundStyle(.primary)
+                    }
+                    
+                    // Show "Originally X" if we have an original name that differs
+                    if let originalName = accountFriend?.originalName,
+                       !originalName.isEmpty,
+                       originalName != friend.name {
+                        Text("Originally \(originalName)")
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundStyle(.secondary.opacity(0.8))
                     }
                 }
                 
@@ -992,6 +1001,7 @@ struct DirectExpenseCard: View {
 }
 
 struct GroupExpensesSection: View {
+    @EnvironmentObject var store: AppStore
     let group: SpendingGroup
     let expenses: [Expense]
     let friend: GroupMember
@@ -1000,7 +1010,7 @@ struct GroupExpensesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.groupSectionInternalSpacing) {
             HStack {
-                Text(group.name)
+                Text(store.groupDisplayName(group))
                     .font(.system(.headline, design: .rounded, weight: .semibold))
                     .foregroundStyle(AppTheme.brand)
 
