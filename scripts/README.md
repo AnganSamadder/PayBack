@@ -1,18 +1,40 @@
 # PayBack Scripts
 
-The scripts directory now only contains optional tooling helpers. Supabase configuration is loaded from the environment or `SupabaseConfig.plist` at runtime; no emulator setup is required.
+Helper scripts for local development and CI.
 
-- `setup-git-hooks.sh`: installs git hooks for local workflows (optional).
-- `test-ci-locally.sh`: runs the PayBack scheme tests with Supabase env vars loaded from `.env.supabase.local`.
-- `test-with-coverage.sh`: runs tests with code coverage enabled and writes `coverage.json` + `coverage-report.txt`.
+## Scripts
 
-To run tests locally:
+- `setup-git-hooks.sh`: Installs git hooks for local workflows (optional).
+- `test-ci-locally.sh`: Runs tests with CI parity. Supports multiple modes:
+  - Default: GitHub Actions-style test run
+  - `CI_FLAVOR=xcodecloud`: XcodeCloud parity mode with build-for-testing flow
+- `test-with-coverage.sh`: Runs tests with code coverage and writes `coverage.json` + `coverage-report.txt`.
+
+## Running Tests Locally
 
 ```bash
+# Generate/regenerate Xcode project
 xcodegen generate
+
+# Run tests (simple)
 xcodebuild -scheme PayBack -destination "platform=iOS Simulator,name=iPhone 16" test
+
+# Run tests with CI parity
+./scripts/test-ci-locally.sh
+
+# Run with XcodeCloud parity mode
+CI_FLAVOR=xcodecloud ./scripts/test-ci-locally.sh
 ```
 
-Environment variables for Supabase:
-- `SUPABASE_URL`
-- `SUPABASE_ANON_KEY`
+## Convex Backend
+
+The app uses Convex as its backend. Backend functions are in the `convex/` directory.
+
+To deploy backend changes locally:
+```bash
+npx convex deploy
+```
+
+For CI/XcodeCloud deployment, set these environment variables:
+- `CONVEX_DEPLOY_KEY`: Convex deploy key (secret)
+- `CONVEX_DEPLOY_ON_CI=1`: Safety switch to enable deploy from CI

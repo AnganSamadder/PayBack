@@ -104,6 +104,9 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     STRING_CATALOG_GENERATE_SYMBOLS: YES
     # VERSIONING_SYSTEM: apple-generic
+    # ConvexMobile XCFramework only ships arm64 simulator slices.
+    # Exclude x86_64 to prevent linker failures on Intel runners / Rosetta.
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
 
   # Configuration-specific settings
   configs:
@@ -260,14 +263,29 @@ targets:
         outputFiles:
           - $(DERIVED_FILE_DIR)/convex_sync_timestamp
         script: |
+          set -euo pipefail
+
+          # Safety check: only deploy when explicitly enabled
+          if [ "${CONVEX_DEPLOY_ON_CI:-}" != "1" ]; then
+            echo "Convex deploy disabled (CONVEX_DEPLOY_ON_CI != 1). Skipping."
+            touch "$DERIVED_FILE_DIR/convex_sync_timestamp"
+            exit 0
+          fi
+
+          # Verify deploy key is available
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "warning: CONVEX_DEPLOY_KEY not set. Skipping Convex deploy."
+            touch "$DERIVED_FILE_DIR/convex_sync_timestamp"
+            exit 0
+          fi
+
           export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
 
-          # Try to find npx via nvm
+          # Try to find npx via nvm (local dev) or Homebrew (XcodeCloud)
           export NVM_DIR="$HOME/.nvm"
           if [ -s "$NVM_DIR/nvm.sh" ]; then
             . "$NVM_DIR/nvm.sh"
           elif [ -d "$NVM_DIR/versions/node" ]; then
-            # Fallback: add the latest node version to PATH
             LATEST_NODE=$(ls -rd "$NVM_DIR/versions/node"/v* 2>/dev/null | head -n 1)
             if [ -n "$LATEST_NODE" ]; then
               export PATH="$LATEST_NODE/bin:$PATH"
@@ -275,12 +293,13 @@ targets:
           fi
 
           if command -v npx >/dev/null 2>&1; then
-            echo "Syncing Convex backend..."
-            npx convex deploy -y --cmd 'echo "Backend sync successful"'
+            echo "Deploying Convex backend..."
+            npx convex deploy -y --cmd 'echo "Backend deploy successful"'
             touch "$DERIVED_FILE_DIR/convex_sync_timestamp"
           else
-            echo "warning: npx not found in PATH. Skipping Convex backend sync."
-            echo "Debug PATH: $PATH"
+            echo "error: npx not found in PATH. Cannot deploy Convex backend."
+            echo "PATH: $PATH"
+            exit 1
           fi
 
     # Build settings

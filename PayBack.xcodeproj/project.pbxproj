@@ -1217,7 +1217,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"\n\n# Try to find npx via nvm\nexport NVM_DIR=\"$HOME/.nvm\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\nelif [ -d \"$NVM_DIR/versions/node\" ]; then\n  # Fallback: add the latest node version to PATH\n  LATEST_NODE=$(ls -rd \"$NVM_DIR/versions/node\"/v* 2>/dev/null | head -n 1)\n  if [ -n \"$LATEST_NODE\" ]; then\n    export PATH=\"$LATEST_NODE/bin:$PATH\"\n  fi\nfi\n\nif command -v npx >/dev/null 2>&1; then\n  echo \"Syncing Convex backend...\"\n  npx convex deploy -y --cmd 'echo \"Backend sync successful\"'\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\nelse\n  echo \"warning: npx not found in PATH. Skipping Convex backend sync.\"\n  echo \"Debug PATH: $PATH\"\nfi\n";
+			shellScript = "set -euo pipefail\n\n# Safety check: only deploy when explicitly enabled\nif [ \"${CONVEX_DEPLOY_ON_CI:-}\" != \"1\" ]; then\n  echo \"Convex deploy disabled (CONVEX_DEPLOY_ON_CI != 1). Skipping.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\n# Verify deploy key is available\nif [ -z \"${CONVEX_DEPLOY_KEY:-}\" ]; then\n  echo \"warning: CONVEX_DEPLOY_KEY not set. Skipping Convex deploy.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\nexport PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"\n\n# Try to find npx via nvm (local dev) or Homebrew (XcodeCloud)\nexport NVM_DIR=\"$HOME/.nvm\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\nelif [ -d \"$NVM_DIR/versions/node\" ]; then\n  LATEST_NODE=$(ls -rd \"$NVM_DIR/versions/node\"/v* 2>/dev/null | head -n 1)\n  if [ -n \"$LATEST_NODE\" ]; then\n    export PATH=\"$LATEST_NODE/bin:$PATH\"\n  fi\nfi\n\nif command -v npx >/dev/null 2>&1; then\n  echo \"Deploying Convex backend...\"\n  npx convex deploy -y --cmd 'echo \"Backend deploy successful\"'\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\nelse\n  echo \"error: npx not found in PATH. Cannot deploy Convex backend.\"\n  echo \"PATH: $PATH\"\n  exit 1\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -1482,12 +1482,13 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -1551,12 +1552,13 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = s;

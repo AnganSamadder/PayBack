@@ -2,9 +2,9 @@ name: iOS CI
 
 on:
   push:
-    branches: ["main", "supabase"]
+    branches: ["main"]
   pull_request:
-    branches: ["main", "supabase"]
+    branches: ["main"]
 
 jobs:
   build-and-test:
@@ -14,22 +14,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Create Supabase Environment
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: |
-          # Use test/mock values if secrets are not set (for PRs from forks)
-          SUPABASE_URL="${SUPABASE_URL:-https://example.supabase.co}"
-          SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY:-test-anon-key-for-ci}"
-          
-          cat > .env.supabase.local <<EOF
-          SUPABASE_URL=${SUPABASE_URL}
-          SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
-          EOF
-          
-          echo "✅ Created .env.supabase.local for CI build"
 
       - name: Detect latest stable Xcode (not beta)
         id: detect-xcode
@@ -231,22 +215,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Create Supabase Environment
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: |
-          # Use test/mock values if secrets are not set (for PRs from forks)
-          SUPABASE_URL="${SUPABASE_URL:-https://example.supabase.co}"
-          SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY:-test-anon-key-for-ci}"
-          
-          cat > .env.supabase.local <<EOF
-          SUPABASE_URL=${SUPABASE_URL}
-          SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
-          EOF
-          
-          echo "✅ Created .env.supabase.local for CI tests"
 
       - name: Detect latest stable Xcode (not beta)
         id: detect-xcode
