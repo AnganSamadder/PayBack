@@ -5,11 +5,12 @@ struct AuthFlowView: View {
     let onAuthenticated: (UserSession) -> Void
 
     init(
-        accountService: AccountService = AccountServiceProvider.makeAccountService(),
-        emailAuthService: EmailAuthService = EmailAuthServiceProvider.makeService(),
+        store: AppStore,
+        accountService: AccountService = Dependencies.current.accountService,
+        emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
         onAuthenticated: @escaping (UserSession) -> Void
     ) {
-        _coordinator = StateObject(wrappedValue: AuthCoordinator(accountService: accountService, emailAuthService: emailAuthService))
+        _coordinator = StateObject(wrappedValue: AuthCoordinator(store: store, accountService: accountService, emailAuthService: emailAuthService))
         self.onAuthenticated = onAuthenticated
     }
 
@@ -41,6 +42,7 @@ struct AuthFlowView: View {
                 isBusy: coordinator.isBusy,
                 errorMessage: coordinator.errorMessage,
                 infoMessage: coordinator.infoMessage,
+                showResendConfirmation: coordinator.unconfirmedEmail != nil,
                 onLogin: { email, password in
                     Task { await coordinator.login(emailInput: email, password: password) }
                 },
@@ -49,6 +51,9 @@ struct AuthFlowView: View {
                 },
                 onPrefillSignup: { input in
                     coordinator.openSignup(with: input)
+                },
+                onResendConfirmation: {
+                    Task { await coordinator.resendConfirmationEmail() }
                 }
             )
             .frame(maxWidth: 520)
@@ -57,13 +62,31 @@ struct AuthFlowView: View {
                 email: email,
                 isBusy: coordinator.isBusy,
                 errorMessage: coordinator.errorMessage,
-                onSubmit: { email, name, password in
-                    Task { await coordinator.signup(emailInput: email, displayName: name, password: password) }
+                onSubmit: { email, firstName, lastName, password in
+                    Task { await coordinator.signup(emailInput: email, firstName: firstName, lastName: lastName, password: password) }
                 },
                 onBack: {
                     withAnimation {
                         coordinator.start()
                     }
+                }
+            )
+            .frame(maxWidth: 520)
+        case .verification(let email, _):
+            CodeVerificationView(
+                email: email,
+                isBusy: coordinator.isBusy,
+                errorMessage: coordinator.errorMessage,
+                onSubmit: { code in
+                    Task { await coordinator.verifyCode(code) }
+                },
+                onBack: {
+                    withAnimation {
+                        coordinator.start()
+                    }
+                },
+                onResend: {
+                    Task { await coordinator.resendVerificationCode() }
                 }
             )
             .frame(maxWidth: 520)
@@ -116,6 +139,6 @@ private struct AuthBackground: View {
 
 struct AuthFlowView_Previews: PreviewProvider {
     static var previews: some View {
-        AuthFlowView(accountService: MockAccountService(), emailAuthService: MockEmailAuthService()) { _ in }
+        AuthFlowView(store: AppStore(), accountService: MockAccountService(), emailAuthService: MockEmailAuthService()) { _ in }
     }
 }

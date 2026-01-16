@@ -139,6 +139,8 @@ final class AccountLinkingSecurityTests: XCTestCase {
             id: UUID(),
             creatorId: "creator-123",
             creatorEmail: "creator@example.com",
+            creatorName: nil,
+            creatorProfileImageUrl: nil,
             targetMemberId: targetMemberId,
             targetMemberName: "Bob",
             createdAt: createdAt,
@@ -173,6 +175,8 @@ final class AccountLinkingSecurityTests: XCTestCase {
             id: UUID(),
             creatorId: "creator-123",
             creatorEmail: "creator@example.com",
+            creatorName: nil,
+            creatorProfileImageUrl: nil,
             targetMemberId: targetMemberId,
             targetMemberName: "Bob",
             createdAt: Date().addingTimeInterval(-8 * 24 * 3600), // 8 days ago

@@ -13,6 +13,12 @@ protocol AccountService: Sendable {
         linkedAccountId: String,
         linkedAccountEmail: String
     ) async throws
+    
+    func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String?
+    func uploadProfileImage(_ data: Data) async throws -> String
+    
+    /// Checks if the user is authenticated on the backend
+    func checkAuthentication() async throws -> Bool
 }
 
 actor MockAccountService: AccountService {
@@ -78,5 +84,19 @@ actor MockAccountService: AccountService {
             currentFriends[index] = updatedFriend
             friends[accountEmail] = currentFriends
         }
+    }
+    
+    func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
+        // Mock implementation
+        return imageUrl
+    }
+    
+    func uploadProfileImage(_ data: Data) async throws -> String {
+        // Mock implementation - return a fake URL
+        return "https://mock.convex.cloud/storage/mock-id"
+    }
+    
+    func checkAuthentication() async throws -> Bool {
+        return true
     }
 }

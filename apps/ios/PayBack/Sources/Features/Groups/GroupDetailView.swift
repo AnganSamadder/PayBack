@@ -591,7 +591,7 @@ private struct SettleConfirmationView: View {
                             VStack(spacing: 8) {
                                 ForEach(paymentRecipients, id: \.member.id) { recipient in
                                     HStack(spacing: 12) {
-                                        AvatarView(name: recipientDisplayName(recipient.member))
+                                        AvatarView(name: recipientDisplayName(recipient.member), colorHex: recipient.member.profileColorHex)
                                             .frame(width: 40, height: 40)
 
                                         VStack(alignment: .leading, spacing: 2) {

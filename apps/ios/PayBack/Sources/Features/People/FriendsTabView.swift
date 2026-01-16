@@ -272,7 +272,7 @@ private struct FriendsList: View {
                             onFriendSelected(friend)
                         }) {
                             HStack(spacing: 12) {
-                                AvatarView(name: friendDisplayName(friend))
+                                AvatarView(name: friendDisplayName(friend), colorHex: friend.profileColorHex)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(friendDisplayName(friend))
                                         .font(.headline)

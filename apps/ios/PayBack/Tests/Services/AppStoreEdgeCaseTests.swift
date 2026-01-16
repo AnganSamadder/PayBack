@@ -12,6 +12,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     var mockInviteLinkService: MockInviteLinkServiceForTests!
     
     override func setUp() async throws {
+        Dependencies.reset()
         try await super.setUp()
         
         mockPersistence = MockPersistenceService()
@@ -27,7 +28,8 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             expenseCloudService: mockExpenseCloudService,
             groupCloudService: mockGroupCloudService,
             linkRequestService: mockLinkRequestService,
-            inviteLinkService: mockInviteLinkService
+            inviteLinkService: mockInviteLinkService,
+            skipClerkInit: true
         )
     }
     
@@ -101,7 +103,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Add current user as a friend (shouldn't happen but test edge case)
@@ -233,8 +235,11 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     // MARK: - Friend Members Edge Cases
     
     func testFriendMembers_WithoutSession_DeriveFromGroups() async throws {
-        // Given - no session
-        sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
+        // Given - friendMembers now returns from Convex-synced friends array
+        let aliceId = UUID()
+        let bobId = UUID()
+        sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false))
+        sut.addImportedFriend(AccountFriend(memberId: bobId, name: "Bob", hasLinkedAccount: false))
         
         // When
         let friends = sut.friendMembers
@@ -249,7 +254,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let remoteFriend = AccountFriend(
@@ -329,7 +334,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             linkedMemberId: UUID()
         )
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let member = GroupMember(id: account.linkedMemberId!, name: "Test")
@@ -569,7 +574,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // When/Then
@@ -588,7 +593,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             linkedMemberId: linkedMemberId
         )
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let friend = GroupMember(id: linkedMemberId, name: "Test")
@@ -603,7 +608,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let friend = GroupMember(name: "Alice")
@@ -618,7 +623,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         // Add the current user's account to mock service
@@ -636,7 +641,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
         let session = UserSession(account: account)
-        sut.completeAuthentication(with: session)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
         let recipientAccount = UserAccount(id: "recipient-456", email: "recipient@example.com", displayName: "Recipient")

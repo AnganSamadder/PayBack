@@ -2,31 +2,39 @@ import SwiftUI
 import UIKit
 import Foundation
 import Network
-import Supabase
-
-private enum SupabaseConfigurator {
-    static func configureIfNeeded() {
-        SupabaseClientProvider.configureIfNeeded()
-    }
-}
+import Clerk
+import ConvexMobile
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
-        SupabaseConfigurator.configureIfNeeded()
+        AppConfig.markTiming("AppDelegate.didFinishLaunching")
         return true
     }
 }
 
 struct RootViewWithStore: View {
-    @StateObject private var store = AppStore()
-    @State private var isCheckingAuth = true
+    @StateObject private var store: AppStore
+    @Environment(\.clerk) private var clerk
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var networkMonitor = NetworkMonitor()
     @State private var pendingInviteToken: UUID?
 
+    init() {
+        AppConfig.markTiming("RootViewWithStore init started")
+        // Initialize StateObject manually to track timing
+        let storeInstance = AppStore()
+        _store = StateObject(wrappedValue: storeInstance)
+        AppConfig.markTiming("RootViewWithStore init completed")
+        
+        AppConfig.markTiming("NetworkMonitor init started")
+        _networkMonitor = StateObject(wrappedValue: NetworkMonitor())
+        AppConfig.markTiming("NetworkMonitor init completed")
+    }
+
     var body: some View {
         Group {
-            if isCheckingAuth {
+            // Use store's state instead of local state to avoid view lifecycle delays
+            if store.isCheckingAuth {
                 // Show loading state while checking for existing session
                 ZStack {
                     LinearGradient(
@@ -49,19 +57,33 @@ struct RootViewWithStore: View {
                             .font(.system(size: 32, weight: .bold, design: .rounded))
                             .foregroundStyle(.white)
                     }
+                    .onAppear {
+                         AppConfig.markTiming("Loading Screen appeared")
+                    }
                 }
             } else if store.session != nil {
                 RootView(pendingInviteToken: $pendingInviteToken)
+                    .onAppear {
+                         AppConfig.markTiming("RootView appeared")
+                    }
             } else {
-                AuthFlowView { session in
-                    store.completeAuthentication(with: session)
+                // Show AuthFlowView directly when not authenticated (matching original UX)
+                // Show AuthFlowView directly when not authenticated (matching original UX)
+                AuthFlowView(store: store) { session in
+                    // Session setup is handled internally by AppStore.login/signup
+                    #if DEBUG
+                    print("Auth flow completed for: \(session.account.email)")
+                    #endif
+                }
+                .onAppear {
+                     AppConfig.markTiming("AuthFlowView appeared")
                 }
             }
         }
         .environmentObject(store)
         .animation(.easeInOut(duration: 0.25), value: store.session != nil)
         .task {
-            await checkExistingSession()
+            AppConfig.markTiming("RootViewWithStore.task triggered (Auth check already running in AppStore)")
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             handleScenePhaseChange(oldPhase: oldPhase, newPhase: newPhase)
@@ -74,57 +96,8 @@ struct RootViewWithStore: View {
         }
     }
     
-    private func checkExistingSession() async {
-        SupabaseConfigurator.configureIfNeeded()
-        guard let client = SupabaseClientProvider.client else {
-            isCheckingAuth = false
-            return
-        }
-
-        let accountService = AccountServiceProvider.makeAccountService()
-
-        do {
-            var session = try await client.auth.session
-
-            if session.isExpired {
-                // Attempt to refresh; if it fails we'll drop to auth flow.
-                session = try await client.auth.refreshSession()
-            }
-
-            let email = session.user.email ?? "\(session.user.id.uuidString)@payback.local"
-
-            if let account = try await accountService.lookupAccount(byEmail: email) {
-                let sessionModel = UserSession(account: account)
-                store.completeAuthentication(with: sessionModel)
-                isCheckingAuth = false
-                return
-            }
-
-            let displayName = resolvedDisplayName(from: session.user, fallbackEmail: email)
-            let account = try await accountService.createAccount(email: email, displayName: displayName)
-            let sessionModel = UserSession(account: account)
-            store.completeAuthentication(with: sessionModel)
-        } catch {
-            #if DEBUG
-            print("[Auth] Failed to restore Supabase session: \(error.localizedDescription)")
-            #endif
-        }
-
-        isCheckingAuth = false
-    }
-
-    private func resolvedDisplayName(from user: User, fallbackEmail: String) -> String {
-        if let name = user.userMetadata["display_name"], case let .string(value) = name {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { return trimmed }
-        }
-        if let emailPrefix = fallbackEmail.split(separator: "@").first {
-            return String(emailPrefix)
-        }
-        return "User"
-    }
-    
     private func handleScenePhaseChange(oldPhase: ScenePhase, newPhase: ScenePhase) {
+        AppConfig.markTiming("ScenePhase changed: \(oldPhase) -> \(newPhase)")
         // Trigger reconciliation when app becomes active
         if oldPhase != .active && newPhase == .active {
             #if DEBUG
@@ -206,21 +179,23 @@ class NetworkMonitor: ObservableObject {
     @Published var connectionType: NWInterface.InterfaceType?
     
     init() {
+        AppConfig.markTiming("NetworkMonitor init started")
         monitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
                 self?.isConnected = path.status == .satisfied
                 self?.connectionType = path.availableInterfaces.first?.type
                 
                 #if DEBUG
-                if path.status == .satisfied {
+                if path.status == .satisfied && AppConfig.verboseLogging {
                     print("[Network] Connection available: \(path.availableInterfaces.first?.type.debugDescription ?? "unknown")")
-                } else {
+                } else if AppConfig.verboseLogging {
                     print("[Network] Connection unavailable")
                 }
                 #endif
             }
         }
         monitor.start(queue: queue)
+        AppConfig.markTiming("NetworkMonitor init completed")
     }
     
     deinit {
@@ -244,15 +219,41 @@ extension NWInterface.InterfaceType {
 @main
 struct PayBackApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @State private var clerk = Clerk.shared
+    
+    let convexClient: ConvexClientWithAuth<ClerkAuthResult>
 
     init() {
-        SupabaseConfigurator.configureIfNeeded()
+        // Start performance tracking
+        AppConfig.markAppStart()
+        
+        // Log startup configuration
+        AppConfig.logStartupInfo()
+        AppConfig.markTiming("Configuration logged")
+        
+        let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
+        AppConfig.markTiming("ClerkAuthProvider created")
+        
+        convexClient = ConvexClientWithAuth(
+            deploymentUrl: ConvexConfig.deploymentUrl,
+            authProvider: authProvider
+        )
+        AppConfig.markTiming("ConvexClient created")
+        
+        Dependencies.configure(client: convexClient)
+        AppConfig.markTiming("Dependencies configured")
+        
         AppAppearance.configure()
+        AppConfig.markTiming("Appearance configured")
+        
+        AppConfig.log("PayBack initialization complete")
     }
 
     var body: some Scene {
         WindowGroup {
             RootViewWithStore()
+                .environment(\.clerk, clerk)
         }
     }
 }
+

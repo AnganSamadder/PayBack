@@ -1,13 +1,14 @@
+//
+//  LinkRequestService.swift
+//  PayBack
+//
+//  Adapted for Clerk/Convex migration.
+//
+
 import Foundation
 
 public protocol LinkRequestService: Sendable {
     /// Creates a link request to connect an account with an unlinked participant
-    /// - Parameters:
-    ///   - recipientEmail: Email address of the account to send the request to
-    ///   - targetMemberId: UUID of the GroupMember to link
-    ///   - targetMemberName: Display name of the member
-    /// - Returns: The created LinkRequest
-    /// - Throws: PayBackError if creation fails (duplicate, unauthorized, etc.)
     func createLinkRequest(
         recipientEmail: String,
         targetMemberId: UUID,
@@ -15,42 +16,31 @@ public protocol LinkRequestService: Sendable {
     ) async throws -> LinkRequest
     
     /// Fetches all incoming link requests for the current user
-    /// - Returns: Array of pending link requests sent to the current user
-    /// - Throws: PayBackError if fetch fails
     func fetchIncomingRequests() async throws -> [LinkRequest]
     
     /// Fetches all outgoing link requests created by the current user
-    /// - Returns: Array of pending link requests created by the current user
-    /// - Throws: PayBackError if fetch fails
     func fetchOutgoingRequests() async throws -> [LinkRequest]
     
     /// Fetches previous (accepted/rejected) link requests for the current user
-    /// - Returns: Array of accepted or rejected link requests
-    /// - Throws: PayBackError if fetch fails
     func fetchPreviousRequests() async throws -> [LinkRequest]
     
     /// Accepts a link request and links the account to the member
-    /// - Parameter requestId: UUID of the link request to accept
-    /// - Returns: LinkAcceptResult containing the linked account details
-    /// - Throws: PayBackError if acceptance fails
     func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult
     
     /// Declines a link request
-    /// - Parameter requestId: UUID of the link request to decline
-    /// - Throws: PayBackError if decline fails
     func declineLinkRequest(_ requestId: UUID) async throws
     
     /// Cancels an outgoing link request
-    /// - Parameter requestId: UUID of the link request to cancel
-    /// - Throws: PayBackError if cancellation fails
     func cancelLinkRequest(_ requestId: UUID) async throws
 }
 
-/// Mock implementation for testing and when Supabase is not configured
+/// Mock implementation for testing
 public final class MockLinkRequestService: LinkRequestService, @unchecked Sendable {
     private static var requests: [UUID: LinkRequest] = [:]
     private static let queue = DispatchQueue(label: "com.payback.mockLinkRequestService", attributes: .concurrent)
     
+    public init() {}
+
     public func createLinkRequest(
         recipientEmail: String,
         targetMemberId: UUID,
@@ -109,7 +99,7 @@ public final class MockLinkRequestService: LinkRequestService, @unchecked Sendab
                     request.status == .pending &&
                     request.expiresAt > now
                 }
-                continuation.resume(returning: result)
+                continuation.resume(returning: Array(result))
             }
         }
     }
@@ -123,7 +113,7 @@ public final class MockLinkRequestService: LinkRequestService, @unchecked Sendab
                     request.status == .pending &&
                     request.expiresAt > now
                 }
-                continuation.resume(returning: result)
+                continuation.resume(returning: Array(result))
             }
         }
     }
@@ -135,7 +125,7 @@ public final class MockLinkRequestService: LinkRequestService, @unchecked Sendab
                     request.recipientEmail == "mock@example.com" &&
                     (request.status == .accepted || request.status == .declined || request.status == .rejected)
                 }
-                continuation.resume(returning: result)
+                continuation.resume(returning: Array(result))
             }
         }
     }
@@ -192,288 +182,4 @@ public final class MockLinkRequestService: LinkRequestService, @unchecked Sendab
             }
         }
     }
-}
-
-import Supabase
-
-private struct LinkRequestRow: Codable {
-    let id: UUID
-    let requesterId: String
-    let requesterEmail: String
-    let requesterName: String
-    let recipientEmail: String
-    let targetMemberId: UUID
-    let targetMemberName: String
-    let createdAt: Date
-    let status: String
-    let expiresAt: Date
-    let rejectedAt: Date?
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case requesterId = "requester_id"
-        case requesterEmail = "requester_email"
-        case requesterName = "requester_name"
-        case recipientEmail = "recipient_email"
-        case targetMemberId = "target_member_id"
-        case targetMemberName = "target_member_name"
-        case createdAt = "created_at"
-        case status
-        case expiresAt = "expires_at"
-        case rejectedAt = "rejected_at"
-    }
-}
-
-/// Supabase implementation of LinkRequestService
-final class SupabaseLinkRequestService: LinkRequestService, Sendable {
-    private let client: SupabaseClient
-    private let table = "link_requests"
-    private let userContextProvider: @Sendable () async throws -> SupabaseUserContext
-    
-    init(
-        client: SupabaseClient = SupabaseClientProvider.client!,
-        userContextProvider: (@Sendable () async throws -> SupabaseUserContext)? = nil
-    ) {
-        self.client = client
-        self.userContextProvider = userContextProvider ?? SupabaseUserContextProvider.defaultProvider(client: client)
-    }
-    
-    func createLinkRequest(
-        recipientEmail: String,
-        targetMemberId: UUID,
-        targetMemberName: String
-    ) async throws -> LinkRequest {
-        let context = try await userContext()
-        let normalizedRecipientEmail = recipientEmail.lowercased().trimmingCharacters(in: .whitespaces)
-        
-        if normalizedRecipientEmail == context.email {
-            throw PayBackError.linkSelfNotAllowed
-        }
-        
-        let existing: PostgrestResponse<[LinkRequestRow]> = try await client
-            .from(table)
-            .select()
-            .eq("requester_id", value: context.id)
-            .eq("recipient_email", value: normalizedRecipientEmail)
-            .eq("target_member_id", value: targetMemberId)
-            .eq("status", value: LinkRequestStatus.pending.rawValue)
-            .execute()
-        
-        if !existing.value.isEmpty {
-            throw PayBackError.linkDuplicateRequest
-        }
-        
-        let request = LinkRequest(
-            id: UUID(),
-            requesterId: context.id,
-            requesterEmail: context.email,
-            requesterName: context.name ?? context.email,
-            recipientEmail: normalizedRecipientEmail,
-            targetMemberId: targetMemberId,
-            targetMemberName: targetMemberName,
-            createdAt: Date(),
-            status: .pending,
-            expiresAt: Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date(),
-            rejectedAt: nil
-        )
-        
-        let row = LinkRequestRow(
-            id: request.id,
-            requesterId: request.requesterId,
-            requesterEmail: request.requesterEmail,
-            requesterName: request.requesterName,
-            recipientEmail: request.recipientEmail,
-            targetMemberId: request.targetMemberId,
-            targetMemberName: request.targetMemberName,
-            createdAt: request.createdAt,
-            status: request.status.rawValue,
-            expiresAt: request.expiresAt,
-            rejectedAt: request.rejectedAt
-        )
-        
-        _ = try await client
-            .from(table)
-            .insert([row], returning: .minimal)
-            .execute() as PostgrestResponse<Void>
-        
-        return request
-    }
-    
-    func fetchIncomingRequests() async throws -> [LinkRequest] {
-        let context = try await userContext()
-        let now = Date()
-        
-        let snapshot: PostgrestResponse<[LinkRequestRow]> = try await client
-            .from(table)
-            .select()
-            .eq("recipient_email", value: context.email)
-            .eq("status", value: LinkRequestStatus.pending.rawValue)
-            .gt("expires_at", value: now)
-            .execute()
-        
-        return snapshot.value.compactMap(linkRequest(from:))
-    }
-    
-    func fetchOutgoingRequests() async throws -> [LinkRequest] {
-        let context = try await userContext()
-        let now = Date()
-        
-        let snapshot: PostgrestResponse<[LinkRequestRow]> = try await client
-            .from(table)
-            .select()
-            .eq("requester_id", value: context.id)
-            .eq("status", value: LinkRequestStatus.pending.rawValue)
-            .gt("expires_at", value: now)
-            .execute()
-        
-        return snapshot.value.compactMap(linkRequest(from:))
-    }
-    
-    func fetchPreviousRequests() async throws -> [LinkRequest] {
-        let context = try await userContext()
-        
-        let snapshot: PostgrestResponse<[LinkRequestRow]> = try await client
-            .from(table)
-            .select()
-            .eq("recipient_email", value: context.email)
-            .`in`("status", values: [
-                LinkRequestStatus.accepted.rawValue,
-                LinkRequestStatus.declined.rawValue,
-                LinkRequestStatus.rejected.rawValue
-            ])
-            .execute()
-        
-        return snapshot.value.compactMap(linkRequest(from:))
-    }
-    
-    func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult {
-        let context = try await userContext()
-        
-        let response: PostgrestResponse<[LinkRequestRow]> = try await client
-            .from(table)
-            .select()
-            .eq("id", value: requestId)
-            .limit(1)
-            .execute()
-        
-        guard let row = response.value.first else {
-            throw PayBackError.linkInvalid
-        }
-        
-        guard row.recipientEmail == context.email else {
-            throw PayBackError.linkInvalid
-        }
-        
-        guard row.expiresAt > Date() else {
-            throw PayBackError.linkExpired
-        }
-        
-        guard row.status == LinkRequestStatus.pending.rawValue else {
-            throw PayBackError.linkAlreadyClaimed
-        }
-        
-        _ = try await client
-            .from(table)
-            .update(["status": LinkRequestStatus.accepted.rawValue], returning: .minimal)
-            .eq("id", value: requestId)
-            .eq("status", value: LinkRequestStatus.pending.rawValue)
-            .execute() as PostgrestResponse<Void>
-        
-        return LinkAcceptResult(
-            linkedMemberId: row.targetMemberId,
-            linkedAccountId: context.id,
-            linkedAccountEmail: context.email
-        )
-    }
-    
-    func declineLinkRequest(_ requestId: UUID) async throws {
-        let context = try await userContext()
-        
-        let response: PostgrestResponse<[LinkRequestRow]> = try await client
-            .from(table)
-            .select()
-            .eq("id", value: requestId)
-            .limit(1)
-            .execute()
-        
-        guard let row = response.value.first else {
-            throw PayBackError.linkInvalid
-        }
-        
-        guard row.recipientEmail == context.email else {
-            throw PayBackError.linkInvalid
-        }
-        
-        struct DeclinePayload: Encodable {
-            let status: String
-            let rejectedAt: Date
-
-            enum CodingKeys: String, CodingKey {
-                case status
-                case rejectedAt = "rejected_at"
-            }
-        }
-
-        let payload = DeclinePayload(status: LinkRequestStatus.declined.rawValue, rejectedAt: Date())
-
-        _ = try await client
-            .from(table)
-            .update(payload, returning: .minimal)
-            .eq("id", value: requestId)
-            .execute() as PostgrestResponse<Void>
-    }
-    
-    func cancelLinkRequest(_ requestId: UUID) async throws {
-        let context = try await userContext()
-        
-        let response: PostgrestResponse<[LinkRequestRow]> = try await client
-            .from(table)
-            .select()
-            .eq("id", value: requestId)
-            .limit(1)
-            .execute()
-        
-        guard let row = response.value.first else {
-            throw PayBackError.linkInvalid
-        }
-        
-        guard row.requesterId == context.id else {
-            throw PayBackError.linkInvalid
-        }
-        
-        _ = try await client
-            .from(table)
-            .delete(returning: .minimal)
-            .eq("id", value: requestId)
-            .execute() as PostgrestResponse<Void>
-    }
-    
-    // MARK: - Helpers
-    
-    private func linkRequest(from row: LinkRequestRow) -> LinkRequest? {
-        guard let status = LinkRequestStatus(rawValue: row.status) else { return nil }
-        
-        return LinkRequest(
-            id: row.id,
-            requesterId: row.requesterId,
-            requesterEmail: row.requesterEmail,
-            requesterName: row.requesterName,
-            recipientEmail: row.recipientEmail,
-            targetMemberId: row.targetMemberId,
-            targetMemberName: row.targetMemberName,
-            createdAt: row.createdAt,
-            status: status,
-            expiresAt: row.expiresAt,
-            rejectedAt: row.rejectedAt
-        )
-    }
-
-    private func userContext() async throws -> SupabaseUserContext {
-        do {
-            return try await userContextProvider()
-        } catch {
-            throw PayBackError.authSessionMissing
-        }
-    }
-    
 }

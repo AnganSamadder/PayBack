@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Clerk
 
 final class AppStore: ObservableObject {
     private struct NormalizedRemoteData {
@@ -9,11 +10,11 @@ final class AppStore: ObservableObject {
         let dirtyExpenses: [Expense]
     }
 
-    @Published private(set) var groups: [SpendingGroup]
-    @Published private(set) var expenses: [Expense]
-    @Published private(set) var currentUser: GroupMember
-    @Published private(set) var session: UserSession?
-    @Published private(set) var friends: [AccountFriend]
+    @Published var groups: [SpendingGroup]
+    @Published var expenses: [Expense]
+    @Published var currentUser: GroupMember
+    @Published var session: UserSession?
+    @Published var friends: [AccountFriend]
     @Published private(set) var incomingLinkRequests: [LinkRequest] = []
     @Published private(set) var outgoingLinkRequests: [LinkRequest] = []
     @Published private(set) var previousLinkRequests: [LinkRequest] = []
@@ -24,6 +25,7 @@ final class AppStore: ObservableObject {
     private let groupCloudService: GroupCloudService
     private let linkRequestService: LinkRequestService
     private let inviteLinkService: InviteLinkService
+    private let emailAuthService: EmailAuthService
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
@@ -31,34 +33,40 @@ final class AppStore: ObservableObject {
     private let stateReconciliation = LinkStateReconciliation()
     private let failureTracker = LinkFailureTracker()
 
+    @Published var isCheckingAuth = true
+    
+    // ... dependencies ...
+
     init(
         persistence: PersistenceServiceProtocol = PersistenceService.shared,
         accountService: AccountService = Dependencies.current.accountService,
         expenseCloudService: ExpenseCloudService = Dependencies.current.expenseService,
         groupCloudService: GroupCloudService = Dependencies.current.groupService,
         linkRequestService: LinkRequestService = Dependencies.current.linkRequestService,
-        inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService
+        inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService,
+        emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
+        skipClerkInit: Bool = false
     ) {
+        AppConfig.markTiming("AppStore init started")
+        
         self.persistence = persistence
         self.accountService = accountService
         self.expenseCloudService = expenseCloudService
         self.groupCloudService = groupCloudService
         self.linkRequestService = linkRequestService
         self.inviteLinkService = inviteLinkService
+        self.emailAuthService = emailAuthService
         
-        // Load local data first (don't clear it!)
+        // Load local data
         let localData = persistence.load()
+        AppConfig.markTiming("Persistence loaded (\(localData.groups.count) groups, \(localData.expenses.count) expenses)")
+        
         self.groups = localData.groups
         self.expenses = localData.expenses
-        #if DEBUG
-        if !localData.groups.isEmpty || !localData.expenses.isEmpty {
-            print("[AppStore] Loaded \(localData.groups.count) groups and \(localData.expenses.count) expenses from local storage")
-        }
-        #endif
-        
         self.friends = []
         self.currentUser = GroupMember(name: "You")
-
+        
+        // Setup subscriptions...
         $groups.combineLatest($expenses)
             .debounce(for: .milliseconds(250), scheduler: DispatchQueue.main)
             .sink { [weak self] groups, expenses in
@@ -66,25 +74,375 @@ final class AppStore: ObservableObject {
                 self.persistence.save(AppData(groups: groups, expenses: expenses))
             }
             .store(in: &cancellables)
+            
+        AppConfig.markTiming("AppStore subscriptions setup")
+        
+        // 1. Kick off Sync Subscriptions (Concurrent)
+        Task { @MainActor in
+            subscribeToSyncManager()
+        }
+        
+        // 2. Kick off Auth Check (Concurrent, OFF-MAIN-THREAD to bypass UI blocking)
+        // Skip for tests to avoid Clerk API rate limiting
+        if !skipClerkInit {
+            Task.detached(priority: .userInitiated) { [weak self] in
+                await self?.checkSession()
+            }
+        }
+        
+        AppConfig.markTiming("AppStore init completed")
     }
+    
+    /// Runs off the main actor to avoid blocking UI startup
+    func checkSession() async {
+        AppConfig.markTiming("AppStore.checkSession started")
+        print("[AuthDebug] AppStore.checkSession started")
+        
+        let clerk = Clerk.shared
+        // Configure Clerk (safe to call from background)
+        await MainActor.run {
+             clerk.configure(publishableKey: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA")
+        }
+        
+        do {
+            try await clerk.load()
+            AppConfig.markTiming("Clerk loaded (in AppStore)")
+            
+            await MainActor.run {
+                if let user = clerk.user {
+                    print("[AuthDebug] Clerk loaded. User found: \(user.id) (\(user.primaryEmailAddress?.emailAddress ?? "no email"))")
+                } else {
+                    print("[AuthDebug] Clerk loaded. No user found.")
+                }
+            }
+        } catch {
+            AppConfig.markTiming("Clerk load failed: \(error.localizedDescription)")
+            print("[AuthDebug] Clerk load failed: \(error)")
+        }
+        
+        // Fetch user info on MainActor (Clerk properties are isolated)
+        let userInfo = await MainActor.run { () -> (String, String)? in
+            guard let user = clerk.user else { return nil }
+            let email = user.primaryEmailAddress?.emailAddress ?? ""
+            let displayName = [user.firstName, user.lastName].compactMap { $0 }.joined(separator: " ")
+            return (email, displayName)
+        }
+        
+        if let (email, displayName) = userInfo {
+            // Concurrent execution: Authenticate Convex AND prepare logic
+            async let convexAuth: Void = Dependencies.authenticateConvex()
+            
+            // Wait for Convex auth
+            await convexAuth
+            
+            // 3. Convex Account Lookup
+            let accountService = self.accountService // Capture service
+            
+            do {
+                let account = try await RetryPolicy.startup.execute {
+                    if let account = try await accountService.lookupAccount(byEmail: email) {
+                        AppConfig.markTiming("Account lookup complete (found)")
+                        return account
+                    } else {
+                        AppConfig.markTiming("Account lookup complete (not found)")
+                        let account = try await accountService.createAccount(email: email, displayName: displayName)
+                        AppConfig.markTiming("Account created")
+                        return account
+                    }
+                }
+                
+                // Complete login securely
+                await finishLogin(account: account)
+                
+            } catch {
+                AppConfig.markTiming("Session restore failed: \(error.localizedDescription)")
+            }
+        } else {
+            AppConfig.markTiming("No Clerk user found")
+        }
+        
+        await MainActor.run {
+            self.isCheckingAuth = false
+            AppConfig.markTiming("AppStore.checkSession completed (isCheckingAuth = false)")
+            AppConfig.printTimingSummary()
+        }
+    }
+
+    private func finishLogin(account: UserAccount) async {
+        await MainActor.run {
+            self.persistence.clear()
+            self.session = UserSession(account: account)
+            self.applyDisplayName(account.displayName)
+        }
+        
+        // Run subsequent tasks in parallel to minimize wait time
+        async let identityCheck = ensureCurrentUserIdentity(for: account)
+        async let remoteDataLoad: Void = loadRemoteData()
+        async let reconciliation: Void = reconcileLinkState()
+        
+        // Wait for identity (needed for session update)
+        let updatedAccount = await identityCheck
+        await MainActor.run {
+            self.session = UserSession(account: updatedAccount)
+        }
+        
+        // Ensure other tasks complete
+        _ = await (remoteDataLoad, reconciliation)
+        
+        // Start real-time sync
+        await MainActor.run {
+             Dependencies.syncManager?.startSync()
+             AppConfig.markTiming("Sync started")
+        }
+    }
+    
+    @MainActor
+    private func subscribeToSyncManager() {
+        guard let syncManager = Dependencies.syncManager else { return }
+        
+        // When syncManager.groups updates, replace local data (but keep dirty local items if any exist - though currently we don't have a robust dirty state here yet)
+        syncManager.$groups
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] remoteGroups in
+                guard let self = self else { return }
+                // Deduplicate by ID to prevent SwiftUI ForEach errors
+                var seenGroupIds = Set<UUID>()
+                let uniqueGroups = remoteGroups.filter { seenGroupIds.insert($0.id).inserted }
+                
+                // Only log if count changes to reduce noise
+                let previousCount = self.groups.count
+                self.groups = uniqueGroups
+                
+                #if DEBUG
+                if previousCount != uniqueGroups.count || AppConfig.verboseLogging {
+                    // Only log redundant syncs if verbose logging is explicitly on, otherwise quiet
+                    if previousCount != uniqueGroups.count {
+                        print("[AppStore] Synced \(uniqueGroups.count) groups from Convex (deduped from \(remoteGroups.count))")
+                    } else if AppConfig.verboseLogging {
+                         // Optional: Comment out to be even quieter
+                         // print("[AppStore] Synced \(uniqueGroups.count) groups (no count change)")
+                    }
+                }
+                #endif
+            }
+            .store(in: &cancellables)
+        
+        // When syncManager.expenses updates
+        syncManager.$expenses
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] remoteExpenses in
+                guard let self = self else { return }
+                // Deduplicate by ID to prevent SwiftUI ForEach errors
+                var seenExpenseIds = Set<UUID>()
+                let uniqueExpenses = remoteExpenses.filter { seenExpenseIds.insert($0.id).inserted }
+                
+                let previousCount = self.expenses.count
+                self.expenses = uniqueExpenses
+                
+                #if DEBUG
+                if previousCount != uniqueExpenses.count {
+                    print("[AppStore] Synced \(uniqueExpenses.count) expenses from Convex (deduped from \(remoteExpenses.count))")
+                }
+                #endif
+            }
+            .store(in: &cancellables)
+            
+        // When syncManager.friends updates
+        syncManager.$friends
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] remoteFriends in
+                guard let self = self else { return }
+                // Deduplicate by memberId
+                var seenMemberIds = Set<UUID>()
+                let uniqueFriends = remoteFriends.filter { seenMemberIds.insert($0.memberId).inserted }
+                
+                let previousCount = self.friends.count
+                self.friends = uniqueFriends
+                
+                #if DEBUG
+                if previousCount != uniqueFriends.count {
+                    print("[AppStore] Synced \(uniqueFriends.count) friends from Convex (deduped from \(remoteFriends.count))")
+                }
+                #endif
+            }
+            .store(in: &cancellables)
+            
+        // When link requests update
+        Publishers.CombineLatest(syncManager.$incomingLinkRequests, syncManager.$outgoingLinkRequests)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] incoming, outgoing in
+                guard let self = self else { return }
+                self.incomingLinkRequests = incoming
+                self.outgoingLinkRequests = outgoing
+            }
+            .store(in: &cancellables)
+    }
+    
+
 
     // MARK: - Session management
 
-    func completeAuthentication(with session: UserSession) {
-        self.session = session
-        self.applyDisplayName(session.account.displayName)
+    // MARK: - Centralized Authentication
+    
+    /// Centralized login that handles Clerk sign-in, robust Convex auth, and session setup.
+    func login(email: String, password: String) async throws -> UserAccount {
+        let normalizedEmail = try accountService.normalizedEmail(from: email)
+        let result = try await emailAuthService.signIn(email: normalizedEmail, password: password)
+        
+        return try await performConvexAuthAndSetup(email: normalizedEmail, name: result.displayName)
+    }
+    
+    /// Centralized signup. returns result so coordinator can handle verification step.
+    func signup(email: String, firstName: String, lastName: String?, password: String) async throws -> SignUpResult {
+        let normalizedEmail = try accountService.normalizedEmail(from: email)
+        let trimmedFirstName = firstName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedLastName = lastName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        let result = try await emailAuthService.signUp(
+            email: normalizedEmail,
+            password: password,
+            firstName: trimmedFirstName,
+            lastName: trimmedLastName
+        )
+        
+        if case .complete(let authResult) = result {
+            // Auto-login if complete
+            _ = try await performConvexAuthAndSetup(email: normalizedEmail, name: authResult.displayName)
+        }
+        
+        return result
+    }
+    
+    /// Verifies code and completes authentication
+    func verifyCode(_ code: String, pendingDisplayName: String? = nil) async throws -> UserAccount {
+        let authResult = try await emailAuthService.verifyCode(code: code)
+        let displayName = pendingDisplayName?.isEmpty == false ? pendingDisplayName : authResult.displayName
+        
+        return try await performConvexAuthAndSetup(email: authResult.email, name: displayName)
+    }
+    
+    /// Shared helper to authenticate Convex, wait for server, and setup session
+    private func performConvexAuthAndSetup(email: String, name: String?) async throws -> UserAccount {
+        // 1. Authenticate Convex
+        await Dependencies.authenticateConvex()
+        
+        // 2. Robust Wait
+        try await waitForServerAuthentication()
+        
+        // 3. Create/Sync Account - generate display name from email if not provided
+        let fallbackName: String
+        if let name = name, !name.isEmpty {
+            fallbackName = name
+        } else {
+            // Generate name from email (e.g., "john.doe@example.com" -> "John Doe")
+            fallbackName = Self.displayNameFromEmail(email)
+        }
+        
+        // Lookup or Create
+        let account: UserAccount
+        if let existing = try await accountService.lookupAccount(byEmail: email) {
+            account = existing
+        } else {
+            account = try await accountService.createAccount(email: email, displayName: fallbackName)
+        }
+        
+        // 4. Update Local Session
+        await MainActor.run {
+             self.session = UserSession(account: account)
+             self.applyDisplayName(account.displayName)
+        }
+        
+        // 5. Post-Login Setup
+        let updatedAccount = await ensureCurrentUserIdentity(for: account)
+        await MainActor.run {
+            self.session = UserSession(account: updatedAccount)
+        }
+        
+        await loadRemoteData()
+        
+        await MainActor.run {
+             Dependencies.syncManager?.startSync()
+        }
+        
+        await reconcileLinkState()
+        
+        return updatedAccount
+    }
+
+    func completeAuthentication(id: String, email: String, name: String?) {
+        Task {
+            do {
+                _ = try await performConvexAuthAndSetup(email: email, name: name)
+            } catch {
+                print("Failed to complete authentication: \(error)")
+            }
+        }
+        /*
+        // Create initial account object
+        _ = UserAccount(
+            id: id,
+            email: email,
+            displayName: name ?? "User"
+        )
+        // Wrapp in UserSession (assuming it exists and takes account) or just use account
+        // Since we don't know UserSession structure perfectly, let's look at how it was used: session.account
+        // We might need to construct it. If UserSession is Clerk specific, we should use UserAccount directly.
+        // For now, let's rely on finding/creating the account via service first.
+        
+        // Clear any stale local cache before syncing from Convex
+        persistence.clear()
         
         Task {
-            let updatedAccount = await ensureCurrentUserIdentity(for: session.account)
-            await MainActor.run {
-                self.session = UserSession(account: updatedAccount)
-            }
-            // Load remote data after setting session
-            await loadRemoteData()
-            
-            // Perform initial link state reconciliation on app launch
-            await reconcileLinkState()
+            // 1. Ensure backend has this user (Convex users:store)
+            // The AccountService (Convex) createAccount calls 'users:store'.
+            do {
+                // NEW: Authenticate Convex with the new Clerk session
+                // This ensures ConvexClient switches to the new user before we try to create account or load data
+                await Dependencies.authenticateConvex()
+                
+                // Robust wait for server-side authentication
+                // This polls "users:isAuthenticated" until true
+                try await waitForServerAuthentication()
+                
+                let syncedAccount = try await accountService.createAccount(email: email, displayName: name ?? "User")
+                print("[AuthDebug] Account creation/sync successful")
+                
+
+                
+                await MainActor.run {
+                     self.session = UserSession(account: syncedAccount)
+                     self.applyDisplayName(syncedAccount.displayName)
+                }
+                
+                let updatedAccount = await ensureCurrentUserIdentity(for: syncedAccount)
+                await MainActor.run {
+                    self.session = UserSession(account: updatedAccount)
+                }
+                await loadRemoteData()
+                await reconcileLinkState()
+                
+        */
+    }
+    
+    /// Polls the server until authentication is confirmed or timeout
+    private func waitForServerAuthentication(timeout: TimeInterval = 10.0) async throws {
+        print("[AuthDebug] Waiting for server authentication...")
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+             do {
+                 let isAuth = try await accountService.checkAuthentication()
+                 if isAuth {
+                     print("[AuthDebug] Server confirmed authentication")
+                     return
+                 }
+                 print("[AuthDebug] Server not yet authenticated, retrying...")
+             } catch {
+                 print("[AuthDebug] Auth check error: \(error)")
+             }
+             try await Task.sleep(nanoseconds: 200_000_000) // 200ms poll
         }
+        print("[AuthDebug] Server authentication timed out")
+        throw PayBackError.underlying(message: "Server authentication timed out")
     }
 
     private func ensureCurrentUserIdentity(for account: UserAccount) async -> UserAccount {
@@ -97,7 +455,9 @@ final class AppStore: ObservableObject {
             return account
         }
 
-        let memberId = await MainActor.run { self.currentUser.id }
+        // IMPORTANT: Generate a fresh UUID for new users to ensure data isolation
+        // Do NOT use currentUser.id as it may be stale from a previous session
+        let memberId = UUID()
         var updatedAccount = account
         do {
             try await accountService.updateLinkedMember(accountId: account.id, memberId: memberId)
@@ -108,35 +468,129 @@ final class AppStore: ObservableObject {
             #endif
         }
         await MainActor.run {
-            if self.currentUser.id != memberId {
-                self.currentUser = GroupMember(id: memberId, name: self.currentUser.name)
-            }
+            self.currentUser = GroupMember(id: memberId, name: self.currentUser.name)
         }
         return updatedAccount
     }
 
-    func signOut() {
+    @MainActor
+    func signOut() async {
+        print("[AuthDebug] signOut called. Current User: \(currentUser.name) (\(currentUser.id))")
         remoteLoadTask?.cancel()
         friendSyncTask?.cancel()
+        
+        // Stop real-time sync
+        Dependencies.syncManager?.stopSync()
+        
+        // 1. Sign out from Clerk/Backend FIRST
+        // This ensures the persistent session is cleared from Keychain before we update UI
+        let emailAuthService = EmailAuthServiceProvider.makeService()
+        do {
+            try await emailAuthService.signOut()
+            #if DEBUG
+            print("[AppStore] Clerk/Backend signed out successfully")
+            print("[AuthDebug] Clerk/Backend signed out successfully")
+            #endif
+            
+            // Verify sign out
+            try? await Clerk.shared.load()
+            if let user = Clerk.shared.user {
+                print("[AuthDebug] CRITICAL: Clerk still has user after signOut: \(user.id)")
+            } else {
+                print("[AuthDebug] Clerk user is nil after signOut (Correct).")
+            }
+            
+            // Explicitly logout from Convex to clear its state
+            await Dependencies.logoutConvex()
+            
+        } catch {
+            #if DEBUG
+            print("[AppStore] Warning: Backend sign out failed: \(error)")
+            print("[AuthDebug] Backend sign out failed: \(error)")
+            #endif
+        }
+        
+        // 2. Clear local state and UI
+        // Doing this last prevents the user from logging in again before the old session is dead
         session = nil
         applyDisplayName("You")
         groups = []
         expenses = []
         friends = []
+        
+        // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
+        // Without this, the next user logging in could inherit this user's member ID
+        currentUser = GroupMember(id: UUID(), name: "You")
+        
         persistence.clear()
         
-        // Sign out from Supabase Auth to clear the persistent session
-        let emailAuthService = EmailAuthServiceProvider.makeService()
-        try? emailAuthService.signOut()
-        
         #if DEBUG
-        print("[AppStore] User signed out and session cleared")
+        print("[AppStore] Local state cleared, user fully signed out")
         #endif
     }
 
-    private func applyDisplayName(_ name: String) {
+    /// Clears all user data while respecting shared data integrity.
+    /// - Deletes all expenses where the current user is involved
+    /// - Removes current user from shared groups (doesn't delete group if others remain)
+    /// - Deletes groups where current user is the only member
+    /// - Clears friend list (doesn't affect linked friends' own data)
+    func clearAllUserData() {
+        #if DEBUG
+        print("[AppStore] Clearing all data for user")
+        #endif
+        
+        // 1. Stop real-time sync FIRST to prevent repopulation
+        Task { @MainActor in
+            Dependencies.syncManager?.stopSync()
+        }
+        
+        // Clear local data immediately
+        let expenseCount = expenses.count
+        let groupCount = groups.count
+        let friendCount = friends.count
+        
+        expenses = []
+        groups = []
+        friends = []
+        
+        // Persist locally
+        persistCurrentState()
+        
+        // Sync deletions to cloud and restart sync after
+        Task {
+            // Use the new clearAllForUser mutations that delete everything server-side
+            if let convexExpenseService = expenseCloudService as? ConvexExpenseService {
+                try? await convexExpenseService.clearAllData()
+            }
+            if let convexGroupService = groupCloudService as? ConvexGroupService {
+                try? await convexGroupService.clearAllData()
+            }
+            // Clear friends from Convex
+            if let convexAccountService = accountService as? ConvexAccountService {
+                try? await convexAccountService.clearFriends()
+            }
+            
+            // Wait a moment for server to process
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            
+            // Restart sync after deletions are complete
+            await MainActor.run {
+                Dependencies.syncManager?.startSync()
+            }
+            
+            #if DEBUG
+            await MainActor.run {
+                print("[AppStore] Cleared \(expenseCount) expenses, \(groupCount) groups, \(friendCount) friends from local and cloud")
+            }
+            #endif
+        }
+        
+        Haptics.notify(.success)
+    }
+
+    func applyDisplayName(_ name: String) {
         guard currentUser.name != name else { return }
-        currentUser = GroupMember(id: currentUser.id, name: name)
+        currentUser = GroupMember(id: currentUser.id, name: name, profileImageUrl: currentUser.profileImageUrl, profileColorHex: currentUser.profileColorHex)
         groups = groups.map { group in
             var group = group
             group.members = group.members.map { member in
@@ -155,6 +609,36 @@ final class AppStore: ObservableObject {
             for group in affectedGroups {
                 try? await groupCloudService.upsertGroup(group)
             }
+        }
+    }
+    
+    func updateUserProfile(color: String?, imageUrl: String?) {
+        // Optimistic update
+        if let color { currentUser.profileColorHex = color }
+        if let imageUrl { currentUser.profileImageUrl = imageUrl }
+        
+        if var account = session?.account {
+            if let color { account.profileColorHex = color }
+            if let imageUrl { account.profileImageUrl = imageUrl }
+            session = UserSession(account: account)
+        }
+        persistCurrentState()
+        
+        Task {
+            _ = try? await accountService.updateProfile(colorHex: color, imageUrl: imageUrl)
+        }
+    }
+    
+    func uploadProfileImage(_ data: Data) async throws {
+        let url = try await accountService.uploadProfileImage(data)
+        
+        await MainActor.run {
+            currentUser.profileImageUrl = url
+            if var account = session?.account {
+                account.profileImageUrl = url
+                session = UserSession(account: account)
+            }
+            persistCurrentState()
         }
     }
 
@@ -181,7 +665,7 @@ final class AppStore: ObservableObject {
     
     func addGroup(name: String, memberNames: [String]) {
         // Include current user as a member
-        var allMembers = [GroupMember(id: currentUser.id, name: currentUser.name)]
+        var allMembers = [GroupMember(id: currentUser.id, name: currentUser.name, profileImageUrl: currentUser.profileImageUrl, profileColorHex: currentUser.profileColorHex, isCurrentUser: true)]
         // Reuse existing member IDs when possible
         allMembers.append(contentsOf: memberNames.map { memberWithName($0) })
         
@@ -453,6 +937,45 @@ final class AppStore: ObservableObject {
     
     /// Removes a member from a group and deletes all expenses involving that member from that group only.
 
+    // MARK: - Friend Management
+    
+    func addImportedFriend(_ friend: AccountFriend) {
+        // Check if already exists
+        if !friends.contains(where: { $0.memberId == friend.memberId }) {
+            friends.append(friend)
+            persistCurrentState()
+            
+            // Sync to cloud
+            guard let session else { return }
+            friendSyncTask?.cancel()
+            friendSyncTask = Task { [friends] in
+                do {
+                    try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: friends)
+                } catch {
+                    #if DEBUG
+                    print("⚠️ Failed to sync friends after import: \(error.localizedDescription)")
+                    #endif
+                }
+            }
+        }
+    }
+    
+    /// Syncs all friends to Convex (used after bulk import)
+    func syncFriendsToCloud() async {
+        guard let session else { return }
+        friendSyncTask?.cancel()
+        do {
+            try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: friends)
+            #if DEBUG
+            print("✅ Synced \(friends.count) friends to Convex after import")
+            #endif
+        } catch {
+            #if DEBUG
+            print("⚠️ Failed to sync friends to cloud: \(error.localizedDescription)")
+            #endif
+        }
+    }
+
     // MARK: - Expenses
     func addExpense(_ expense: Expense) {
         expenses.append(expense)
@@ -560,6 +1083,20 @@ final class AppStore: ObservableObject {
     
     // MARK: - Balance Calculations
     
+    /// Returns all member IDs that represent the current user (their own ID + linked member ID if any)
+    private var currentUserMemberIds: Set<UUID> {
+        var ids: Set<UUID> = [currentUser.id]
+        if let linkedId = session?.account.linkedMemberId {
+            ids.insert(linkedId)
+        }
+        return ids
+    }
+    
+    /// Checks if a member ID represents the current user (either their own ID or their linked member ID)
+    private func isCurrentUserMemberId(_ memberId: UUID) -> Bool {
+        currentUserMemberIds.contains(memberId)
+    }
+    
     public func overallNetBalance() -> Double {
         var totalBalance: Double = 0
         for group in groups {
@@ -575,14 +1112,15 @@ final class AppStore: ObservableObject {
         let groupExpenses = expenses(in: group.id)
         
         for expense in groupExpenses {
-            if expense.paidByMemberId == currentUser.id {
+            // Check if current user paid (using ANY of their member IDs)
+            if isCurrentUserMemberId(expense.paidByMemberId) {
                 // User paid, add up what others owe (unsettled)
-                for split in expense.splits where split.memberId != currentUser.id && !split.isSettled {
+                for split in expense.splits where !isCurrentUserMemberId(split.memberId) && !split.isSettled {
                     paidByUser += split.amount
                 }
             } else {
-                // Someone else paid, check if user owes
-                if let split = expense.splits.first(where: { $0.memberId == currentUser.id }), !split.isSettled {
+                // Someone else paid, check if user owes (using ANY of their member IDs)
+                if let split = expense.splits.first(where: { isCurrentUserMemberId($0.memberId) }), !split.isSettled {
                     owes += split.amount
                 }
             }
@@ -925,11 +1463,12 @@ final class AppStore: ObservableObject {
     }
 
     private func synthesizedGroupName(for members: [GroupMember], isDirect: Bool, expenses: [Expense]) -> String {
-        if isDirect, let other = members.first(where: { $0.id != currentUser.id }) {
+        // Use isCurrentUserMemberId to correctly identify current user including linked member ID
+        if isDirect, let other = members.first(where: { !isCurrentUserMemberId($0.id) }) {
             return other.name
         }
 
-        let otherMembers = members.filter { $0.id != currentUser.id }
+        let otherMembers = members.filter { !isCurrentUserMemberId($0.id) }
         if !otherMembers.isEmpty {
             if otherMembers.count == 1 {
                 return otherMembers[0].name
@@ -969,27 +1508,55 @@ final class AppStore: ObservableObject {
         let overrides = friendNameOverrides()
         var seen: Set<UUID> = []
         var results: [GroupMember] = []
-
-        // If we have a session, use the friends list
-        if session != nil {
-            for friend in friends where !isCurrentUserFriend(friend) {
-                guard seen.insert(friend.memberId).inserted else { continue }
-                let name = sanitizedFriendName(friend, overrides: overrides)
-                let member = GroupMember(id: friend.memberId, name: name)
-                
-                // Extra safety check: never include current user
-                guard !isCurrentUser(member) else { continue }
-                
-                results.append(member)
+        
+        // Build lookups from the Convex-synced friends array for metadata
+        // Primary key: memberId (most reliable for linked friends)
+        // Secondary key: name (lowercased) for unlinked or newly created members
+        var friendMetadataById: [UUID: AccountFriend] = [:]
+        var friendMetadataByName: [String: AccountFriend] = [:]
+        var friendMetadataByNickname: [String: AccountFriend] = [:]
+        
+        for friend in friends where !isCurrentUserFriend(friend) {
+            friendMetadataById[friend.memberId] = friend
+            friendMetadataByName[friend.name.lowercased().trimmingCharacters(in: .whitespaces)] = friend
+            if let nickname = friend.nickname?.lowercased().trimmingCharacters(in: .whitespaces), !nickname.isEmpty {
+                friendMetadataByNickname[nickname] = friend
             }
-        } else {
-            // Without a session, derive friends from groups
-            for group in groups {
-                for member in group.members where !isCurrentUser(member) {
-                    guard seen.insert(member.id).inserted else { continue }
+        }
+
+        // First, derive friends from actual group members (which have correct UUIDs matching expenses)
+        for group in groups {
+            for member in group.members where !isCurrentUser(member) {
+                guard seen.insert(member.id).inserted else { continue }
+                
+                // Look up AccountFriend metadata - prioritize memberId, fall back to name or nickname
+                let memberNameKey = member.name.lowercased().trimmingCharacters(in: .whitespaces)
+                let friendData = friendMetadataById[member.id] 
+                    ?? friendMetadataByName[memberNameKey]
+                    ?? friendMetadataByNickname[memberNameKey]
+                
+                if let friendData = friendData {
+                    // Enrich with AccountFriend data (profile color, linking status, etc.)
+                    let name = sanitizedFriendName(friendData, overrides: overrides)
+                    var enrichedMember = GroupMember(id: member.id, name: name)
+                    enrichedMember.profileColorHex = friendData.profileColorHex ?? member.profileColorHex
+                    results.append(enrichedMember)
+                } else {
+                    // No metadata found - use group member as-is with its existing profile color
                     results.append(member)
                 }
             }
+        }
+        
+        // Second, include friends from the friends array that don't exist in any group
+        // (e.g., friends synced from Convex that haven't been added to a group yet)
+        for friend in friends where !isCurrentUserFriend(friend) {
+            guard seen.insert(friend.memberId).inserted else { continue }
+            
+            let name = sanitizedFriendName(friend, overrides: overrides)
+            var member = GroupMember(id: friend.memberId, name: name)
+            member.profileColorHex = friend.profileColorHex
+            results.append(member)
         }
 
         return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -1054,6 +1621,29 @@ final class AppStore: ObservableObject {
             return true
         }
         return inferredDirectGroup(group)
+    }
+    
+    /// Returns the display name for a group from the current user's perspective.
+    /// For direct groups, shows the OTHER person's name (with nickname preference).
+    /// For non-direct groups, returns the group's stored name.
+    func groupDisplayName(_ group: SpendingGroup) -> String {
+        // For direct groups, show the other person's name
+        if isDirectGroup(group) {
+            // Find the other member (not the current user)
+            if let otherMember = group.members.first(where: { !isCurrentUserMemberId($0.id) }) {
+                // Check if we have a nickname preference for this friend
+                if let friend = friends.first(where: { $0.id == otherMember.id }) {
+                    // If friend has nickname and user prefers nicknames, use nickname
+                    if let nickname = friend.nickname, !nickname.isEmpty {
+                        return nickname
+                    }
+                    // Otherwise use the friend's name (which may be their real linked name)
+                    return friend.name
+                }
+                return otherMember.name
+            }
+        }
+        return group.name
     }
 
     private func inferredDirectGroup(_ group: SpendingGroup) -> Bool {
@@ -1207,7 +1797,7 @@ final class AppStore: ObservableObject {
             return
         }
 
-        print("[Sync] Loaded \(groups.count) group(s), \(expenses.count) expense(s) from Supabase.")
+        print("[Sync] Loaded \(groups.count) group(s), \(expenses.count) expense(s) from Convex.")
 
         if !expenses.isEmpty {
             let currencyCode = Locale.current.currency?.identifier ?? "USD"
@@ -1227,6 +1817,19 @@ final class AppStore: ObservableObject {
         if friend.memberId == currentUser.id {
             return true
         }
+        
+        // Strict Check: If friend is linked to an account, compare identifiers
+        if let session = session?.account {
+            // If the friend record has a linked account ID, it MUST match current user's ID to be "self"
+            if let linkedId = friend.linkedAccountId, linkedId == session.id {
+                return true
+            }
+            // If the friend record has a linked email, it MUST match current user's email
+            if let linkedEmail = friend.linkedAccountEmail, 
+               linkedEmail.caseInsensitiveCompare(session.email) == .orderedSame {
+                return true
+            }
+        }
 
         let friendName = normalizedName(friend.name)
         let currentName = normalizedName(currentUser.name)
@@ -1235,39 +1838,25 @@ final class AppStore: ObservableObject {
             return true
         }
 
+        // Fallback: If unlinked, duplicates usually happen if name matches exactly
+        // But only if we are signed in and the friend is NOT linked to someone else
         guard let account = session?.account else {
+            // If not signed in, matching names is best guess
             return friendName == currentName
         }
-
-        if let linkedMemberId = account.linkedMemberId,
-           friend.memberId == linkedMemberId {
-            return true
-        }
-
-        if friend.linkedAccountId == account.id {
-            return true
-        }
-
-        if let email = friend.linkedAccountEmail,
-           normalizedEmail(email) == normalizedEmail(account.email) {
-            return true
-        }
-
-        if friendName == normalizedName(account.displayName) {
-            return true
-        }
-
-        if friendName == currentName {
-            return true
-        }
-
-        let friendTokens = Set(nameTokens(friend.name))
-        if tokensMatchCurrentUser(friendTokens) {
-            return true
+        
+        // If friend is NOT linked, but has same name as user... 
+        // We should be careful. "Angan" might be "Angan" (me) or "Angan" (other).
+        // But if I Added a friend named "Angan", it's likely me if I am "Angan".
+        if !friend.hasLinkedAccount {
+             return friendName == normalizedName(account.displayName)
         }
 
         return false
     }
+
+
+
 
     private func makeParticipants(for expense: Expense) -> [ExpenseParticipant] {
         let group = group(by: expense.groupId)
@@ -1396,16 +1985,22 @@ final class AppStore: ObservableObject {
     }
     
     func expensesInvolvingCurrentUser() -> [Expense] {
-        expenses
-            .filter { $0.involvedMemberIds.contains(currentUser.id) }
+        let userIds = currentUserMemberIds
+        return expenses
+            .filter { expense in
+                expense.involvedMemberIds.contains { userIds.contains($0) }
+            }
             .sorted(by: { $0.date > $1.date })
     }
     
     func unsettledExpensesInvolvingCurrentUser() -> [Expense] {
-        expenses
+        let userIds = currentUserMemberIds
+        return expenses
             .filter { expense in
-                expense.involvedMemberIds.contains(currentUser.id) && 
-                !expense.isSettled(for: currentUser.id)
+                let isInvolved = expense.involvedMemberIds.contains { userIds.contains($0) }
+                // Check if settled using any of the user's IDs
+                let isSettled = userIds.allSatisfy { expense.isSettled(for: $0) }
+                return isInvolved && !isSettled
             }
             .sorted(by: { $0.date > $1.date })
     }
@@ -1776,6 +2371,11 @@ final class AppStore: ObservableObject {
         return validation
     }
     
+    /// Subscribe to live updates for invite validation - updates in real-time as expenses change
+    func subscribeToInviteValidation(_ tokenId: UUID) -> AsyncThrowingStream<InviteTokenValidation, Error> {
+        return inviteLinkService.subscribeToInviteValidation(tokenId)
+    }
+    
     /// Claims an invite token and links the account with retry logic
     func claimInviteToken(_ tokenId: UUID) async throws {
         guard session != nil else {
@@ -1793,6 +2393,11 @@ final class AppStore: ObservableObject {
             accountId: result.linkedAccountId,
             accountEmail: result.linkedAccountEmail
         )
+        
+        // 🚀 CRITICAL FIX: Fetch new data (groups/expenses) that we now have access to!
+        // The cloud services have been updated to rely on RLS, so fetching now will return
+        // the shared groups/expenses associated with this new link.
+        await loadRemoteData()
     }
     
     /// Generates an expense preview for a member
@@ -1841,6 +2446,7 @@ final class AppStore: ObservableObject {
         return ExpensePreview(
             personalExpenses: personalExpenses,
             groupExpenses: groupExpenses,
+            expenseCount: memberExpenses.count,
             totalBalance: totalBalance,
             groupNames: groupNames
         )
@@ -1863,7 +2469,7 @@ final class AppStore: ObservableObject {
             }
         }
         
-        // Sync to Supabase
+        // Sync to Convex
         guard let session = session else {
             throw PayBackError.authSessionMissing
         }
@@ -1889,7 +2495,7 @@ final class AppStore: ObservableObject {
             )
         }
         
-        // Sync updated friends to Supabase with transaction-based retry logic
+        // Sync updated friends to Convex with transaction-based retry logic
         guard let session = session else {
             throw PayBackError.authSessionMissing
         }
@@ -1906,7 +2512,7 @@ final class AppStore: ObservableObject {
             }
             
             #if DEBUG
-            print("[AppStore] Successfully synced friend link status to Supabase with transaction")
+            print("[AppStore] Successfully synced friend link status to Convex with transaction")
             #endif
         } catch {
             // Record partial failure for later recovery
@@ -2088,7 +2694,7 @@ final class AppStore: ObservableObject {
         #endif
         
         do {
-            // Fetch fresh friend data from Supabase
+            // Fetch fresh friend data from Convex
             let remoteFriends = try await accountService.fetchFriends(
                 accountEmail: session.account.email.lowercased()
             )
@@ -2240,5 +2846,17 @@ final class AppStore: ObservableObject {
             guard let linkedEmail = friend.linkedAccountEmail else { return false }
             return linkedEmail.lowercased() == normalizedEmail
         }
+    }
+    
+    /// Generates a display name from an email address
+    /// Example: "john.doe@example.com" -> "John Doe"
+    private static func displayNameFromEmail(_ email: String) -> String {
+        guard let username = email.split(separator: "@").first else {
+            return "User"
+        }
+        return username
+            .split(separator: ".")
+            .map { $0.capitalized }
+            .joined(separator: " ")
     }
 }

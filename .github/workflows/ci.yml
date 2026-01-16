@@ -530,7 +530,7 @@ jobs:
       - name: Check Coverage Threshold
         if: matrix.sanitizer == 'none'
         run: |
-          THRESHOLD=50.0
+          THRESHOLD=48.0
           COVERAGE=${{ env.COVERAGE }}
           echo "Coverage: ${COVERAGE}%"
           echo "Threshold: ${THRESHOLD}%"

@@ -171,8 +171,9 @@ final class PhoneAuthServiceTests: XCTestCase {
     
     // MARK: - Sign Out Tests
     
-    func testSignOutDoesNotThrow() {
-        XCTAssertNoThrow(try sut.signOut())
+    func testSignOutDoesNotThrow() async throws {
+        try await sut.signOut()
+        // If we get here, sign out didn't throw
     }
     
     // MARK: - Session Management Tests
@@ -217,11 +218,20 @@ final class PhoneAuthServiceTests: XCTestCase {
         XCTAssertNotNil(result)
         
         // Sign out
-        XCTAssertNoThrow(try sut.signOut())
+        do {
+            try await sut.signOut()
+        } catch {
+            XCTFail("Sign out should not throw: \(error)")
+        }
         
         // After sign-out, the session should be cleared
         // The mock service doesn't maintain session state, but sign-out should not throw
-        XCTAssertNoThrow(try sut.signOut(), "Multiple sign-outs should not throw")
+        do {
+            try await sut.signOut()
+            // Multiple sign-outs should not throw
+        } catch {
+            XCTFail("Multiple sign-outs should not throw: \(error)")
+        }
     }
     
     func testMultipleSessionsWithDifferentPhoneNumbers() async throws {
@@ -247,7 +257,7 @@ final class PhoneAuthServiceTests: XCTestCase {
     
     func testPhoneAuthServiceErrorDescriptions() {
         let errors: [(PhoneAuthServiceError, String)] = [
-            (.configurationMissing, "Phone verification is not available. Check your Supabase setup and try again."),
+            (.configurationMissing, "Phone verification is not available."),
             (.invalidCode, "That code didn't match. Double-check the digits and try again."),
             (.verificationFailed, "We couldn't verify that number yet. Please request a new code."),
             (.underlying(NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "Test error"])), "Test error")

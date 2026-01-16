@@ -6,12 +6,19 @@ final class AuthCoordinatorTests: XCTestCase {
     var coordinator: AuthCoordinator!
     var mockAccountService: TestAccountService!
     var mockEmailAuthService: TestEmailAuthService!
+    var mockStore: AppStore!
     
     override func setUp() async throws {
         try await super.setUp()
         mockAccountService = TestAccountService()
         mockEmailAuthService = TestEmailAuthService()
+        mockStore = AppStore(
+            accountService: mockAccountService,
+            emailAuthService: mockEmailAuthService,
+            skipClerkInit: true
+        )
         coordinator = AuthCoordinator(
+            store: mockStore,
             accountService: mockAccountService,
             emailAuthService: mockEmailAuthService
         )
@@ -21,6 +28,7 @@ final class AuthCoordinatorTests: XCTestCase {
         coordinator = nil
         mockAccountService = nil
         mockEmailAuthService = nil
+        mockStore = nil
         try await super.tearDown()
     }
     
@@ -48,15 +56,15 @@ final class AuthCoordinatorTests: XCTestCase {
     
     // MARK: - SignOut Tests
     
-    func testSignOut_Success() {
-        coordinator.signOut()
+    func testSignOut_Success() async {
+        await coordinator.signOut()
         XCTAssertEqual(coordinator.route, .login)
         XCTAssertTrue(mockEmailAuthService.signOutCalled)
     }
     
-    func testSignOut_WhenEmailAuthServiceThrows_StillSetsLoginRoute() {
+    func testSignOut_WhenEmailAuthServiceThrows_StillSetsLoginRoute() async {
         mockEmailAuthService.shouldThrowOnSignOut = true
-        coordinator.signOut()
+        await coordinator.signOut()
         XCTAssertEqual(coordinator.route, .login)
     }
     
@@ -92,7 +100,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: testEmail,
-            displayName: "Test User"
+            firstName: "Test",
+            lastName: "User"
         )
         await mockAccountService.setExistingAccount(existingAccount)
         
@@ -116,7 +125,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "456",
             email: testEmail,
-            displayName: "New User"
+            firstName: "New",
+            lastName: "User"
         )
         await mockAccountService.setExistingAccount(nil)
         await mockAccountService.setCreatedAccount(UserAccount(
@@ -145,7 +155,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "789",
             email: testEmail,
-            displayName: ""
+            firstName: nil,
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(nil)
         await mockAccountService.setCreatedAccount(UserAccount(
@@ -180,7 +191,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         await mockAccountService.setShouldThrowOnLookup(true, error: PayBackError.networkUnavailable)
         
@@ -196,7 +208,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(UserAccount(
             id: "123",
@@ -215,7 +228,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(UserAccount(
             id: "123",
@@ -245,18 +259,19 @@ final class AuthCoordinatorTests: XCTestCase {
         let testPassword = "password123"
         let testDisplayName = "New User"
         
-        mockEmailAuthService.signUpResult = EmailAuthSignInResult(
+        mockEmailAuthService.signUpResult = .complete(EmailAuthSignInResult(
             uid: "new123",
             email: testEmail,
-            displayName: testDisplayName
-        )
+            firstName: "New",
+            lastName: "User"
+        ))
         await mockAccountService.setCreatedAccount(UserAccount(
             id: "new123",
             email: testEmail,
             displayName: testDisplayName
         ))
         
-        await coordinator.signup(emailInput: testEmail, displayName: testDisplayName, password: testPassword)
+        await coordinator.signup(emailInput: testEmail, firstName: "New", lastName: "User", password: testPassword)
         
         XCTAssertFalse(coordinator.isBusy)
         XCTAssertNil(coordinator.errorMessage)
@@ -272,30 +287,32 @@ final class AuthCoordinatorTests: XCTestCase {
     func testSignup_TrimsDisplayName() async {
         let testEmail = "test@example.com"
         let testPassword = "password123"
-        let testDisplayName = "  Trimmed Name  "
+        _ = "  Trimmed Name  "
         
-        mockEmailAuthService.signUpResult = EmailAuthSignInResult(
+        mockEmailAuthService.signUpResult = .complete(EmailAuthSignInResult(
             uid: "123",
             email: testEmail,
-            displayName: "Trimmed Name"
-        )
+            firstName: "Trimmed",
+            lastName: "Name"
+        ))
         await mockAccountService.setCreatedAccount(UserAccount(
             id: "123",
             email: testEmail,
             displayName: "Trimmed Name"
         ))
         
-        await coordinator.signup(emailInput: testEmail, displayName: testDisplayName, password: testPassword)
+        await coordinator.signup(emailInput: testEmail, firstName: "  Trimmed  ", lastName: "  Name  ", password: testPassword)
         
         XCTAssertTrue(mockEmailAuthService.signUpCalled)
-        XCTAssertEqual(mockEmailAuthService.lastSignUpDisplayName, "Trimmed Name")
+        XCTAssertEqual(mockEmailAuthService.lastSignUpFirstName, "Trimmed")
+        XCTAssertEqual(mockEmailAuthService.lastSignUpLastName, "Name")
     }
     
     func testSignup_Failure_EmailAlreadyInUse() async {
         mockEmailAuthService.shouldThrowOnSignUp = true
         mockEmailAuthService.errorToThrow = PayBackError.accountDuplicate(email: "existing@example.com")
         
-        await coordinator.signup(emailInput: "existing@example.com", displayName: "Test", password: "password")
+        await coordinator.signup(emailInput: "existing@example.com", firstName: "Test", lastName: nil, password: "password")
         
         XCTAssertFalse(coordinator.isBusy)
         XCTAssertNotNil(coordinator.errorMessage)
@@ -306,7 +323,7 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.shouldThrowOnSignUp = true
         mockEmailAuthService.errorToThrow = PayBackError.authWeakPassword
         
-        await coordinator.signup(emailInput: "test@example.com", displayName: "Test", password: "123")
+        await coordinator.signup(emailInput: "test@example.com", firstName: "Test", lastName: nil, password: "123")
         
         XCTAssertFalse(coordinator.isBusy)
         XCTAssertNotNil(coordinator.errorMessage)
@@ -315,18 +332,19 @@ final class AuthCoordinatorTests: XCTestCase {
     
     func testSignup_NormalizesEmail() async {
         let testEmail = "  NEW@EXAMPLE.COM  "
-        mockEmailAuthService.signUpResult = EmailAuthSignInResult(
+        mockEmailAuthService.signUpResult = .complete(EmailAuthSignInResult(
             uid: "123",
             email: "new@example.com",
-            displayName: "Test"
-        )
+            firstName: "Test",
+            lastName: nil
+        ))
         await mockAccountService.setCreatedAccount(UserAccount(
             id: "123",
             email: "new@example.com",
             displayName: "Test"
         ))
         
-        await coordinator.signup(emailInput: testEmail, displayName: "Test", password: "password")
+        await coordinator.signup(emailInput: testEmail, firstName: "Test", lastName: nil, password: "password")
         
         XCTAssertTrue(mockEmailAuthService.signUpCalled)
         XCTAssertEqual(mockEmailAuthService.lastSignUpEmail, "new@example.com")
@@ -335,15 +353,16 @@ final class AuthCoordinatorTests: XCTestCase {
     func testSignup_WhenAccountCreationFailsWithSessionMissing_SetsInfoMessage() async {
         let testEmail = "verify@example.com"
         
-        mockEmailAuthService.signUpResult = EmailAuthSignInResult(
+        mockEmailAuthService.signUpResult = .complete(EmailAuthSignInResult(
             uid: "new123",
             email: testEmail,
-            displayName: "Test"
-        )
+            firstName: "Test",
+            lastName: nil
+        ))
         // Simulate sign up success but create account failure due to session missing (email verification needed)
         await mockAccountService.setShouldThrowOnCreate(true, error: PayBackError.authSessionMissing)
         
-        await coordinator.signup(emailInput: testEmail, displayName: "Test", password: "password")
+        await coordinator.signup(emailInput: testEmail, firstName: "Test", lastName: nil, password: "password")
         
         XCTAssertFalse(coordinator.isBusy)
         XCTAssertNil(coordinator.errorMessage)
@@ -413,7 +432,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         
         await coordinator.login(emailInput: "test@example.com", password: "password")
@@ -448,7 +468,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "john@example.com",
-            displayName: ""
+            firstName: nil,
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(nil)
         await mockAccountService.setCreatedAccount(UserAccount(
@@ -467,7 +488,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "mary.jane.watson@example.com",
-            displayName: ""
+            firstName: nil,
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(nil)
         await mockAccountService.setCreatedAccount(UserAccount(
@@ -489,7 +511,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(UserAccount(
             id: "123",
@@ -521,6 +544,7 @@ final class AuthCoordinatorTests: XCTestCase {
     
     func testRunBusyTask_ClearsErrorAndInfoMessages() async {
         coordinator = AuthCoordinator(
+            store: mockStore,
             accountService: mockAccountService,
             emailAuthService: mockEmailAuthService
         )
@@ -534,7 +558,8 @@ final class AuthCoordinatorTests: XCTestCase {
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
-            displayName: "Test"
+            firstName: "Test",
+            lastName: nil
         )
         await mockAccountService.setExistingAccount(UserAccount(
             id: "123",
@@ -638,26 +663,47 @@ actor TestAccountService: AccountService {
     ) async throws {
         // No-op for tests
     }
+    
+    func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
+        return imageUrl
+    }
+    
+    func uploadProfileImage(_ data: Data) async throws -> String {
+        return "https://example.com/mock.jpg"
+    }
+    
+    func checkAuthentication() async throws -> Bool {
+        return true
+    }
 }
 
 final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     var signInResult: EmailAuthSignInResult?
-    var signUpResult: EmailAuthSignInResult?
+    var signUpResult: SignUpResult?
+    var verifyCodeResult: EmailAuthSignInResult?
     var shouldThrowOnSignIn = false
     var shouldThrowOnSignUp = false
+    var shouldThrowOnVerifyCode = false
     var shouldThrowOnPasswordReset = false
     var shouldThrowOnSignOut = false
     var errorToThrow: Error = PayBackError.authInvalidCredentials(message: "Invalid credentials")
+    
     var signInCalled = false
     var signUpCalled = false
+    var verifyCodeCalled = false
     var sendPasswordResetCalled = false
     var signOutCalled = false
+    
     var lastSignInEmail: String?
     var lastSignUpEmail: String?
-    var lastSignUpDisplayName: String?
+    var lastSignUpFirstName: String?
+    var lastSignUpLastName: String?
+    var lastVerifyCode: String?
     var lastPasswordResetEmail: String?
+    
     var signInDelay: TimeInterval = 0
     var passwordResetDelay: TimeInterval = 0
+    
     var signInCallCount = 0
     var passwordResetCallCount = 0
     
@@ -681,10 +727,11 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
         return result
     }
     
-    func signUp(email: String, password: String, displayName: String) async throws -> EmailAuthSignInResult {
+    func signUp(email: String, password: String, firstName: String, lastName: String?) async throws -> SignUpResult {
         signUpCalled = true
         lastSignUpEmail = email
-        lastSignUpDisplayName = displayName
+        lastSignUpFirstName = firstName
+        lastSignUpLastName = lastName
         
         if shouldThrowOnSignUp {
             throw errorToThrow
@@ -692,6 +739,21 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
         
         guard let result = signUpResult else {
             throw PayBackError.underlying(message: "Sign up error")
+        }
+        
+        return result
+    }
+    
+    func verifyCode(code: String) async throws -> EmailAuthSignInResult {
+        verifyCodeCalled = true
+        lastVerifyCode = code
+        
+        if shouldThrowOnVerifyCode {
+            throw errorToThrow
+        }
+        
+        guard let result = verifyCodeResult else {
+            throw PayBackError.authInvalidCredentials(message: "Invalid verification code")
         }
         
         return result
@@ -711,11 +773,15 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
         }
     }
     
-    func signOut() throws {
+    func signOut() async throws {
         signOutCalled = true
         
         if shouldThrowOnSignOut {
             throw PayBackError.underlying(message: "Sign out error")
         }
+    }
+    
+    func resendConfirmationEmail(email: String) async throws {
+        // Mock implementation for testings
     }
 }
