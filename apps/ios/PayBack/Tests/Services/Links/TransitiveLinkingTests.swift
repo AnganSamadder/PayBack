@@ -14,7 +14,6 @@ final class TransitiveLinkingTests: XCTestCase {
         // When: B accepts A's invite
         // Then: Only A-B is linked
         
-        let userA = createMockUser(email: "a@test.com")
         let userB = createMockUser(email: "b@test.com")
         let memberB = GroupMember(id: UUID(), name: "B")
         
@@ -137,7 +136,6 @@ final class TransitiveLinkingTests: XCTestCase {
         // Then: Only A-B is linked, D-B is NOT linked
         
         let memberB = GroupMember(id: UUID(), name: "B")
-        let memberD = GroupMember(id: UUID(), name: "D")
         
         // D's friend record should NOT be updated since no shared group
         let friendFromDPerspective = AccountFriend(

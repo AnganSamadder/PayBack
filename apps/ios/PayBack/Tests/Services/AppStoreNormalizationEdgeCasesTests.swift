@@ -50,7 +50,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     func testNormalizeGroup_WithAliasButNoCurrentUser() async throws {
         // This triggers the path where containsAlias && !containsCurrent
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "John Doe")
-        let session = UserSession(account: account)
         
         // Create a group with an alias (same name as current user, different ID)
         let aliasId = UUID()
@@ -80,7 +79,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testNormalizeGroup_WithMultipleAliases() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Jane Smith")
-        let session = UserSession(account: account)
         
         // Create multiple aliases for the same user
         let alias1 = GroupMember(id: UUID(), name: "Jane Smith")
@@ -110,7 +108,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testNormalizeGroup_WithDuplicateMemberIds() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         
         // Create group with duplicate member IDs (should be deduplicated)
         let alice = GroupMember(name: "Alice")
@@ -137,7 +134,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testNormalizeGroup_InferDirectGroup() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -170,7 +166,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testNormalizeExpenses_WithAliasInPaidBy() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "John Doe")
-        let session = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -216,7 +211,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testNormalizeExpenses_WithAliasInSplits() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Jane Smith")
-        let session = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -263,7 +257,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testNormalizeExpenses_WithMultipleAliasesInSameSplit() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Alice Wonder")
-        let session = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -317,7 +310,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testNormalizeExpenses_WithAliasInInvolvedMembers() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -365,7 +357,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testNormalizeExpenses_WithSettledSplits() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "User One")
-        let session = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -418,7 +409,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testSynthesizeGroup_WithOrphanExpenses() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -475,7 +465,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testSynthesizeGroup_WithParticipantNames() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -521,7 +510,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testSynthesizeGroup_DirectGroupInference() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -559,7 +547,6 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
     
     func testSynthesizeGroup_WithMultipleExpensesAndNames() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         
         // Complete authentication first to establish currentUser
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
