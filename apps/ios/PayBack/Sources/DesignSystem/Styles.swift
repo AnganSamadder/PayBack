@@ -437,7 +437,8 @@ struct AvatarView: View {
     }
     
     private var initials: String {
-        let components = name.components(separatedBy: .whitespaces)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = trimmedName.split(whereSeparator: { $0.isWhitespace })
         let firstInitial = components.first?.first.map(String.init) ?? ""
         let lastInitial = components.count > 1 ? components.last?.first.map(String.init) ?? "" : ""
         return (firstInitial + lastInitial).uppercased()
@@ -457,7 +458,9 @@ struct AvatarView: View {
         let colors: [Color] = [
             .blue, .green, .orange, .purple, .pink, .red, .indigo, .teal, .cyan, .mint
         ]
-        return colors[Int(hash) % colors.count]
+        // Use modulo on UInt first to avoid overflow when converting to Int
+        let index = Int(hash % UInt(colors.count))
+        return colors[index]
     }
     
     /// DJB2 hash algorithm - produces stable hash values across app launches
