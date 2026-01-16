@@ -151,8 +151,6 @@ final class MockInviteLinkServiceTests: XCTestCase {
         let service = MockInviteLinkService.shared
         
         let inviteLink = try await service.generateInviteLink(targetMemberId: UUID(), targetMemberName: "Test")
-        let activeBeforeRevoke = try await service.fetchActiveInvites()
-        let countBefore = activeBeforeRevoke.filter { $0.id == inviteLink.token.id }.count
         
         try await service.revokeInvite(inviteLink.token.id)
         

@@ -48,7 +48,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testLinkAccount_SuccessfullyLinksAccount() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -85,7 +84,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testLinkAccount_HandlesErrors() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -122,7 +120,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testUpdateFriendLinkStatus_UpdatesLocalFriendState() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -170,7 +167,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testSyncAffectedData_SyncsGroupsWithLinkedMember() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -223,7 +219,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testSyncAffectedData_HandlesMultipleExpenses() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -276,7 +271,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testReconcileLinkState_UpdatesLocalStateFromRemote() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -317,7 +311,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testReconcileLinkState_HandlesPartiallyLinkedFriends() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -370,7 +363,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testRetryFailedLinkOperations_RetriesPendingFailures() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -386,7 +378,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testSendLinkRequest_ThrowsForAlreadyLinkedMember() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -416,7 +407,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testSendLinkRequest_ThrowsForAccountAlreadyLinkedToAnotherMember() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -449,7 +439,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testClaimInviteToken_SuccessfullyClaimsToken() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -474,7 +463,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testClaimInviteToken_HandlesInvalidToken() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -489,7 +477,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testClaimInviteToken_HandlesExpiredToken() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -506,7 +493,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testValidateInviteToken_ReturnsValidationForValidToken() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -531,7 +517,6 @@ final class AppStoreLinkingTests: XCTestCase {
     func testValidateInviteToken_HandlesInvalidToken() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         

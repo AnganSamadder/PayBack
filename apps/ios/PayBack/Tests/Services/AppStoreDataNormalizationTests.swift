@@ -48,7 +48,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeGroup_RemovesDuplicateMembersByName() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -79,7 +78,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_UpdatesExpensesWithAliasIds() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -120,7 +118,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizeGroupsIfNeeded_CreatesGroupForOrphanExpense() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -147,7 +144,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizeGroup_CreatesGroupWithMembersFromExpenses() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -195,7 +191,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizedGroupName_UsesDescriptiveNameForMultipleMembers() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -234,7 +229,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizedGroupName_UsesOtherPersonNameForDirectGroup() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -269,7 +263,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testResolveMemberName_UsesCurrentUserNameForCurrentUser() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -297,7 +290,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testResolveMemberName_UsesMostCommonNameForMember() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -351,7 +343,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testLooksLikeCurrentUserName_MatchesWithDiacritics() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "José García")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -365,7 +356,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testLooksLikeCurrentUserName_MatchesPartialTokens() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "John Michael Smith")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -379,7 +369,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testLooksLikeCurrentUserName_DoesNotMatchUnrelatedNames() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "John Smith")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -398,7 +387,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testFriendNameOverrides_UsesNicknameWhenAvailable() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         
         let memberId = UUID()
         let friend = AccountFriend(
@@ -429,7 +417,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSanitizedFriendName_UsesOriginalNameWhenNoOverride() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         
         let memberId = UUID()
         let friend = AccountFriend(
@@ -462,7 +449,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testMergeFriends_CombinesRemoteAndDerivedFriends() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -494,7 +480,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testMergeFriends_PrefersRemoteFriendData() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -526,7 +511,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_WithChainedAliases() async throws {
         // Given: expense uses alias1, which maps to alias2, which maps to canonical
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -570,7 +554,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_WithMultipleAliasesPerMember() async throws {
         // Given: member has 3 different IDs in different expenses
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -630,7 +613,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_WithAliasInPaidBy() async throws {
         // Given: expense.paidByMemberId is an alias
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -670,7 +652,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_WithAliasInInvolvedMembers() async throws {
         // Given: involvedMemberIds contains aliases
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -714,7 +695,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_WithDuplicateInvolvedMembers() async throws {
         // Given: involvedMemberIds has [alias1, alias2] that map to same member
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -757,7 +737,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_AggregatesSplitsForSameMember() async throws {
         // Given: expense has 2 splits for same member (via aliases)
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -801,7 +780,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_PreservesSettledStatusWhenAggregating() async throws {
         // Given: 2 splits for same member, one settled, one not
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -847,7 +825,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeGroup_WithTripleDuplicateMembers() async throws {
         // Given: group has 3 members with same name, different IDs
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -879,7 +856,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeGroup_WithCurrentUserAlias() async throws {
         // Given: group has member with current user's name but different ID
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -909,7 +885,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeGroup_WithOnlyAliases() async throws {
         // Given: group has only alias members, no canonical
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -935,7 +910,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeGroup_MarksAsDirectWhenTwoMembers() async throws {
         // Given: group has 2 members, isDirect=false
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -964,7 +938,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizeGroup_WithFivePlusMembers() async throws {
         // Given: orphan expenses with 5+ unique members
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -997,7 +970,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizeGroup_WithNoParticipantNames() async throws {
         // Given: expenses have no participantNames map
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1029,7 +1001,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizeGroup_WithMixedNameSources() async throws {
         // Given: some members have names in participantNames, some don't
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1063,7 +1034,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizeGroup_UsesEarliestExpenseDate() async throws {
         // Given: multiple expenses with different dates
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1119,7 +1089,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testResolveMemberName_PrefersNonCurrentUserName() async throws {
         // Given: candidates include current user name and other names
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1159,7 +1128,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testResolveMemberName_UsesCachedName() async throws {
         // Given: member ID in cache with valid name
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1188,7 +1156,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testResolveMemberName_UsesFriendName() async throws {
         // Given: member in friends list
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1227,7 +1194,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testResolveMemberName_UsesFallbackForUnknown() async throws {
         // Given: no cache, no candidates, no friend
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1259,7 +1225,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizedGroupName_WithTwoMembers() async throws {
         // Given: direct group with 2 members
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1296,7 +1261,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizedGroupName_WithThreeMembers() async throws {
         // Given: 3 members (current + 2 others)
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1336,7 +1300,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizedGroupName_WithFourMembers() async throws {
         // Given: 4 members
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1371,7 +1334,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizedGroupName_WithFivePlusMembers() async throws {
         // Given: 5+ members
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1406,7 +1368,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizedGroupName_FallsBackToImportedGroup() async throws {
         // Given: many members, no expense description
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1443,7 +1404,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_WithAliasInPaidByAndSplits() async throws {
         // Given: expense with alias as payer AND in splits
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1488,7 +1448,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_WithMultipleAliasesAggregatesSplits() async throws {
         // Given: expense with multiple alias IDs that should aggregate
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1532,7 +1491,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_WithSettledAndUnsettledAliasesAggregatesCorrectly() async throws {
         // Given: multiple alias splits with different settled states
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1571,7 +1529,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeExpenses_WithAliasInInvolvedMembersDeduplicates() async throws {
         // Given: expense with duplicate alias IDs in involvedMemberIds
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1615,7 +1572,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeGroup_WithAliasButNoCurrentUserAddsCurrentUser() async throws {
         // Given: group with only aliases, no actual current user
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1649,7 +1605,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeGroup_WithCurrentUserAndAliasKeepsOnlyCurrentUser() async throws {
         // Given: group with both current user and alias
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1680,7 +1635,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeGroup_WithDuplicateCurrentUserIdDeduplicates() async throws {
         // Given: group with duplicate current user IDs
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1708,7 +1662,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testNormalizeGroup_InfersDirectGroupWhenTwoMembers() async throws {
         // Given: group with 2 members, isDirect=false
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1735,7 +1688,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizeGroup_WithOrphanExpensesCreatesGroup() async throws {
         // Given: expenses without corresponding group
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1781,7 +1733,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizeGroup_UsesParticipantNamesForMembers() async throws {
         // Given: orphan expense with participant names
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1824,7 +1775,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizeGroup_InfersDirectGroupForTwoMembers() async throws {
         // Given: orphan expense with 2 members
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -1858,7 +1808,6 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     func testSynthesizeGroup_AlwaysIncludesCurrentUser() async throws {
         // Given: orphan expense without current user in involved members
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        let session = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
