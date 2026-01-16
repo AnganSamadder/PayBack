@@ -13,6 +13,22 @@ echo "=========================================="
 cd "$(dirname "$0")/.."
 
 # ----------------------------------------------------------------------------
+# Simulator validation
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- Simulator Check ---"
+
+# Get the first available iPhone simulator
+AVAILABLE_SIM=$(xcrun simctl list devices iPhone available 2>/dev/null | grep -E "iPhone.*\(" | head -1 || echo "")
+if [ -n "$AVAILABLE_SIM" ]; then
+	echo "Available simulator: $AVAILABLE_SIM"
+else
+	echo "WARNING: No iPhone simulators found!"
+	echo "Available devices:"
+	xcrun simctl list devices available 2>/dev/null | head -20 || true
+fi
+
+# ----------------------------------------------------------------------------
 # Environment diagnostics
 # ----------------------------------------------------------------------------
 echo ""
@@ -22,6 +38,7 @@ echo "CI_XCODE_SCHEME: ${CI_XCODE_SCHEME:-unset}"
 echo "CI_XCODEBUILD_ACTION: ${CI_XCODEBUILD_ACTION:-unset}"
 echo "CI_BUILD_NUMBER: ${CI_BUILD_NUMBER:-unset}"
 echo "CI_WORKFLOW: ${CI_WORKFLOW:-unset}"
+echo "CI_PRODUCT_PLATFORM: ${CI_PRODUCT_PLATFORM:-unset}"
 
 echo ""
 echo "--- Node/npx Status ---"
