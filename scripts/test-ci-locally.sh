@@ -11,6 +11,9 @@
 #
 # Environment Variables:
 #   SANITIZER: none (default, enables coverage), thread, or address
+#   CI_FLAVOR: xcodecloud (enables XcodeCloud parity mode)
+#   DERIVED_DATA_PATH: custom DerivedData path (default: ./DerivedDataCI in xcodecloud mode)
+#   FAIL_ON_WARNINGS: 1 (fail if any warnings are detected)
 
 set -e
 
@@ -26,111 +29,158 @@ NC='\033[0m' # No Color
 # Configuration
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SANITIZER="${SANITIZER:-none}"
+CI_FLAVOR="${CI_FLAVOR:-github}"
+FAIL_ON_WARNINGS="${FAIL_ON_WARNINGS:-0}"
+
+# XcodeCloud parity mode settings
+if [ "$CI_FLAVOR" = "xcodecloud" ]; then
+	DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$PROJECT_ROOT/DerivedDataCI}"
+	XCODECLOUD_MODE=true
+else
+	DERIVED_DATA_PATH=""
+	XCODECLOUD_MODE=false
+fi
 
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}  PayBack CI Test - Complete GitHub Actions Simulation${NC}"
+if [ "$XCODECLOUD_MODE" = true ]; then
+	echo -e "${BLUE}  PayBack CI Test - XcodeCloud Parity Mode${NC}"
+else
+	echo -e "${BLUE}  PayBack CI Test - Complete GitHub Actions Simulation${NC}"
+fi
 echo -e "${BLUE}  Unit Tests + Coverage Analysis${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo ""
 
 cd "$PROJECT_ROOT"
 
-# Step 1: Show Xcode version
-echo -e "${YELLOW}[1/8] Checking Xcode version...${NC}"
-xcodebuild -version | head -1
+# =============================================================================
+# Environment Snapshot (helps debug XcodeCloud vs local differences)
+# =============================================================================
+echo -e "${YELLOW}[1/9] Environment Snapshot...${NC}"
+HOST_ARCH=$(uname -m)
+echo "  Host architecture: $HOST_ARCH"
+xcodebuild -version | head -2 | sed 's/^/  /'
+echo "  CI_FLAVOR: $CI_FLAVOR"
+echo "  SANITIZER: $SANITIZER"
+echo "  FAIL_ON_WARNINGS: $FAIL_ON_WARNINGS"
+
+# Check if Intel simulator is being attempted
+if [ "$HOST_ARCH" = "x86_64" ]; then
+	echo ""
+	echo -e "${YELLOW}⚠ Intel Mac detected.${NC}"
+	echo -e "${YELLOW}  ConvexMobile XCFramework only ships arm64 simulator slices.${NC}"
+	echo -e "${YELLOW}  Simulator builds will fail. Use device builds or Apple Silicon.${NC}"
+	echo ""
+fi
+
+if [ "$XCODECLOUD_MODE" = true ]; then
+	echo "  DerivedData path: $DERIVED_DATA_PATH"
+fi
+echo -e "${GREEN}✓ Environment captured${NC}"
 echo ""
 
-# Step 3: Clean simulators
-echo -e "${YELLOW}[2/8] Cleaning simulators...${NC}"
+# =============================================================================
+# Clean simulators
+# =============================================================================
+echo -e "${YELLOW}[2/9] Cleaning simulators...${NC}"
 xcrun simctl delete unavailable 2>/dev/null || true
 echo -e "${GREEN}✓ Cleaned${NC}"
 echo ""
 
-# Step 4: Check xcpretty
-echo -e "${YELLOW}[3/8] Checking xcpretty...${NC}"
-if ! command -v xcpretty &> /dev/null; then
-  echo "xcpretty not found - output will be raw"
-  echo "Install it with: gem install xcpretty"
-  XCPRETTY_AVAILABLE=false
+# =============================================================================
+# Check xcpretty
+# =============================================================================
+echo -e "${YELLOW}[3/9] Checking xcpretty...${NC}"
+if ! command -v xcpretty &>/dev/null; then
+	echo "xcpretty not found - output will be raw"
+	echo "Install it with: gem install xcpretty"
+	XCPRETTY_AVAILABLE=false
 else
-  echo -e "${GREEN}✓ xcpretty available${NC}"
-  XCPRETTY_AVAILABLE=true
+	echo -e "${GREEN}✓ xcpretty available${NC}"
+	XCPRETTY_AVAILABLE=true
 fi
 echo ""
 
-# Step 5: Generate Xcode project
-echo -e "${YELLOW}[4/8] Generating project...${NC}"
-if command -v xcodegen &> /dev/null; then
-  if xcodegen generate > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ Generated${NC}"
-  else
-    echo -e "${YELLOW}⚠ Generation had warnings (continuing)${NC}"
-  fi
+# =============================================================================
+# Generate Xcode project
+# =============================================================================
+echo -e "${YELLOW}[4/9] Generating project...${NC}"
+if command -v xcodegen &>/dev/null; then
+	if xcodegen generate >/dev/null 2>&1; then
+		echo -e "${GREEN}✓ Generated${NC}"
+	else
+		echo -e "${YELLOW}⚠ Generation had warnings (continuing)${NC}"
+	fi
 else
-  echo -e "${YELLOW}⚠ xcodegen not found - using existing project${NC}"
+	echo -e "${YELLOW}⚠ xcodegen not found - using existing project${NC}"
 fi
 echo ""
 
-# Step 6: Resolve dependencies
-echo -e "${YELLOW}[5/8] Resolving dependencies...${NC}"
+# =============================================================================
+# Resolve dependencies
+# =============================================================================
+echo -e "${YELLOW}[5/9] Resolving dependencies...${NC}"
 
 # Check if gtimeout is available (from coreutils)
 TIMEOUT_CMD=""
-if command -v gtimeout &> /dev/null; then
-  TIMEOUT_CMD="gtimeout"
-elif command -v timeout &> /dev/null; then
-  TIMEOUT_CMD="timeout"
+if command -v gtimeout &>/dev/null; then
+	TIMEOUT_CMD="gtimeout"
+elif command -v timeout &>/dev/null; then
+	TIMEOUT_CMD="timeout"
 fi
 
 # Check if dependencies are already resolved
 if [ -f "PayBack.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved" ]; then
-  echo "Dependencies already resolved (Package.resolved exists)"
-  echo -e "${GREEN}✓ Already resolved${NC}"
+	echo "Dependencies already resolved (Package.resolved exists)"
+	echo -e "${GREEN}✓ Already resolved${NC}"
 else
-  # Kill any existing xcodebuild processes that might be hanging
-  pkill -9 xcodebuild 2>/dev/null || true
-  sleep 1
+	# Kill any existing xcodebuild processes that might be hanging
+	pkill -9 xcodebuild 2>/dev/null || true
+	sleep 1
 
-  # Resolve with timeout and visible output
-  echo "Resolving Swift Package dependencies (this may take 2-3 minutes)..."
-  RESOLVE_LOG="/tmp/resolve-deps-$$.log"
+	# Resolve with timeout and visible output
+	echo "Resolving Swift Package dependencies (this may take 2-3 minutes)..."
+	RESOLVE_LOG="/tmp/resolve-deps-$$.log"
 
-  RESOLVE_CMD="xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj"
-  
-  if [ -n "$TIMEOUT_CMD" ]; then
-    if $TIMEOUT_CMD 600 $RESOLVE_CMD > "$RESOLVE_LOG" 2>&1; then
-      echo -e "${GREEN}✓ Resolved${NC}"
-    else
-      RESOLVE_EXIT=$?
-      if [ $RESOLVE_EXIT -eq 124 ]; then
-        echo -e "${RED}✗ Dependency resolution timed out after 10 minutes${NC}"
-        echo ""
-        echo "Last 30 lines of output:"
-        tail -30 "$RESOLVE_LOG"
-        rm -f "$RESOLVE_LOG"
-        exit 1
-      else
-        echo -e "${YELLOW}⚠ Dependency resolution had issues (continuing)${NC}"
-        tail -10 "$RESOLVE_LOG" 2>/dev/null || true
-      fi
-    fi
-  else
-    echo -e "${YELLOW}⚠ No timeout command available, resolving without timeout...${NC}"
-    if $RESOLVE_CMD > "$RESOLVE_LOG" 2>&1; then
-      echo -e "${GREEN}✓ Resolved${NC}"
-    else
-      echo -e "${YELLOW}⚠ Dependency resolution had issues (continuing)${NC}"
-      tail -10 "$RESOLVE_LOG" 2>/dev/null || true
-    fi
-  fi
+	RESOLVE_CMD="xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj"
 
-  rm -f "$RESOLVE_LOG"
+	if [ -n "$TIMEOUT_CMD" ]; then
+		if $TIMEOUT_CMD 600 $RESOLVE_CMD >"$RESOLVE_LOG" 2>&1; then
+			echo -e "${GREEN}✓ Resolved${NC}"
+		else
+			RESOLVE_EXIT=$?
+			if [ $RESOLVE_EXIT -eq 124 ]; then
+				echo -e "${RED}✗ Dependency resolution timed out after 10 minutes${NC}"
+				echo ""
+				echo "Last 30 lines of output:"
+				tail -30 "$RESOLVE_LOG"
+				rm -f "$RESOLVE_LOG"
+				exit 1
+			else
+				echo -e "${YELLOW}⚠ Dependency resolution had issues (continuing)${NC}"
+				tail -10 "$RESOLVE_LOG" 2>/dev/null || true
+			fi
+		fi
+	else
+		echo -e "${YELLOW}⚠ No timeout command available, resolving without timeout...${NC}"
+		if $RESOLVE_CMD >"$RESOLVE_LOG" 2>&1; then
+			echo -e "${GREEN}✓ Resolved${NC}"
+		else
+			echo -e "${YELLOW}⚠ Dependency resolution had issues (continuing)${NC}"
+			tail -10 "$RESOLVE_LOG" 2>/dev/null || true
+		fi
+	fi
+
+	rm -f "$RESOLVE_LOG"
 fi
 echo ""
 
-# Step 7: Select simulator
-echo -e "${YELLOW}[6/8] Selecting iPhone simulator...${NC}"
-SIMULATOR_INFO=$(python3 <<'PY'
+# =============================================================================
+# Select simulator
+# =============================================================================
+echo -e "${YELLOW}[6/9] Selecting iPhone simulator...${NC}"
+SIMULATOR_INFO=$(
+	python3 <<'PY'
 import json
 import subprocess
 import sys
@@ -215,8 +265,8 @@ PY
 )
 
 if [ $? -ne 0 ]; then
-  echo -e "${RED}✗ Failed to select simulator${NC}"
-  exit 1
+	echo -e "${RED}✗ Failed to select simulator${NC}"
+	exit 1
 fi
 
 SIMULATOR_NAME=$(echo "$SIMULATOR_INFO" | awk -F':::' '{print $1}')
@@ -227,100 +277,202 @@ echo -e "${GREEN}✓ Selected: ${SIMULATOR_NAME} (iOS ${SIMULATOR_OS})${NC}"
 echo -e "  UDID: ${SIMULATOR_UDID}"
 echo ""
 
-# Step 8: Boot simulator
-echo -e "${YELLOW}[7/8] Booting simulator...${NC}"
+# =============================================================================
+# Boot simulator
+# =============================================================================
+echo -e "${YELLOW}[7/9] Booting simulator...${NC}"
 xcrun simctl boot "$SIMULATOR_UDID" 2>/dev/null || echo "Already booted"
 xcrun simctl bootstatus "$SIMULATOR_UDID" -b 2>/dev/null || true
 echo -e "${GREEN}✓ Ready${NC}"
 echo ""
 
-# Step 9: Run tests
-echo -e "${YELLOW}[8/8] Running tests (sanitizer: ${SANITIZER})...${NC}"
+# =============================================================================
+# Build and Test (XcodeCloud parity or standard)
+# =============================================================================
+echo -e "${YELLOW}[8/9] Running tests (sanitizer: ${SANITIZER}, mode: ${CI_FLAVOR})...${NC}"
 echo ""
-rm -rf TestResults.xcresult coverage-report.txt coverage.json test_output.log 2>/dev/null || true
+rm -rf TestResults.xcresult coverage-report.txt coverage.json test_output.log build_output.log 2>/dev/null || true
+
+# Clean DerivedData in XcodeCloud mode for fresh builds
+if [ "$XCODECLOUD_MODE" = true ]; then
+	echo "Cleaning DerivedData for XcodeCloud parity..."
+	rm -rf "$DERIVED_DATA_PATH" 2>/dev/null || true
+	mkdir -p "$DERIVED_DATA_PATH"
+fi
 
 # Determine sanitizer flags
 SANITIZER_FLAGS=""
 if [ "$SANITIZER" = "none" ]; then
-  SANITIZER_FLAGS="-enableCodeCoverage YES"
+	SANITIZER_FLAGS="-enableCodeCoverage YES"
 elif [ "$SANITIZER" = "thread" ]; then
-  SANITIZER_FLAGS="-enableThreadSanitizer YES"
+	SANITIZER_FLAGS="-enableThreadSanitizer YES"
 elif [ "$SANITIZER" = "address" ]; then
-  SANITIZER_FLAGS="-enableAddressSanitizer YES"
+	SANITIZER_FLAGS="-enableAddressSanitizer YES"
 fi
 
-# Run tests
+# Build derived data argument
+DERIVED_DATA_ARG=""
+if [ -n "$DERIVED_DATA_PATH" ]; then
+	DERIVED_DATA_ARG="-derivedDataPath '$DERIVED_DATA_PATH'"
+fi
+
 export NSUnbufferedIO=YES
 
-echo "Running all tests..."
-echo "This may take 2-5 minutes depending on your machine..."
-echo "Progress will be shown below..."
-echo ""
+# In XcodeCloud mode, run build-for-testing first (like XcodeCloud does)
+if [ "$XCODECLOUD_MODE" = true ]; then
+	echo "Running build-for-testing (XcodeCloud parity)..."
+	echo ""
 
-TEST_CMD="xcodebuild test \
-  -project PayBack.xcodeproj \
-  -scheme PayBack \
-  -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
-  $SANITIZER_FLAGS \
-  -parallel-testing-enabled NO \
-  -resultBundlePath TestResults.xcresult"
+	BUILD_CMD="xcodebuild build-for-testing \
+    -project PayBack.xcodeproj \
+    -scheme PayBack \
+    -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
+    $SANITIZER_FLAGS \
+    $DERIVED_DATA_ARG \
+    -parallel-testing-enabled NO"
+
+	set +e
+	if [ "$XCPRETTY_AVAILABLE" = true ]; then
+		eval "$BUILD_CMD" 2>&1 | tee build_output.log | xcpretty --color --simple
+		BUILD_EXIT_CODE=${PIPESTATUS[0]}
+	else
+		eval "$BUILD_CMD" 2>&1 | tee build_output.log
+		BUILD_EXIT_CODE=${PIPESTATUS[0]}
+	fi
+	set -e
+
+	if [ $BUILD_EXIT_CODE -ne 0 ]; then
+		echo -e "${RED}✗ Build failed${NC}"
+
+		# Check for warnings
+		WARNING_COUNT=$(grep -c "warning:" build_output.log 2>/dev/null || echo "0")
+		if [ "$WARNING_COUNT" -gt 0 ]; then
+			echo ""
+			echo -e "${YELLOW}Found $WARNING_COUNT warning(s):${NC}"
+			grep "warning:" build_output.log | head -20 | sed 's/^/  /'
+		fi
+
+		exit 1
+	fi
+
+	echo -e "${GREEN}✓ Build succeeded${NC}"
+	echo ""
+
+	# Now run test-without-building
+	echo "Running test-without-building..."
+	echo ""
+
+	TEST_CMD="xcodebuild test-without-building \
+    -project PayBack.xcodeproj \
+    -scheme PayBack \
+    -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
+    $DERIVED_DATA_ARG \
+    -parallel-testing-enabled NO \
+    -resultBundlePath TestResults.xcresult"
+else
+	# Standard mode: just run tests
+	echo "Running all tests..."
+	echo "This may take 2-5 minutes depending on your machine..."
+	echo ""
+
+	TEST_CMD="xcodebuild test \
+    -project PayBack.xcodeproj \
+    -scheme PayBack \
+    -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
+    $SANITIZER_FLAGS \
+    -parallel-testing-enabled NO \
+    -resultBundlePath TestResults.xcresult"
+fi
 
 # Use timeout if available (30 minutes max for all tests)
 if [ -n "$TIMEOUT_CMD" ]; then
-  TEST_CMD="$TIMEOUT_CMD 1800 $TEST_CMD"
+	TEST_CMD="$TIMEOUT_CMD 1800 $TEST_CMD"
 fi
 
 # Show progress while tests run
 if [ "$XCPRETTY_AVAILABLE" = true ]; then
-  set +e
-  eval "$TEST_CMD" 2>&1 | tee test_output.log | xcpretty --color --simple
-  TEST_EXIT_CODE=${PIPESTATUS[0]}
-  set -e
-  
-  # Check actual test results instead of just exit code
-  ACTUAL_FAILURES=$(grep -E "Test Case.*failed \(" test_output.log 2>/dev/null | wc -l | xargs)
-  TEST_RESULTS=$(grep -E "Executed.*tests.*with.*failure" test_output.log 2>/dev/null | tail -1)
-  
-  if [ $TEST_EXIT_CODE -eq 124 ]; then
-    echo -e "${RED}✗ Tests timed out after 30 minutes${NC}"
-    TEST_SUCCESS=false
-  elif [ "$ACTUAL_FAILURES" = "0" ] && [[ "$TEST_RESULTS" == *"0 failures"* ]]; then
-    TEST_SUCCESS=true
-  elif [ $TEST_EXIT_CODE -eq 0 ]; then
-    TEST_SUCCESS=true
-  else
-    TEST_SUCCESS=false
-  fi
+	set +e
+	eval "$TEST_CMD" 2>&1 | tee test_output.log | xcpretty --color --simple
+	TEST_EXIT_CODE=${PIPESTATUS[0]}
+	set -e
+
+	# Check actual test results instead of just exit code
+	ACTUAL_FAILURES=$(grep -E "Test Case.*failed \(" test_output.log 2>/dev/null | wc -l | xargs)
+	TEST_RESULTS=$(grep -E "Executed.*tests.*with.*failure" test_output.log 2>/dev/null | tail -1)
+
+	if [ $TEST_EXIT_CODE -eq 124 ]; then
+		echo -e "${RED}✗ Tests timed out after 30 minutes${NC}"
+		TEST_SUCCESS=false
+	elif [ "$ACTUAL_FAILURES" = "0" ] && [[ "$TEST_RESULTS" == *"0 failures"* ]]; then
+		TEST_SUCCESS=true
+	elif [ $TEST_EXIT_CODE -eq 0 ]; then
+		TEST_SUCCESS=true
+	else
+		TEST_SUCCESS=false
+	fi
 else
-  echo "Note: Install xcpretty for better output (gem install xcpretty)"
-  echo ""
-  set +e
-  eval "$TEST_CMD" 2>&1 | tee test_output.log
-  TEST_EXIT_CODE=${PIPESTATUS[0]}
-  set -e
-  
-  if [ $TEST_EXIT_CODE -eq 124 ]; then
-    echo -e "${RED}✗ Tests timed out after 30 minutes${NC}"
-    TEST_SUCCESS=false
-  elif [ $TEST_EXIT_CODE -eq 0 ]; then
-    TEST_SUCCESS=true
-  else
-    TEST_SUCCESS=false
-  fi
+	echo "Note: Install xcpretty for better output (gem install xcpretty)"
+	echo ""
+	set +e
+	eval "$TEST_CMD" 2>&1 | tee test_output.log
+	TEST_EXIT_CODE=${PIPESTATUS[0]}
+	set -e
+
+	if [ $TEST_EXIT_CODE -eq 124 ]; then
+		echo -e "${RED}✗ Tests timed out after 30 minutes${NC}"
+		TEST_SUCCESS=false
+	elif [ $TEST_EXIT_CODE -eq 0 ]; then
+		TEST_SUCCESS=true
+	else
+		TEST_SUCCESS=false
+	fi
 fi
 
 echo ""
 
+# =============================================================================
+# Warning Analysis
+# =============================================================================
+echo -e "${YELLOW}[9/9] Analyzing warnings...${NC}"
+
+# Combine build and test logs for warning analysis
+cat build_output.log test_output.log 2>/dev/null >combined_output.log || cp test_output.log combined_output.log 2>/dev/null || true
+
+WARNING_COUNT=$(grep -c "warning:" combined_output.log 2>/dev/null || echo "0")
+if [ "$WARNING_COUNT" -gt 0 ]; then
+	echo -e "${YELLOW}Found $WARNING_COUNT warning(s)${NC}"
+	echo ""
+	echo "Unique warnings (first 15):"
+	grep "warning:" combined_output.log 2>/dev/null | sort -u | head -15 | sed 's/^/  /'
+	echo ""
+
+	if [ "$FAIL_ON_WARNINGS" = "1" ]; then
+		echo -e "${RED}✗ FAIL_ON_WARNINGS is enabled and warnings were found${NC}"
+		WARNINGS_FAILED=true
+	else
+		echo -e "${YELLOW}⚠ Set FAIL_ON_WARNINGS=1 to fail on warnings${NC}"
+		WARNINGS_FAILED=false
+	fi
+else
+	echo -e "${GREEN}✓ No warnings detected${NC}"
+	WARNINGS_FAILED=false
+fi
+
+rm -f combined_output.log 2>/dev/null || true
+echo ""
+
+# =============================================================================
 # Generate coverage and summary
+# =============================================================================
 echo -e "${YELLOW}Generating coverage report...${NC}"
 echo ""
 
 # Generate coverage if enabled
 if [ "$SANITIZER" = "none" ] && [ -d "TestResults.xcresult" ]; then
-  echo "Analyzing coverage data..."
-  
-  if xcrun xccov view --report --json TestResults.xcresult > coverage.json 2>&1; then
-    python3 <<'PYCOV'
+	echo "Analyzing coverage data..."
+
+	if xcrun xccov view --report --json TestResults.xcresult >coverage.json 2>&1; then
+		python3 <<'PYCOV'
 import json
 import sys
 from pathlib import Path
@@ -405,18 +557,6 @@ print(f"{BLUE}{'=' * 80}{NC}\n")
 print(f"{MAGENTA}{'═' * 80}{NC}")
 print(f"{MAGENTA}FUNCTIONAL CODE (Models, Services, Business Logic){NC}")
 print(f"{MAGENTA}{'═' * 80}{NC}\n")
-
-# Group functional files by feature
-functional_features = {}
-for path, cov in functional_files:
-    if '/' in path:
-        feature = path.split('/')[0]
-    else:
-        feature = 'Root'
-    
-    if feature not in functional_features:
-        functional_features[feature] = []
-    functional_features[feature].append((path, cov))
 
 # Print top 20 lowest coverage functional files for improvement focus
 print(f"{CYAN}Files needing attention (lowest coverage):{NC}")
@@ -540,34 +680,44 @@ with open('coverage-report.txt', 'w') as f:
 
 print(f"{GREEN}✓ Coverage report saved to coverage-report.txt{NC}")
 PYCOV
-  else
-    echo -e "${YELLOW}⚠ Failed to generate coverage report${NC}"
-  fi
+	else
+		echo -e "${YELLOW}⚠ Failed to generate coverage report${NC}"
+	fi
 else
-  if [ "$SANITIZER" != "none" ]; then
-    echo "Coverage disabled when using sanitizers"
-  else
-    echo -e "${YELLOW}⚠ No test results found for coverage${NC}"
-  fi
+	if [ "$SANITIZER" != "none" ]; then
+		echo "Coverage disabled when using sanitizers"
+	else
+		echo -e "${YELLOW}⚠ No test results found for coverage${NC}"
+	fi
 fi
 
 echo ""
 
+# =============================================================================
 # Final summary
+# =============================================================================
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-if [ "$TEST_SUCCESS" = true ]; then
-  echo -e "${GREEN}  ✓ ALL TESTS PASSED${NC}"
+if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ]; then
+	echo -e "${GREEN}  ✓ ALL TESTS PASSED${NC}"
+	if [ "$XCODECLOUD_MODE" = true ]; then
+		echo -e "${GREEN}  ✓ XcodeCloud parity mode completed successfully${NC}"
+	fi
 else
-  echo -e "${RED}  ✗ SOME TESTS FAILED${NC}"
+	if [ "$TEST_SUCCESS" != true ]; then
+		echo -e "${RED}  ✗ SOME TESTS FAILED${NC}"
+	fi
+	if [ "$WARNINGS_FAILED" = true ]; then
+		echo -e "${RED}  ✗ WARNINGS DETECTED (FAIL_ON_WARNINGS=1)${NC}"
+	fi
 fi
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo ""
 
 # Cleanup
-rm -f test_output.log 2>/dev/null || true
+rm -f test_output.log build_output.log 2>/dev/null || true
 
-if [ "$TEST_SUCCESS" = true ]; then
-  exit 0
+if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ]; then
+	exit 0
 else
-  exit 1
+	exit 1
 fi

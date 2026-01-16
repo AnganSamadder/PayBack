@@ -1,34 +1,54 @@
 #!/bin/sh
 
 # Xcode Cloud Post-Clone Script
-# Ensures Supabase credentials are available as a local env file (gitignored).
+# Installs Node.js (required for Convex CLI) and prepares build environment.
 
 set -euo pipefail
 
 echo "=========================================="
-echo "ci_post_clone.sh: Preparing Supabase env file"
+echo "ci_post_clone.sh: Setting up build environment"
 echo "=========================================="
 
 # Navigate to repository root (ci_scripts is inside the repo)
 cd "$(dirname "$0")/.."
 
-# Use placeholder values if secrets are not set (allows builds to succeed)
-SUPABASE_URL="${SUPABASE_URL:-https://placeholder.supabase.co}"
-SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY:-placeholder-anon-key}"
+echo "Working directory: $(pwd)"
+echo "Runner architecture: $(uname -m)"
 
-if [ "$SUPABASE_URL" = "https://placeholder.supabase.co" ] || [ "$SUPABASE_ANON_KEY" = "placeholder-anon-key" ]; then
-  echo "⚠️  Using placeholder Supabase credentials (secrets not configured)."
-  echo "   Add SUPABASE_URL and SUPABASE_ANON_KEY in Xcode Cloud for full functionality."
+# ----------------------------------------------------------------------------
+# Install Node.js via Homebrew (XcodeCloud has Homebrew pre-installed)
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- Installing Node.js ---"
+
+if command -v node >/dev/null 2>&1; then
+	echo "Node.js already available: $(node --version)"
 else
-  echo "✅ Using Supabase credentials from environment."
+	echo "Installing Node.js via Homebrew..."
+	if command -v brew >/dev/null 2>&1; then
+		brew install node
+		echo "Installed Node.js: $(node --version)"
+	else
+		echo "warning: Homebrew not available. Cannot install Node.js."
+		echo "         Convex deploy will be skipped during build."
+	fi
 fi
 
-cat > ".env.supabase.local" <<EOF
-SUPABASE_URL=${SUPABASE_URL}
-SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
-EOF
+if command -v npx >/dev/null 2>&1; then
+	echo "npx available: $(npx --version)"
+else
+	echo "warning: npx not found after Node.js install."
+fi
 
-chmod 600 ".env.supabase.local" || true
+# ----------------------------------------------------------------------------
+# Environment diagnostics
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- Environment Summary ---"
+echo "Xcode version: $(xcodebuild -version | head -1)"
+echo "Swift version: $(swift --version 2>&1 | head -1)"
+echo "PATH: $PATH"
 
-echo "✅ Wrote .env.supabase.local for the build (file is gitignored)."
+echo ""
+echo "ci_post_clone.sh complete"
 echo "=========================================="
