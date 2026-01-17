@@ -315,6 +315,7 @@ final class DomainModelsExtendedTests: XCTestCase {
     
     func testUserSession_initialization() {
         let account = UserAccount(id: "123", email: "test@example.com", displayName: "Test")
+        let session = UserSession(account: account)
         
         XCTAssertEqual(session.account.id, "123")
     }
