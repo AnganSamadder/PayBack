@@ -119,47 +119,21 @@ final class AdvancedExpenseSplittingTests: XCTestCase {
     
     // MARK: - Itemized Split Tests
     
-    /// Tests basic itemized split without tax/tip
-    func test_itemizedSplit_noTaxTip_usesItemAmountsOnly() {
-        let idA = UUID()
-        let idB = UUID()
-        let memberIds = [idA, idB]
-        let itemizedAmounts: [UUID: Double] = [idA: 60.0, idB: 40.0]
-        
-        let splits = calculateItemizedSplits(
-            memberIds: memberIds,
-            itemizedAmounts: itemizedAmounts,
-            tax: 0,
-            tip: 0,
-            autoDistributeTaxTip: false
-        )
-        
-        XCTAssertEqual(splits.count, 2)
-        
-        let splitA = splits.first { $0.memberId == idA }!
-        let splitB = splits.first { $0.memberId == idB }!
-        
-        XCTAssertEqual(splitA.amount, 60.0, accuracy: 0.01)
-        XCTAssertEqual(splitB.amount, 40.0, accuracy: 0.01)
-    }
-    
-    /// Tests itemized split with smart tax/tip distribution
-    /// Subtotal 100, Tax 10, Tip 10
-    /// A: 60, B: 40
+    /// Tests itemized split with derived fees from total
+    /// Total: 120, Items: 100 (A:60, B:40), Derived Fees: 20
     /// A pays: 60 + (60/100 * 20) = 60 + 12 = 72
     /// B pays: 40 + (40/100 * 20) = 40 + 8 = 48
-    func test_itemizedSplit_withSmartTaxTip_distributesProportionally() {
+    func test_itemizedSplit_derivedFees_distributesProportionally() {
         let idA = UUID()
         let idB = UUID()
         let memberIds = [idA, idB]
         let itemizedAmounts: [UUID: Double] = [idA: 60.0, idB: 40.0]
+        let totalAmount = 120.0 // Items = 100, so fees = 20
         
-        let splits = calculateItemizedSplits(
+        let splits = calculateItemizedSplitsWithDerivedFees(
+            totalAmount: totalAmount,
             memberIds: memberIds,
-            itemizedAmounts: itemizedAmounts,
-            tax: 10.0,
-            tip: 10.0,
-            autoDistributeTaxTip: true
+            itemizedAmounts: itemizedAmounts
         )
         
         XCTAssertEqual(splits.count, 2)
@@ -172,23 +146,22 @@ final class AdvancedExpenseSplittingTests: XCTestCase {
         // B: 40 + (40/100 * 20) = 48
         XCTAssertEqual(splitB.amount, 48.0, accuracy: 0.01)
         
-        // Conservation: 72 + 48 = 120 = 60 + 40 + 10 + 10
-        assertConservation(splits: splits, totalAmount: 120.0)
+        // Conservation: 72 + 48 = 120 = total
+        assertConservation(splits: splits, totalAmount: totalAmount)
     }
     
-    /// Tests itemized split with tax/tip but auto-distribute disabled
-    func test_itemizedSplit_taxTipDisabled_ignoresTaxTip() {
+    /// Tests itemized split when items equal total (no fees)
+    func test_itemizedSplit_noFees_itemsMatchTotal() {
         let idA = UUID()
         let idB = UUID()
         let memberIds = [idA, idB]
         let itemizedAmounts: [UUID: Double] = [idA: 60.0, idB: 40.0]
+        let totalAmount = 100.0 // Items = 100, so fees = 0
         
-        let splits = calculateItemizedSplits(
+        let splits = calculateItemizedSplitsWithDerivedFees(
+            totalAmount: totalAmount,
             memberIds: memberIds,
-            itemizedAmounts: itemizedAmounts,
-            tax: 10.0,
-            tip: 10.0,
-            autoDistributeTaxTip: false
+            itemizedAmounts: itemizedAmounts
         )
         
         XCTAssertEqual(splits.count, 2)
@@ -196,26 +169,27 @@ final class AdvancedExpenseSplittingTests: XCTestCase {
         let splitA = splits.first { $0.memberId == idA }!
         let splitB = splits.first { $0.memberId == idB }!
         
-        // Without auto-distribute, just use item amounts
+        // No fees, just items
         XCTAssertEqual(splitA.amount, 60.0, accuracy: 0.01)
         XCTAssertEqual(splitB.amount, 40.0, accuracy: 0.01)
+        
+        assertConservation(splits: splits, totalAmount: totalAmount)
     }
     
-    /// Tests itemized split with three members
-    func test_itemizedSplit_threeMembers_smartDistribution() {
+    /// Tests itemized split with three members and derived fees
+    func test_itemizedSplit_threeMembers_derivedFeesDistribution() {
         let idA = UUID()
         let idB = UUID()
         let idC = UUID()
         let memberIds = [idA, idB, idC]
         // A: 50, B: 30, C: 20 (subtotal = 100)
         let itemizedAmounts: [UUID: Double] = [idA: 50.0, idB: 30.0, idC: 20.0]
+        let totalAmount = 120.0 // Fees = 20
         
-        let splits = calculateItemizedSplits(
+        let splits = calculateItemizedSplitsWithDerivedFees(
+            totalAmount: totalAmount,
             memberIds: memberIds,
-            itemizedAmounts: itemizedAmounts,
-            tax: 8.0,
-            tip: 12.0, // Total tax+tip = 20
-            autoDistributeTaxTip: true
+            itemizedAmounts: itemizedAmounts
         )
         
         XCTAssertEqual(splits.count, 3)
@@ -231,8 +205,36 @@ final class AdvancedExpenseSplittingTests: XCTestCase {
         // C: 20 + (20/100 * 20) = 20 + 4 = 24
         XCTAssertEqual(splitC.amount, 24.0, accuracy: 0.01)
         
-        // Conservation: 60 + 36 + 24 = 120 = 100 + 20
-        assertConservation(splits: splits, totalAmount: 120.0)
+        // Conservation: 60 + 36 + 24 = 120 = total
+        assertConservation(splits: splits, totalAmount: totalAmount)
+    }
+    
+    /// Tests itemized split when items exceed total (negative fees)
+    func test_itemizedSplit_negativeFees_itemsExceedTotal() {
+        let idA = UUID()
+        let idB = UUID()
+        let memberIds = [idA, idB]
+        let itemizedAmounts: [UUID: Double] = [idA: 70.0, idB: 50.0] // Items = 120
+        let totalAmount = 100.0 // Fees = -20 (items exceed total)
+        
+        let splits = calculateItemizedSplitsWithDerivedFees(
+            totalAmount: totalAmount,
+            memberIds: memberIds,
+            itemizedAmounts: itemizedAmounts
+        )
+        
+        XCTAssertEqual(splits.count, 2)
+        
+        let splitA = splits.first { $0.memberId == idA }!
+        let splitB = splits.first { $0.memberId == idB }!
+        
+        // A: 70 + (70/120 * -20) = 70 - 11.67 = 58.33
+        XCTAssertEqual(splitA.amount, 58.33, accuracy: 0.01)
+        // B: 50 + (50/120 * -20) = 50 - 8.33 = 41.67
+        XCTAssertEqual(splitB.amount, 41.67, accuracy: 0.01)
+        
+        // Conservation: sum should still equal total
+        assertConservation(splits: splits, totalAmount: totalAmount)
     }
     
     // MARK: - Adjustments Tests
@@ -363,40 +365,39 @@ final class AdvancedExpenseSplittingTests: XCTestCase {
         let memberIds = [idA]
         let itemizedAmounts: [UUID: Double] = [:]
         
-        let splits = calculateItemizedSplits(
+        let splits = calculateItemizedSplitsWithDerivedFees(
+            totalAmount: 100.0,
             memberIds: memberIds,
-            itemizedAmounts: itemizedAmounts,
-            tax: 10.0,
-            tip: 10.0,
-            autoDistributeTaxTip: true
+            itemizedAmounts: itemizedAmounts
         )
         
         // With zero user items, can't calculate proportion
         XCTAssertTrue(splits.isEmpty)
     }
     
-    /// Tests itemized with only one person having items
-    func test_itemizedSplit_onePersonAllItems_getsAllTaxTip() {
+    /// Tests itemized with only one person having items - they get all fees
+    func test_itemizedSplit_onePersonAllItems_getsAllFees() {
         let idA = UUID()
         let idB = UUID()
         let memberIds = [idA, idB]
         let itemizedAmounts: [UUID: Double] = [idA: 100.0, idB: 0.0]
+        let totalAmount = 120.0 // Fees = 20
         
-        let splits = calculateItemizedSplits(
+        let splits = calculateItemizedSplitsWithDerivedFees(
+            totalAmount: totalAmount,
             memberIds: memberIds,
-            itemizedAmounts: itemizedAmounts,
-            tax: 10.0,
-            tip: 10.0,
-            autoDistributeTaxTip: true
+            itemizedAmounts: itemizedAmounts
         )
         
         let splitA = splits.first { $0.memberId == idA }!
         let splitB = splits.first { $0.memberId == idB }!
         
-        // A gets all items + all tax/tip
+        // A gets all items + all fees
         XCTAssertEqual(splitA.amount, 120.0, accuracy: 0.01)
         // B gets nothing
         XCTAssertEqual(splitB.amount, 0.0, accuracy: 0.01)
+        
+        assertConservation(splits: splits, totalAmount: totalAmount)
     }
     
     /// Tests determinism for shares split
@@ -462,7 +463,30 @@ private func calculateSharesSplitsWithAdjustments(
     }
 }
 
-/// Calculate itemized splits with smart tax/tip distribution
+/// Calculate itemized splits with derived fees (total - items)
+/// This matches the new behavior where fees = totalAmount - sum(items)
+private func calculateItemizedSplitsWithDerivedFees(
+    totalAmount: Double,
+    memberIds: [UUID],
+    itemizedAmounts: [UUID: Double]
+) -> [ExpenseSplit] {
+    let userItemsTotal = memberIds.reduce(0.0) { $0 + (itemizedAmounts[$1] ?? 0) }
+    guard userItemsTotal > 0 else { return [] }
+    
+    // Derived fees = total - sum of item inputs
+    let derivedFees = totalAmount - userItemsTotal
+    
+    return memberIds.map { id in
+        let userItems = itemizedAmounts[id] ?? 0
+        // Always distribute fees proportionally based on user's items
+        let proportion = userItems / userItemsTotal
+        let finalAmount = userItems + (proportion * derivedFees)
+        
+        return ExpenseSplit(memberId: id, amount: finalAmount)
+    }
+}
+
+/// Calculate itemized splits with smart tax/tip distribution (legacy helper, kept for compatibility)
 private func calculateItemizedSplits(
     memberIds: [UUID],
     itemizedAmounts: [UUID: Double],
