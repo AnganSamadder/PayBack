@@ -201,7 +201,6 @@
 		EAC53DF1302B0E64F67916C8 /* NavigationHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 763885D766A04AE1FF7CB213 /* NavigationHeader.swift */; };
 		EB628C7BA2674F2CFAC629D3 /* SwipeBackModifierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67AC8D6CED64719B2EDA9C42 /* SwipeBackModifierTests.swift */; };
 		EC4563930E6BC6C7DB9E4326 /* GoldenFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A05EDF5E485AD430FBF6CF11 /* GoldenFixtureTests.swift */; };
-		ECA01D91A224ACD2023A228C /* AppStoreDataNormalizationTests.swift.backup in Resources */ = {isa = PBXBuildFile; fileRef = 08040FD2CC9AF53159B646E3 /* AppStoreDataNormalizationTests.swift.backup */; };
 		ED0C58337417B8D8098E6512 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 0DEEE08CB9798C9737AD7700 /* README.md */; };
 		ED43B10D1C3C98D14502AA84 /* AppStoreQueryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 718969A0234C03DA6E147746 /* AppStoreQueryTests.swift */; };
 		EDBAA2DEB72C1EBBDC3B774C /* StylesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00569602A1A9FF6F43EFCB6A /* StylesTests.swift */; };
@@ -239,7 +238,6 @@
 		0340193934C27016C59EBF49 /* ExpenseSplitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpenseSplitTests.swift; sourceTree = "<group>"; };
 		049690E11813E755E5AD8ADE /* ImportExportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportExportView.swift; sourceTree = "<group>"; };
 		056748429691E6B85DBF3CF5 /* LeakCheckingTestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LeakCheckingTestCase.swift; sourceTree = "<group>"; };
-		08040FD2CC9AF53159B646E3 /* AppStoreDataNormalizationTests.swift.backup */ = {isa = PBXFileReference; path = AppStoreDataNormalizationTests.swift.backup; sourceTree = "<group>"; };
 		0BDA8B0A8AF582C2E1CBE990 /* FriendsTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsTabView.swift; sourceTree = "<group>"; };
 		0C0166AE6D51E4712BBA9180 /* AppStoreDataNormalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreDataNormalizationTests.swift; sourceTree = "<group>"; };
 		0DEEE08CB9798C9737AD7700 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -854,7 +852,6 @@
 				98F427750E9430EC0BF9920E /* AppStoreBalanceExtendedTests.swift */,
 				27B995267D99C697CE9BA59E /* AppStoreBalanceTests.swift */,
 				0C0166AE6D51E4712BBA9180 /* AppStoreDataNormalizationTests.swift */,
-				08040FD2CC9AF53159B646E3 /* AppStoreDataNormalizationTests.swift.backup */,
 				A36C9829B835054B1CB6AB38 /* AppStoreEdgeCaseTests.swift */,
 				911003BBB8CA68015880078B /* AppStoreExtendedTests.swift */,
 				A7FC224EB7703CCFAEBA1D36 /* AppStoreLinkingTests.swift */,
@@ -1168,7 +1165,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				ECA01D91A224ACD2023A228C /* AppStoreDataNormalizationTests.swift.backup in Resources */,
 				593B7CD54FED2352146A7A26 /* CI-CD-SETUP.md in Resources */,
 				ED0C58337417B8D8098E6512 /* README.md in Resources */,
 				9DBFCAE874B128131F45425F /* TEST_MONITORING.md in Resources */,
