@@ -10,6 +10,7 @@ name: PayBack
 # ----------------------------------------------------------------------------
 options:
   # Deployment targets for different platforms
+  # Minimum iOS 18.0, but compatible with iOS 26+ simulators on Xcode Cloud
   deploymentTarget:
     iOS: "18.0"
     # macOS: "14.0"

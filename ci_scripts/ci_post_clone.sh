@@ -43,17 +43,24 @@ echo ""
 echo "--- Available iOS Runtimes ---"
 xcrun simctl runtime list 2>/dev/null | grep -i ios || echo "No iOS runtimes found"
 
-# Show available iPhone simulators
+# Show available iPhone simulators with their UUIDs
 echo ""
-echo "--- Available iPhone Simulators ---"
-xcrun simctl list devices iPhone available 2>/dev/null | head -30 || echo "Could not list simulators"
+echo "--- Available iPhone Simulators (with UUIDs) ---"
+xcrun simctl list devices iPhone available 2>/dev/null || echo "Could not list simulators"
 
 # ----------------------------------------------------------------------------
-# Show simulators matching iOS 18 specifically (deployment target)
+# Create a fresh simulator if needed (workaround for stale UUIDs)
 # ----------------------------------------------------------------------------
 echo ""
-echo "--- iOS 18.x Simulators (deployment target) ---"
-xcrun simctl list devices available 2>/dev/null | grep -A 20 "iOS 18" | head -25 || echo "No iOS 18 simulators found"
+echo "--- Creating Fresh Simulator ---"
+# Get the latest iOS runtime
+LATEST_RUNTIME=$(xcrun simctl runtime list 2>/dev/null | grep -i "iOS" | head -1 | awk '{print $1, $2}' || echo "")
+echo "Latest runtime: $LATEST_RUNTIME"
+
+# List all available device types
+echo ""
+echo "--- Available Device Types ---"
+xcrun simctl list devicetypes 2>/dev/null | grep -i "iPhone" | head -10 || echo "Could not list device types"
 
 # ----------------------------------------------------------------------------
 # Install Node.js via Homebrew (XcodeCloud has Homebrew pre-installed)
