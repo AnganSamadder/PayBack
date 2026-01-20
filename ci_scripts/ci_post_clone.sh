@@ -14,6 +14,19 @@ cd "$(dirname "$0")/.."
 
 echo "Working directory: $(pwd)"
 echo "Runner architecture: $(uname -m)"
+echo "macOS version: $(sw_vers -productVersion)"
+echo "Xcode path: $(xcode-select -p)"
+
+# ----------------------------------------------------------------------------
+# Xcode and SDK diagnostics
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- Xcode Environment ---"
+echo "Xcode version:"
+xcodebuild -version 2>/dev/null || echo "xcodebuild not available"
+echo ""
+echo "Available iOS SDKs:"
+xcodebuild -showsdks 2>/dev/null | grep -i ios || echo "No iOS SDKs found"
 
 # ----------------------------------------------------------------------------
 # Clean up unavailable simulators (prevents stale UDID issues)
@@ -23,10 +36,24 @@ echo "--- Cleaning Simulators ---"
 xcrun simctl delete unavailable 2>/dev/null || true
 echo "Cleaned unavailable simulators"
 
+# ----------------------------------------------------------------------------
+# Available simulator runtimes
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- Available iOS Runtimes ---"
+xcrun simctl runtime list 2>/dev/null | grep -i ios || echo "No iOS runtimes found"
+
 # Show available iPhone simulators
 echo ""
 echo "--- Available iPhone Simulators ---"
-xcrun simctl list devices iPhone available 2>/dev/null | head -20 || echo "Could not list simulators"
+xcrun simctl list devices iPhone available 2>/dev/null | head -30 || echo "Could not list simulators"
+
+# ----------------------------------------------------------------------------
+# Show simulators matching iOS 18 specifically (deployment target)
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- iOS 18.x Simulators (deployment target) ---"
+xcrun simctl list devices available 2>/dev/null | grep -A 20 "iOS 18" | head -25 || echo "No iOS 18 simulators found"
 
 # ----------------------------------------------------------------------------
 # Install Node.js via Homebrew (XcodeCloud has Homebrew pre-installed)
