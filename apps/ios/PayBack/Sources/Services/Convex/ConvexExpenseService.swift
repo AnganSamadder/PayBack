@@ -1,4 +1,6 @@
 import Foundation
+
+#if !PAYBACK_CI_NO_CONVEX
 @preconcurrency import ConvexMobile
 
 final class ConvexExpenseService: ExpenseCloudService, Sendable {
@@ -170,3 +172,5 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         _ = try await client.mutation("expenses:clearAllForUser", with: [:])
     }
 }
+
+#endif

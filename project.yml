@@ -183,6 +183,17 @@ schemes:
     archive:
       config: Release
 
+  PayBackCITests:
+    build:
+      targets:
+        PayBackCI: all
+        PayBackCITests: all
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - PayBackCITests
+
 # ----------------------------------------------------------------------------
 # Targets
 # ----------------------------------------------------------------------------
@@ -468,6 +479,64 @@ targets:
       # region: US
       # disableMainThreadChecker: false
       # stopOnEveryMainThreadCheckerIssue: false
+
+  # --------------------------------------------------------------------------
+  # CI App Target (no ConvexMobile)
+  # --------------------------------------------------------------------------
+  PayBackCI:
+    type: application
+    platform: iOS
+
+    sources:
+      - path: apps/ios/PayBack/Sources
+      - path: apps/ios/PayBack/Assets.xcassets
+        type: resource
+
+    dependencies:
+      - package: Clerk
+        product: Clerk
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.angansamadder.PayBackCI
+        PRODUCT_MODULE_NAME: PayBack
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) PAYBACK_CI_NO_CONVEX"
+        SUPPORTS_MACCATALYST: YES
+
+    info:
+      path: apps/ios/PayBack/Info.CI.plist
+      properties:
+        CFBundleDisplayName: PayBackCI
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+
+  # --------------------------------------------------------------------------
+  # CI Unit Tests Target (builds against PayBackCI)
+  # --------------------------------------------------------------------------
+  PayBackCITests:
+    type: bundle.unit-test
+    platform: iOS
+
+    sources:
+      - path: apps/ios/PayBack/Tests
+        excludes:
+          - "Services/ConvexAccountServiceTests.swift"
+          - "Services/ConvexExpenseServiceTests.swift"
+          - "Services/ConvexClientWrapperTests.swift"
+          - "Services/ConvexArgumentBuilderTests.swift"
+          - "Services/DependenciesTests.swift"
+          - "Services/DependenciesExtendedTests.swift"
+          - "Services/ClerkAuthProviderTests.swift"
+          - "Services/ClerkAuthProviderExtendedTests.swift"
+
+    dependencies:
+      - target: PayBackCI
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.angansamadder.PayBackCITests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/PayBackCI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PayBackCI"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) PAYBACK_CI_NO_CONVEX"
 # ----------------------------------------------------------------------------
 # Additional Target Types Examples
 # ----------------------------------------------------------------------------
