@@ -57,8 +57,17 @@ if command -v node >/dev/null 2>&1; then
 else
 	echo "Installing Node.js via Homebrew..."
 	if command -v brew >/dev/null 2>&1; then
-		brew install node
-		echo "Installed Node.js: $(node --version)"
+		# Xcode Cloud networking/DNS to GitHub-hosted bottle endpoints is
+		# occasionally flaky. Node is only required when Convex deploy is enabled
+		# (CONVEX_DEPLOY_ON_CI=1). Prefer not failing the entire build here.
+		export HOMEBREW_NO_AUTO_UPDATE=1
+		export HOMEBREW_NO_INSTALL_UPGRADE=1
+		if brew install node; then
+			echo "Installed Node.js: $(node --version)"
+		else
+			echo "warning: Failed to install Node.js via Homebrew. Continuing."
+			echo "         Convex deploy may be skipped if enabled."
+		fi
 	else
 		echo "warning: Homebrew not available. Cannot install Node.js."
 		echo "         Convex deploy will be skipped during build."
