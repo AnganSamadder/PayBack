@@ -29,38 +29,22 @@ echo "Available iOS SDKs:"
 xcodebuild -showsdks 2>/dev/null | grep -i ios || echo "No iOS SDKs found"
 
 # ----------------------------------------------------------------------------
-# Clean up unavailable simulators (prevents stale UDID issues)
-# ----------------------------------------------------------------------------
-echo ""
-echo "--- Cleaning Simulators ---"
-xcrun simctl delete unavailable 2>/dev/null || true
-echo "Cleaned unavailable simulators"
-
-# ----------------------------------------------------------------------------
-# Available simulator runtimes
+# Simulator diagnostics
+# NOTE: Do not mutate the simulator set here.
+# Xcode Cloud passes explicit simulator UUIDs to xcodebuild; deleting/cleaning
+# devices can break destination resolution.
 # ----------------------------------------------------------------------------
 echo ""
 echo "--- Available iOS Runtimes ---"
 xcrun simctl runtime list 2>/dev/null | grep -i ios || echo "No iOS runtimes found"
 
-# Show available iPhone simulators with their UUIDs
 echo ""
 echo "--- Available iPhone Simulators (with UUIDs) ---"
 xcrun simctl list devices iPhone available 2>/dev/null || echo "Could not list simulators"
 
-# ----------------------------------------------------------------------------
-# Create a fresh simulator if needed (workaround for stale UUIDs)
-# ----------------------------------------------------------------------------
-echo ""
-echo "--- Creating Fresh Simulator ---"
-# Get the latest iOS runtime
-LATEST_RUNTIME=$(xcrun simctl runtime list 2>/dev/null | grep -i "iOS" | head -1 | awk '{print $1, $2}' || echo "")
-echo "Latest runtime: $LATEST_RUNTIME"
-
-# List all available device types
 echo ""
 echo "--- Available Device Types ---"
-xcrun simctl list devicetypes 2>/dev/null | grep -i "iPhone" | head -10 || echo "Could not list device types"
+xcrun simctl list devicetypes 2>/dev/null | grep -i "iPhone" | head -20 || echo "Could not list device types"
 
 # ----------------------------------------------------------------------------
 # Install Node.js via Homebrew (XcodeCloud has Homebrew pre-installed)
