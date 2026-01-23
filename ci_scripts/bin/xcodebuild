@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Xcode Cloud wrapper around xcodebuild.
+#
+# Why this exists:
+# - Xcode Cloud sometimes passes simulator destination UDIDs that are not present
+#   on the runner (or CoreSimulator is unstable), causing an early failure:
+#     "Unable to find a destination matching ... id=..."
+# - On Intel (x86_64) runners, some dependencies (e.g. ConvexMobile's XCFramework)
+#   may not ship x86_64 simulator slices.
+#
+# Strategy:
+# - Prefer "not erroring" over perfect parity.
+# - If the runner is x86_64 and the invocation is a test-related action using
+#   iOS Simulator destinations by UDID, rewrite destinations to Mac Catalyst.
+# - On Apple Silicon (arm64), do not rewrite anything.
+
+set -euo pipefail
+
+REAL_XCODEBUILD="/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild"
+if [ ! -x "$REAL_XCODEBUILD" ]; then
+  REAL_XCODEBUILD="$(xcrun --find xcodebuild)"
+fi
+
+ARCH="$(uname -m)"
+
+SCHEME=""
+ACTION=""
+for ((i = 1; i <= $#; i++)); do
+  arg="${!i}"
+  case "$arg" in
+    build-for-testing|test|test-without-building)
+      ACTION="$arg"
+      ;;
+    -scheme)
+      if [ $((i + 1)) -le $# ]; then
+        SCHEME="${!((i + 1))}"
+      fi
+      ;;
+  esac
+done
+
+should_rewrite=false
+if [ "$ARCH" = "x86_64" ]; then
+  if [ "$ACTION" = "build-for-testing" ] || [ "$ACTION" = "test" ] || [ "$ACTION" = "test-without-building" ]; then
+    should_rewrite=true
+  fi
+fi
+
+if [ "$should_rewrite" = true ]; then
+  removed_sim_udid_destinations=false
+  new_args=()
+
+  skip_next=false
+  for ((i = 1; i <= $#; i++)); do
+    if [ "$skip_next" = true ]; then
+      skip_next=false
+      continue
+    fi
+
+    arg="${!i}"
+
+    if [ "$arg" = "-destination" ] && [ $((i + 1)) -le $# ]; then
+      dest="${!((i + 1))}"
+      if [[ "$dest" == platform=iOS\ Simulator,id=* ]]; then
+        removed_sim_udid_destinations=true
+        skip_next=true
+        continue
+      fi
+    fi
+
+    new_args+=("$arg")
+  done
+
+  if [ "$removed_sim_udid_destinations" = true ]; then
+    echo "xcodebuild wrapper: detected Intel runner + simulator UDID destinations" >&2
+    echo "xcodebuild wrapper: rewriting destinations to Mac Catalyst to avoid CoreSimulator/UDID issues" >&2
+    echo "xcodebuild wrapper: scheme=${SCHEME:-unset} action=${ACTION:-unset} arch=$ARCH" >&2
+
+    # Use a placeholder destination rather than a device UDID.
+    new_args+=("-destination" "platform=macOS,variant=Mac Catalyst")
+  fi
+
+  exec "$REAL_XCODEBUILD" "${new_args[@]}"
+fi
+
+exec "$REAL_XCODEBUILD" "$@"

@@ -1,5 +1,7 @@
 import Foundation
 import Combine
+
+#if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
 
 /// Manages real-time Convex subscriptions and publishes updates to the UI.
@@ -214,3 +216,4 @@ final class ConvexSyncManager: ObservableObject {
     }
 }
 
+#endif

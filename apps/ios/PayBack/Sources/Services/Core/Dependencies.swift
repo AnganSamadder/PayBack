@@ -1,3 +1,81 @@
+#if PAYBACK_CI_NO_CONVEX
+
+import Foundation
+
+/// Centralized dependency container for CI builds that intentionally exclude Convex.
+final class Dependencies: Sendable {
+    /// Shared singleton instance for production use
+    nonisolated(unsafe) static var current = Dependencies()
+
+    /// Account service for user account operations
+    let accountService: any AccountService
+
+    /// Email authentication service
+    let emailAuthService: any EmailAuthService
+
+    /// Service for managing expenses
+    let expenseService: any ExpenseCloudService
+
+    /// Service for managing groups
+    let groupService: any GroupCloudService
+
+    /// Service for managing link requests
+    let linkRequestService: LinkRequestService
+
+    /// Service for managing invite links
+    let inviteLinkService: InviteLinkService
+
+    init(
+        accountService: (any AccountService)? = nil,
+        emailAuthService: (any EmailAuthService)? = nil,
+        expenseService: (any ExpenseCloudService)? = nil,
+        groupService: (any GroupCloudService)? = nil,
+        linkRequestService: LinkRequestService? = nil,
+        inviteLinkService: InviteLinkService? = nil
+    ) {
+        self.accountService = accountService ?? MockAccountService()
+        self.emailAuthService = emailAuthService ?? EmailAuthServiceProvider.makeService()
+        self.expenseService = expenseService ?? NoopExpenseCloudService()
+        self.groupService = groupService ?? NoopGroupCloudService()
+        self.linkRequestService = linkRequestService ?? MockLinkRequestService()
+        self.inviteLinkService = inviteLinkService ?? MockInviteLinkService()
+    }
+
+    // MARK: - Convex hooks (no-op in CI)
+
+    static func authenticateConvex() async {}
+
+    static func logoutConvex() async {}
+
+    // MARK: - Testing helpers
+
+    static func mock(
+        accountService: (any AccountService)? = nil,
+        emailAuthService: (any EmailAuthService)? = nil,
+        expenseService: (any ExpenseCloudService)? = nil,
+        groupService: (any GroupCloudService)? = nil,
+        linkRequestService: LinkRequestService? = nil,
+        inviteLinkService: InviteLinkService? = nil
+    ) -> Dependencies {
+        Dependencies(
+            accountService: accountService ?? MockAccountService(),
+            emailAuthService: emailAuthService ?? MockEmailAuthService(),
+            expenseService: expenseService ?? NoopExpenseCloudService(),
+            groupService: groupService ?? NoopGroupCloudService(),
+            linkRequestService: linkRequestService ?? MockLinkRequestService(),
+            inviteLinkService: inviteLinkService ?? MockInviteLinkService()
+        )
+    }
+
+    /// Resets the shared instance to default production dependencies.
+    /// Useful for cleaning up after tests.
+    static func reset() {
+        current = Dependencies()
+    }
+}
+
+#else
+
 import Foundation
 import ConvexMobile
 
@@ -6,7 +84,7 @@ import ConvexMobile
 final class Dependencies: Sendable {
     /// Shared singleton instance for production use
     nonisolated(unsafe) static var current = Dependencies()
-    
+
     private static var convexClient: ConvexClient?
 
     /// Account service for user account operations
@@ -44,22 +122,22 @@ final class Dependencies: Sendable {
         self.linkRequestService = linkRequestService ?? Dependencies.makeDefaultLinkRequestService()
         self.inviteLinkService = inviteLinkService ?? Dependencies.makeDefaultInviteLinkService()
     }
-    
+
     static func configure(client: ConvexClient) {
         self.convexClient = client
         // Re-initialize current to use the new client
         self.current = Dependencies()
     }
-    
+
     /// Returns the configured Convex client (if any)
     static func getConvexClient() -> ConvexClient? {
         return convexClient
     }
-    
+
     /// Shared sync manager for real-time Convex subscriptions (lazily created)
     private static var _syncManager: ConvexSyncManager?
     private static let syncManagerLock = NSLock()
-    
+
     @MainActor
     static var syncManager: ConvexSyncManager? {
         if _syncManager == nil, let client = convexClient {
@@ -67,13 +145,13 @@ final class Dependencies: Sendable {
         }
         return _syncManager
     }
-    
+
     /// Trigger Convex authentication using the current Clerk session
     static func authenticateConvex() async {
         print("[AuthDebug] Dependencies.authenticateConvex called")
         guard let client = convexClient as? ConvexClientWithAuth<ClerkAuthResult> else {
-             print("[AuthDebug] convexClient is NOT ConvexClientWithAuth")
-             return
+            print("[AuthDebug] convexClient is NOT ConvexClientWithAuth")
+            return
         }
         _ = await client.loginFromCache()
         print("[AuthDebug] Dependencies.authenticateConvex completed")
@@ -152,3 +230,5 @@ final class Dependencies: Sendable {
         current = Dependencies()
     }
 }
+
+#endif

@@ -1,4 +1,6 @@
 import Foundation
+
+#if !PAYBACK_CI_NO_CONVEX
 @preconcurrency import ConvexMobile
 
 final class ConvexGroupService: GroupCloudService, Sendable {
@@ -106,3 +108,5 @@ final class ConvexGroupService: GroupCloudService, Sendable {
         _ = try await client.mutation("groups:clearAllForUser", with: [:])
     }
 }
+
+#endif
