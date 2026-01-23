@@ -181,16 +181,16 @@ final class ClerkAuthProviderTests: XCTestCase {
     }
     
     func testClerkAuthError_CanBeUsedInSwitch() {
-        let error = ClerkAuthError.noSession
-        
-        var matched = false
-        switch error {
-        case .noSession:
-            matched = true
-        case .noToken:
-            matched = false
+        func isNoSession(_ error: ClerkAuthError) -> Bool {
+            switch error {
+            case .noSession:
+                return true
+            case .noToken:
+                return false
+            }
         }
-        
-        XCTAssertTrue(matched)
+
+        XCTAssertTrue(isNoSession(.noSession))
+        XCTAssertFalse(isNoSession(.noToken))
     }
 }

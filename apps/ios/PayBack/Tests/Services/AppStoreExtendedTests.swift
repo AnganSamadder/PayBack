@@ -9,7 +9,10 @@ final class AppStoreExtendedTests: XCTestCase {
     override func setUp() {
         super.setUp()
         Dependencies.reset()
-        store = AppStore()
+        store = AppStore(
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true
+        )
     }
     
     override func tearDown() {

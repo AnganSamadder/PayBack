@@ -8,9 +8,7 @@ final class ClaimSubscriptionTests: XCTestCase {
     
     func testSubscriptionCancellation_TaskCancelledAfterSuccess() {
         // Given: A task that represents a subscription
-        var taskWasCancelled = false
         let task = Task {
-            defer { taskWasCancelled = true }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
         

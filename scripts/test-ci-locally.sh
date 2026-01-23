@@ -438,12 +438,19 @@ echo -e "${YELLOW}[9/9] Analyzing warnings...${NC}"
 # Combine build and test logs for warning analysis
 cat build_output.log test_output.log 2>/dev/null >combined_output.log || cp test_output.log combined_output.log 2>/dev/null || true
 
-WARNING_COUNT=$(grep -c "warning:" combined_output.log 2>/dev/null || echo "0")
+# Filter out known tool noise that isn't actionable app code.
+# Xcode 26+ can emit these even for apps that do not use AppIntents.
+grep "warning:" combined_output.log 2>/dev/null |
+	grep -v "appintentsmetadataprocessor" \
+		>warnings_filtered.log ||
+	true
+
+WARNING_COUNT=$(wc -l <warnings_filtered.log 2>/dev/null | tr -d ' ' || echo "0")
 if [ "$WARNING_COUNT" -gt 0 ]; then
 	echo -e "${YELLOW}Found $WARNING_COUNT warning(s)${NC}"
 	echo ""
 	echo "Unique warnings (first 15):"
-	grep "warning:" combined_output.log 2>/dev/null | sort -u | head -15 | sed 's/^/  /'
+	sort -u warnings_filtered.log 2>/dev/null | head -15 | sed 's/^/  /'
 	echo ""
 
 	if [ "$FAIL_ON_WARNINGS" = "1" ]; then
@@ -458,7 +465,7 @@ else
 	WARNINGS_FAILED=false
 fi
 
-rm -f combined_output.log 2>/dev/null || true
+rm -f combined_output.log warnings_filtered.log 2>/dev/null || true
 echo ""
 
 # =============================================================================

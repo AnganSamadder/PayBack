@@ -26,6 +26,7 @@ final class AppStore: ObservableObject {
     private let linkRequestService: LinkRequestService
     private let inviteLinkService: InviteLinkService
     private let emailAuthService: EmailAuthService
+    private let skipClerkInit: Bool
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
@@ -56,6 +57,7 @@ final class AppStore: ObservableObject {
         self.linkRequestService = linkRequestService
         self.inviteLinkService = inviteLinkService
         self.emailAuthService = emailAuthService
+        self.skipClerkInit = skipClerkInit
         
         // Load local data
         let localData = persistence.load()
@@ -499,7 +501,6 @@ final class AppStore: ObservableObject {
         
         // 1. Sign out from Clerk/Backend FIRST
         // This ensures the persistent session is cleared from Keychain before we update UI
-        let emailAuthService = EmailAuthServiceProvider.makeService()
         do {
             try await emailAuthService.signOut()
             #if DEBUG
@@ -507,13 +508,17 @@ final class AppStore: ObservableObject {
             print("[AuthDebug] Clerk/Backend signed out successfully")
             #endif
             
-            // Verify sign out
-            try? await Clerk.shared.load()
-            if let user = Clerk.shared.user {
-                print("[AuthDebug] CRITICAL: Clerk still has user after signOut: \(user.id)")
-            } else {
-                print("[AuthDebug] Clerk user is nil after signOut (Correct).")
+            #if DEBUG
+            // Verify sign out (skip in tests when Clerk isn't configured).
+            if !skipClerkInit {
+                try? await Clerk.shared.load()
+                if let user = Clerk.shared.user {
+                    print("[AuthDebug] CRITICAL: Clerk still has user after signOut: \(user.id)")
+                } else {
+                    print("[AuthDebug] Clerk user is nil after signOut (Correct).")
+                }
             }
+            #endif
             
             // Explicitly logout from Convex to clear its state
             #if !PAYBACK_CI_NO_CONVEX
