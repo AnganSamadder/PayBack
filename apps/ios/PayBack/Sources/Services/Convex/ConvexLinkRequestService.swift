@@ -6,6 +6,8 @@
 //
 
 import Foundation
+
+#if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
 
 /// Convex-backed implementation of LinkRequestService for production use.
@@ -101,3 +103,5 @@ actor ConvexLinkRequestService: LinkRequestService {
         _ = try await client.mutation("linkRequests:cancel", with: args)
     }
 }
+
+#endif

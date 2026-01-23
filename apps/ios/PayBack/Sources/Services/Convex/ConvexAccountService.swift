@@ -1,4 +1,6 @@
 import Foundation
+
+#if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
 
 actor ConvexAccountService: AccountService {
@@ -264,3 +266,5 @@ actor ConvexAccountService: AccountService {
         return false
     }
 }
+
+#endif

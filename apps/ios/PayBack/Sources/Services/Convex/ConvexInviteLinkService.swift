@@ -6,6 +6,8 @@
 //
 
 import Foundation
+
+#if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
 
 /// Convex-backed implementation of InviteLinkService for production use.
@@ -157,3 +159,5 @@ actor ConvexInviteLinkService: InviteLinkService {
         _ = try await client.mutation("inviteTokens:revoke", with: args)
     }
 }
+
+#endif

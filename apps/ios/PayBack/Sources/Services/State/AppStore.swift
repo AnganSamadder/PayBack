@@ -129,11 +129,13 @@ final class AppStore: ObservableObject {
         }
         
         if let (email, displayName) = userInfo {
+            #if !PAYBACK_CI_NO_CONVEX
             // Concurrent execution: Authenticate Convex AND prepare logic
             async let convexAuth: Void = Dependencies.authenticateConvex()
-            
+
             // Wait for Convex auth
             await convexAuth
+            #endif
             
             // 3. Convex Account Lookup
             let accountService = self.accountService // Capture service
@@ -191,13 +193,18 @@ final class AppStore: ObservableObject {
         
         // Start real-time sync
         await MainActor.run {
-             Dependencies.syncManager?.startSync()
-             AppConfig.markTiming("Sync started")
+            #if !PAYBACK_CI_NO_CONVEX
+            Dependencies.syncManager?.startSync()
+            AppConfig.markTiming("Sync started")
+            #endif
         }
     }
     
     @MainActor
     private func subscribeToSyncManager() {
+        #if PAYBACK_CI_NO_CONVEX
+        return
+        #else
         guard let syncManager = Dependencies.syncManager else { return }
         
         // When syncManager.groups updates, replace local data (but keep dirty local items if any exist - though currently we don't have a robust dirty state here yet)
@@ -276,6 +283,8 @@ final class AppStore: ObservableObject {
                 self.outgoingLinkRequests = outgoing
             }
             .store(in: &cancellables)
+
+        #endif
     }
     
 
@@ -323,8 +332,10 @@ final class AppStore: ObservableObject {
     
     /// Shared helper to authenticate Convex, wait for server, and setup session
     private func performConvexAuthAndSetup(email: String, name: String?) async throws -> UserAccount {
+        #if !PAYBACK_CI_NO_CONVEX
         // 1. Authenticate Convex
         await Dependencies.authenticateConvex()
+        #endif
         
         // 2. Robust Wait
         try await waitForServerAuthentication()
@@ -359,9 +370,11 @@ final class AppStore: ObservableObject {
         }
         
         await loadRemoteData()
-        
+         
         await MainActor.run {
-             Dependencies.syncManager?.startSync()
+            #if !PAYBACK_CI_NO_CONVEX
+            Dependencies.syncManager?.startSync()
+            #endif
         }
         
         await reconcileLinkState()
@@ -480,7 +493,9 @@ final class AppStore: ObservableObject {
         friendSyncTask?.cancel()
         
         // Stop real-time sync
+        #if !PAYBACK_CI_NO_CONVEX
         Dependencies.syncManager?.stopSync()
+        #endif
         
         // 1. Sign out from Clerk/Backend FIRST
         // This ensures the persistent session is cleared from Keychain before we update UI
@@ -501,7 +516,9 @@ final class AppStore: ObservableObject {
             }
             
             // Explicitly logout from Convex to clear its state
+            #if !PAYBACK_CI_NO_CONVEX
             await Dependencies.logoutConvex()
+            #endif
             
         } catch {
             #if DEBUG
@@ -541,7 +558,9 @@ final class AppStore: ObservableObject {
         
         // 1. Stop real-time sync FIRST to prevent repopulation
         Task { @MainActor in
+            #if !PAYBACK_CI_NO_CONVEX
             Dependencies.syncManager?.stopSync()
+            #endif
         }
         
         // Clear local data immediately
@@ -558,6 +577,7 @@ final class AppStore: ObservableObject {
         
         // Sync deletions to cloud and restart sync after
         Task {
+            #if !PAYBACK_CI_NO_CONVEX
             // Use the new clearAllForUser mutations that delete everything server-side
             if let convexExpenseService = expenseCloudService as? ConvexExpenseService {
                 try? await convexExpenseService.clearAllData()
@@ -569,14 +589,15 @@ final class AppStore: ObservableObject {
             if let convexAccountService = accountService as? ConvexAccountService {
                 try? await convexAccountService.clearFriends()
             }
-            
+
             // Wait a moment for server to process
             try? await Task.sleep(nanoseconds: 500_000_000)
-            
+
             // Restart sync after deletions are complete
             await MainActor.run {
                 Dependencies.syncManager?.startSync()
             }
+            #endif
             
             #if DEBUG
             await MainActor.run {

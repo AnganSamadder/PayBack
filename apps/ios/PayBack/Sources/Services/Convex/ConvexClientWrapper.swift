@@ -1,4 +1,6 @@
 import Foundation
+
+#if !PAYBACK_CI_NO_CONVEX
 @preconcurrency import ConvexMobile
 
 // MARK: - ConvexClient Protocol Wrapper
@@ -186,6 +188,8 @@ enum ExpenseArgumentBuilder {
         return errors
     }
 }
+
+#endif
 
 // MARK: - Group Argument Builders
 

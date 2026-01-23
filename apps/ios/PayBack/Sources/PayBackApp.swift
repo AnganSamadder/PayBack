@@ -3,7 +3,10 @@ import UIKit
 import Foundation
 import Network
 import Clerk
+
+#if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
+#endif
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
@@ -221,7 +224,9 @@ struct PayBackApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var clerk = Clerk.shared
     
+    #if !PAYBACK_CI_NO_CONVEX
     let convexClient: ConvexClientWithAuth<ClerkAuthResult>
+    #endif
 
     init() {
         // Start performance tracking
@@ -231,17 +236,21 @@ struct PayBackApp: App {
         AppConfig.logStartupInfo()
         AppConfig.markTiming("Configuration logged")
         
+        #if !PAYBACK_CI_NO_CONVEX
         let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
         AppConfig.markTiming("ClerkAuthProvider created")
-        
+
         convexClient = ConvexClientWithAuth(
             deploymentUrl: ConvexConfig.deploymentUrl,
             authProvider: authProvider
         )
         AppConfig.markTiming("ConvexClient created")
-        
+
         Dependencies.configure(client: convexClient)
         AppConfig.markTiming("Dependencies configured")
+        #else
+        AppConfig.markTiming("Convex disabled for CI")
+        #endif
         
         AppAppearance.configure()
         AppConfig.markTiming("Appearance configured")
@@ -256,4 +265,3 @@ struct PayBackApp: App {
         }
     }
 }
-
