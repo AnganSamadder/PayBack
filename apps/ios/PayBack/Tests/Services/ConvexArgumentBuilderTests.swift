@@ -128,8 +128,8 @@ final class ConvexArgumentBuilderTests: XCTestCase {
         XCTAssertEqual(result["description"] as? String, "Dinner")
         XCTAssertEqual(result["total_amount"] as? Double, 100.0)
         XCTAssertEqual(result["is_settled"] as? Bool, false)
-        XCTAssertNotNil(result["splits"])
-        XCTAssertNotNil(result["participants"])
+        XCTAssertNotNil(result["splits"] ?? nil)
+        XCTAssertNotNil(result["participants"] ?? nil)
     }
     
     func testBuildExpenseArgs_WithSubexpenses_IncludesSubexpenses() {
@@ -145,7 +145,7 @@ final class ConvexArgumentBuilderTests: XCTestCase {
         
         let result = ExpenseArgumentBuilder.buildExpenseArgs(expense: expense, participants: [])
         
-        XCTAssertNotNil(result["subexpenses"])
+        XCTAssertNotNil(result["subexpenses"] ?? nil)
     }
     
     func testValidateExpenseArgs_ValidArgs_ReturnsEmptyErrors() {
@@ -264,8 +264,8 @@ final class ConvexArgumentBuilderTests: XCTestCase {
         XCTAssertEqual(result["name"] as? String, "Trip")
         XCTAssertEqual(result["is_direct"] as? Bool, false)
         XCTAssertEqual(result["is_payback_generated_mock_data"] as? Bool, true)
-        XCTAssertNotNil(result["members"])
-        XCTAssertNotNil(result["created_at"])
+        XCTAssertNotNil(result["members"] ?? nil)
+        XCTAssertNotNil(result["created_at"] ?? nil)
     }
     
     func testBuildGroupArgs_DirectGroup_SetsIsDirect() {

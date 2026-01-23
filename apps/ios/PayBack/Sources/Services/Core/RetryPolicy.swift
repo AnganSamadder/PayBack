@@ -6,12 +6,19 @@ struct RetryPolicy {
     let baseDelay: TimeInterval
     let maxDelay: TimeInterval
     let multiplier: Double
+
+    private let sleeper: @Sendable (TimeInterval) async throws -> Void
     
     init(
         maxAttempts: Int = 3,
         baseDelay: TimeInterval = 1.0,
         maxDelay: TimeInterval = 10.0,
-        multiplier: Double = 2.0
+        multiplier: Double = 2.0,
+        sleeper: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+            let clamped = max(0.0, seconds)
+            let nanoseconds = UInt64(clamped * 1_000_000_000)
+            try await Task.sleep(nanoseconds: nanoseconds)
+        }
     ) {
         // Normalize configuration to avoid invalid ranges and align with tests' expectations.
         // - maxAttempts is clamped to at least 1 so we always attempt the operation once.
@@ -27,6 +34,7 @@ struct RetryPolicy {
         self.baseDelay = normalizedBaseDelay
         self.maxDelay = normalizedMaxDelay
         self.multiplier = normalizedMultiplier
+        self.sleeper = sleeper
     }
     
     /// Executes an async operation with exponential backoff retry logic
@@ -59,7 +67,7 @@ struct RetryPolicy {
                 print("[RetryPolicy] Attempt \(attempt + 1) failed: \(error.localizedDescription). Retrying in \(delay)s...")
                 #endif
                 
-                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                try await sleeper(delay)
             }
         }
         

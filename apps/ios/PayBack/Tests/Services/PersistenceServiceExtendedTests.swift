@@ -17,25 +17,25 @@ final class PersistenceServiceExtendedTests: XCTestCase {
     
     // MARK: - Save Tests
     
-    func testSave_emptyAppData_succeeds() throws {
+    func testSave_emptyAppData_succeeds() {
         let data = AppData(groups: [], expenses: [])
-        try service.save(data)
+        service.save(data)
         
         // Should not throw
     }
     
-    func testSave_singleGroup_persists() throws {
+    func testSave_singleGroup_persists() {
         let group = SpendingGroup(name: "Test", members: [GroupMember(name: "Alice")])
         let data = AppData(groups: [group], expenses: [])
         
-        try service.save(data)
+        service.save(data)
         let loaded = service.load()
         
         XCTAssertEqual(loaded.groups.count, 1)
         XCTAssertEqual(loaded.groups[0].name, "Test")
     }
     
-    func testSave_singleExpense_persists() throws {
+    func testSave_singleExpense_persists() {
         let expense = Expense(
             groupId: UUID(),
             description: "Dinner",
@@ -46,14 +46,14 @@ final class PersistenceServiceExtendedTests: XCTestCase {
         )
         let data = AppData(groups: [], expenses: [expense])
         
-        try service.save(data)
+        service.save(data)
         let loaded = service.load()
         
         XCTAssertEqual(loaded.expenses.count, 1)
         XCTAssertEqual(loaded.expenses[0].description, "Dinner")
     }
     
-    func testSave_complexData_allFieldsPersist() throws {
+    func testSave_complexData_allFieldsPersist() {
         let member1 = GroupMember(name: "Alice")
         let member2 = GroupMember(name: "Bob")
         
@@ -79,7 +79,7 @@ final class PersistenceServiceExtendedTests: XCTestCase {
         expense.participantNames = [member1.id: "Alice", member2.id: "Bob"]
         
         let data = AppData(groups: [group], expenses: [expense])
-        try service.save(data)
+        service.save(data)
         let loaded = service.load()
         
         // Verify all fields
@@ -101,12 +101,12 @@ final class PersistenceServiceExtendedTests: XCTestCase {
     
     // MARK: - Clear Tests
     
-    func testClear_removesAllData() throws {
+    func testClear_removesAllData() {
         let data = AppData(
             groups: [SpendingGroup(name: "Test", members: [])],
             expenses: []
         )
-        try service.save(data)
+        service.save(data)
         
         service.clear()
         let loaded = service.load()
@@ -124,18 +124,18 @@ final class PersistenceServiceExtendedTests: XCTestCase {
     
     // MARK: - Overwrite Tests
     
-    func testSave_overwritesPreviousData() throws {
+    func testSave_overwritesPreviousData() {
         let data1 = AppData(
             groups: [SpendingGroup(name: "Group 1", members: [])],
             expenses: []
         )
-        try service.save(data1)
+        service.save(data1)
         
         let data2 = AppData(
             groups: [SpendingGroup(name: "Group 2", members: [])],
             expenses: []
         )
-        try service.save(data2)
+        service.save(data2)
         
         let loaded = service.load()
         
@@ -145,13 +145,13 @@ final class PersistenceServiceExtendedTests: XCTestCase {
     
     // MARK: - Unicode Tests
     
-    func testSave_unicodeCharacters_preserved() throws {
+    func testSave_unicodeCharacters_preserved() {
         let group = SpendingGroup(name: "日本語 🎉 Émoji", members: [
             GroupMember(name: "André")
         ])
         let data = AppData(groups: [group], expenses: [])
         
-        try service.save(data)
+        service.save(data)
         let loaded = service.load()
         
         XCTAssertEqual(loaded.groups[0].name, "日本語 🎉 Émoji")
@@ -160,17 +160,17 @@ final class PersistenceServiceExtendedTests: XCTestCase {
     
     // MARK: - Large Data Tests
     
-    func testSave_manyGroups_persists() throws {
+    func testSave_manyGroups_persists() {
         let groups = (0..<100).map { SpendingGroup(name: "Group \($0)", members: []) }
         let data = AppData(groups: groups, expenses: [])
         
-        try service.save(data)
+        service.save(data)
         let loaded = service.load()
         
         XCTAssertEqual(loaded.groups.count, 100)
     }
     
-    func testSave_manyExpenses_persists() throws {
+    func testSave_manyExpenses_persists() {
         let expenses = (0..<100).map {
             Expense(
                 groupId: UUID(),
@@ -183,7 +183,7 @@ final class PersistenceServiceExtendedTests: XCTestCase {
         }
         let data = AppData(groups: [], expenses: expenses)
         
-        try service.save(data)
+        service.save(data)
         let loaded = service.load()
         
         XCTAssertEqual(loaded.expenses.count, 100)
@@ -191,12 +191,12 @@ final class PersistenceServiceExtendedTests: XCTestCase {
     
     // MARK: - Date Precision Tests
     
-    func testSave_datePrecision_preserved() throws {
+    func testSave_datePrecision_preserved() {
         let now = Date()
         let group = SpendingGroup(name: "Test", members: [], createdAt: now)
         let data = AppData(groups: [group], expenses: [])
         
-        try service.save(data)
+        service.save(data)
         let loaded = service.load()
         
         // Date should be within 1 second (JSON encoding may lose sub-second precision)
@@ -205,7 +205,7 @@ final class PersistenceServiceExtendedTests: XCTestCase {
     
     // MARK: - ID Preservation Tests
     
-    func testSave_uuidPreserved() throws {
+    func testSave_uuidPreserved() {
         let groupId = UUID()
         let memberId = UUID()
         let expenseId = UUID()
@@ -222,7 +222,7 @@ final class PersistenceServiceExtendedTests: XCTestCase {
         )
         
         let data = AppData(groups: [group], expenses: [expense])
-        try service.save(data)
+        service.save(data)
         let loaded = service.load()
         
         XCTAssertEqual(loaded.groups[0].id, groupId)

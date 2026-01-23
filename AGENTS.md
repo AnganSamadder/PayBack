@@ -30,6 +30,11 @@ This file guides agentic coding assistants working in this repo.
 - When running tests, use the full local CI simulation: `./scripts/test-ci-locally.sh`.
 - This script must stay in lockstep with the GitHub Actions test workflow. If CI changes, update `scripts/test-ci-locally.sh` so local runs replicate CI behavior exactly (same steps, simulator selection, and flags).
 
+## Zero Warnings Policy
+- Test runs must be warning-free (treat warnings as failures).
+- Before pushing, run: `FAIL_ON_WARNINGS=1 ./scripts/test-ci-locally.sh`.
+- If Xcode emits non-actionable tool warnings, update `./scripts/test-ci-locally.sh` warning filtering rather than ignoring warnings in code.
+
 ## Test Commands
 - Full CI-equivalent test run (preferred):
   - `./scripts/test-ci-locally.sh`

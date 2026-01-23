@@ -64,7 +64,6 @@ final class AppStoreBalanceTests: XCTestCase {
     
     func testNetBalance_UserPaid_FriendOwes_ReturnsPositive() {
         // Given
-        let friend = GroupMember(name: "Friend")
         sut.addGroup(name: "Test Group", memberNames: ["Friend"])
         guard let group = sut.groups.first else { return XCTFail("Group not created") }
         guard let friendMember = group.members.first(where: { $0.id != sut.currentUser.id }) else { return XCTFail("Friend not found") }
@@ -91,7 +90,6 @@ final class AppStoreBalanceTests: XCTestCase {
     
     func testNetBalance_FriendPaid_UserOwes_ReturnsNegative() {
         // Given
-        let friend = GroupMember(name: "Friend")
         sut.addGroup(name: "Test Group", memberNames: ["Friend"])
         guard let group = sut.groups.first else { return XCTFail("Group not created") }
         guard let friendMember = group.members.first(where: { $0.id != sut.currentUser.id }) else { return XCTFail("Friend not found") }
@@ -118,7 +116,6 @@ final class AppStoreBalanceTests: XCTestCase {
     
     func testNetBalance_SettledExpenses_Ignored() {
         // Given
-        let friend = GroupMember(name: "Friend")
         sut.addGroup(name: "Test Group", memberNames: ["Friend"])
         guard let group = sut.groups.first else { return XCTFail("Group not created") }
         guard let friendMember = group.members.first(where: { $0.id != sut.currentUser.id }) else { return XCTFail("Friend not found") }

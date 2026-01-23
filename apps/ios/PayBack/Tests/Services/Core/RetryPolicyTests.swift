@@ -202,38 +202,47 @@ final class RetryPolicyTests: XCTestCase {
     
     func test_execute_exponentialBackoff_delaysIncrease() async {
         // Arrange
-        let policy = RetryPolicy(maxAttempts: 4, baseDelay: 0.1, maxDelay: 10.0, multiplier: 2.0)
-        var attemptTimes: [Date] = []
+        actor DelayRecorder {
+            private var delays: [TimeInterval] = []
+
+            func record(_ seconds: TimeInterval) {
+                delays.append(seconds)
+            }
+
+            func snapshot() -> [TimeInterval] {
+                delays
+            }
+        }
+
+        let recorder = DelayRecorder()
+        let policy = RetryPolicy(
+            maxAttempts: 4,
+            baseDelay: 0.1,
+            maxDelay: 10.0,
+            multiplier: 2.0,
+            sleeper: { seconds in
+                await recorder.record(seconds)
+            }
+        )
+
+        var attemptCount = 0
         
         // Act
         do {
             _ = try await policy.execute {
-                attemptTimes.append(Date())
+                attemptCount += 1
                 throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
             // Assert
-            XCTAssertEqual(attemptTimes.count, 4)
-            
-            // Check delays between attempts (with some tolerance for execution time)
-            if attemptTimes.count >= 2 {
-                let delay1 = attemptTimes[1].timeIntervalSince(attemptTimes[0])
-                XCTAssertGreaterThanOrEqual(delay1, 0.1, "First delay should be at least base delay")
-                XCTAssertLessThan(delay1, 0.2, "First delay should be approximately base delay")
-            }
-            
-            if attemptTimes.count >= 3 {
-                let delay2 = attemptTimes[2].timeIntervalSince(attemptTimes[1])
-                XCTAssertGreaterThanOrEqual(delay2, 0.2, "Second delay should be at least 2x base delay")
-                XCTAssertLessThan(delay2, 0.3, "Second delay should be approximately 2x base delay")
-            }
-            
-            if attemptTimes.count >= 4 {
-                let delay3 = attemptTimes[3].timeIntervalSince(attemptTimes[2])
-                XCTAssertGreaterThanOrEqual(delay3, 0.4, "Third delay should be at least 4x base delay")
-                XCTAssertLessThan(delay3, 0.5, "Third delay should be approximately 4x base delay")
-            }
+            let observedDelays = await recorder.snapshot()
+            XCTAssertEqual(attemptCount, 4)
+            XCTAssertEqual(observedDelays.count, 3)
+
+            XCTAssertEqual(observedDelays[0], 0.1, accuracy: 0.0001)
+            XCTAssertEqual(observedDelays[1], 0.2, accuracy: 0.0001)
+            XCTAssertEqual(observedDelays[2], 0.4, accuracy: 0.0001)
         }
     }
     
@@ -241,35 +250,49 @@ final class RetryPolicyTests: XCTestCase {
     
     func test_execute_maxDelayEnforced_delayDoesNotExceedMax() async {
         // Arrange
-        let policy = RetryPolicy(maxAttempts: 5, baseDelay: 1.0, maxDelay: 2.0, multiplier: 2.0)
-        var attemptTimes: [Date] = []
+        actor DelayRecorder {
+            private var delays: [TimeInterval] = []
+
+            func record(_ seconds: TimeInterval) {
+                delays.append(seconds)
+            }
+
+            func snapshot() -> [TimeInterval] {
+                delays
+            }
+        }
+
+        let recorder = DelayRecorder()
+        let policy = RetryPolicy(
+            maxAttempts: 5,
+            baseDelay: 1.0,
+            maxDelay: 2.0,
+            multiplier: 2.0,
+            sleeper: { seconds in
+                await recorder.record(seconds)
+            }
+        )
+
+        var attemptCount = 0
         
         // Act
         do {
             _ = try await policy.execute {
-                attemptTimes.append(Date())
+                attemptCount += 1
                 throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
             // Assert
-            XCTAssertEqual(attemptTimes.count, 5)
-            
-            // Check that delays don't exceed max delay
-            // Attempt 1: base = 1.0
-            // Attempt 2: base * 2 = 2.0 (at max)
-            // Attempt 3: base * 4 = 4.0 -> capped to 2.0
-            // Attempt 4: base * 8 = 8.0 -> capped to 2.0
-            
-            if attemptTimes.count >= 4 {
-                let delay3 = attemptTimes[3].timeIntervalSince(attemptTimes[2])
-                XCTAssertLessThanOrEqual(delay3, 2.5, "Delay should not exceed max delay (allow for overhead)")
-            }
-            
-            if attemptTimes.count >= 5 {
-                let delay4 = attemptTimes[4].timeIntervalSince(attemptTimes[3])
-                XCTAssertLessThanOrEqual(delay4, 2.5, "Delay should not exceed max delay (allow for overhead)")
-            }
+            let observedDelays = await recorder.snapshot()
+            XCTAssertEqual(attemptCount, 5)
+
+            // Sleeps occur between attempts, so for 5 attempts we sleep 4 times.
+            XCTAssertEqual(observedDelays.count, 4)
+            XCTAssertEqual(observedDelays[0], 1.0, accuracy: 0.0001)
+            XCTAssertEqual(observedDelays[1], 2.0, accuracy: 0.0001)
+            XCTAssertEqual(observedDelays[2], 2.0, accuracy: 0.0001)
+            XCTAssertEqual(observedDelays[3], 2.0, accuracy: 0.0001)
         }
     }
     
