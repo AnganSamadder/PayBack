@@ -11,7 +11,7 @@ final class TabBarTests: XCTestCase {
     
     override func setUp() {
         super.setUp()
-        store = AppStore()
+        store = AppStore(skipClerkInit: true)
     }
     
     override func tearDown() {

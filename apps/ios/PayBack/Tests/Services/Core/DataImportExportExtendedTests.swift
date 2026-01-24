@@ -7,7 +7,7 @@ final class DataImportExportExtendedTests: XCTestCase {
     
     @MainActor
     override func setUp() async throws {
-        store = AppStore()
+        store = AppStore(skipClerkInit: true)
         // Setup a current user
         let currentUser = GroupMember(
             id: UUID(),

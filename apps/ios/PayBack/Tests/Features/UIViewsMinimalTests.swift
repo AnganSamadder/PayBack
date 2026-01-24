@@ -10,7 +10,7 @@ final class UIViewsMinimalTests: XCTestCase {
     
     override func setUp() {
         super.setUp()
-        store = AppStore()
+        store = AppStore(skipClerkInit: true)
         // Note: currentUser is read-only, initialized by AppStore
     }
     
