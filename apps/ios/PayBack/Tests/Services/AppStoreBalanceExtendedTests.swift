@@ -9,7 +9,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
     override func setUp() {
         super.setUp()
         Dependencies.reset()
-        store = AppStore()
+        store = AppStore(skipClerkInit: true)
     }
     
     override func tearDown() {

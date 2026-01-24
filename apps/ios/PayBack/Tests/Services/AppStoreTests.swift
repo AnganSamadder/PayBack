@@ -65,7 +65,8 @@ final class AppStoreTests: XCTestCase {
             expenseCloudService: MockExpenseCloudServiceForAppStore(),
             groupCloudService: MockGroupCloudServiceForAppStore(),
             linkRequestService: MockLinkRequestServiceForAppStore(),
-            inviteLinkService: MockInviteLinkServiceForTests()
+            inviteLinkService: MockInviteLinkServiceForTests(),
+            skipClerkInit: true
         )
         
         // Then
@@ -1124,7 +1125,8 @@ final class AppStoreTests: XCTestCase {
             expenseCloudService: MockExpenseCloudServiceForAppStore(),
             groupCloudService: MockGroupCloudServiceForAppStore(),
             linkRequestService: MockLinkRequestServiceForAppStore(),
-            inviteLinkService: MockInviteLinkServiceForTests()
+            inviteLinkService: MockInviteLinkServiceForTests(),
+            skipClerkInit: true
         )
         
         // Wait for async data loading
@@ -1742,7 +1744,8 @@ final class AppStoreTests: XCTestCase {
             expenseCloudService: MockExpenseCloudServiceForAppStore(),
             groupCloudService: MockGroupCloudServiceForAppStore(),
             linkRequestService: MockLinkRequestServiceForAppStore(),
-            inviteLinkService: MockInviteLinkServiceForTests()
+            inviteLinkService: MockInviteLinkServiceForTests(),
+            skipClerkInit: true
         )
         
         // Then
