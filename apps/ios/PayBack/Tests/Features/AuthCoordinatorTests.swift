@@ -675,6 +675,10 @@ actor TestAccountService: AccountService {
     func checkAuthentication() async throws -> Bool {
         return true
     }
+    
+    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
+        // No-op for tests
+    }
 }
 
 final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {

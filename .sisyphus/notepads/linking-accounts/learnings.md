@@ -219,4 +219,10 @@
 00218| - Implemented merge flow using `store.mergeFriend(unlinkedMemberId:into:)`.
 00219| - Note: Since the source member ID effectively ceases to exist after merge, we navigate back (`onBack()`) upon success to avoid showing stale data.
 00220| - Reused `AccountFriend` init from `GroupMember` data.
-</file>
+00221| 
+00222| ## Merge Friends Implementation (Settings)
+00223| - Added `MergeFriendsView` to merge unlinked friends.
+00224| - Used `store.friends.filter { !$0.hasLinkedAccount }` to filter candidates.
+00225| - `AppStore.mergeFriend` uses `AccountService.mergeMemberIds`, which required updating mocks in `AuthCoordinatorTests` and `MockAccountService`.
+00226| - Added "Data Management" section to `SettingsView` for this feature.
+00227| - **Critical**: When adding new service methods, ensure ALL mocks (Test doubles and Preview mocks) are updated, otherwise tests will fail to compile.

@@ -106,4 +106,9 @@ actor MockAccountServiceForAppStore: AccountService {
         if shouldFail { throw PayBackError.networkUnavailable }
         return true
     }
+    
+    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        // No-op for mock
+    }
 }

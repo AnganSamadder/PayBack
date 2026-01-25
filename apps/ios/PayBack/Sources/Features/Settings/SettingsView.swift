@@ -15,6 +15,9 @@ struct SettingsView: View {
                     // Account section
                     accountSection
                     
+                    // Data section
+                    dataSection
+                    
                     // About section
                     aboutSection
                     
@@ -98,6 +101,61 @@ struct SettingsView: View {
                 }
             }
             .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(AppTheme.card)
+                    .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
+            )
+        }
+    }
+    
+    // MARK: - Data Section
+    
+    private var dataSection: some View {
+        VStack(spacing: 16) {
+            Text("Data Management")
+                .font(.system(.headline, design: .rounded, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            
+            VStack(spacing: 0) {
+                // Merge Friends
+                NavigationLink {
+                    MergeFriendsView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "person.2.circle.fill")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(AppTheme.brand)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                Circle()
+                                    .fill(AppTheme.brand.opacity(0.1))
+                            )
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Merge Friends")
+                                .font(.system(.body, design: .rounded, weight: .medium))
+                                .foregroundStyle(.primary)
+                            
+                            Text("Combine two unlinked friends into one")
+                                .font(.system(.caption, design: .rounded, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(16)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(store.friends.filter { !$0.hasLinkedAccount }.count < 2)
+                .opacity(store.friends.filter { !$0.hasLinkedAccount }.count < 2 ? 0.6 : 1)
+            }
             .background(
                 RoundedRectangle(cornerRadius: 16)
                     .fill(AppTheme.card)
