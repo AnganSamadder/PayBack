@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
+import { getAllEquivalentMemberIds } from "./aliases";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -138,9 +139,10 @@ export const list = query({
     // Check by membership (if user has a linked member ID)
     let groupsByMembership: any[] = [];
     if (user.linked_member_id) {
+        const equivalentIds = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
         const allGroups = await ctx.db.query("groups").collect();
         groupsByMembership = allGroups.filter(g => 
-            g.members.some(m => m.id === user.linked_member_id)
+            g.members.some(m => equivalentIds.includes(m.id))
         );
     }
     
@@ -169,8 +171,11 @@ export const get = query({
         
         // Auth check
         if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
-            if (user.linked_member_id && group.members.some(m => m.id === user.linked_member_id)) {
-                return group;
+            if (user.linked_member_id) {
+                const equivalentIds = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
+                if (group.members.some(m => equivalentIds.includes(m.id))) {
+                    return group;
+                }
             }
             return null;
         }

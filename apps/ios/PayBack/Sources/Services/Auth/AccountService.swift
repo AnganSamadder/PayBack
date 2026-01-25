@@ -19,6 +19,9 @@ protocol AccountService: Sendable {
     
     /// Checks if the user is authenticated on the backend
     func checkAuthentication() async throws -> Bool
+    
+    /// Merges two member IDs (e.g. merging a manual unlinked friend into a linked friend)
+    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws
 }
 
 actor MockAccountService: AccountService {
@@ -98,5 +101,12 @@ actor MockAccountService: AccountService {
     
     func checkAuthentication() async throws -> Bool {
         return true
+    }
+    
+    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
+        // Mock implementation - no-op or simulate merge
+        #if DEBUG
+        print("[MockAccountService] Merging \(sourceId) into \(targetId)")
+        #endif
     }
 }

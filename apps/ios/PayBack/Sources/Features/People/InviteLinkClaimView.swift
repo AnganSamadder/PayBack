@@ -16,6 +16,12 @@ struct InviteLinkClaimView: View {
     @State private var successOpacity: Double = 0
     @State private var subscriptionTask: Task<Void, Never>?
     
+    // Merge Flow State
+    @State private var showMergeSheet = false
+    @State private var potentialMatches: [AccountFriend] = []
+    @State private var justClaimedToken: InviteToken?
+    @State private var mergedFriendName: String?
+    
     private var needsAuthentication: Bool {
         store.session == nil
     }
@@ -64,6 +70,65 @@ struct InviteLinkClaimView: View {
             }
             .onDisappear {
                 subscriptionTask?.cancel()
+            }
+            .sheet(isPresented: $showMergeSheet) {
+                NavigationStack {
+                    List {
+                        Section {
+                            Text("We found a friend with a similar name in your contacts. Would you like to merge them?")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .listRowBackground(Color.clear)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
+                        }
+                        
+                        Section("Potential Match") {
+                            ForEach(potentialMatches, id: \.memberId) { friend in
+                                Button {
+                                    Task {
+                                        await mergeWithFriend(friend)
+                                    }
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading) {
+                                            Text(friend.name)
+                                                .font(.headline)
+                                            Text("Keep this history")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        
+                                        Spacer()
+                                        
+                                        if let count = expenseCountFor(friend) {
+                                            VStack(alignment: .trailing) {
+                                                Text("\(count)")
+                                                    .font(.headline)
+                                                Text("expenses")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        
+                                        Image(systemName: "arrow.merge")
+                                            .foregroundStyle(AppTheme.brand)
+                                    }
+                                    .padding(.vertical, 4)
+                                }
+                            }
+                        }
+                        
+                        Section {
+                            Button("No, Keep Separate") {
+                                completeWithoutMerge()
+                            }
+                        }
+                    }
+                    .navigationTitle("Merge Contacts?")
+                    .navigationBarTitleDisplayMode(.inline)
+                }
+                .presentationDetents([.medium])
+                .interactiveDismissDisabled()
             }
         }
     }
@@ -393,12 +458,12 @@ struct InviteLinkClaimView: View {
                 .scaleEffect(successScale)
                 .opacity(successOpacity)
             
-            Text("Invite Claimed!")
+            Text(mergedFriendName != nil ? "Merged with \(mergedFriendName!)" : "Invite Claimed!")
                 .font(.title3)
                 .fontWeight(.semibold)
                 .opacity(successOpacity)
             
-            Text("Your account has been linked successfully")
+            Text(mergedFriendName != nil ? "Your transaction history has been combined." : "Your account has been linked successfully")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .opacity(successOpacity)
@@ -531,8 +596,14 @@ struct InviteLinkClaimView: View {
         isProcessing = true
         errorMessage = nil
         
+        // Capture token before claiming
+        let token = validation?.token
+        
         do {
             try await store.claimInviteToken(tokenId)
+            
+            // Check for potential matches
+            let matches = checkForSimilarFriends(token: token)
             
             await MainActor.run {
                 isProcessing = false
@@ -548,13 +619,21 @@ struct InviteLinkClaimView: View {
                 // Trigger success haptic
                 Haptics.notify(.success)
                 
-                withAnimation(AppAnimation.springy) {
-                    showSuccess = true
-                }
-                
-                // Dismiss after a delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    dismiss()
+                if !matches.isEmpty {
+                    // Show merge sheet
+                    potentialMatches = matches
+                    justClaimedToken = token
+                    showMergeSheet = true
+                } else {
+                    // Standard success flow
+                    withAnimation(AppAnimation.springy) {
+                        showSuccess = true
+                    }
+                    
+                    // Dismiss after a delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        dismiss()
+                    }
                 }
             }
         } catch {
@@ -610,5 +689,76 @@ struct InviteLinkClaimView: View {
             return "Make sure you're using the complete link."
         }
         return nil
+    }
+    
+    // MARK: - Merge Logic Helpers
+    
+    private func checkForSimilarFriends(token: InviteToken?) -> [AccountFriend] {
+        guard let token = token, let creatorName = token.creatorName else { return [] }
+        
+        // Find unlinked friends with similar names
+        return store.friends.filter { friend in
+            !friend.hasLinkedAccount &&
+            (friend.name.localizedCaseInsensitiveContains(creatorName) ||
+             creatorName.localizedCaseInsensitiveContains(friend.name))
+        }
+    }
+    
+    private func expenseCountFor(_ friend: AccountFriend) -> Int? {
+        let count = store.expenses.filter { 
+            $0.involvedMemberIds.contains(friend.memberId) || 
+            $0.paidByMemberId == friend.memberId 
+        }.count
+        return count > 0 ? count : nil
+    }
+    
+    private func mergeWithFriend(_ friend: AccountFriend) async {
+        guard let token = justClaimedToken else { return }
+        
+        // Find the linked creator friend to merge INTO
+        // We look for a friend that is linked to the token creator's ID
+        if let creatorFriend = store.friends.first(where: { $0.linkedAccountId == token.creatorId }) {
+             do {
+                 try await store.mergeFriend(unlinkedMemberId: friend.memberId, into: creatorFriend.memberId)
+                 await MainActor.run {
+                     mergedFriendName = friend.name
+                     completeWithMerge()
+                 }
+             } catch {
+                 print("[InviteLinkClaimView] Merge failed: \(error)")
+                 // Just proceed without merge on error
+                 await MainActor.run {
+                     completeWithoutMerge()
+                 }
+             }
+        } else {
+            print("[InviteLinkClaimView] Could not find creator friend record (id: \(token.creatorId))")
+            // Proceed without merge
+            await MainActor.run {
+                completeWithoutMerge()
+            }
+        }
+    }
+    
+    private func completeWithMerge() {
+        showMergeSheet = false
+        // Show success with animation
+        withAnimation(AppAnimation.springy) {
+            showSuccess = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            dismiss()
+        }
+    }
+    
+    private func completeWithoutMerge() {
+        showMergeSheet = false
+        // Show success with animation
+        withAnimation(AppAnimation.springy) {
+            showSuccess = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            dismiss()
+        }
     }
 }

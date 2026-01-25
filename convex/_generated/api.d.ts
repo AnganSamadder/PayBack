@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as aliases from "../aliases.js";
 import type * as cleanup from "../cleanup.js";
 import type * as debug from "../debug.js";
 import type * as expenses from "../expenses.js";
@@ -26,6 +27,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  aliases: typeof aliases;
   cleanup: typeof cleanup;
   debug: typeof debug;
   expenses: typeof expenses;

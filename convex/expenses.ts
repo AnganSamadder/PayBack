@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { getAllEquivalentMemberIds } from "./aliases";
 
 async function getCurrentUser(ctx: any) {
   const identity = await ctx.auth.getUserIdentity();
@@ -140,12 +141,13 @@ export const list = query({
         .withIndex("by_owner_account_id", q => q.eq("owner_account_id", user.id))
         .collect();
         
-    // 2. Get expenses for groups where user is a member
+    // 2. Get expenses for groups where user is a member (via alias resolution)
     let membershipGroupIds: string[] = [];
     if (user.linked_member_id) {
+        const equivalentIds = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
         const allGroups = await ctx.db.query("groups").collect();
         membershipGroupIds = allGroups
-            .filter(g => g.members.some(m => m.id === user.linked_member_id))
+            .filter(g => g.members.some(m => equivalentIds.includes(m.id)))
             .map(g => g.id);
     }
 

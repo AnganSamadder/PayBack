@@ -2504,6 +2504,24 @@ final class AppStore: ObservableObject {
         try await accountService.syncFriends(accountEmail: session.account.email, friends: currentFriends)
     }
     
+    /// Merges an unlinked friend into a linked friend
+    func mergeFriend(unlinkedMemberId: UUID, into targetMemberId: UUID) async throws {
+        guard session != nil else {
+            throw PayBackError.authSessionMissing
+        }
+        
+        // Optimistically remove the unlinked friend from local state to reflect merge
+        await MainActor.run {
+            friends.removeAll { $0.memberId == unlinkedMemberId }
+        }
+        
+        // Call backend to merge
+        try await accountService.mergeMemberIds(from: unlinkedMemberId, to: targetMemberId)
+        
+        // Force a data reload to get the updated state (merged expenses, etc)
+        await loadRemoteData()
+    }
+    
     // MARK: - Account Linking Helpers
     
     /// Links a member ID to an account with retry logic and failure handling

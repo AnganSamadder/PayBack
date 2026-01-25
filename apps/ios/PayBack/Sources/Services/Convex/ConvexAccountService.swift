@@ -265,6 +265,15 @@ actor ConvexAccountService: AccountService {
         }
         return false
     }
+    
+    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
+        let args: [String: ConvexEncodable?] = [
+            "sourceId": sourceId.uuidString,
+            "targetId": targetId.uuidString
+        ]
+        // Using "aliases:mergeMemberIds" as identified in the plan/grep
+        _ = try await client.mutation("aliases:mergeMemberIds", with: args)
+    }
 }
 
 #endif

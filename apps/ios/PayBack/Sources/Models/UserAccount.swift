@@ -37,6 +37,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     var name: String
     var nickname: String?
     var originalName: String?     // Name before linking (for "Originally X" display)
+    var originalNickname: String? // Nickname before linking (preserved for restore)
+    var preferNickname: Bool      // Per-friend toggle: true = always show nickname
     var hasLinkedAccount: Bool
     var linkedAccountId: String?
     var linkedAccountEmail: String?
@@ -49,6 +51,11 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     /// - Parameter showRealNames: If true, shows real name (with nickname underneath). If false, shows nickname (with real name underneath)
     /// - Returns: The primary display name
     func displayName(showRealNames: Bool) -> String {
+        // Per-friend preference takes priority: if preferNickname is true, always use nickname
+        if preferNickname, let nick = nickname, !nick.isEmpty {
+            return nick
+        }
+        
         // For unlinked friends, always show the name (no nickname distinction)
         guard hasLinkedAccount else {
             return name
@@ -59,7 +66,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
             return name
         }
         
-        // Return based on preference
+        // Return based on global preference
         return showRealNames ? name : nickname
     }
     
@@ -67,6 +74,11 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     /// - Parameter showRealNames: If true, shows nickname underneath. If false, shows real name underneath
     /// - Returns: The secondary display name, or nil if not applicable
     func secondaryDisplayName(showRealNames: Bool) -> String? {
+        // Per-friend preference: if preferNickname, show real name as secondary
+        if preferNickname, let nick = nickname, !nick.isEmpty {
+            return name
+        }
+        
         // For unlinked friends, no secondary name
         guard hasLinkedAccount else {
             return nil
@@ -77,7 +89,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
             return nil
         }
         
-        // Return opposite of primary
+        // Return opposite of primary based on global preference
         return showRealNames ? nickname : name
     }
     
@@ -86,6 +98,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         name: String,
         nickname: String? = nil,
         originalName: String? = nil,
+        originalNickname: String? = nil,
+        preferNickname: Bool = false,
         hasLinkedAccount: Bool = false,
         linkedAccountId: String? = nil,
         linkedAccountEmail: String? = nil,
@@ -96,6 +110,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         self.name = name
         self.nickname = nickname
         self.originalName = originalName
+        self.originalNickname = originalNickname
+        self.preferNickname = preferNickname
         self.hasLinkedAccount = hasLinkedAccount
         self.linkedAccountId = linkedAccountId
         self.linkedAccountEmail = linkedAccountEmail
@@ -109,6 +125,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         case name
         case nickname
         case originalName
+        case originalNickname
+        case preferNickname
         case hasLinkedAccount
         case linkedAccountId
         case linkedAccountEmail
@@ -120,9 +138,10 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         memberId = try container.decode(UUID.self, forKey: .memberId)
         name = try container.decode(String.self, forKey: .name)
-        // Nickname defaults to nil for backward compatibility
         nickname = try container.decodeIfPresent(String.self, forKey: .nickname)
         originalName = try container.decodeIfPresent(String.self, forKey: .originalName)
+        originalNickname = try container.decodeIfPresent(String.self, forKey: .originalNickname)
+        preferNickname = try container.decodeIfPresent(Bool.self, forKey: .preferNickname) ?? false
         hasLinkedAccount = try container.decode(Bool.self, forKey: .hasLinkedAccount)
         linkedAccountId = try container.decodeIfPresent(String.self, forKey: .linkedAccountId)
         linkedAccountEmail = try container.decodeIfPresent(String.self, forKey: .linkedAccountEmail)
@@ -136,6 +155,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         try container.encode(name, forKey: .name)
         try container.encodeIfPresent(nickname, forKey: .nickname)
         try container.encodeIfPresent(originalName, forKey: .originalName)
+        try container.encodeIfPresent(originalNickname, forKey: .originalNickname)
+        try container.encode(preferNickname, forKey: .preferNickname)
         try container.encode(hasLinkedAccount, forKey: .hasLinkedAccount)
         try container.encodeIfPresent(linkedAccountId, forKey: .linkedAccountId)
         try container.encodeIfPresent(linkedAccountEmail, forKey: .linkedAccountEmail)

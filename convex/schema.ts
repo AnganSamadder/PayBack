@@ -20,6 +20,8 @@ export default defineSchema({
     name: v.string(),
     nickname: v.optional(v.string()),
     original_name: v.optional(v.string()), // Name before linking (for "Originally X" display)
+    original_nickname: v.optional(v.string()),
+    prefer_nickname: v.optional(v.boolean()),
     profile_image_url: v.optional(v.string()),
     profile_avatar_color: v.optional(v.string()),
     has_linked_account: v.boolean(),
@@ -30,6 +32,19 @@ export default defineSchema({
     .index("by_account_email", ["account_email"])
     .index("by_account_email_and_member_id", ["account_email", "member_id"])
     .index("by_linked_account_id", ["linked_account_id"]),
+
+  // Member aliases for account linking - maps alias member IDs to canonical member IDs
+  // When a receiver claims an invite and already has a linked_member_id (canonical),
+  // the sender's target_member_id becomes an alias pointing to the receiver's canonical ID.
+  // All alias lookups are transitive: if A→B and B→C, then A resolves to C.
+  member_aliases: defineTable({
+    canonical_member_id: v.string(), // The "real" member ID (receiver's existing linked_member_id)
+    alias_member_id: v.string(), // The member ID that aliases to canonical (sender's target_member_id)
+    account_email: v.string(), // The account that created this alias relationship
+    created_at: v.number(),
+  })
+    .index("by_alias_member_id", ["alias_member_id"])
+    .index("by_canonical_member_id", ["canonical_member_id"]),
 
   groups: defineTable({
     id: v.string(), // UUID string from client
