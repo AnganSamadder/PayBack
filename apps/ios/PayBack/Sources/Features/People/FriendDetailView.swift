@@ -17,6 +17,7 @@ struct FriendDetailView: View {
     @State private var isEditingNickname = false
     @State private var nicknameText = ""
     @State private var isSavingNickname = false
+    @State private var showMergeSheet = false
 
     init(friend: GroupMember, onBack: @escaping () -> Void, onExpenseSelected: ((Expense) -> Void)? = nil) {
         self.friend = friend
@@ -130,6 +131,14 @@ struct FriendDetailView: View {
         store.friends.first { $0.memberId == friend.id }
     }
     
+    private var isFriend: Bool {
+        store.friends.contains { $0.memberId == friend.id }
+    }
+    
+    private var unlinkedFriends: [AccountFriend] {
+        store.friends.filter { !$0.hasLinkedAccount }
+    }
+    
     private var currentNickname: String? {
         accountFriend?.nickname
     }
@@ -176,6 +185,56 @@ struct FriendDetailView: View {
     }
 
     // MARK: - Invite Link Button
+    
+    private var addFriendButtons: some View {
+        VStack(spacing: 12) {
+            Button(action: {
+                Haptics.selection()
+                Task {
+                    await addAsFriend()
+                }
+            }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "person.badge.plus")
+                        .font(.system(size: 16, weight: .semibold))
+                    
+                    Text("Add Friend")
+                        .font(.system(.body, design: .rounded, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(AppTheme.brand)
+                )
+            }
+            .buttonStyle(.plain)
+            
+            if !unlinkedFriends.isEmpty {
+                Button(action: {
+                    Haptics.selection()
+                    showMergeSheet = true
+                }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "person.2.circle")
+                            .font(.system(size: 16, weight: .semibold))
+                        
+                        Text("Merge with Existing Friend")
+                            .font(.system(.body, design: .rounded, weight: .semibold))
+                    }
+                    .foregroundStyle(AppTheme.brand)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(AppTheme.brand.opacity(0.1))
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
     
     private var inviteLinkButton: some View {
         Button(action: {
@@ -399,6 +458,51 @@ struct FriendDetailView: View {
         }
     }
     
+    private var mergeSheet: some View {
+        NavigationStack {
+            List(unlinkedFriends) { friend in
+                Button {
+                    Task {
+                        await mergeWithFriend(friend)
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        AvatarView(name: friend.name, size: 40, colorHex: friend.profileColorHex)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(friend.name)
+                                .font(.system(.body, design: .rounded, weight: .medium))
+                                .foregroundStyle(.primary)
+                            
+                            if let nickname = friend.nickname {
+                                Text(nickname)
+                                    .font(.system(.caption, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        
+                        Spacer()
+                        
+                        Image(systemName: "arrow.merge")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(AppTheme.brand)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .navigationTitle("Select Friend to Merge")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showMergeSheet = false
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+    
     // MARK: - Helper Functions
 
     private func currency(_ amount: Double) -> String {
@@ -433,6 +537,40 @@ struct FriendDetailView: View {
                 self.linkError = .networkUnavailable
                 self.showErrorAlert = true
                 self.isSavingNickname = false
+            }
+        }
+    }
+    
+    private func addAsFriend() async {
+        let newFriend = AccountFriend(
+            memberId: friend.id,
+            name: friend.name,
+            profileImageUrl: friend.profileImageUrl,
+            profileColorHex: friend.profileColorHex
+        )
+        store.addImportedFriend(newFriend)
+        await MainActor.run {
+            Haptics.notify(.success)
+        }
+    }
+    
+    private func mergeWithFriend(_ target: AccountFriend) async {
+        showMergeSheet = false
+        do {
+            try await store.mergeFriend(unlinkedMemberId: friend.id, into: target.memberId)
+            await MainActor.run {
+                Haptics.notify(.success)
+                onBack() // Navigate back as the current "friend" (non-friend member) is now merged/gone
+            }
+        } catch {
+            await MainActor.run {
+                Haptics.notify(.error)
+                if let paybackError = error as? PayBackError {
+                    self.linkError = paybackError
+                } else {
+                    self.linkError = .networkUnavailable
+                }
+                self.showErrorAlert = true
             }
         }
     }
@@ -481,6 +619,9 @@ struct FriendDetailView: View {
         }
         .sheet(isPresented: $isEditingNickname) {
             nicknameEditSheet
+        }
+        .sheet(isPresented: $showMergeSheet) {
+            mergeSheet
         }
         .alert("Error", isPresented: $showErrorAlert) {
             Button("OK", role: .cancel) { }
@@ -686,13 +827,17 @@ struct FriendDetailView: View {
              )
              
              // Invite link button for unlinked friends
-             if !isLinked && !hasPendingOutgoingRequest {
-                 inviteLinkButton
-             }
-             
-             // Cancel request button for pending requests
-             if hasPendingOutgoingRequest {
-                 cancelRequestButton
+             if isFriend {
+                 if !isLinked && !hasPendingOutgoingRequest {
+                     inviteLinkButton
+                 }
+                 
+                 // Cancel request button for pending requests
+                 if hasPendingOutgoingRequest {
+                     cancelRequestButton
+                 }
+             } else {
+                 addFriendButtons
              }
              
              // Success message
