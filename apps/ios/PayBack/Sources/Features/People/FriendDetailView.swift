@@ -16,6 +16,7 @@ struct FriendDetailView: View {
     @State private var showSuccessMessage = false
     @State private var isEditingNickname = false
     @State private var nicknameText = ""
+    @State private var preferNickname = false
     @State private var isSavingNickname = false
     @State private var showMergeSheet = false
 
@@ -401,11 +402,24 @@ struct FriendDetailView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .rounded))
                 
+                if isLinked {
+                    Toggle("Prefer Nickname", isOn: $preferNickname)
+                        .font(.system(.body, design: .rounded))
+                        .tint(AppTheme.brand)
+                        .onChange(of: preferNickname) { oldValue, newValue in
+                            if newValue && nicknameText.isEmpty {
+                                if let original = accountFriend?.originalNickname, !original.isEmpty {
+                                    nicknameText = original
+                                }
+                            }
+                        }
+                }
+                
                 if isLinked && currentNickname != nil {
                     Button(action: {
                         Haptics.selection()
                         Task {
-                            await saveNickname(nil)
+                            await saveNickname(nil, preferNickname: false)
                         }
                     }) {
                         HStack(spacing: 8) {
@@ -449,7 +463,7 @@ struct FriendDetailView: View {
                         Haptics.selection()
                         Task {
                             let trimmed = nicknameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                            await saveNickname(trimmed.isEmpty ? nil : trimmed)
+                            await saveNickname(trimmed.isEmpty ? nil : trimmed, preferNickname: preferNickname)
                         }
                     }
                     .disabled(isSavingNickname)
@@ -516,11 +530,12 @@ struct FriendDetailView: View {
         return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
     }
     
-    private func saveNickname(_ nickname: String?) async {
+    private func saveNickname(_ nickname: String?, preferNickname: Bool) async {
         isSavingNickname = true
         
         do {
             try await store.updateFriendNickname(memberId: friend.id, nickname: nickname)
+            try await store.updateFriendPreferNickname(memberId: friend.id, prefer: preferNickname)
             
             await MainActor.run {
                 // Trigger success haptic
@@ -724,28 +739,56 @@ struct FriendDetailView: View {
                 
                 // Name display with nickname support
                 VStack(spacing: 4) {
-                    if isLinked && currentNickname != nil {
-                        // Show real name prominently
-                        Text(friend.name)
-                            .font(.system(.title2, design: .rounded, weight: .bold))
-                            .foregroundStyle(.primary)
-                        
-                        // Show nickname smaller underneath
-                        Text("aka \"\(currentNickname!)\"")
-                            .font(.system(.subheadline, design: .rounded, weight: .medium))
-                            .foregroundStyle(.secondary)
+                    if isLinked {
+                        if let currentNickname = currentNickname {
+                            if accountFriend?.preferNickname == true {
+                                // Prefer Nickname: Show nickname big, real name small
+                                Text(currentNickname)
+                                    .font(.system(.title2, design: .rounded, weight: .bold))
+                                    .foregroundStyle(.primary)
+                                
+                                Text(friend.name)
+                                    .font(.system(.subheadline, design: .rounded, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                // Default: Show real name big, nickname small
+                                Text(friend.name)
+                                    .font(.system(.title2, design: .rounded, weight: .bold))
+                                    .foregroundStyle(.primary)
+                                
+                                Text("aka \"\(currentNickname)\"")
+                                    .font(.system(.subheadline, design: .rounded, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            // Linked but no nickname: Show real name
+                            Text(friend.name)
+                                .font(.system(.title2, design: .rounded, weight: .bold))
+                                .foregroundStyle(.primary)
+                        }
                     } else {
-                        // Show single name
+                        // Unlinked: Show name (which is nickname/local name)
                         Text(displayName)
                             .font(.system(.title2, design: .rounded, weight: .bold))
                             .foregroundStyle(.primary)
                     }
                     
-                    // Show "Originally X" if we have an original name that differs
-                    if let originalName = accountFriend?.originalName,
+                    // Additional info: Original name (what you called them before linking)
+                    if isLinked,
+                       let originalName = accountFriend?.originalName,
                        !originalName.isEmpty,
                        originalName != friend.name {
-                        Text("Originally \(originalName)")
+                        Text("Original name: \(originalName)")
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundStyle(.secondary.opacity(0.8))
+                    }
+                    
+                    // Additional info: Previous nickname (if changed)
+                    if isLinked,
+                       let originalNick = accountFriend?.originalNickname,
+                       !originalNick.isEmpty,
+                       originalNick != currentNickname {
+                        Text("Previously known as: \(originalNick)")
                             .font(.system(.caption, design: .rounded))
                             .foregroundStyle(.secondary.opacity(0.8))
                     }
@@ -755,6 +798,7 @@ struct FriendDetailView: View {
                 Button(action: {
                     Haptics.selection()
                     nicknameText = currentNickname ?? ""
+                    preferNickname = accountFriend?.preferNickname ?? false
                     isEditingNickname = true
                 }) {
                     HStack(spacing: 4) {

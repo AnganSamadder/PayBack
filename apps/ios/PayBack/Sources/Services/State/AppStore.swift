@@ -2504,6 +2504,30 @@ final class AppStore: ObservableObject {
         try await accountService.syncFriends(accountEmail: session.account.email, friends: currentFriends)
     }
     
+    /// Updates the preferNickname flag for a friend
+    func updateFriendPreferNickname(memberId: UUID, prefer: Bool) async throws {
+        guard session != nil else {
+            throw PayBackError.authSessionMissing
+        }
+        
+        // Update preference in local state
+        await MainActor.run {
+            if let index = friends.firstIndex(where: { $0.memberId == memberId }) {
+                var updatedFriend = friends[index]
+                updatedFriend.preferNickname = prefer
+                friends[index] = updatedFriend
+            }
+        }
+        
+        // Sync to Convex
+        guard let session = session else {
+            throw PayBackError.authSessionMissing
+        }
+        
+        let currentFriends = await MainActor.run { friends }
+        try await accountService.syncFriends(accountEmail: session.account.email, friends: currentFriends)
+    }
+    
     /// Merges an unlinked friend into a linked friend
     func mergeFriend(unlinkedMemberId: UUID, into targetMemberId: UUID) async throws {
         guard session != nil else {
