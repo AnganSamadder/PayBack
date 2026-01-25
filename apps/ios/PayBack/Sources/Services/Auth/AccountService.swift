@@ -22,6 +22,15 @@ protocol AccountService: Sendable {
     
     /// Merges two member IDs (e.g. merging a manual unlinked friend into a linked friend)
     func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws
+    
+    /// Deletes a linked friend (removes link and 1:1 expenses, keeps account)
+    func deleteLinkedFriend(memberId: UUID) async throws
+    
+    /// Deletes an unlinked friend (removes entirely from groups and expenses)
+    func deleteUnlinkedFriend(memberId: UUID) async throws
+    
+    /// Deletes the current user's account (unlinks from friends, keeps expenses, signs out)
+    func selfDeleteAccount() async throws
 }
 
 actor MockAccountService: AccountService {
@@ -108,5 +117,39 @@ actor MockAccountService: AccountService {
         #if DEBUG
         print("[MockAccountService] Merging \(sourceId) into \(targetId)")
         #endif
+    }
+    
+    func deleteLinkedFriend(memberId: UUID) async throws {
+        #if DEBUG
+        print("[MockAccountService] deleteLinkedFriend \(memberId)")
+        #endif
+        for (email, friendList) in friends {
+            if let idx = friendList.firstIndex(where: { $0.memberId == memberId }) {
+                var updated = friendList
+                updated.remove(at: idx)
+                friends[email] = updated
+            }
+        }
+    }
+    
+    func deleteUnlinkedFriend(memberId: UUID) async throws {
+        #if DEBUG
+        print("[MockAccountService] deleteUnlinkedFriend \(memberId)")
+        #endif
+        for (email, friendList) in friends {
+            if let idx = friendList.firstIndex(where: { $0.memberId == memberId }) {
+                var updated = friendList
+                updated.remove(at: idx)
+                friends[email] = updated
+            }
+        }
+    }
+    
+    func selfDeleteAccount() async throws {
+        #if DEBUG
+        print("[MockAccountService] selfDeleteAccount")
+        #endif
+        // Mock implementation - remove current user from accounts
+        // In a real mock, we might need to know WHO is calling, but for now just log it
     }
 }

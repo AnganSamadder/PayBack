@@ -274,6 +274,21 @@ actor ConvexAccountService: AccountService {
         // Using "aliases:mergeMemberIds" as identified in the plan/grep
         _ = try await client.mutation("aliases:mergeMemberIds", with: args)
     }
+
+    func deleteLinkedFriend(memberId: UUID) async throws {
+        let args: [String: ConvexEncodable?] = ["memberId": memberId.uuidString]
+        _ = try await client.mutation("cleanup:deleteLinkedFriend", with: args)
+    }
+
+    func deleteUnlinkedFriend(memberId: UUID) async throws {
+        let args: [String: ConvexEncodable?] = ["memberId": memberId.uuidString]
+        _ = try await client.mutation("cleanup:deleteUnlinkedFriend", with: args)
+    }
+    
+    func selfDeleteAccount() async throws {
+        // Calls the mutation that unlinks the user from everyone but preserves expenses
+        _ = try await client.mutation("cleanup:selfDeleteAccount", with: [:])
+    }
 }
 
 #endif

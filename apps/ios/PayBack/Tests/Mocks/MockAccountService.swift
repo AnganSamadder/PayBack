@@ -111,4 +111,30 @@ actor MockAccountServiceForAppStore: AccountService {
         if shouldFail { throw PayBackError.networkUnavailable }
         // No-op for mock
     }
+    
+    func deleteLinkedFriend(memberId: UUID) async throws {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        for (email, var friendList) in friends {
+            if let idx = friendList.firstIndex(where: { $0.memberId == memberId }) {
+                friendList.remove(at: idx)
+                friends[email] = friendList
+            }
+        }
+    }
+    
+    func deleteUnlinkedFriend(memberId: UUID) async throws {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        for (email, var friendList) in friends {
+            if let idx = friendList.firstIndex(where: { $0.memberId == memberId }) {
+                friendList.remove(at: idx)
+                friends[email] = friendList
+            }
+        }
+    }
+    
+    func selfDeleteAccount() async throws {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        // Mock implementation: could remove the account from internal storage if we tracked "current user",
+        // but for now just succeeding is enough for most tests unless we test the side effects explicitly.
+    }
 }

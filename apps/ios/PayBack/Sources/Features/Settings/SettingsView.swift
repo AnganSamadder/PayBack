@@ -99,6 +99,36 @@ struct SettingsView: View {
                         value: account.email
                     )
                 }
+                
+                Divider()
+                    .padding(.vertical, 4)
+                
+                NavigationLink {
+                    DeleteAccountView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "trash.fill")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.red)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                Circle()
+                                    .fill(Color.red.opacity(0.1))
+                            )
+                        
+                        Text("Delete Account")
+                            .font(.system(.body, design: .rounded, weight: .medium))
+                            .foregroundStyle(.red)
+                        
+                        Spacer()
+                        
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             .padding(16)
             .background(

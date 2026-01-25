@@ -859,105 +859,106 @@ final class AppStore: ObservableObject {
     /// 3. Deleting all expenses involving them in each group
     /// 4. Auto-deleting any groups that become single-member (only current user)
     func deleteFriend(_ friend: GroupMember) {
-        print("🔵 deleteFriend called for: \(friend.name) (\(friend.id))")
-        
-        let friendIdToRemove = friend.id
-        
-        // Step 1: Immediately remove from friends list for instant UI update
-        friends.removeAll { $0.memberId == friendIdToRemove }
-        print("🟢 Removed friend from friends list. Remaining: \(friends.count)")
-        
-        // Step 2: Find ALL groups containing this friend
-        let groupsWithFriend = groups.filter { group in
-            group.members.contains(where: { $0.id == friendIdToRemove })
+        Task {
+            await deleteUnlinkedFriend(memberId: friend.id)
         }
-        print("🟢 Found \(groupsWithFriend.count) groups containing this friend")
+    }
+    
+    func deleteLinkedFriend(memberId: UUID) async {
+        print("🔵 deleteLinkedFriend called for: \(memberId)")
         
-        var groupsToDelete: [UUID] = []
-        var groupsToUpdate: [SpendingGroup] = []
-        var allExpensesToDelete: [Expense] = []
-        
-        for group in groupsWithFriend {
-            // Find and collect all expenses involving this friend in this group
-            let expensesInGroup = expenses.filter { expense in
-                expense.groupId == group.id && (
-                    expense.paidByMemberId == friendIdToRemove ||
-                    expense.involvedMemberIds.contains(friendIdToRemove)
-                )
-            }
-            allExpensesToDelete.append(contentsOf: expensesInGroup)
+        await MainActor.run {
+            friends.removeAll { $0.memberId == memberId }
             
-            // Remove friend from the group's member list
-            var updatedGroup = group
-            updatedGroup.members.removeAll { $0.id == friendIdToRemove }
-            
-            // Check if group should be deleted (only current user left OR empty)
-            let remainingNonCurrentUserMembers = updatedGroup.members.filter { !isCurrentUser($0) }
-            if remainingNonCurrentUserMembers.isEmpty {
-                // Group only has current user - mark for deletion
-                groupsToDelete.append(group.id)
-                // Also delete ALL expenses in this group (not just ones involving the friend)
-                let allGroupExpenses = expenses.filter { $0.groupId == group.id }
-                allExpensesToDelete.append(contentsOf: allGroupExpenses)
-                print("🟢 Group '\(group.name)' will be deleted (only current user left)")
-            } else {
-                // Group still has other members - just update it
-                groupsToUpdate.append(updatedGroup)
-                print("🟢 Group '\(group.name)' will be updated (removed friend, \(updatedGroup.members.count) members remain)")
-            }
-        }
-        
-        // Step 3: Apply local changes
-        // Remove expenses
-        let expenseIdsToDelete = Set(allExpensesToDelete.map(\.id))
-        expenses.removeAll { expenseIdsToDelete.contains($0.id) }
-        
-        // Remove groups marked for deletion
-        let groupIdsToDelete = Set(groupsToDelete)
-        groups.removeAll { groupIdsToDelete.contains($0.id) }
-        
-        // Update groups that still exist
-        for updatedGroup in groupsToUpdate {
-            if let idx = groups.firstIndex(where: { $0.id == updatedGroup.id }) {
-                groups[idx] = updatedGroup
-            }
-        }
-        
-        persistCurrentState()
-        print("✅ Local state updated: deleted \(groupsToDelete.count) groups, updated \(groupsToUpdate.count) groups, removed \(expenseIdsToDelete.count) expenses")
-        
-        // Step 4: Sync to cloud
-        Task { [groupsToDelete, groupsToUpdate, allExpensesToDelete] in
-            // Delete groups from cloud
-            if !groupsToDelete.isEmpty {
-                try? await groupCloudService.deleteGroups(groupsToDelete)
+            if let directGroup = groups.first(where: { 
+                ($0.isDirect ?? false) && $0.members.contains(where: { $0.id == memberId }) 
+            }) {
+                print("🟢 Deleting direct group: \(directGroup.id)")
+                expenses.removeAll { $0.groupId == directGroup.id }
+                groups.removeAll { $0.id == directGroup.id }
             }
             
-            // Update remaining groups in cloud
-            for group in groupsToUpdate {
-                try? await groupCloudService.upsertGroup(group)
-            }
-            
-            // Delete expenses from cloud
-            for expense in allExpensesToDelete {
-                try? await expenseCloudService.deleteExpense(expense.id)
-            }
+            persistCurrentState()
         }
         
-        // Step 5: Sync the cleaned friends list to cloud
-        if let session = session {
-            let cleanedFriends = friends
-            friendSyncTask?.cancel()
-            friendSyncTask = Task { [cleanedFriends] in
-                do {
-                    try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: cleanedFriends)
-                    print("✅ Friends synced to cloud after deletion")
-                } catch {
-                    #if DEBUG
-                    print("⚠️ Failed to sync friends after deletion: \(error.localizedDescription)")
-                    #endif
+        do {
+            try await accountService.deleteLinkedFriend(memberId: memberId)
+            print("✅ Backend deleteLinkedFriend success")
+            scheduleFriendSync()
+        } catch {
+            print("🔴 Backend deleteLinkedFriend failed: \(error)")
+        }
+    }
+    
+    func deleteUnlinkedFriend(memberId: UUID) async {
+        print("🔵 deleteUnlinkedFriend called for: \(memberId)")
+        
+        await MainActor.run {
+            friends.removeAll { $0.memberId == memberId }
+            
+            let groupsWithFriend = groups.filter { group in
+                group.members.contains(where: { $0.id == memberId })
+            }
+            
+            var groupsToDelete: [UUID] = []
+            
+            for group in groupsWithFriend {
+                expenses.removeAll { expense in
+                    expense.groupId == group.id && (
+                        expense.paidByMemberId == memberId ||
+                        expense.involvedMemberIds.contains(memberId)
+                    )
+                }
+                
+                if let idx = groups.firstIndex(where: { $0.id == group.id }) {
+                    var updatedGroup = groups[idx]
+                    updatedGroup.members.removeAll { $0.id == memberId }
+                    
+                    let remaining = updatedGroup.members.filter { !isCurrentUser($0) }
+                    if remaining.isEmpty {
+                        groupsToDelete.append(group.id)
+                        expenses.removeAll { $0.groupId == group.id }
+                    } else {
+                        groups[idx] = updatedGroup
+                    }
                 }
             }
+            
+            groups.removeAll { groupsToDelete.contains($0.id) }
+            
+            persistCurrentState()
+        }
+        
+        do {
+            try await accountService.deleteUnlinkedFriend(memberId: memberId)
+            print("✅ Backend deleteUnlinkedFriend success")
+            scheduleFriendSync()
+        } catch {
+            print("🔴 Backend deleteUnlinkedFriend failed: \(error)")
+        }
+    }
+    
+    func selfDeleteAccount() async {
+        print("🔵 selfDeleteAccount called")
+        do {
+            try await accountService.selfDeleteAccount()
+            print("✅ Backend selfDeleteAccount success")
+            await signOut()
+        } catch {
+            print("🔴 Backend selfDeleteAccount failed: \(error)")
+            // We might still want to sign out locally even if backend fails, 
+            // but for safety/consistency let's alert user (handled in View)
+            // or just force signout if it's a "user not found" error?
+            // For now, assume if it fails, we don't sign out so they can try again.
+        }
+    }
+    
+    func directGroup(with memberId: UUID) -> SpendingGroup? {
+        groups.first { group in
+            (group.isDirect ?? false) &&
+            group.members.count == 2 &&
+            group.members.contains { $0.id == memberId } &&
+            group.members.contains { $0.id == currentUser.id }
         }
     }
     

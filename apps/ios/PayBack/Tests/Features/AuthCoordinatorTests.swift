@@ -679,6 +679,18 @@ actor TestAccountService: AccountService {
     func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
         // No-op for tests
     }
+    
+    func deleteLinkedFriend(memberId: UUID) async throws {
+        // No-op for tests
+    }
+    
+    func deleteUnlinkedFriend(memberId: UUID) async throws {
+        // No-op for tests
+    }
+    
+    func selfDeleteAccount() async throws {
+        // No-op for tests
+    }
 }
 
 final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {

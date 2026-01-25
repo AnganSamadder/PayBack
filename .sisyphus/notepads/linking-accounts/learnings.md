@@ -247,3 +247,29 @@ Same priority for `preferNickname`:
 - Toggle state initializes from friend data when sheet opens.
 - Changes to toggle don't save until "Save" button is pressed (atomic update with nickname).
 - "Original name" only shows if it differs from current display names to avoid redundancy.
+
+## Link-Aware Deletion UI (Task 10)
+
+### UI Changes
+- **FriendsTabView**: Updated delete confirmation dialog to be context-aware.
+  - Linked friends: "Remove [name] as a friend? Their account will remain, but your 1:1 expenses will be deleted."
+  - Unlinked friends: "Delete [name]? This will remove them from all your groups and expenses."
+- **FriendDetailView**: Added a delete action (trash icon) to the navigation header using `.customNavigationHeaderWithAction`. It shares the same logic as the list view.
+- **Expense Warning**: Added a pre-check for unsettled expenses in the 1:1 group (direct group). If found, an additional alert ("Delete Anyway?") is shown with the count and total amount.
+- **Success Feedback**: Added a custom toast overlay for successful deletion.
+
+### Logic & Backend Integration
+- Added `deleteLinkedFriend(memberId:)` and `deleteUnlinkedFriend(memberId:)` to `AccountService` and `ConvexAccountService`.
+  - Maps to `cleanup:deleteLinkedFriend` and `cleanup:deleteUnlinkedFriend` mutations.
+- **Optimistic Updates**: `AppStore` methods perform immediate local cleanup before calling the backend:
+  - `deleteLinkedFriend`: Removes from friend list, deletes direct group and its expenses. Preserves shared groups.
+  - `deleteUnlinkedFriend`: Removes from friend list, removes from ALL groups, cascades deletions for empty groups.
+- **Mock Updates**: Updated `MockAccountService` (in main and test targets) and `TestAccountService` to implement the new protocol methods, fixing build errors in tests.
+
+## Self-Delete Account Implementation (Task 12)
+- Added `selfDeleteAccount` to `AccountService` protocol and its implementations (`ConvexAccountService`, `MockAccountService`).
+- Implemented `selfDeleteAccount` in `AppStore` to call the service and then sign out.
+- Created `DeleteAccountView` with a two-step confirmation process (Alert -> Type "DELETE").
+- Added entry point in `SettingsView` under the Account section with red styling.
+- **Critical**: When modifying protocols like `AccountService`, always update ALL mock implementations (e.g., `TestAccountService` in test files) to avoid build failures.
+- **Convex**: Used `cleanup:selfDeleteAccount` mutation which unlinks the user but preserves expenses.
