@@ -19,6 +19,7 @@ struct FriendDetailView: View {
     @State private var preferNickname = false
     @State private var isSavingNickname = false
     @State private var showMergeSheet = false
+    @State private var showDeleteConfirmation = false
 
     init(friend: GroupMember, onBack: @escaping () -> Void, onExpenseSelected: ((Expense) -> Void)? = nil) {
         self.friend = friend
@@ -412,8 +413,16 @@ struct FriendDetailView: View {
                                     nicknameText = original
                                 }
                             }
-                        }
-                }
+        }
+        .confirmationDialog("Delete Friend?", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete \(friend.name)", role: .destructive) {
+                print("Delete friend \(friend.name) requested")
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Are you sure you want to delete this friend? This action cannot be undone.")
+        }
+    }
                 
                 if isLinked && currentNickname != nil {
                     Button(action: {
@@ -905,7 +914,19 @@ struct FriendDetailView: View {
                         )
                 )
         )
-                                    .shadow(color: AppTheme.brand.opacity(0.1), radius: AppMetrics.FriendDetail.heroCardShadowRadius, x: 0, y: AppMetrics.FriendDetail.heroCardShadowY)
+        .overlay(alignment: .topTrailing) {
+            Button(action: {
+                Haptics.selection()
+                showDeleteConfirmation = true
+            }) {
+                Image(systemName: "trash.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.white, .red)
+                    .padding(12)
+                    .shadow(radius: 2)
+            }
+        }
+        .shadow(color: AppTheme.brand.opacity(0.1), radius: AppMetrics.FriendDetail.heroCardShadowRadius, x: 0, y: AppMetrics.FriendDetail.heroCardShadowY)
           .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
     }
     
@@ -1122,29 +1143,35 @@ struct DirectExpenseCard: View {
 
                     if expense.paidByMemberId == store.currentUser.id {
                         if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
-                            HStack(spacing: 4) {
-                                Text("\(friend.name) owes \(currency(friendSplit.amount))")
-                                    .font(.system(.caption, design: .rounded, weight: .medium))
-                                    .foregroundStyle(.green)
-
-                                if friendSplit.isSettled {
+                            if friendSplit.isSettled {
+                                HStack(spacing: 4) {
+                                    Text("You paid \(currency(friendSplit.amount))")
+                                        .font(.system(.caption, design: .rounded, weight: .medium))
+                                        .foregroundStyle(.green)
                                     Image(systemName: "checkmark.circle.fill")
                                         .font(.system(size: 12))
                                         .foregroundStyle(.green)
                                 }
+                            } else {
+                                Text("\(friend.name) owes \(currency(friendSplit.amount))")
+                                    .font(.system(.caption, design: .rounded, weight: .medium))
+                                    .foregroundStyle(.green)
                             }
                         }
                     } else if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
-                        HStack(spacing: 4) {
-                            Text("You owe \(currencyPositive(userSplit.amount))")
-                                .font(.system(.caption, design: .rounded, weight: .medium))
-                                .foregroundStyle(.red)
-
-                            if userSplit.isSettled {
+                        if userSplit.isSettled {
+                            HStack(spacing: 4) {
+                                Text("\(friend.name) paid \(currencyPositive(userSplit.amount))")
+                                    .font(.system(.caption, design: .rounded, weight: .medium))
+                                    .foregroundStyle(.green)
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 12))
                                     .foregroundStyle(.green)
                             }
+                        } else {
+                            Text("You owe \(currencyPositive(userSplit.amount))")
+                                .font(.system(.caption, design: .rounded, weight: .medium))
+                                .foregroundStyle(.red)
                         }
                     }
                 }
