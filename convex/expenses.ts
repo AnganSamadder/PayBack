@@ -170,9 +170,9 @@ export const list = query({
 
     // Merge and deduplicate
     const expenseMap = new Map();
-    ownedExpenses.forEach(e => expenseMap.set(e._id, e));
-    sharedExpenses.forEach(e => expenseMap.set(e._id, e));
-    participantExpenses.forEach(e => expenseMap.set(e._id, e));
+    ownedExpenses.forEach(e => { expenseMap.set(e._id, e); });
+    memberExpenses.forEach(e => { expenseMap.set(e._id, e); });
+    participantExpenses.forEach(e => { expenseMap.set(e._id, e); });
         
     return Array.from(expenseMap.values());
   },
