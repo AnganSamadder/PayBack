@@ -201,7 +201,7 @@ struct InviteLinkClaimView: View {
             
             // Expense preview
             if let preview = preview {
-                expensePreviewSection(preview: preview)
+                expensePreviewSection(token: token, preview: preview)
             }
             
             // Action buttons (only show if not processing or successful)
@@ -216,28 +216,12 @@ struct InviteLinkClaimView: View {
     @ViewBuilder
     private func senderInfoSection(token: InviteToken) -> some View {
         VStack(spacing: 16) {
-            // Avatar - show real profile pic if available
-            if let imageUrl = token.creatorProfileImageUrl, let url = URL(string: imageUrl) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 80, height: 80)
-                            .clipShape(Circle())
-                    case .failure(_):
-                        fallbackAvatar(for: token)
-                    case .empty:
-                        ProgressView()
-                            .frame(width: 80, height: 80)
-                    @unknown default:
-                        fallbackAvatar(for: token)
-                    }
-                }
-            } else {
-                fallbackAvatar(for: token)
-            }
+            // Avatar - use AvatarView for consistency
+            AvatarView(
+                name: token.creatorName ?? token.creatorEmail,
+                size: 80,
+                imageUrl: token.creatorProfileImageUrl
+            )
             
             VStack(spacing: 4) {
                 Text("Invite from")
@@ -261,19 +245,6 @@ struct InviteLinkClaimView: View {
         .background(Color(.systemBackground))
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 2)
-    }
-    
-    @ViewBuilder
-    private func fallbackAvatar(for token: InviteToken) -> some View {
-        ZStack {
-            Circle()
-                .fill(AppTheme.brand.opacity(0.2))
-                .frame(width: 80, height: 80)
-            
-            Text((token.creatorName ?? token.creatorEmail).prefix(1).uppercased())
-                .font(.system(size: 36, weight: .semibold))
-                .foregroundStyle(AppTheme.brand)
-        }
     }
     
     // MARK: - Name Confirmation Section
@@ -306,7 +277,7 @@ struct InviteLinkClaimView: View {
     // MARK: - Expense Preview Section
     
     @ViewBuilder
-    private func expensePreviewSection(preview: ExpensePreview) -> some View {
+    private func expensePreviewSection(token: InviteToken, preview: ExpensePreview) -> some View {
         VStack(spacing: 16) {
             // Summary header
             VStack(spacing: 8) {
@@ -336,14 +307,40 @@ struct InviteLinkClaimView: View {
                 )
             }
             
-            // Groups involved
-            if !preview.groupNames.isEmpty {
+            // Friends section (Direct Groups)
+            if !preview.personalExpenses.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Friends")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    
+                    // Show the target member (friend in direct group)
+                    HStack(spacing: 12) {
+                        AvatarView(name: token.targetMemberName, size: 32)
+                        Text(token.targetMemberName)
+                            .font(.headline)
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .cornerRadius(12)
+            }
+            
+            // Groups section (Multi-person groups only - exclude direct groups)
+            let multiPersonGroups = preview.groupNames.filter { groupName in
+                // Exclude direct groups (typically named after the friend)
+                groupName.lowercased().trimmingCharacters(in: .whitespaces) != token.targetMemberName.lowercased().trimmingCharacters(in: .whitespaces)
+            }
+            
+            if !multiPersonGroups.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Groups")
                         .font(.subheadline)
                         .fontWeight(.semibold)
                     
-                    ForEach(preview.groupNames, id: \.self) { groupName in
+                    ForEach(multiPersonGroups, id: \.self) { groupName in
                         HStack {
                             Image(systemName: "person.3.fill")
                                 .font(.caption)

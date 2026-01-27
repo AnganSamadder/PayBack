@@ -34,6 +34,10 @@ struct FriendDetailView: View {
         var id: String { rawValue }
     }
     
+    private func isMe(_ memberId: UUID) -> Bool {
+        return memberId == store.currentUser.id || memberId == store.session?.account.linkedMemberId
+    }
+
     private var netBalance: Double {
         var balance: Double = 0
 
@@ -45,14 +49,14 @@ struct FriendDetailView: View {
                 // Example: SELECT * FROM expenses WHERE group_id = group.id AND settled = false
                 let groupExpenses = store.expenses(in: group.id)
                 for expense in groupExpenses {
-                    if expense.paidByMemberId == store.currentUser.id {
+                    if isMe(expense.paidByMemberId) {
                         // Current user paid, check if friend owes anything (only unsettled)
                         if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }), !friendSplit.isSettled {
                             balance += friendSplit.amount
                         }
                     } else if expense.paidByMemberId == friend.id {
                         // Friend paid, check if current user owes anything (only unsettled)
-                        if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }), !userSplit.isSettled {
+                        if let userSplit = expense.splits.first(where: { isMe($0.memberId) }), !userSplit.isSettled {
                             balance -= userSplit.amount
                         }
                     }
@@ -990,10 +994,11 @@ struct FriendDetailView: View {
         return store.groups.first { group in
             (group.isDirect ?? false) && 
             group.members.count == 2 &&
-            Set(group.members.map(\.id)) == Set([store.currentUser.id, friend.id])
+            group.members.contains(where: { isMe($0.id) }) &&
+            group.members.contains(where: { $0.id == friend.id })
         }
     }
-    
+
 }
 
 // MARK: - Direct Expenses View
@@ -1008,13 +1013,18 @@ struct DirectExpensesView: View {
         self.onExpenseTap = onExpenseTap
     }
     
+    private func isMe(_ memberId: UUID) -> Bool {
+        return memberId == store.currentUser.id || memberId == store.session?.account.linkedMemberId
+    }
+
     private var directExpenses: [Expense] {
         // TODO: DATABASE_INTEGRATION - Replace with database query
         // Example: SELECT * FROM groups WHERE is_direct = true AND member_ids = [currentUser.id, friend.id]
         let directGroup = store.groups.first { group in
             (group.isDirect ?? false) &&
             group.members.count == 2 &&
-            Set(group.members.map(\.id)) == Set([store.currentUser.id, friend.id])
+            group.members.contains(where: { isMe($0.id) }) &&
+            group.members.contains(where: { $0.id == friend.id })
         }
 
         guard let directGroup = directGroup else { return [] }
@@ -1045,7 +1055,8 @@ struct DirectExpensesView: View {
         return store.groups.first { group in
             (group.isDirect ?? false) && 
             group.members.count == 2 &&
-            Set(group.members.map(\.id)) == Set([store.currentUser.id, friend.id])
+            group.members.contains(where: { isMe($0.id) }) &&
+            group.members.contains(where: { $0.id == friend.id })
         }
     }
 }
@@ -1118,6 +1129,10 @@ struct DirectExpenseCard: View {
     let friend: GroupMember
     let onTap: ((Expense) -> Void)?
 
+    private func isMe(_ memberId: UUID) -> Bool {
+        return memberId == store.currentUser.id || memberId == store.session?.account.linkedMemberId
+    }
+
     var body: some View {
         let content = VStack(spacing: AppMetrics.FriendDetail.expenseCardInternalSpacing) {
             HStack {
@@ -1141,7 +1156,7 @@ struct DirectExpenseCard: View {
                         .font(.system(.body, design: .rounded, weight: .semibold))
                         .foregroundStyle(.primary)
 
-                    if expense.paidByMemberId == store.currentUser.id {
+                    if isMe(expense.paidByMemberId) {
                         if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
                             if friendSplit.isSettled {
                                 HStack(spacing: 4) {
@@ -1158,7 +1173,7 @@ struct DirectExpenseCard: View {
                                     .foregroundStyle(.green)
                             }
                         }
-                    } else if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
+                    } else if let userSplit = expense.splits.first(where: { isMe($0.memberId) }) {
                         if userSplit.isSettled {
                             HStack(spacing: 4) {
                                 Text("\(friend.name) paid \(currencyPositive(userSplit.amount))")
@@ -1268,6 +1283,10 @@ struct GroupExpenseRow: View {
     let expense: Expense
     let friend: GroupMember
 
+    private func isMe(_ memberId: UUID) -> Bool {
+        return memberId == store.currentUser.id || memberId == store.session?.account.linkedMemberId
+    }
+
     var body: some View {
         HStack(spacing: AppMetrics.FriendDetail.groupExpenseRowSpacing) {
             GroupIcon(name: expense.description)
@@ -1291,7 +1310,7 @@ struct GroupExpenseRow: View {
                     .foregroundStyle(.primary)
 
                 // Show the relationship between current user and friend
-                if expense.paidByMemberId == store.currentUser.id {
+                if isMe(expense.paidByMemberId) {
                     // Current user paid - friend owes current user
                     if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
                         HStack(spacing: 4) {
@@ -1308,7 +1327,7 @@ struct GroupExpenseRow: View {
                     }
                 } else {
                     // Friend paid - current user owes friend
-                    if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
+                    if let userSplit = expense.splits.first(where: { isMe($0.memberId) }) {
                         HStack(spacing: 4) {
                             Text("You owe \(currencyPositive(userSplit.amount))")
                                 .font(.system(.caption, design: .rounded, weight: .medium))
