@@ -753,6 +753,19 @@ final class AppStore: ObservableObject {
         scheduleFriendSync()
     }
 
+    func leaveGroup(_ groupId: UUID) {
+        guard let index = groups.firstIndex(where: { $0.id == groupId }) else { return }
+
+        groups.remove(at: index)
+        expenses.removeAll { $0.groupId == groupId }
+
+        persistCurrentState()
+
+        Task {
+            try? await groupCloudService.leaveGroup(groupId)
+        }
+    }
+
     /// Removes a member from a group and deletes all expenses involving that member from that group only.
     /// - Parameters:
     ///   - groupId: The ID of the group to remove the member from

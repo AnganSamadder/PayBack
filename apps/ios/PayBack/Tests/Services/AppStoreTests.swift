@@ -153,6 +153,28 @@ final class AppStoreTests: XCTestCase {
         XCTAssertTrue(sut.expenses.isEmpty)
     }
     
+    func testLeaveGroup_RemovesGroupAndExpenses() async throws {
+        // Given
+        sut.addGroup(name: "Trip", memberNames: ["Alice"])
+        let group = sut.groups[0]
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 50,
+            paidByMemberId: group.members[0].id,
+            involvedMemberIds: [group.members[0].id],
+            splits: [ExpenseSplit(memberId: group.members[0].id, amount: 50)]
+        )
+        sut.addExpense(expense)
+        
+        // When
+        sut.leaveGroup(group.id)
+        
+        // Then
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertTrue(sut.expenses.isEmpty)
+    }
+    
     func testAddExistingGroup_AddsGroup() async throws {
         // Given
         let group = SpendingGroup(name: "Existing", members: [GroupMember(name: "Alice")])
