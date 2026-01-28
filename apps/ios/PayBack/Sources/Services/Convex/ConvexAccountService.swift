@@ -19,6 +19,23 @@ actor ConvexAccountService: AccountService {
         let profile_image_url: String?
         let profile_avatar_color: String?
         let linked_member_id: String?
+        let equivalent_member_ids: [String]?
+    }
+
+    func lookupAccount() async throws -> UserAccount? {
+        for try await value in client.subscribe(to: "users:viewer", yielding: UserViewerDTO?.self).values {
+             guard let dto = value else { return nil }
+             return UserAccount(
+                 id: dto.id,
+                 email: dto.email,
+                 displayName: dto.display_name,
+                 linkedMemberId: dto.linked_member_id.flatMap { UUID(uuidString: $0) },
+                 equivalentMemberIds: (dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
+                 profileImageUrl: dto.profile_image_url,
+                 profileColorHex: dto.profile_avatar_color
+             )
+        }
+        return nil
     }
 
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {

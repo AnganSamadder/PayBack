@@ -5,6 +5,7 @@ struct UserAccount: Identifiable, Codable, Hashable, Sendable {
     var email: String
     var displayName: String
     var linkedMemberId: UUID?
+    var equivalentMemberIds: [UUID]
     var createdAt: Date
     var profileImageUrl: String?
     var profileColorHex: String?
@@ -14,6 +15,7 @@ struct UserAccount: Identifiable, Codable, Hashable, Sendable {
         email: String,
         displayName: String,
         linkedMemberId: UUID? = nil,
+        equivalentMemberIds: [UUID] = [],
         createdAt: Date = Date(),
         profileImageUrl: String? = nil,
         profileColorHex: String? = nil
@@ -22,6 +24,7 @@ struct UserAccount: Identifiable, Codable, Hashable, Sendable {
         self.email = email
         self.displayName = displayName
         self.linkedMemberId = linkedMemberId
+        self.equivalentMemberIds = equivalentMemberIds
         self.createdAt = createdAt
         self.profileImageUrl = profileImageUrl
         self.profileColorHex = profileColorHex

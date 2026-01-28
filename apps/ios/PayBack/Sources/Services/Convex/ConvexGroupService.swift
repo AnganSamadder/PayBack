@@ -107,6 +107,11 @@ final class ConvexGroupService: GroupCloudService, Sendable {
     func clearAllData() async throws {
         _ = try await client.mutation("groups:clearAllForUser", with: [:])
     }
+
+    func leaveGroup(_ groupId: UUID) async throws {
+        let args: [String: ConvexEncodable?] = ["id": groupId.uuidString]
+        _ = try await client.mutation("groups:leaveGroup", with: args)
+    }
 }
 
 #endif
