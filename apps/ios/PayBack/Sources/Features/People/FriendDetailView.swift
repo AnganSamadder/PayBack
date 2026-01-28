@@ -35,7 +35,12 @@ struct FriendDetailView: View {
     }
     
     private func isMe(_ memberId: UUID) -> Bool {
-        return memberId == store.currentUser.id || memberId == store.session?.account.linkedMemberId
+        if memberId == store.currentUser.id { return true }
+        if let account = store.session?.account {
+            if let linkedId = account.linkedMemberId, memberId == linkedId { return true }
+            if account.equivalentMemberIds.contains(memberId) { return true }
+        }
+        return false
     }
 
     private var netBalance: Double {
@@ -417,18 +422,10 @@ struct FriendDetailView: View {
                                     nicknameText = original
                                 }
                             }
-        }
-        .confirmationDialog("Delete Friend?", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
-            Button("Delete \(friend.name)", role: .destructive) {
-                print("Delete friend \(friend.name) requested")
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Are you sure you want to delete this friend? This action cannot be undone.")
-        }
-    }
+                        }
+                }
                 
-                if isLinked && currentNickname != nil {
+                if currentNickname != nil {
                     Button(action: {
                         Haptics.selection()
                         Task {
@@ -636,6 +633,8 @@ struct FriendDetailView: View {
         }
         .onAppear {
             selectedTab = .direct
+            print("DEBUG: CurrentUser ID: \(store.currentUser.id)")
+            print("DEBUG: LinkedMemberID: \(String(describing: store.session?.account.linkedMemberId))")
         }
         .onChange(of: friend.id) { oldValue, newValue in
             selectedTab = .direct
@@ -663,6 +662,14 @@ struct FriendDetailView: View {
             } else {
                Text("An unknown error occurred.")
             }
+        }
+        .confirmationDialog("Delete Friend?", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete \(friend.name)", role: .destructive) {
+                print("Delete friend \(friend.name) requested")
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Are you sure you want to delete this friend? This action cannot be undone.")
         }
     }
     
@@ -1014,10 +1021,15 @@ struct DirectExpensesView: View {
     }
     
     private func isMe(_ memberId: UUID) -> Bool {
-        return memberId == store.currentUser.id || memberId == store.session?.account.linkedMemberId
+        if memberId == store.currentUser.id { return true }
+        if let account = store.session?.account {
+            if let linkedId = account.linkedMemberId, memberId == linkedId { return true }
+            if account.equivalentMemberIds.contains(memberId) { return true }
+        }
+        return false
     }
 
-    private var directExpenses: [Expense] {
+    fileprivate var directExpenses: [Expense] {
         // TODO: DATABASE_INTEGRATION - Replace with database query
         // Example: SELECT * FROM groups WHERE is_direct = true AND member_ids = [currentUser.id, friend.id]
         let directGroup = store.groups.first { group in
@@ -1079,17 +1091,33 @@ struct GroupExpensesView: View {
         // TODO: DATABASE_INTEGRATION - Replace store.groups with database query
         // Example: SELECT * FROM groups WHERE member_ids CONTAINS friend.id AND is_direct = false
         for group in store.groups {
+            print("DEBUG: Checking group \(group.name) (\(group.id))")
             // Skip direct groups - those are handled separately
-            guard !(group.isDirect ?? false) else { continue }
+            guard !(group.isDirect ?? false) else { 
+                print("DEBUG: Group \(group.name) is direct, skipping")
+                continue 
+            }
+
+            if group.members.contains(where: { $0.id == friend.id }) {
+                 print("DEBUG: Friend \(friend.name) (\(friend.id)) found in group \(group.name)")
+            } else {
+                 print("DEBUG: Friend \(friend.name) (\(friend.id)) NOT found in group \(group.name). Members: \(group.members.map { "\($0.name) (\($0.id))" })")
+            }
+
             guard group.members.contains(where: { $0.id == friend.id }) else { continue }
 
             // TODO: DATABASE_INTEGRATION - Replace store.expenses(in:) with database query
             // Example: SELECT * FROM expenses WHERE group_id = group.id AND involved_member_ids CONTAINS friend.id
             let expenses = store.expenses(in: group.id)
                 .filter { expense in
-                    expense.involvedMemberIds.contains(friend.id)
+                    let involved = expense.involvedMemberIds.contains(friend.id)
+                    if !involved {
+                        print("DEBUG: Expense '\(expense.description)' in group \(group.name) does NOT involve friend \(friend.id). Involved: \(expense.involvedMemberIds)")
+                    }
+                    return involved
                 }
 
+            print("DEBUG: Group \(group.name) has \(expenses.count) involved expenses for friend")
             if !expenses.isEmpty {
                 result[group] = expenses
             }
@@ -1130,7 +1158,12 @@ struct DirectExpenseCard: View {
     let onTap: ((Expense) -> Void)?
 
     private func isMe(_ memberId: UUID) -> Bool {
-        return memberId == store.currentUser.id || memberId == store.session?.account.linkedMemberId
+        if memberId == store.currentUser.id { return true }
+        if let account = store.session?.account {
+            if let linkedId = account.linkedMemberId, memberId == linkedId { return true }
+            if account.equivalentMemberIds.contains(memberId) { return true }
+        }
+        return false
     }
 
     var body: some View {
@@ -1226,6 +1259,7 @@ struct DirectExpenseCard: View {
     }
 
     private func memberName(for id: UUID) -> String {
+        if isMe(id) { return "You" }
         guard let group = store.group(by: expense.groupId) else { return "Unknown" }
         return group.members.first { $0.id == id }?.name ?? "Unknown"
     }
@@ -1284,7 +1318,12 @@ struct GroupExpenseRow: View {
     let friend: GroupMember
 
     private func isMe(_ memberId: UUID) -> Bool {
-        return memberId == store.currentUser.id || memberId == store.session?.account.linkedMemberId
+        if memberId == store.currentUser.id { return true }
+        if let account = store.session?.account {
+            if let linkedId = account.linkedMemberId, memberId == linkedId { return true }
+            if account.equivalentMemberIds.contains(memberId) { return true }
+        }
+        return false
     }
 
     var body: some View {

@@ -59,6 +59,8 @@ struct GroupDetailView: View {
     @State private var memberToDelete: GroupMember?
     @State private var showMemberDeleteConfirmation = false
     @State private var showAddMemberSheet = false
+    @State private var showLeaveConfirmation = false
+    @State private var showUnsettledAlert = false
     
     // Get the live group from store to ensure updates are reflected
     private var group: SpendingGroup? {
@@ -90,6 +92,23 @@ struct GroupDetailView: View {
 
                         // Expenses section
                         expensesSection(group)
+
+                        Button(role: .destructive) {
+                            if hasUnsettledExpenses {
+                                showUnsettledAlert = true
+                            } else {
+                                showLeaveConfirmation = true
+                            }
+                        } label: {
+                            Text("Leave Group")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.red.opacity(0.1))
+                                .foregroundStyle(.red)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
 
                         // Bottom padding
                         Spacer(minLength: 20)
@@ -144,6 +163,20 @@ struct GroupDetailView: View {
             }
         } message: { member in
             Text("This will remove \"\(member.name)\" from the group and delete all expenses involving them. This action cannot be undone.")
+        }
+        .alert("Cannot Leave Group", isPresented: $showUnsettledAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("You have unsettled expenses. Please settle them before leaving.")
+        }
+        .alert("Leave Group?", isPresented: $showLeaveConfirmation) {
+            Button("Leave", role: .destructive) {
+                store.leaveGroup(groupId)
+                onBack()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Are you sure you want to leave this group?")
         }
     }
 
@@ -219,6 +252,19 @@ struct GroupDetailView: View {
     private func calculateGroupTotalBalance() -> Double {
         let items = store.expenses(in: groupId)
         return items.reduce(0) { $0 + $1.totalAmount }
+    }
+
+    private var hasUnsettledExpenses: Bool {
+        let expenses = store.expenses(in: groupId)
+        return expenses.contains { exp in
+            if let split = exp.splits.first(where: { $0.memberId == store.currentUser.id }), !split.isSettled {
+                return true
+            }
+            if exp.paidByMemberId == store.currentUser.id && !exp.isSettled {
+                return true
+            }
+            return false
+        }
     }
 
     @ViewBuilder
