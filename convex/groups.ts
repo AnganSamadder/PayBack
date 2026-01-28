@@ -263,3 +263,35 @@ export const clearAllForUser = mutation({
         return null;
     }
 });
+
+export const leaveGroup = mutation({
+  args: { id: v.string() },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+
+    const group = await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", args.id))
+      .unique();
+
+    if (!group) throw new Error("Group not found");
+
+    let equivalentIds = [user.id];
+    if (user.linked_member_id) {
+        const aliases = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
+        equivalentIds = [...equivalentIds, ...aliases];
+    }
+    
+    const newMembers = group.members.filter(m => !equivalentIds.includes(m.id));
+    
+    if (newMembers.length === 0) {
+        await ctx.db.delete(group._id);
+    } else {
+        await ctx.db.patch(group._id, { 
+            members: newMembers,
+            updated_at: Date.now()
+        });
+    }
+  },
+});

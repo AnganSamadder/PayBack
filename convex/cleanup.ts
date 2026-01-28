@@ -446,6 +446,15 @@ export const selfDeleteAccount = mutation({
       }
     }
 
+    const myFriends = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email", (q) => q.eq("account_email", args.accountEmail))
+      .collect();
+
+    for (const friend of myFriends) {
+      await ctx.db.delete(friend._id);
+    }
+
     await ctx.db.delete(user._id);
 
     return {

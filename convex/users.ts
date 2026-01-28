@@ -1,6 +1,7 @@
 import { mutation, query, action } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
+import { getAllEquivalentMemberIds } from "./aliases";
 
 /**
  * Stores or updates the current user in the `accounts` table.
@@ -71,7 +72,19 @@ export const viewer = query({
       .withIndex("by_email", (q) => q.eq("email", identity.email!))
       .unique();
 
-    return user;
+    if (!user) {
+      return null;
+    }
+
+    let equivalentMemberIds: string[] = [];
+    if (user.linked_member_id) {
+      equivalentMemberIds = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
+    }
+
+    return {
+      ...user,
+      equivalent_member_ids: equivalentMemberIds,
+    };
   },
 });
 
