@@ -665,11 +665,28 @@ struct FriendDetailView: View {
         }
         .confirmationDialog("Delete Friend?", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
             Button("Delete \(friend.name)", role: .destructive) {
-                print("Delete friend \(friend.name) requested")
+                Haptics.notify(.warning)
+                store.deleteFriend(friend)
+                onBack()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Are you sure you want to delete this friend? This action cannot be undone.")
+            let isLinked = store.friendHasLinkedAccount(friend)
+            var message = ""
+            
+            if isLinked {
+                message = "Remove \(displayName) as a friend? Their account will remain, but your 1:1 expenses will be deleted."
+            } else {
+                message = "Delete \(displayName)? This will remove them from all your groups and expenses."
+            }
+            
+            if abs(netBalance) > 0.01 {
+                let currencyCode = Locale.current.currency?.identifier ?? "USD"
+                let formattedAmount = abs(netBalance).formatted(.currency(code: currencyCode))
+                message += "\n\n⚠️ You have unsettled expenses totaling \(formattedAmount). Deleting will remove these."
+            }
+            
+            return Text(message)
         }
     }
     

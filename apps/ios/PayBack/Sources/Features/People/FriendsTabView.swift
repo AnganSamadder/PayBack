@@ -328,7 +328,23 @@ private struct FriendsList: View {
                 friendToDelete = nil
             }
         } message: { friend in
-            Text("This will remove \"\(friendDisplayName(friend))\" from your friends list and delete your 1:1 group history. This cannot be undone.")
+            let balance = calculateBalanceForSorting(for: friend)
+            let isLinked = store.friendHasLinkedAccount(friend)
+            var message = ""
+            
+            if isLinked {
+                message = "Remove \(friendDisplayName(friend)) as a friend? Their account will remain, but your 1:1 expenses will be deleted."
+            } else {
+                message = "Delete \(friendDisplayName(friend))? This will remove them from all your groups and expenses."
+            }
+            
+            if abs(balance) > 0.01 {
+                let currencyCode = Locale.current.currency?.identifier ?? "USD"
+                let formattedAmount = abs(balance).formatted(.currency(code: currencyCode))
+                message += "\n\n⚠️ You have unsettled expenses totaling \(formattedAmount). Deleting will remove these."
+            }
+            
+            return Text(message)
         }
     }
 
