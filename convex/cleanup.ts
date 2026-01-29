@@ -16,6 +16,14 @@ async function getCurrentUser(ctx: any) {
   return { identity, user };
 }
 
+async function deleteUserExpensesForExpense(ctx: any, expenseId: string) {
+  const rows = await ctx.db
+    .query("user_expenses")
+    .withIndex("by_expense_id", (q: any) => q.eq("expense_id", expenseId))
+    .collect();
+  for (const row of rows) await ctx.db.delete(row._id);
+}
+
 export const deleteSelfFriends = mutation({
   args: {},
   handler: async (ctx) => {
@@ -149,6 +157,7 @@ export const deleteLinkedFriend = mutation({
         .collect();
 
       for (const expense of groupExpenses) {
+        await deleteUserExpensesForExpense(ctx, expense.id);
         await ctx.db.delete(expense._id);
         expensesDeleted++;
       }
@@ -223,6 +232,7 @@ export const deleteUnlinkedFriend = mutation({
           .collect();
 
         for (const expense of groupExpenses) {
+          await deleteUserExpensesForExpense(ctx, expense.id);
           await ctx.db.delete(expense._id);
           expensesDeleted++;
         }
@@ -251,6 +261,7 @@ export const deleteUnlinkedFriend = mutation({
           );
 
           if (remainingParticipants.length <= 1) {
+            await deleteUserExpensesForExpense(ctx, expense.id);
             await ctx.db.delete(expense._id);
             expensesDeleted++;
           } else {
@@ -334,6 +345,13 @@ export const hardDeleteAccount = internalMutation({
       .withIndex("by_account_email", (q) => q.eq("account_email", email))
       .collect();
 
+    // FAN-OUT CLEANUP: Delete user's view
+    const myUserExpenses = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_user_id", (q: any) => q.eq("user_id", args.accountId))
+      .collect();
+    for (const ue of myUserExpenses) await ctx.db.delete(ue._id);
+
     for (const friend of friends) {
       await ctx.db.delete(friend._id);
       friendsDeleted++;
@@ -351,6 +369,7 @@ export const hardDeleteAccount = internalMutation({
         .collect();
 
       for (const expense of groupExpenses) {
+        await deleteUserExpensesForExpense(ctx, expense.id);
         await ctx.db.delete(expense._id);
         expensesDeleted++;
       }
@@ -365,6 +384,7 @@ export const hardDeleteAccount = internalMutation({
       .collect();
 
     for (const expense of ownedExpenses) {
+      await deleteUserExpensesForExpense(ctx, expense.id);
       await ctx.db.delete(expense._id);
       expensesDeleted++;
     }
@@ -450,6 +470,15 @@ export const selfDeleteAccount = mutation({
       .query("account_friends")
       .withIndex("by_account_email", (q) => q.eq("account_email", args.accountEmail))
       .collect();
+
+    // FAN-OUT CLEANUP: Delete my user_expenses view
+    const myUserExpenses = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_user_id", (q: any) => q.eq("user_id", user.id))
+      .collect();
+    for (const ue of myUserExpenses) {
+      await ctx.db.delete(ue._id);
+    }
 
     for (const friend of myFriends) {
       await ctx.db.delete(friend._id);
