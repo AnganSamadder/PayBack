@@ -114,6 +114,16 @@ export default defineSchema({
     .index("by_owner_email", ["owner_email"])
     .index("by_group_id", ["group_id"])
     .index("by_client_id", ["id"]),
+
+  user_expenses: defineTable({
+    user_id: v.string(),       // The user who "sees" this expense
+    expense_id: v.string(),    // Reference to expenses.id (UUID)
+    updated_at: v.number(),    // For sorting
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_expense_id", ["expense_id"])
+    .index("by_user_id_and_updated_at", ["user_id", "updated_at"]),
+
   link_requests: defineTable({
     id: v.string(),
     requester_id: v.string(),
