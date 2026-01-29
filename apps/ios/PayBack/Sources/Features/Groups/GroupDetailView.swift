@@ -55,30 +55,14 @@ struct GroupDetailView: View {
     let onMemberTap: (GroupMember) -> Void
     let onExpenseTap: (Expense) -> Void
     @State private var showAddExpense = false
-    @State private var showSettleView = false
-    @State private var memberToDelete: GroupMember?
-    @State private var showMemberDeleteConfirmation = false
-    @State private var showAddMemberSheet = false
+    @State private var expenseToEdit: Expense?
+    @State private var showDeleteConfirmation = false
     @State private var showLeaveConfirmation = false
-    @State private var showUnsettledAlert = false
+    @State private var showEditGroup = false
+    @State private var showAddMembers = false
+    @State private var memberToMerge: GroupMember?
+    @State private var showMergeSheet = false
     
-    // Get the live group from store to ensure updates are reflected
-    private var group: SpendingGroup? {
-        store.groups.first { $0.id == groupId }
-    }
-
-    init(
-        group: SpendingGroup,
-        onBack: @escaping () -> Void,
-        onMemberTap: @escaping (GroupMember) -> Void = { _ in },
-        onExpenseTap: @escaping (Expense) -> Void = { _ in }
-    ) {
-        self.groupId = group.id
-        self.onBack = onBack
-        self.onMemberTap = onMemberTap
-        self.onExpenseTap = onExpenseTap
-    }
-
     var body: some View {
         ZStack {
             if let group = group {
@@ -430,11 +414,35 @@ struct GroupDetailView: View {
                         .contextMenu {
                             if !store.isCurrentUser(member) {
                                 Button(role: .destructive) {
-                                    memberToDelete = member
-                                    showMemberDeleteConfirmation = true
+                                    store.removeMemberFromGroup(groupId: group.id, memberId: member.id)
                                 } label: {
                                     Label("Remove from Group", systemImage: "person.badge.minus")
                                 }
+                                
+                                if !store.friends.contains(where: { $0.memberId == member.id }) {
+                                    Button {
+                                        let newFriend = AccountFriend(
+                                            memberId: member.id,
+                                            name: member.name,
+                                            profileImageUrl: member.profileImageUrl,
+                                            profileColorHex: member.profileColorHex
+                                        )
+                                        store.addImportedFriend(newFriend)
+                                        Haptics.notify(.success)
+                                    } label: {
+                                        Label("Add Friend", systemImage: "person.badge.plus")
+                                    }
+                                    
+                                    if !store.friends.filter({ !$0.hasLinkedAccount }).isEmpty {
+                                        Button {
+                                            memberToMerge = member
+                                            showMergeSheet = true
+                                        } label: {
+                                            Label("Merge with Existing Friend", systemImage: "person.2.circle")
+                                        }
+                                    }
+                                }
+                            }
                             }
                         }
                     }
