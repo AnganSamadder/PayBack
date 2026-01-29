@@ -149,46 +149,20 @@ export const list = query({
     const { user } = await getCurrentUser(ctx);
     if (!user) return [];
 
-    // 1. Get owned expenses
-    const ownedExpenses = await ctx.db
+    const userExpenses = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_user_id_and_updated_at", q => q.eq("user_id", user.id))
+      .order("desc")
+      .collect();
+
+    const expenses = await Promise.all(userExpenses.map(async (ue) => {
+      return await ctx.db
         .query("expenses")
-        .withIndex("by_owner_account_id", q => q.eq("owner_account_id", user.id))
-        .collect();
-        
-    // 2. Get expenses for groups where user is a member (via alias resolution)
-    let membershipGroupIds: string[] = [];
-    if (user.linked_member_id) {
-        const equivalentIds = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
-        const allGroups = await ctx.db.query("groups").collect();
-        membershipGroupIds = allGroups
-            .filter(g => g.members.some(m => equivalentIds.includes(m.id)))
-            .map(g => g.id);
-    }
+        .withIndex("by_client_id", q => q.eq("id", ue.expense_id))
+        .unique();
+    }));
 
-    let sharedExpenses: any[] = [];
-    if (membershipGroupIds.length > 0) {
-        for (const groupId of membershipGroupIds) {
-            const groupExp = await ctx.db
-                .query("expenses")
-                .withIndex("by_group_id", q => q.eq("group_id", groupId))
-                .collect();
-            sharedExpenses = [...sharedExpenses, ...groupExp];
-        }
-    }
-
-    // 3. Get expenses where user's email is in participant_emails
-    const allExpenses = await ctx.db.query("expenses").collect();
-    const participantExpenses = allExpenses.filter(e => 
-        e.participant_emails?.includes(user.email)
-    );
-
-    // Merge and deduplicate
-    const expenseMap = new Map();
-    ownedExpenses.forEach(e => { expenseMap.set(e._id, e); });
-    sharedExpenses.forEach(e => { expenseMap.set(e._id, e); });
-    participantExpenses.forEach(e => { expenseMap.set(e._id, e); });
-        
-    return Array.from(expenseMap.values());
+    return expenses.filter(e => e !== null);
   },
 });
 
