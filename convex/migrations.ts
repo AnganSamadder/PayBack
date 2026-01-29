@@ -1,7 +1,8 @@
 
-import { mutation } from "./_generated/server";
+import { mutation, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
+import { reconcileUserExpenses } from "./helpers";
 
 /**
  * Creates member_aliases records for existing linked accounts.
@@ -568,4 +569,48 @@ export const backfillParticipantEmailsAdvanced = mutation({
     
     return { updated, memberMappings: memberIdToEmail.size };
   }
+});
+
+export const backfillUserExpenses = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const expenses = await ctx.db.query("expenses").collect();
+    let processed = 0;
+    
+    for (const expense of expenses) {
+      // 1. Collect User IDs (Owner + derived participants)
+      const userIds = new Set<string>();
+      if (expense.owner_account_id) {
+          userIds.add(expense.owner_account_id);
+      }
+      
+      // Add linked accounts from participants array
+      if (expense.participants) {
+        for (const p of expense.participants) {
+          if (p.linked_account_id) {
+            userIds.add(p.linked_account_id);
+          }
+        }
+      }
+      
+      // Resolve participant_emails to accounts
+      if (expense.participant_emails) {
+        for (const email of expense.participant_emails) {
+          const account = await ctx.db
+            .query("accounts")
+            .withIndex("by_email", q => q.eq("email", email))
+            .unique();
+          if (account) {
+            userIds.add(account.id);
+          }
+        }
+      }
+      
+      // 2. Reconcile
+      await reconcileUserExpenses(ctx, expense.id, Array.from(userIds));
+      processed++;
+    }
+    
+    return { processed };
+  },
 });
