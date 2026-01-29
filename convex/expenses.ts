@@ -1,6 +1,5 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { getAllEquivalentMemberIds } from "./aliases";
 import { reconcileUserExpenses } from "./helpers";
 
 async function getCurrentUser(ctx: any) {
