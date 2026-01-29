@@ -119,7 +119,6 @@ final class UserAccountTests: XCTestCase {
             email: "session@test.com",
             displayName: "Session User"
         )
-
         let session = UserSession(account: account)
         
         XCTAssertEqual(session.account.id, "session123")
