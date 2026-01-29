@@ -443,7 +443,6 @@ struct GroupDetailView: View {
                                     }
                                 }
                             }
-                            }
                         }
                     }
                 }
