@@ -152,7 +152,6 @@ struct SettingsView: View {
             
             VStack(spacing: 0) {
                 // Merge Friends
-                /*
                 NavigationLink {
                     MergeFriendsView()
                 } label: {
@@ -188,7 +187,6 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
                 .disabled(store.friends.filter { !$0.hasLinkedAccount }.count < 2)
                 .opacity(store.friends.filter { !$0.hasLinkedAccount }.count < 2 ? 0.6 : 1)
-                */
             }
             .background(
                 RoundedRectangle(cornerRadius: 16)
