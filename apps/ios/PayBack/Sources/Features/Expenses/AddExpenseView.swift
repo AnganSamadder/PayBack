@@ -133,20 +133,18 @@ struct AddExpenseView: View {
             }
             
         case .itemized:
-            // Smart Tax/Tip distribution
+            // Always distribute fees proportionally (taxTipsFees = total - itemsSubtotal)
             let userItemsTotal = ids.reduce(0.0) { $0 + (itemizedAmounts[$1] ?? 0) }
             guard userItemsTotal > 0 else { return [] }
             
-            let taxTipTotal = itemizedTax + itemizedTip
+            // Derived fees = total - sum of item inputs
+            let derivedFees = totalAmount - userItemsTotal
+            
             baseSplits = ids.map { id in
                 let userItems = itemizedAmounts[id] ?? 0
-                var finalAmount = userItems
-                
-                if autoDistributeTaxTip && taxTipTotal > 0 {
-                    // Distribute tax/tip proportionally based on user's items
-                    let proportion = userItems / userItemsTotal
-                    finalAmount += proportion * taxTipTotal
-                }
+                // Always distribute fees proportionally based on user's items
+                let proportion = userItems / userItemsTotal
+                let finalAmount = userItems + (proportion * derivedFees)
                 
                 return ExpenseSplit(memberId: id, amount: finalAmount)
             }
@@ -1429,13 +1427,16 @@ private struct ManualSplitView: View {
                 HStack {
                     Text(p.name)
                     Spacer()
-                    TextField("0", value: Binding(
-                        get: { manualAmounts[p.id] ?? 0 },
-                        set: { manualAmounts[p.id] = $0 }
-                    ), format: .number)
-                    .keyboardType(.decimalPad)
-                    .frame(width: AppMetrics.AddExpense.manualAmountFieldWidth)
-                    .multilineTextAlignment(.trailing)
+                    SmartCurrencyField(
+                        amount: Binding(
+                            get: { manualAmounts[p.id] ?? 0 },
+                            set: { manualAmounts[p.id] = $0 }
+                        ),
+                        currency: Locale.current.currency?.identifier ?? "USD",
+                        font: .system(size: 18, weight: .medium, design: .rounded),
+                        alignment: .trailing
+                    )
+                    .frame(width: 100)
                     if adjustment != 0 {
                         Text(adjustment > 0 ? "+\(adjustment, specifier: "%.2f")" : "\(adjustment, specifier: "%.2f")")
                             .font(.caption)
@@ -1581,142 +1582,167 @@ private struct ItemizedSplitView: View {
     @Binding var tip: Double
     @Binding var autoDistributeTaxTip: Bool
     
-    private var userItemsTotal: Double {
+    /// Computed subtotal from sum of all item inputs
+    private var itemsSubtotal: Double {
         participants.reduce(0) { $0 + (itemizedAmounts[$1.id] ?? 0) }
     }
     
-    private var taxTipTotal: Double {
-        tax + tip
+    /// Derived "Tax, Tips, & Fees" = total - itemsSubtotal
+    private var taxTipsFees: Double {
+        total - itemsSubtotal
     }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Header fields
-            VStack(spacing: 12) {
-                ItemizedFieldRow(label: "Subtotal", value: $subtotal, placeholder: "0.00")
-                ItemizedFieldRow(label: "Tax", value: $tax, placeholder: "0.00")
-                ItemizedFieldRow(label: "Tip", value: $tip, placeholder: "0.00")
-            }
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(AppTheme.card)
-            )
-            
-            // Smart Tax/Tip toggle
-            Toggle(isOn: $autoDistributeTaxTip) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Smart Tax/Tip Distribution")
-                        .font(.subheadline.weight(.medium))
-                    Text("Distribute proportionally based on items")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .tint(AppTheme.brand)
-            .onChange(of: autoDistributeTaxTip) { _, _ in
-                Haptics.selection()
-            }
-            
-            Divider()
-            
-            // Per-user items
+            // Section: Each Person's Items
             Text("Each Person's Items")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
             
             ForEach(participants) { p in
-                let userItems = itemizedAmounts[p.id] ?? 0
-                let proportion = userItemsTotal > 0 ? userItems / userItemsTotal : 0
-                let taxTipShare = autoDistributeTaxTip ? proportion * taxTipTotal : 0
-                let finalAmount = userItems + taxTipShare
-                
-                VStack(spacing: 4) {
-                    HStack {
-                        Text(p.name)
-                        Spacer()
-                        TextField("0.00", value: Binding(
+                HStack {
+                    Text(p.name)
+                    Spacer()
+                    SmartCurrencyField(
+                        amount: Binding(
                             get: { itemizedAmounts[p.id] ?? 0 },
                             set: { itemizedAmounts[p.id] = $0 }
-                        ), format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
-                        .keyboardType(.decimalPad)
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: 100)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(AppTheme.card)
-                        )
-                    }
-                    
-                    if autoDistributeTaxTip && taxTipTotal > 0 {
-                        HStack {
-                            Text("+ \(Int(proportion * 100))% of tax/tip")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("= \(finalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))")
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(AppTheme.brand)
-                        }
-                    }
+                        ),
+                        currency: Locale.current.currency?.identifier ?? "USD",
+                        font: .system(size: 18, weight: .medium, design: .rounded),
+                        alignment: .trailing
+                    )
+                    .frame(width: 100)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(AppTheme.card)
+                    )
                 }
             }
             
             Divider()
             
-            // Summary
-            VStack(spacing: 8) {
+            // Section: Subtotal (read-only, derived from items)
+            HStack {
+                Text("Subtotal")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(itemsSubtotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    .fontWeight(.medium)
+            }
+            
+            // Section: Tax, Tips, & Fees (read-only, derived)
+            HStack {
+                Text("Tax, Tips, & Fees")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(taxTipsFees, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    .fontWeight(.medium)
+                    .foregroundStyle(taxTipsFees < 0 ? .red : .primary)
+            }
+            
+            // Warning if items exceed total
+            if taxTipsFees < 0 {
                 HStack {
-                    Text("Items Total")
-                    Spacer()
-                    Text(userItemsTotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
-                }
-                
-                HStack {
-                    Text("Tax + Tip")
-                    Spacer()
-                    Text(taxTipTotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
-                }
-                
-                HStack {
-                    Text("Grand Total")
-                        .fontWeight(.semibold)
-                    Spacer()
-                    Text(userItemsTotal + taxTipTotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
-                        .fontWeight(.semibold)
-                }
-                
-                if abs((userItemsTotal + taxTipTotal) - total) > 0.01 {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                        Text("Difference from entered total: \(abs((userItemsTotal + taxTipTotal) - total), format: .currency(code: Locale.current.currency?.identifier ?? "USD"))")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Items exceed total by ")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    + Text(abs(taxTipsFees), format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
+            
+            Divider()
+            
+            // Section: Preview (Smartly Distributed) - always shown
+            Text("Preview (Smartly Distributed)")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            
+            ForEach(participants) { p in
+                let userItems = itemizedAmounts[p.id] ?? 0
+                let proportion = itemsSubtotal > 0 ? userItems / itemsSubtotal : 0
+                let feesShare = proportion * taxTipsFees
+                let finalAmount = userItems + feesShare
+                
+                ItemizedPreviewRow(
+                    name: p.name,
+                    userItems: userItems,
+                    feesShare: feesShare,
+                    finalAmount: finalAmount,
+                    showDetails: itemsSubtotal > 0 && taxTipsFees != 0,
+                    isNegativeFees: taxTipsFees < 0
+                )
+            }
+            
+            Divider()
+            
+            // Grand Total confirmation
+            HStack {
+                Text("Grand Total")
+                    .fontWeight(.semibold)
+                Spacer()
+                Text(total, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    .fontWeight(.semibold)
+            }
+        }
+        .onChange(of: itemsSubtotal) { _, newSubtotal in
+            // Keep the subtotal binding in sync (for computedSplits compatibility)
+            subtotal = newSubtotal
+            // Store derived fees in tax, set tip to 0 (minimal change approach)
+            tax = taxTipsFees
+            tip = 0
+        }
+        .onAppear {
+            // Ensure always-on smart distribution
+            autoDistributeTaxTip = true
         }
     }
 }
 
-private struct ItemizedFieldRow: View {
-    let label: String
-    @Binding var value: Double
-    let placeholder: String
+// MARK: - Itemized Preview Row
+private struct ItemizedPreviewRow: View {
+    let name: String
+    let userItems: Double
+    let feesShare: Double
+    let finalAmount: Double
+    let showDetails: Bool
+    let isNegativeFees: Bool
+    
+    private var currencyCode: String {
+        Locale.current.currency?.identifier ?? "USD"
+    }
     
     var body: some View {
-        HStack {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer()
-            TextField(placeholder, value: $value, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
-                .keyboardType(.decimalPad)
-                .multilineTextAlignment(.trailing)
-                .frame(width: 100)
+        VStack(spacing: 4) {
+            HStack {
+                Text(name)
+                    .fontWeight(.medium)
+                Spacer()
+                Text(finalAmount, format: .currency(code: currencyCode))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(AppTheme.brand)
+            }
+            
+            if showDetails {
+                HStack {
+                    Text("Items: \(userItems.formatted(.currency(code: currencyCode)))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    let feeLabel = feesShare >= 0 ? "+" : ""
+                    Text("\(feeLabel)\(feesShare.formatted(.currency(code: currencyCode))) fees")
+                        .font(.caption)
+                        .foregroundStyle(isNegativeFees ? .red : .secondary)
+                }
+            }
         }
+        .padding(.vertical, 4)
     }
 }
 

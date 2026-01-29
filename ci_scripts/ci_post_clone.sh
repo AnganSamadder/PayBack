@@ -47,6 +47,19 @@ echo "--- Available Device Types ---"
 xcrun simctl list devicetypes 2>/dev/null | grep -i "iPhone" | head -20 || echo "Could not list device types"
 
 # ----------------------------------------------------------------------------
+# Clean up unavailable simulators (prevents stale UDID issues)
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- Cleaning Simulators ---"
+xcrun simctl delete unavailable 2>/dev/null || true
+echo "Cleaned unavailable simulators"
+
+# Show available iPhone simulators
+echo ""
+echo "--- Available iPhone Simulators ---"
+xcrun simctl list devices iPhone available 2>/dev/null | head -20 || echo "Could not list simulators"
+
+# ----------------------------------------------------------------------------
 # Install Node.js via Homebrew (XcodeCloud has Homebrew pre-installed)
 # ----------------------------------------------------------------------------
 echo ""
