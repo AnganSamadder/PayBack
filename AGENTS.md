@@ -6,6 +6,10 @@ This file guides agentic coding assistants working in this repo.
 - Applies to the entire repository.
 - No Cursor or Copilot instruction files were found in this repo.
 
+## CI Environment Constraints
+- Xcode Cloud runs on x86 and does not support Convex testing.
+- Do not add build steps that require running the Convex backend in CI.
+
 ## Primary CI Parity Rule
 - Always use the local CI simulation script for full test runs: `./scripts/test-ci-locally.sh`.
 - This script must remain in lockstep with GitHub Actions. If `.github/workflows/ci.yml` changes, update `scripts/test-ci-locally.sh` to replicate CI behavior exactly (steps, flags, simulator selection, coverage settings).
