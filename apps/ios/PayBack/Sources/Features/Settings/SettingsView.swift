@@ -103,7 +103,6 @@ struct SettingsView: View {
                 Divider()
                     .padding(.vertical, 4)
                 
-                /*
                 NavigationLink {
                     DeleteAccountView()
                 } label: {
@@ -130,7 +129,6 @@ struct SettingsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                */
             }
             .padding(16)
             .background(
