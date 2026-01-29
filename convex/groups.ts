@@ -59,6 +59,11 @@ export const create = mutation({
                 )
                 .unique();
 
+            const linkedUser = await ctx.db
+                .query("accounts")
+                .withIndex("by_linked_member_id", (q) => q.eq("linked_member_id", member.id))
+                .unique();
+
             if (!existingFriend) {
                 await ctx.db.insert("account_friends", {
                 account_email: user.email,
@@ -66,8 +71,17 @@ export const create = mutation({
                 name: member.name,
                 profile_avatar_color: member.profile_avatar_color ?? getRandomAvatarColor(),
                 profile_image_url: member.profile_image_url,
-                has_linked_account: false,
+                has_linked_account: !!linkedUser,
+                linked_account_id: linkedUser?._id,
+                linked_account_email: linkedUser?.email,
                 updated_at: Date.now(),
+                });
+            } else if (linkedUser && !existingFriend.has_linked_account) {
+                await ctx.db.patch(existingFriend._id, {
+                    has_linked_account: true,
+                    linked_account_id: linkedUser._id,
+                    linked_account_email: linkedUser.email,
+                    updated_at: Date.now(),
                 });
             }
         }
@@ -101,6 +115,11 @@ export const create = mutation({
         )
         .unique();
 
+      const linkedUser = await ctx.db
+        .query("accounts")
+        .withIndex("by_linked_member_id", (q) => q.eq("linked_member_id", member.id))
+        .unique();
+
       if (!existingFriend) {
         await ctx.db.insert("account_friends", {
           account_email: user.email,
@@ -108,7 +127,16 @@ export const create = mutation({
           name: member.name,
           profile_avatar_color: member.profile_avatar_color ?? getRandomAvatarColor(),
           profile_image_url: member.profile_image_url,
-          has_linked_account: false,
+          has_linked_account: !!linkedUser,
+          linked_account_id: linkedUser?._id,
+          linked_account_email: linkedUser?.email,
+          updated_at: Date.now(),
+        });
+      } else if (linkedUser && !existingFriend.has_linked_account) {
+        await ctx.db.patch(existingFriend._id, {
+          has_linked_account: true,
+          linked_account_id: linkedUser._id,
+          linked_account_email: linkedUser.email,
           updated_at: Date.now(),
         });
       }
@@ -148,9 +176,9 @@ export const list = query({
     
     // Merge results
     const groupMap = new Map();
-    groupsByOwnerId.forEach(g => groupMap.set(g._id, g));
-    groupsByEmail.forEach(g => groupMap.set(g._id, g));
-    groupsByMembership.forEach(g => groupMap.set(g._id, g));
+    groupsByOwnerId.forEach(g => { groupMap.set(g._id, g); });
+    groupsByEmail.forEach(g => { groupMap.set(g._id, g); });
+    groupsByMembership.forEach(g => { groupMap.set(g._id, g); });
     
     return Array.from(groupMap.values());
   },
@@ -252,8 +280,8 @@ export const clearAllForUser = mutation({
             
         // Merge and dedupe
         const allGroupIds = new Set<string>();
-        ownedGroups.forEach(g => allGroupIds.add(g._id));
-        byEmail.forEach(g => allGroupIds.add(g._id));
+        ownedGroups.forEach(g => { allGroupIds.add(g._id); });
+        byEmail.forEach(g => { allGroupIds.add(g._id); });
         
         // Delete all
         for (const _id of allGroupIds) {

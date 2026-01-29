@@ -12,7 +12,8 @@ export default defineSchema({
     created_at: v.number(),
     updated_at: v.optional(v.number()),
   })
-    .index("by_email", ["email"]),
+    .index("by_email", ["email"])
+    .index("by_linked_member_id", ["linked_member_id"]),
 
   account_friends: defineTable({
     account_email: v.string(),
