@@ -55,6 +55,11 @@ struct GroupDetailView: View {
     let onMemberTap: (GroupMember) -> Void
     let onExpenseTap: (Expense) -> Void
     @State private var showAddExpense = false
+    @State private var showSettleView = false
+    @State private var memberToDelete: GroupMember?
+    @State private var showMemberDeleteConfirmation = false
+    @State private var showAddMemberSheet = false
+    @State private var showUnsettledAlert = false
     @State private var expenseToEdit: Expense?
     @State private var showDeleteConfirmation = false
     @State private var showLeaveConfirmation = false
@@ -62,6 +67,23 @@ struct GroupDetailView: View {
     @State private var showAddMembers = false
     @State private var memberToMerge: GroupMember?
     @State private var showMergeSheet = false
+    
+    // Get the live group from store to ensure updates are reflected
+    private var group: SpendingGroup? {
+        store.groups.first { $0.id == groupId }
+    }
+
+    init(
+        group: SpendingGroup,
+        onBack: @escaping () -> Void,
+        onMemberTap: @escaping (GroupMember) -> Void = { _ in },
+        onExpenseTap: @escaping (Expense) -> Void = { _ in }
+    ) {
+        self.groupId = group.id
+        self.onBack = onBack
+        self.onMemberTap = onMemberTap
+        self.onExpenseTap = onExpenseTap
+    }
     
     var body: some View {
         ZStack {
