@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { getAllEquivalentMemberIds } from "./aliases";
+import { reconcileUserExpenses } from "./helpers";
 
 async function getCurrentUser(ctx: any) {
   const identity = await ctx.auth.getUserIdentity();
@@ -72,7 +73,7 @@ export const create = mutation({
 
     if (existing) {
       // Update existing record
-      await ctx.db.patch(existing._id, {
+        await ctx.db.patch(existing._id, {
         description: args.description,
         date: args.date,
         total_amount: args.total_amount,
@@ -86,6 +87,13 @@ export const create = mutation({
         subexpenses: args.subexpenses,
         updated_at: Date.now(),
       });
+
+      const participantUsers = await Promise.all(participantEmails.map(email => 
+        ctx.db.query("accounts").withIndex("by_email", q => q.eq("email", email)).unique()
+      ));
+      const participantUserIds = participantUsers.filter(u => u !== null).map(u => u!.id);
+      await reconcileUserExpenses(ctx, args.id, participantUserIds);
+
       return existing._id;
     }
 
@@ -109,6 +117,12 @@ export const create = mutation({
       created_at: Date.now(),
       updated_at: Date.now(),
     });
+
+    const participantUsers = await Promise.all(participantEmails.map(email => 
+      ctx.db.query("accounts").withIndex("by_email", q => q.eq("email", email)).unique()
+    ));
+    const participantUserIds = participantUsers.filter(u => u !== null).map(u => u!.id);
+    await reconcileUserExpenses(ctx, args.id, participantUserIds);
     
     return expenseId;
   },
@@ -197,6 +211,7 @@ export const deleteExpense = mutation({
             throw new Error("Not authorized to delete this expense");
         }
         
+        await reconcileUserExpenses(ctx, args.id, []);
         await ctx.db.delete(expense._id);
     }
 });
@@ -221,6 +236,7 @@ export const deleteExpenses = mutation({
                 continue;
             }
             
+            await reconcileUserExpenses(ctx, id, []);
             await ctx.db.delete(expense._id);
         }
     }
@@ -246,8 +262,8 @@ export const clearAllForUser = mutation({
             
         // Merge and dedupe
         const allExpenseIds = new Set<string>();
-        ownedExpenses.forEach(e => allExpenseIds.add(e._id));
-        byEmail.forEach(e => allExpenseIds.add(e._id));
+        ownedExpenses.forEach(e => { allExpenseIds.add(e._id); });
+        byEmail.forEach(e => { allExpenseIds.add(e._id); });
         
         // Delete all
         for (const _id of allExpenseIds) {
