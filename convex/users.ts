@@ -22,7 +22,7 @@ const logSelfHeal = (
   );
 };
 
-async function cleanupOrphanedDataForEmail(
+export async function cleanupOrphanedDataForEmail(
   ctx: any,
   identity: { email: string; subject: string }
 ) {
@@ -426,5 +426,27 @@ export const updateProfile = mutation({
     }
     
     return patches.profile_image_url;
+  },
+});
+
+/**
+ * Lightweight query to check if the current user exists and is valid.
+ * Used for real-time session monitoring.
+ * Returns: "active" | "deleted" | "unauthenticated"
+ */
+export const sessionStatus = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return "unauthenticated";
+    }
+
+    const user = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", identity.email!))
+      .unique();
+
+    return user ? "active" : "deleted";
   },
 });

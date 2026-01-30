@@ -614,3 +614,24 @@ export const backfillUserExpenses = internalMutation({
     return { processed };
   },
 });
+
+export const backfillFriendStatus = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const friends = await ctx.db.query("account_friends").collect();
+    let updated = 0;
+    
+    for (const friend of friends) {
+      if (!friend.status) {
+        // Default to "friend" for existing records
+        await ctx.db.patch(friend._id, {
+          status: "friend", 
+          updated_at: Date.now()
+        });
+        updated++;
+      }
+    }
+    
+    return { updated, total: friends.length };
+  }
+});

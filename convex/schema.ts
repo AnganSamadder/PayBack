@@ -15,6 +15,17 @@ export default defineSchema({
     .index("by_email", ["email"])
     .index("by_linked_member_id", ["linked_member_id"]),
 
+  friend_requests: defineTable({
+    sender_id: v.id("accounts"),
+    recipient_email: v.string(),
+    status: v.string(), // "pending", "accepted", "rejected"
+    created_at: v.number(),
+    updated_at: v.optional(v.number()),
+  })
+    .index("by_recipient_email", ["recipient_email"])
+    .index("by_sender_id", ["sender_id"])
+    .index("by_recipient_email_and_status", ["recipient_email", "status"]),
+
   account_friends: defineTable({
     account_email: v.string(),
     member_id: v.string(), // UUID string
@@ -28,6 +39,7 @@ export default defineSchema({
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
+    status: v.optional(v.string()), // "friend", "group_peer", "request_sent"
     updated_at: v.number(),
   })
     .index("by_account_email", ["account_email"])
