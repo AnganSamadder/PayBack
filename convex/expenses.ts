@@ -64,6 +64,36 @@ export const create = mutation({
       }
     }
 
+    // VALIDATION: Check Group & Friendship for Direct Expenses
+    const group = await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
+        .unique();
+
+    if (!group) throw new Error("Group not found");
+
+    if (group.is_direct) {
+        for (const memberId of args.involved_member_ids) {
+            // Check if this member is the current user (based on group definition)
+            const groupMember = group.members.find(m => m.id === memberId);
+            if (groupMember?.is_current_user) {
+                continue; // It's me, skip
+            }
+
+            // Must be a confirmed friend
+            const friend = await ctx.db
+                .query("account_friends")
+                .withIndex("by_account_email_and_member_id", (q) => 
+                    q.eq("account_email", user.email).eq("member_id", memberId)
+                )
+                .unique();
+
+            if (!friend || friend.status !== "friend") {
+                throw new Error(`Cannot create direct expense: Member ${groupMember?.name ?? memberId} is not a confirmed friend.`);
+            }
+        }
+    }
+
     // Deduplication check: Check if expense with this ID already exists
     const existing = await ctx.db
       .query("expenses")

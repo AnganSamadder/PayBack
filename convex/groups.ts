@@ -50,42 +50,6 @@ export const create = mutation({
           updated_at: Date.now(),
         });
 
-        // Automatically add all group members as friends
-        for (const member of args.members) {
-            const existingFriend = await ctx.db
-                .query("account_friends")
-                .withIndex("by_account_email_and_member_id", (q) => 
-                q.eq("account_email", user.email).eq("member_id", member.id)
-                )
-                .unique();
-
-            const linkedUser = await ctx.db
-                .query("accounts")
-                .withIndex("by_linked_member_id", (q) => q.eq("linked_member_id", member.id))
-                .unique();
-
-            if (!existingFriend) {
-                await ctx.db.insert("account_friends", {
-                account_email: user.email,
-                member_id: member.id,
-                name: member.name,
-                profile_avatar_color: member.profile_avatar_color ?? getRandomAvatarColor(),
-                profile_image_url: member.profile_image_url,
-                has_linked_account: !!linkedUser,
-                linked_account_id: linkedUser?._id,
-                linked_account_email: linkedUser?.email,
-                updated_at: Date.now(),
-                });
-            } else if (linkedUser && !existingFriend.has_linked_account) {
-                await ctx.db.patch(existingFriend._id, {
-                    has_linked_account: true,
-                    linked_account_id: linkedUser._id,
-                    linked_account_email: linkedUser.email,
-                    updated_at: Date.now(),
-                });
-            }
-        }
-
         return existing._id;
       }
     }
@@ -101,47 +65,6 @@ export const create = mutation({
       updated_at: Date.now(),
     });
     
-    // Automatically add all group members as friends
-    for (const member of args.members) {
-      // Logic for "Self": If this member IS the current user (e.g. flagged by client), skip adding as friend.
-      if (member.is_current_user) {
-          continue;
-      }
-
-      const existingFriend = await ctx.db
-        .query("account_friends")
-        .withIndex("by_account_email_and_member_id", (q) => 
-          q.eq("account_email", user.email).eq("member_id", member.id)
-        )
-        .unique();
-
-      const linkedUser = await ctx.db
-        .query("accounts")
-        .withIndex("by_linked_member_id", (q) => q.eq("linked_member_id", member.id))
-        .unique();
-
-      if (!existingFriend) {
-        await ctx.db.insert("account_friends", {
-          account_email: user.email,
-          member_id: member.id,
-          name: member.name,
-          profile_avatar_color: member.profile_avatar_color ?? getRandomAvatarColor(),
-          profile_image_url: member.profile_image_url,
-          has_linked_account: !!linkedUser,
-          linked_account_id: linkedUser?._id,
-          linked_account_email: linkedUser?.email,
-          updated_at: Date.now(),
-        });
-      } else if (linkedUser && !existingFriend.has_linked_account) {
-        await ctx.db.patch(existingFriend._id, {
-          has_linked_account: true,
-          linked_account_id: linkedUser._id,
-          linked_account_email: linkedUser.email,
-          updated_at: Date.now(),
-        });
-      }
-    }
-
     return groupId;
   },
 });
