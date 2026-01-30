@@ -250,33 +250,33 @@ actor ConvexAccountService: AccountService {
     
     /// Monitors the current user's session status in real-time
     /// Returns a stream of UserAccount? (nil if deleted/unauthenticated)
-    func monitorSession() -> AsyncStream<UserAccount?> {
+    nonisolated func monitorSession() -> AsyncStream<UserAccount?> {
         AsyncStream { continuation in
             let task = Task {
-                // Subscribe to 'users:viewer' to get real-time updates of the user account
-                for await value in client.subscribe(to: "users:viewer", yielding: UserViewerDTO?.self).values {
-                    if case .failure(let error) = value {
-                        print("Monitor Session Error: \(error)")
-                        continuation.yield(nil)
-                        continue
-                    }
-                    if case .success(let dto) = value {
-                        if let dto = dto {
-                            let account = UserAccount(
-                                id: dto.id,
-                                email: dto.email,
-                                displayName: dto.display_name,
-                                linkedMemberId: dto.linked_member_id.flatMap { UUID(uuidString: $0) },
-                                equivalentMemberIds: (dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
-                                profileImageUrl: dto.profile_image_url,
-                                profileColorHex: dto.profile_avatar_color
-                            )
-                            continuation.yield(account)
-                        } else {
-                            // User is null -> Deleted or Unauthenticated
+                do {
+                    // Subscribe to 'users:viewer' to get real-time updates of the user account
+                    // Accessing actor-isolated 'client' requires await
+                    // Subscribe can throw, so we try-await it
+                    for try await value in await client.subscribe(to: "users:viewer", yielding: UserViewerDTO?.self).values {
+                        guard let dto = value else {
                             continuation.yield(nil)
+                            continue
                         }
+                        
+                        let account = UserAccount(
+                            id: dto.id,
+                            email: dto.email,
+                            displayName: dto.display_name,
+                            linkedMemberId: dto.linked_member_id.flatMap { UUID(uuidString: $0) },
+                            equivalentMemberIds: (dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
+                            profileImageUrl: dto.profile_image_url,
+                            profileColorHex: dto.profile_avatar_color
+                        )
+                        continuation.yield(account)
                     }
+                } catch {
+                    print("Monitor Session Error: \(error)")
+                    continuation.yield(nil)
                 }
             }
             
@@ -284,6 +284,84 @@ actor ConvexAccountService: AccountService {
                 task.cancel()
             }
         }
+    }
+
+    // MARK: - Friend Requests
+
+    func sendFriendRequest(email: String) async throws {
+        _ = try await client.mutation("friend_requests:send", with: ["email": email])
+    }
+
+    func acceptFriendRequest(requestId: String) async throws {
+        _ = try await client.mutation("friend_requests:accept", with: ["requestId": requestId])
+    }
+
+    func rejectFriendRequest(requestId: String) async throws {
+        _ = try await client.mutation("friend_requests:reject", with: ["requestId": requestId])
+    }
+
+    private struct FriendRequestDTO: Decodable {
+        struct SenderDTO: Decodable {
+            let id: String
+            let name: String
+            let email: String
+            let profile_image_url: String?
+            let profile_avatar_color: String?
+        }
+        struct RequestDTO: Decodable {
+            let _id: String
+            let status: String
+            let created_at: Double
+        }
+        let request: RequestDTO
+        let sender: SenderDTO
+    }
+
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest] {
+        // Use subscribe to get the data once, mimicking a query since 'query' method is unavailable
+        var requests: [IncomingFriendRequest] = []
+        for try await dtos in client.subscribe(to: "friend_requests:listIncoming", yielding: [FriendRequestDTO].self).values {
+            requests = dtos.map { dto in
+                IncomingFriendRequest(
+                    id: dto.request._id,
+                    sender: UserAccount(
+                        id: dto.sender.id,
+                        email: dto.sender.email,
+                        displayName: dto.sender.name,
+                        linkedMemberId: nil,
+                        equivalentMemberIds: [],
+                        profileImageUrl: dto.sender.profile_image_url,
+                        profileColorHex: dto.sender.profile_avatar_color
+                    ),
+                    status: dto.request.status,
+                    createdAt: Date(timeIntervalSince1970: dto.request.created_at / 1000)
+                )
+            }
+            // Return immediately after first value to act as a one-shot query
+            return requests
+        }
+        return []
+    }
+
+    func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {
+        // We need the current account email to perform the merge
+        guard let account = try await lookupAccount() else {
+            throw PayBackError.accountNotFound(email: "current")
+        }
+        
+        let args: [String: Any] = [
+            "friendId1": friendId1,
+            "friendId2": friendId2,
+            "accountEmail": account.email
+        ]
+        // Note: mutation uses 'Any' for args in ConvexMobile wrapper often, checking type safety
+        // Constructing dictionary for convex-swift
+        let convexArgs: [String: ConvexEncodable] = [
+            "friendId1": friendId1,
+            "friendId2": friendId2,
+            "accountEmail": account.email
+        ]
+        _ = try await client.mutation("aliases:mergeUnlinkedFriends", with: convexArgs)
     }
 }
 
