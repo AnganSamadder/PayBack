@@ -127,3 +127,27 @@ This file guides agentic coding assistants working in this repo.
 ## Lint/Test Parity Reminder
 - If you change CI steps in `.github/workflows/ci.yml`, update `./scripts/test-ci-locally.sh` to match.
 - If you add a new testing/linting command, document it here.
+
+## User Lifecycle & Cleanup Logic
+
+### The "Ghost User" State
+When a user deletes their account via the app (`selfDeleteAccount`), it is a **Soft Delete**:
+- The `accounts` row is deleted.
+- The `account_friends` list is deleted.
+- **BUT** `groups` and `expenses` owned by them are **PRESERVED**.
+- This leaves a "Ghost User" visible to friends (so they can still see expense history).
+
+### The "Clean Slate" Guarantee
+When a user registers (or re-registers) with an email (`store` mutation):
+1. System checks if an `accounts` row exists.
+2. If **NO** account exists (New or Re-registering user):
+   - **Self-Heal Triggered**: `cleanupOrphanedDataForEmail` runs.
+   - **Wipe**: Deletes ALL old `groups`, `expenses`, `link_requests`, and `invite_tokens` owned by that email.
+   - **Unlink**: Removes the email from other users' friend lists (converting them from "Linked" to "Manual" friends).
+3. **Result**: A fresh account NEVER inherits old/ghost data. It always starts with a blank slate.
+
+### Hard Delete
+- **Function**: `performHardDelete` (internal/admin).
+- **Scope**: Wipes EVERYTHING immediately (Account, Friends, Groups, Expenses, Invites, Aliases).
+- **Use Case**: Admin tools or total data removal requests.
+
