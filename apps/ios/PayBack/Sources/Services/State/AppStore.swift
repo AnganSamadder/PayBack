@@ -2,6 +2,8 @@ import Foundation
 import Combine
 import Clerk
 
+enum LogoutAlert: Identifiable { case accountDeleted; var id: Int { hashValue } }
+
 final class AppStore: ObservableObject {
     private struct NormalizedRemoteData {
         let groups: [SpendingGroup]
@@ -35,6 +37,7 @@ final class AppStore: ObservableObject {
     private let failureTracker = LinkFailureTracker()
 
     @Published var isCheckingAuth = true
+    @Published var logoutAlert: LogoutAlert?
     
     // ... dependencies ...
 
@@ -293,6 +296,29 @@ final class AppStore: ObservableObject {
 
     // MARK: - Session management
 
+    private var sessionMonitorTask: Task<Void, Never>?
+
+    private func startSessionMonitoring() async {
+        sessionMonitorTask?.cancel()
+        sessionMonitorTask = Task { @MainActor in
+            for await account in accountService.monitorSession() {
+                if account == nil && self.session != nil {
+                     self.handleForcedLogout(reason: "Account deleted")
+                }
+            }
+        }
+    }
+
+    private func handleForcedLogout(reason: String) {
+        print("[AppStore] Forced logout: ")
+        Task {
+            await signOut()
+            await MainActor.run {
+                self.logoutAlert = .accountDeleted
+            }
+        }
+    }
+
     // MARK: - Centralized Authentication
     
     /// Centralized login that handles Clerk sign-in, robust Convex auth, and session setup.
@@ -380,6 +406,7 @@ final class AppStore: ObservableObject {
         }
         
         await reconcileLinkState()
+        await startSessionMonitoring()
         
         return updatedAccount
     }
@@ -435,6 +462,7 @@ final class AppStore: ObservableObject {
                 }
                 await loadRemoteData()
                 await reconcileLinkState()
+        await startSessionMonitoring()
                 
         */
     }
@@ -1234,6 +1262,7 @@ final class AppStore: ObservableObject {
             
             // Perform state reconciliation to verify link status
             await reconcileLinkState()
+        await startSessionMonitoring()
 
             // Push dirty records back to cloud
             Task { [weak self] in
@@ -2874,6 +2903,7 @@ final class AppStore: ObservableObject {
         
         // Perform reconciliation
         await reconcileLinkState()
+        await startSessionMonitoring()
     }
     
     // MARK: - Friend Status Visibility Helpers

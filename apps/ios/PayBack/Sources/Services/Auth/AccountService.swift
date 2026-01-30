@@ -31,6 +31,25 @@ protocol AccountService: Sendable {
     
     /// Deletes the current user's account (unlinks from friends, keeps expenses, signs out)
     func selfDeleteAccount() async throws
+    
+    /// Monitors the current user's session status in real-time
+    func monitorSession() -> AsyncStream<UserAccount?>
+    
+    // MARK: - Friend Requests
+    func sendFriendRequest(email: String) async throws
+    func acceptFriendRequest(requestId: String) async throws
+    func rejectFriendRequest(requestId: String) async throws
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest]
+    
+    /// Merges two unlinked friends (alias to alias)
+    func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws
+}
+
+struct IncomingFriendRequest: Identifiable, Sendable {
+    let id: String
+    let sender: UserAccount
+    let status: String
+    let createdAt: Date
 }
 
 actor MockAccountService: AccountService {
@@ -151,5 +170,33 @@ actor MockAccountService: AccountService {
         #endif
         // Mock implementation - remove current user from accounts
         // In a real mock, we might need to know WHO is calling, but for now just log it
+    }
+    
+    func monitorSession() -> AsyncStream<UserAccount?> {
+        AsyncStream { continuation in
+            // Mock implementation: just finish immediately or yield current state if we tracked "currentUser"
+            // For now, simple no-op stream
+            continuation.finish()
+        }
+    }
+    
+    func sendFriendRequest(email: String) async throws {
+        // Mock
+    }
+    
+    func acceptFriendRequest(requestId: String) async throws {
+        // Mock
+    }
+    
+    func rejectFriendRequest(requestId: String) async throws {
+        // Mock
+    }
+    
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest] {
+        return []
+    }
+    
+    func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {
+        // Mock
     }
 }
