@@ -84,6 +84,28 @@ struct ParsedFriend: Sendable {
     let profileImageUrl: String?
     let profileColorHex: String?
     let status: String?
+
+    init(
+        memberId: UUID,
+        name: String,
+        nickname: String? = nil,
+        hasLinkedAccount: Bool = false,
+        linkedAccountId: String? = nil,
+        linkedAccountEmail: String? = nil,
+        profileImageUrl: String? = nil,
+        profileColorHex: String? = nil,
+        status: String? = nil
+    ) {
+        self.memberId = memberId
+        self.name = name
+        self.nickname = nickname
+        self.hasLinkedAccount = hasLinkedAccount
+        self.linkedAccountId = linkedAccountId
+        self.linkedAccountEmail = linkedAccountEmail
+        self.profileImageUrl = profileImageUrl
+        self.profileColorHex = profileColorHex
+        self.status = status
+    }
 }
 
 struct ParsedGroup: Sendable {
@@ -504,6 +526,48 @@ struct DataImportService {
             }
         }
         
+        var parsedMemberIdToName: [UUID: String] = [:]
+        for entry in parsedData.groupMembers {
+            parsedMemberIdToName[entry.memberId] = entry.memberName
+        }
+        for entry in parsedData.participantNames {
+            parsedMemberIdToName[entry.memberId] = entry.name
+        }
+        
+        func resolveMemberId(_ parsedId: UUID) -> UUID {
+            if let mapped = memberIdMapping[parsedId] {
+                return mapped
+            }
+            
+            if let name = parsedMemberIdToName[parsedId],
+               let existingId = nameToExistingId[name.lowercased()] {
+                memberIdMapping[parsedId] = existingId
+                return existingId
+            }
+            
+            if let name = parsedMemberIdToName[parsedId] {
+                let newId = UUID()
+                let newFriend = AccountFriend(
+                    memberId: newId,
+                    name: name,
+                    nickname: nil,
+                    hasLinkedAccount: false,
+                    linkedAccountId: nil,
+                    linkedAccountEmail: nil,
+                    profileImageUrl: nil,
+                    profileColorHex: nil,
+                    status: "peer"
+                )
+                store.addImportedFriend(newFriend)
+                friendsAdded += 1
+                memberIdMapping[parsedId] = newId
+                nameToExistingId[name.lowercased()] = newId
+                return newId
+            }
+            
+            return parsedId
+        }
+        
         // Import expenses
         for parsedExpense in parsedData.expenses {
             guard let newGroupId = groupIdMapping[parsedExpense.groupId] else {
@@ -511,11 +575,9 @@ struct DataImportService {
                 continue
             }
             
-            let newPaidByMemberId = memberIdMapping[parsedExpense.paidByMemberId] ?? parsedExpense.paidByMemberId
+            let newPaidByMemberId = resolveMemberId(parsedExpense.paidByMemberId)
             let involvedEntries = parsedData.expenseInvolvedMembers.filter { $0.expenseId == parsedExpense.id }
-            let newInvolvedMemberIds = involvedEntries.map { entry in
-                memberIdMapping[entry.memberId] ?? entry.memberId
-            }
+            let newInvolvedMemberIds = involvedEntries.map { resolveMemberId($0.memberId) }
 
             let involvedMemberIdsSet = Set(newInvolvedMemberIds)
             let targetDescription = parsedExpense.description
@@ -545,7 +607,7 @@ struct DataImportService {
             let newSplits = splitEntries.map { entry in
                 ExpenseSplit(
                     id: UUID(),
-                    memberId: memberIdMapping[entry.memberId] ?? entry.memberId,
+                    memberId: resolveMemberId(entry.memberId),
                     amount: entry.amount,
                     isSettled: entry.isSettled
                 )
@@ -556,7 +618,7 @@ struct DataImportService {
             if !nameEntries.isEmpty {
                 participantNames = [:]
                 for entry in nameEntries {
-                    let mappedId = memberIdMapping[entry.memberId] ?? entry.memberId
+                    let mappedId = resolveMemberId(entry.memberId)
                     participantNames?[mappedId] = entry.name
                 }
             }
@@ -595,7 +657,7 @@ struct DataImportService {
                 }
                 
                 // Get the resolved ID for this member (must match what's in the group)
-                let resolvedId = memberIdMapping[entry.memberId] ?? nameToExistingId[entry.memberName.lowercased()] ?? UUID()
+                let resolvedId = resolveMemberId(entry.memberId)
                 
                 // Check if already a friend by ID
                 if store.friends.contains(where: { $0.memberId == resolvedId }) {
@@ -614,7 +676,8 @@ struct DataImportService {
                     linkedAccountId: nil,
                     linkedAccountEmail: nil,
                     profileImageUrl: entry.profileImageUrl,
-                    profileColorHex: entry.profileColorHex
+                    profileColorHex: entry.profileColorHex,
+                    status: "peer"
                 )
                 store.addImportedFriend(newFriend)
                 friendsAdded += 1
