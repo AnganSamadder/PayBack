@@ -17,7 +17,6 @@ export default defineSchema({
 
   friend_requests: defineTable({
     sender_id: v.id("accounts"),
-    sender_user_id: v.optional(v.id("accounts")),
     recipient_email: v.string(),
     status: v.string(), // "pending", "accepted", "rejected"
     created_at: v.number(),
@@ -73,7 +72,6 @@ export default defineSchema({
     ),
     owner_email: v.string(),
     owner_account_id: v.string(),
-    owner_id: v.optional(v.id("accounts")),
     is_direct: v.optional(v.boolean()),
     created_at: v.number(),
     updated_at: v.number(),
@@ -86,7 +84,6 @@ export default defineSchema({
   expenses: defineTable({
     id: v.string(), // UUID string from client
     group_id: v.string(), // UUID string
-    group_ref: v.optional(v.id("groups")),
     description: v.string(),
     date: v.number(),
     total_amount: v.number(),
@@ -103,7 +100,6 @@ export default defineSchema({
     is_settled: v.boolean(),
     owner_email: v.string(),
     owner_account_id: v.string(),
-    owner_id: v.optional(v.id("accounts")),
     participant_member_ids: v.array(v.string()),
     participants: v.array(
       v.object({
