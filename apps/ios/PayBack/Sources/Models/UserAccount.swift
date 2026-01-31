@@ -47,6 +47,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     var linkedAccountEmail: String?
     var profileImageUrl: String?
     var profileColorHex: String?
+    var status: String?  // "friend" or "peer" - indicates relationship type
     
     var id: UUID { memberId }
     
@@ -107,7 +108,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         linkedAccountId: String? = nil,
         linkedAccountEmail: String? = nil,
         profileImageUrl: String? = nil,
-        profileColorHex: String? = nil
+        profileColorHex: String? = nil,
+        status: String? = nil
     ) {
         self.memberId = memberId
         self.name = name
@@ -120,6 +122,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         self.linkedAccountEmail = linkedAccountEmail
         self.profileImageUrl = profileImageUrl
         self.profileColorHex = profileColorHex
+        self.status = status
     }
     
     // Codable implementation with backward compatibility
@@ -135,6 +138,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         case linkedAccountEmail
         case profileImageUrl
         case profileColorHex
+        case status
     }
     
     init(from decoder: Decoder) throws {
@@ -150,6 +154,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         linkedAccountEmail = try container.decodeIfPresent(String.self, forKey: .linkedAccountEmail)
         profileImageUrl = try container.decodeIfPresent(String.self, forKey: .profileImageUrl)
         profileColorHex = try container.decodeIfPresent(String.self, forKey: .profileColorHex)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
     }
     
     func encode(to encoder: Encoder) throws {
@@ -165,5 +170,6 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         try container.encodeIfPresent(linkedAccountEmail, forKey: .linkedAccountEmail)
         try container.encodeIfPresent(profileImageUrl, forKey: .profileImageUrl)
         try container.encodeIfPresent(profileColorHex, forKey: .profileColorHex)
+        try container.encodeIfPresent(status, forKey: .status)
     }
 }
