@@ -131,7 +131,7 @@ actor ConvexAccountService: AccountService {
                     "status": args.status ?? ""
                 ]
                 
-                _ = try await client.mutation("friends:upsert", args: convexArgs)
+                _ = try await client.mutation("friends:upsert", with: convexArgs)
             }
             self.cachedFriends = friends
         }
