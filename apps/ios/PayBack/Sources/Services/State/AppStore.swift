@@ -1968,7 +1968,8 @@ final class AppStore: ObservableObject {
                         nickname: nil,
                         hasLinkedAccount: false,
                         linkedAccountId: nil,
-                        linkedAccountEmail: nil
+                        linkedAccountEmail: nil,
+                        status: nil
                     ))
                 }
             }
@@ -2692,7 +2693,8 @@ final class AppStore: ObservableObject {
                 nickname: nil,
                 hasLinkedAccount: true,
                 linkedAccountId: linkedAccountId,
-                linkedAccountEmail: linkedAccountEmail
+                linkedAccountEmail: linkedAccountEmail,
+                status: nil
             )
             friends.append(newFriend)
         }

@@ -571,7 +571,8 @@ struct FriendDetailView: View {
             memberId: friend.id,
             name: friend.name,
             profileImageUrl: friend.profileImageUrl,
-            profileColorHex: friend.profileColorHex
+            profileColorHex: friend.profileColorHex,
+            status: nil
         )
         store.addImportedFriend(newFriend)
         await MainActor.run {

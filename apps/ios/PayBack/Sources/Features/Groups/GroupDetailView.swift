@@ -447,7 +447,8 @@ struct GroupDetailView: View {
                                             memberId: member.id,
                                             name: member.name,
                                             profileImageUrl: member.profileImageUrl,
-                                            profileColorHex: member.profileColorHex
+                                            profileColorHex: member.profileColorHex,
+                                            status: nil
                                         )
                                         store.addImportedFriend(newFriend)
                                         Haptics.notify(.success)
