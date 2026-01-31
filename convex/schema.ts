@@ -110,6 +110,7 @@ export default defineSchema({
   })
     .index("by_owner_account_id", ["owner_account_id"])
     .index("by_group_id", ["group_id"])
+    .index("by_group_ref", ["group_ref"])
     .index("by_client_id", ["id"]),
 
   user_expenses: defineTable({

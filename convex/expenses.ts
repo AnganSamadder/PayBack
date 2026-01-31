@@ -172,6 +172,34 @@ export const listByGroup = query({
   },
 });
 
+export const listByGroupPaginated = query({
+  args: {
+    groupId: v.id("groups"),
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) {
+      return { items: [], nextCursor: null };
+    }
+
+    const result = await ctx.db
+      .query("expenses")
+      .withIndex("by_group_ref", (q) => q.eq("group_ref", args.groupId))
+      .order("desc")
+      .paginate({
+        cursor: args.cursor ?? null,
+        numItems: args.limit ?? 50,
+      });
+
+    return {
+      items: result.page,
+      nextCursor: result.isDone ? null : result.continueCursor,
+    };
+  },
+});
+
 export const list = query({
   args: {},
   handler: async (ctx) => {
