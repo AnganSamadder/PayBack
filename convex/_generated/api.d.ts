@@ -25,6 +25,7 @@ import type * as linkRequests from "../linkRequests.js";
 import type * as maintenance from "../maintenance.js";
 import type * as migrations from "../migrations.js";
 import type * as migrations_backfill_ids from "../migrations/backfill_ids.js";
+import type * as rateLimit from "../rateLimit.js";
 import type * as users from "../users.js";
 import type * as utils from "../utils.js";
 
@@ -52,6 +53,7 @@ declare const fullApi: ApiFromModules<{
   maintenance: typeof maintenance;
   migrations: typeof migrations;
   "migrations/backfill_ids": typeof migrations_backfill_ids;
+  rateLimit: typeof rateLimit;
   users: typeof users;
   utils: typeof utils;
 }>;
