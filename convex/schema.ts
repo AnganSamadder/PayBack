@@ -81,6 +81,7 @@ export default defineSchema({
   })
     .index("by_owner_account_id", ["owner_account_id"])
     .index("by_owner_email", ["owner_email"])
+    .index("by_owner_id", ["owner_id"])
     .index("by_client_id", ["id"]),
 
   expenses: defineTable({

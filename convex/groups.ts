@@ -46,6 +46,7 @@ export const create = mutation({
         await ctx.db.patch(existing._id, {
           name: args.name,
           members: args.members,
+          owner_id: user._id,
           is_direct: args.is_direct ?? existing.is_direct,
           updated_at: Date.now(),
         });
@@ -60,6 +61,7 @@ export const create = mutation({
       members: args.members,
       owner_email: user.email,
       owner_account_id: user.id, // Auth provider ID
+      owner_id: user._id,
       is_direct: args.is_direct ?? false,
       created_at: Date.now(),
       updated_at: Date.now(),
@@ -104,6 +106,31 @@ export const list = query({
     groupsByMembership.forEach(g => { groupMap.set(g._id, g); });
     
     return Array.from(groupMap.values());
+  },
+});
+
+export const listPaginated = query({
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) return { items: [], nextCursor: null };
+
+    const result = await ctx.db
+      .query("groups")
+      .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
+      .order("desc")
+      .paginate({
+        numItems: args.limit ?? 20,
+        cursor: args.cursor ?? null,
+      });
+
+    return {
+      items: result.page,
+      nextCursor: result.isDone ? null : result.continueCursor,
+    };
   },
 });
 
