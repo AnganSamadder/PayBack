@@ -41,6 +41,7 @@ export const upsert = mutation({
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
+    status: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -63,6 +64,7 @@ export const upsert = mutation({
         has_linked_account: args.has_linked_account,
         linked_account_id: args.linked_account_id,
         linked_account_email: args.linked_account_email,
+        status: args.status,
         updated_at: Date.now(),
       });
       return existing._id;
@@ -79,6 +81,7 @@ export const upsert = mutation({
         has_linked_account: args.has_linked_account,
         linked_account_id: args.linked_account_id,
         linked_account_email: args.linked_account_email,
+        status: args.status,
         updated_at: Date.now(),
       });
     }

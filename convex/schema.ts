@@ -28,18 +28,17 @@ export default defineSchema({
 
   account_friends: defineTable({
     account_email: v.string(),
-    member_id: v.string(), // UUID string
+    member_id: v.string(),
     name: v.string(),
     nickname: v.optional(v.string()),
-    original_name: v.optional(v.string()), // Name before linking (for "Originally X" display)
+    original_name: v.optional(v.string()),
     original_nickname: v.optional(v.string()),
     prefer_nickname: v.optional(v.boolean()),
-    profile_image_url: v.optional(v.string()),
-    profile_avatar_color: v.optional(v.string()),
+    profile_avatar_color: v.string(),
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
-    status: v.optional(v.string()), // "friend", "group_peer", "request_sent"
+    status: v.optional(v.string()),
     updated_at: v.number(),
   })
     .index("by_account_email", ["account_email"])
