@@ -40,6 +40,7 @@ export default defineSchema({
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
     status: v.optional(v.string()),
+    profile_image_url: v.optional(v.string()),
     updated_at: v.number(),
   })
     .index("by_account_email", ["account_email"])
@@ -131,6 +132,7 @@ export default defineSchema({
   })
     .index("by_owner_account_id", ["owner_account_id"])
     .index("by_owner_email", ["owner_email"])
+    .index("by_owner_id", ["owner_id"])
     .index("by_group_id", ["group_id"])
     .index("by_group_ref", ["group_ref"])
     .index("by_client_id", ["id"]),

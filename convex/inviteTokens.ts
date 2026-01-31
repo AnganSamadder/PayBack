@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { getRandomAvatarColor } from "./utils";
 
 // Helper to get current authenticated user
 async function getCurrentUser(ctx: any) {
@@ -299,6 +300,8 @@ export const claim = mutation({
             has_linked_account: true,
             linked_account_id: creatorAccount.id,
             linked_account_email: creatorAccount.email,
+            profile_image_url: creatorAccount.profile_image_url,
+            profile_avatar_color: creatorAccount.profile_avatar_color ?? getRandomAvatarColor(),
             updated_at: now,
           });
         }
