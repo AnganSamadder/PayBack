@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds } from "./aliases";
+import { checkRateLimit } from "./rateLimit";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -33,6 +34,8 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const { identity, user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found in database");
+
+    await checkRateLimit(ctx, identity.subject, "groups:create", 10);
 
     // Deduplication check: Check if group with this ID already exists
     if (args.id) {

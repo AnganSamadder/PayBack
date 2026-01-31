@@ -2,6 +2,7 @@ import { mutation, query, action } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds } from "./aliases";
+import { checkRateLimit } from "./rateLimit";
 
 const MAX_SAMPLE_IDS = 10;
 
@@ -245,13 +246,16 @@ export async function cleanupOrphanedDataForEmail(
  */
 export const store = mutation({
   args: {},
-  handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("Called storeUser without authentication present");
-    }
+    handler: async (ctx) => {
+      const identity = await ctx.auth.getUserIdentity();
+      if (!identity) {
+        throw new Error("Called storeUser without authentication present");
+      }
 
-    // Check if we already have an account for this user
+      await checkRateLimit(ctx, identity.subject, "users:store", 10);
+
+      // Check if we already have an account for this user
+
     const user = await ctx.db
       .query("accounts")
       .withIndex("by_email", (q) => q.eq("email", identity.email!))

@@ -153,4 +153,10 @@ export default defineSchema({
     .index("by_creator_id", ["creator_id"])
     .index("by_claimed_by", ["claimed_by"])
     .index("by_client_id", ["id"]),
+
+  rate_limits: defineTable({
+    key: v.string(), // rate_limit:{userId}:{action}
+    count: v.number(),
+    window_start: v.number(),
+  }).index("by_key", ["key"]),
 });

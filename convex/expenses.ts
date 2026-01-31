@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { reconcileUserExpenses } from "./helpers";
+import { checkRateLimit } from "./rateLimit";
 
 async function getCurrentUser(ctx: any) {
   const identity = await ctx.auth.getUserIdentity();
@@ -53,8 +54,10 @@ export const create = mutation({
     )),
   },
   handler: async (ctx, args) => {
-    const { user } = await getCurrentUser(ctx);
+    const { identity, user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+
+    await checkRateLimit(ctx, identity.subject, "expenses:create", 10);
 
     // Build participant_emails from linked participants
     const participantEmails: string[] = [user.email]; // Always include owner
