@@ -52,3 +52,43 @@ export const createMockGroup = async (
     is_direct: overrides?.is_direct,
   });
 };
+
+export const createMockExpense = async (
+  t: any,
+  overrides: {
+    group_id: string;
+    description?: string;
+    total_amount?: number;
+    id?: string;
+  }
+) => {
+  const description = overrides.description ?? "Test Expense";
+  const total_amount = overrides.total_amount ?? 100;
+  const id = overrides.id ?? crypto.randomUUID();
+
+  return await t.mutation(api.expenses.create, {
+    id,
+    group_id: overrides.group_id,
+    description,
+    date: Date.now(),
+    total_amount,
+    paid_by_member_id: "member-1",
+    involved_member_ids: ["member-1"],
+    participants: [
+      {
+        member_id: "member-1",
+        name: "Member 1",
+      },
+    ],
+    participant_member_ids: ["member-1"],
+    splits: [
+      {
+        id: "split-1",
+        member_id: "member-1",
+        amount: total_amount,
+        is_settled: false,
+      },
+    ],
+    is_settled: false,
+  });
+};

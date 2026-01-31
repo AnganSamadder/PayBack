@@ -103,15 +103,34 @@ export default defineSchema({
       })
     ),
     is_settled: v.boolean(),
+    owner_email: v.string(),
     /** @deprecated Use owner_id instead */
     owner_account_id: v.string(),
     owner_id: v.id("accounts"),
     group_ref: v.id("groups"),
+    participant_member_ids: v.array(v.string()),
+    participant_emails: v.array(v.string()),
+    participants: v.array(
+      v.object({
+        member_id: v.string(),
+        name: v.string(),
+        linked_account_id: v.optional(v.string()),
+        linked_account_email: v.optional(v.string()),
+      })
+    ),
+    linked_participants: v.optional(v.any()),
+    subexpenses: v.optional(v.array(
+      v.object({
+        id: v.string(),
+        amount: v.number(),
+      })
+    )),
     created_at: v.number(),
     updated_at: v.number(),
     is_payback_generated_mock_data: v.optional(v.boolean()),
   })
     .index("by_owner_account_id", ["owner_account_id"])
+    .index("by_owner_email", ["owner_email"])
     .index("by_group_id", ["group_id"])
     .index("by_group_ref", ["group_ref"])
     .index("by_client_id", ["id"]),
