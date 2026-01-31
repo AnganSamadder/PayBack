@@ -72,6 +72,7 @@ export default defineSchema({
       })
     ),
     owner_email: v.string(),
+    /** @deprecated Use owner_id instead */
     owner_account_id: v.string(),
     owner_id: v.id("accounts"),
     is_direct: v.optional(v.boolean()),
@@ -86,6 +87,7 @@ export default defineSchema({
 
   expenses: defineTable({
     id: v.string(), // UUID string from client
+    /** @deprecated Use group_ref instead */
     group_id: v.string(), // UUID string
     description: v.string(),
     date: v.number(),
@@ -101,9 +103,10 @@ export default defineSchema({
       })
     ),
     is_settled: v.boolean(),
+    /** @deprecated Use owner_id instead */
     owner_account_id: v.string(),
     owner_id: v.id("accounts"),
-    group_ref: v.optional(v.id("groups")),
+    group_ref: v.id("groups"),
     created_at: v.number(),
     updated_at: v.number(),
     is_payback_generated_mock_data: v.optional(v.boolean()),
