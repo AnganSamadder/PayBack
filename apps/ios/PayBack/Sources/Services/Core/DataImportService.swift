@@ -83,6 +83,7 @@ struct ParsedFriend: Sendable {
     let linkedAccountEmail: String?
     let profileImageUrl: String?
     let profileColorHex: String?
+    let status: String?
 }
 
 struct ParsedGroup: Sendable {
@@ -385,6 +386,29 @@ struct DataImportService {
 
             if let existingId = matchedExistingId {
                 memberIdMapping[parsedFriend.memberId] = existingId
+                
+                // CRITICAL FIX: If matched ID is NOT in friends list (e.g. it was found in a group as a peer),
+                // OR if it IS in the friends list but status is NOT "friend" (peer),
+                // we MUST import this friend record to "promote" them to a Friend.
+                let existingFriend = store.friends.first(where: { $0.memberId == existingId })
+                let isPeerOnly = existingFriend != nil && existingFriend?.status != "friend"
+                let isMissing = existingFriend == nil
+                
+                if isMissing || isPeerOnly {
+                    let newFriend = AccountFriend(
+                        memberId: existingId, // Use the existing ID to link to group history
+                        name: parsedFriend.name,
+                        nickname: parsedFriend.nickname,
+                        hasLinkedAccount: parsedFriend.hasLinkedAccount,
+                        linkedAccountId: parsedFriend.linkedAccountId,
+                        linkedAccountEmail: parsedFriend.linkedAccountEmail,
+                        profileImageUrl: parsedFriend.profileImageUrl,
+                        profileColorHex: parsedFriend.profileColorHex,
+                        status: parsedFriend.status ?? "friend" // Default to "friend" if missing/legacy
+                    )
+                    store.addImportedFriend(newFriend)
+                    friendsAdded += 1
+                }
             } else {
                 // Create new friend with new ID and track it for subsequent name lookups
                 let newMemberId = UUID()
@@ -399,7 +423,8 @@ struct DataImportService {
                     linkedAccountId: parsedFriend.linkedAccountId,
                     linkedAccountEmail: parsedFriend.linkedAccountEmail,
                     profileImageUrl: parsedFriend.profileImageUrl,
-                    profileColorHex: parsedFriend.profileColorHex
+                    profileColorHex: parsedFriend.profileColorHex,
+                    status: parsedFriend.status ?? "friend"
                 )
                 store.addImportedFriend(newFriend)
                 
@@ -492,12 +517,21 @@ struct DataImportService {
                 memberIdMapping[entry.memberId] ?? entry.memberId
             }
 
+            let involvedMemberIdsSet = Set(newInvolvedMemberIds)
+            let targetDescription = parsedExpense.description
+            let targetAmount = parsedExpense.totalAmount
+            let targetDate = parsedExpense.date
+            
             // DEDUPLICATION: Check if expense already exists in the TARGET group
             let existingExpense = store.expenses.first { e in
-                e.groupId == newGroupId &&
-                e.description == parsedExpense.description &&
-                abs(e.totalAmount - parsedExpense.totalAmount) < 0.01 &&
-                abs(e.date.timeIntervalSince(parsedExpense.date)) < 300 // within 5 mins
+                if e.groupId != newGroupId { return false }
+                if e.description != targetDescription { return false }
+                let amountDiff = e.totalAmount - targetAmount
+                if abs(amountDiff) >= 0.01 { return false }
+                let timeDiff = e.date.timeIntervalSince(targetDate)
+                if abs(timeDiff) >= 300 { return false }
+                if e.paidByMemberId != newPaidByMemberId { return false }
+                return Set(e.involvedMemberIds) == involvedMemberIdsSet
             }
 
             if existingExpense != nil {
@@ -669,7 +703,8 @@ struct DataImportService {
             linkedAccountId: fields[4].isEmpty ? nil : fields[4],
             linkedAccountEmail: fields[5].isEmpty ? nil : fields[5],
             profileImageUrl: fields.count > 6 && !fields[6].isEmpty ? unescapeCSV(fields[6]) : nil,
-            profileColorHex: fields.count > 7 && !fields[7].isEmpty ? unescapeCSV(fields[7]) : nil
+            profileColorHex: fields.count > 7 && !fields[7].isEmpty ? unescapeCSV(fields[7]) : nil,
+            status: fields.count > 8 && !fields[8].isEmpty ? unescapeCSV(fields[8]) : nil
         )
     }
     
