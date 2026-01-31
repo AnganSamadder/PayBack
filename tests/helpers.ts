@@ -1,8 +1,7 @@
-import { ConvexTest } from "convex-test";
 import { api } from "../convex/_generated/api";
 
 export const createMockUser = async (
-  t: ConvexTest,
+  t: any,
   overrides?: {
     email?: string;
     name?: string;
@@ -13,17 +12,18 @@ export const createMockUser = async (
   const name = overrides?.name ?? "Test User";
   const subject = overrides?.subject ?? "test-subject";
 
-  t.auth.setUserIdentity({
+  const authenticated = t.withIdentity({
     email,
     name,
     subject,
   });
 
-  return await t.mutation(api.users.store, {});
+  await authenticated.mutation(api.users.store, {});
+  return authenticated;
 };
 
 export const createMockGroup = async (
-  t: ConvexTest,
+  t: any,
   overrides?: {
     name?: string;
     members?: Array<{
