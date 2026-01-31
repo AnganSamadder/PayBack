@@ -116,6 +116,9 @@ apps/ios/PayBack/SupabaseConfig.plist
 .kiro-cache/
 *.kiro
 
+# Sisyphus
+.sisyphus/
+
 # Editor directories and files
 .idea/
 .vscode/
