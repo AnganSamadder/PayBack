@@ -245,7 +245,7 @@ export const deleteExpense = mutation({
         if (!expense) return;
         
         // Auth check - only owner can delete
-        if (expense.owner_account_id !== user.id && expense.owner_email !== user.email) {
+        if (expense.owner_id !== user._id && expense.owner_email !== user.email) {
             throw new Error("Not authorized to delete this expense");
         }
         
@@ -270,7 +270,7 @@ export const deleteExpenses = mutation({
             if (!expense) continue;
             
             // Auth check - only owner can delete
-            if (expense.owner_account_id !== user.id && expense.owner_email !== user.email) {
+            if (expense.owner_id !== user._id && expense.owner_email !== user.email) {
                 continue;
             }
             
@@ -290,7 +290,7 @@ export const clearAllForUser = mutation({
         // Get all expenses owned by this user
         const ownedExpenses = await ctx.db
             .query("expenses")
-            .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
+            .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
             .collect();
             
         const byEmail = await ctx.db

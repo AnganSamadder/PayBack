@@ -80,10 +80,10 @@ export const list = query({
     const { identity, user } = await getCurrentUser(ctx);
     if (!user) return [];
 
-    // Check by owner_account_id
+    // Check by owner_id (preferred)
     const groupsByOwnerId = await ctx.db
       .query("groups")
-      .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
+      .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
       .collect();
       
     // Check by owner_email
@@ -151,7 +151,7 @@ export const get = query({
         if (!group) return null;
         
         // Auth check
-        if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
+        if (group.owner_id !== user._id && group.owner_email !== user.email) {
             if (user.linked_member_id) {
                 const equivalentIds = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
                 if (group.members.some(m => equivalentIds.includes(m.id))) {
@@ -180,7 +180,7 @@ export const deleteGroup = mutation({
         if (!group) return;
         
         // Auth check - only owner can delete
-        if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
+        if (group.owner_id !== user._id && group.owner_email !== user.email) {
             throw new Error("Not authorized to delete this group");
         }
         
@@ -204,7 +204,7 @@ export const deleteGroups = mutation({
             if (!group) continue;
             
             // Auth check - only owner can delete
-            if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
+            if (group.owner_id !== user._id && group.owner_email !== user.email) {
                 continue;
             }
             
@@ -223,7 +223,7 @@ export const clearAllForUser = mutation({
         // Get all groups owned by this user
         const ownedGroups = await ctx.db
             .query("groups")
-            .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
+            .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
             .collect();
             
         const byEmail = await ctx.db
