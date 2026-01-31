@@ -1,8 +1,21 @@
-import { query } from "./_generated/server";
+import { query, QueryCtx } from "./_generated/server";
+
+async function checkAdmin(ctx: QueryCtx) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) {
+    throw new Error("Unauthenticated");
+  }
+
+  const adminEmails = process.env.ADMIN_EMAILS?.split(",") || [];
+  if (!identity.email || !adminEmails.includes(identity.email)) {
+    throw new Error("Not authorized: Admin access required");
+  }
+}
 
 export const debugUserData = query({
   args: {},
   handler: async (ctx) => {
+    await checkAdmin(ctx);
     const accounts = await ctx.db.query("accounts").collect();
 
     const result = [];
@@ -55,6 +68,7 @@ export const debugUserData = query({
 export const listAllFriends = query({
   args: {},
   handler: async (ctx) => {
+    await checkAdmin(ctx);
     return await ctx.db.query("account_friends").collect();
   },
 });
@@ -62,6 +76,7 @@ export const listAllFriends = query({
 export const listAllExpenses = query({
   args: {},
   handler: async (ctx) => {
+    await checkAdmin(ctx);
     return await ctx.db.query("expenses").collect();
   },
 });
@@ -69,6 +84,7 @@ export const listAllExpenses = query({
 export const listAllGroups = query({
   args: {},
   handler: async (ctx) => {
+    await checkAdmin(ctx);
     return await ctx.db.query("groups").collect();
   },
 });
