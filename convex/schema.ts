@@ -13,7 +13,8 @@ export default defineSchema({
     updated_at: v.optional(v.number()),
   })
     .index("by_email", ["email"])
-    .index("by_linked_member_id", ["linked_member_id"]),
+    .index("by_linked_member_id", ["linked_member_id"])
+    .index("by_auth_id", ["id"]),
 
   friend_requests: defineTable({
     sender_id: v.id("accounts"),
@@ -72,6 +73,7 @@ export default defineSchema({
     ),
     owner_email: v.string(),
     owner_account_id: v.string(),
+    owner_id: v.id("accounts"),
     is_direct: v.optional(v.boolean()),
     created_at: v.number(),
     updated_at: v.number(),
@@ -98,32 +100,14 @@ export default defineSchema({
       })
     ),
     is_settled: v.boolean(),
-    owner_email: v.string(),
     owner_account_id: v.string(),
-    participant_member_ids: v.array(v.string()),
-    participants: v.array(
-      v.object({
-        member_id: v.string(),
-        name: v.string(),
-        linked_account_id: v.optional(v.string()),
-        linked_account_email: v.optional(v.string()),
-      })
-    ),
-    // Array of ALL account emails involved (for cross-account visibility)
-    participant_emails: v.optional(v.array(v.string())),
-    linked_participants: v.optional(v.any()), // Keeping as any for flexibility if structure varies
-    subexpenses: v.optional(v.array(
-      v.object({
-        id: v.string(),
-        amount: v.number(),
-      })
-    )),
+    owner_id: v.id("accounts"),
+    group_ref: v.optional(v.id("groups")),
     created_at: v.number(),
     updated_at: v.number(),
     is_payback_generated_mock_data: v.optional(v.boolean()),
   })
     .index("by_owner_account_id", ["owner_account_id"])
-    .index("by_owner_email", ["owner_email"])
     .index("by_group_id", ["group_id"])
     .index("by_client_id", ["id"]),
 
