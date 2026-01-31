@@ -133,9 +133,8 @@ actor ConvexAccountService: AccountService {
                 
                 _ = try await client.mutation("friends:upsert", args: convexArgs)
             }
+            self.cachedFriends = friends
         }
-        self.cachedFriends = friends
-    }
 
     func fetchFriends(accountEmail: String) async throws -> [AccountFriend] {
         for try await dtos in client.subscribe(to: "friends:list", yielding: [FriendDTO].self).values {
