@@ -161,7 +161,8 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
             linkedAccountId: linked_account_id,
             linkedAccountEmail: linked_account_email,
             profileImageUrl: profile_image_url,
-            profileColorHex: profile_avatar_color
+            profileColorHex: profile_avatar_color,
+            status: nil
         )
     }
 }

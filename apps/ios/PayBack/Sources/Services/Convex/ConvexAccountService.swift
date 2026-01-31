@@ -92,7 +92,8 @@ actor ConvexAccountService: AccountService {
                 linkedAccountId: linked_account_id,
                 linkedAccountEmail: linked_account_email,
                 profileImageUrl: profile_image_url,
-                profileColorHex: profile_avatar_color
+                profileColorHex: profile_avatar_color,
+                status: nil
             )
         }
     }
@@ -104,29 +105,34 @@ actor ConvexAccountService: AccountService {
         let has_linked_account: Bool
         let linked_account_id: String?
         let linked_account_email: String?
+        let status: String?
     }
 
-    func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {
-        for friend in friends {
-            let args = FriendArg(
-                member_id: friend.memberId.uuidString,
-                name: friend.name,
-                nickname: friend.nickname,
-                has_linked_account: friend.hasLinkedAccount,
-                linked_account_id: friend.linkedAccountId,
-                linked_account_email: friend.linkedAccountEmail
-            )
-            
-            let convexArgs: [String: ConvexEncodable?] = [
-                "member_id": args.member_id,
-                "name": args.name,
-                "nickname": args.nickname,
-                "has_linked_account": args.has_linked_account,
-                "linked_account_id": args.linked_account_id,
-                "linked_account_email": args.linked_account_email
-            ]
-            
-            _ = try await client.mutation("friends:upsert", with: convexArgs)
+        func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {
+            for friend in friends {
+                let args = FriendArg(
+                    member_id: friend.memberId.uuidString,
+                    name: friend.name,
+                    nickname: friend.nickname,
+                    has_linked_account: friend.hasLinkedAccount,
+                    linked_account_id: friend.linkedAccountId,
+                    linked_account_email: friend.linkedAccountEmail,
+                    status: friend.status
+                )
+                
+                let convexArgs: [String: String] = [
+                    "account_email": accountEmail,
+                    "member_id": args.member_id,
+                    "name": args.name,
+                    "nickname": args.nickname ?? "",
+                    "has_linked_account": String(args.has_linked_account),
+                    "linked_account_id": args.linked_account_id ?? "",
+                    "linked_account_email": args.linked_account_email ?? "",
+                    "status": args.status ?? ""
+                ]
+                
+                _ = try await client.mutation("friends:upsert", args: convexArgs)
+            }
         }
         self.cachedFriends = friends
     }
