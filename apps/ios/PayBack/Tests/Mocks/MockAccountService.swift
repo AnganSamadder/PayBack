@@ -137,4 +137,31 @@ actor MockAccountServiceForAppStore: AccountService {
         // Mock implementation: could remove the account from internal storage if we tracked "current user",
         // but for now just succeeding is enough for most tests unless we test the side effects explicitly.
     }
+
+    nonisolated func monitorSession() -> AsyncStream<UserAccount?> {
+        AsyncStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendFriendRequest(email: String) async throws {
+        if shouldFail { throw PayBackError.networkUnavailable }
+    }
+
+    func acceptFriendRequest(requestId: String) async throws {
+        if shouldFail { throw PayBackError.networkUnavailable }
+    }
+
+    func rejectFriendRequest(requestId: String) async throws {
+        if shouldFail { throw PayBackError.networkUnavailable }
+    }
+
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest] {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        return []
+    }
+
+    func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {
+        if shouldFail { throw PayBackError.networkUnavailable }
+    }
 }

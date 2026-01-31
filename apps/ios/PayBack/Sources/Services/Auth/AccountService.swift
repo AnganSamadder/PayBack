@@ -1,7 +1,7 @@
 import Foundation
 
-protocol AccountService: Sendable {
-    func normalizedEmail(from rawValue: String) throws -> String
+protocol AccountService: Actor {
+    nonisolated func normalizedEmail(from rawValue: String) throws -> String
     func lookupAccount(byEmail email: String) async throws -> UserAccount?
     func createAccount(email: String, displayName: String) async throws -> UserAccount
     func updateLinkedMember(accountId: String, memberId: UUID?) async throws
@@ -33,7 +33,7 @@ protocol AccountService: Sendable {
     func selfDeleteAccount() async throws
     
     /// Monitors the current user's session status in real-time
-    func monitorSession() -> AsyncStream<UserAccount?>
+    nonisolated func monitorSession() -> AsyncStream<UserAccount?>
     
     // MARK: - Friend Requests
     func sendFriendRequest(email: String) async throws
@@ -172,7 +172,7 @@ actor MockAccountService: AccountService {
         // In a real mock, we might need to know WHO is calling, but for now just log it
     }
     
-    func monitorSession() -> AsyncStream<UserAccount?> {
+    nonisolated func monitorSession() -> AsyncStream<UserAccount?> {
         AsyncStream { continuation in
             // Mock implementation: just finish immediately or yield current state if we tracked "currentUser"
             // For now, simple no-op stream

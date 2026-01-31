@@ -667,30 +667,40 @@ actor TestAccountService: AccountService {
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
         return imageUrl
     }
-    
+
     func uploadProfileImage(_ data: Data) async throws -> String {
         return "https://example.com/mock.jpg"
     }
-    
+
     func checkAuthentication() async throws -> Bool {
         return true
     }
-    
-    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
-        // No-op for tests
+
+    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws { }
+
+    func deleteLinkedFriend(memberId: UUID) async throws { }
+
+    func deleteUnlinkedFriend(memberId: UUID) async throws { }
+
+    func selfDeleteAccount() async throws { }
+
+    nonisolated func monitorSession() -> AsyncStream<UserAccount?> {
+        AsyncStream { continuation in
+            continuation.finish()
+        }
     }
-    
-    func deleteLinkedFriend(memberId: UUID) async throws {
-        // No-op for tests
+
+    func sendFriendRequest(email: String) async throws { }
+
+    func acceptFriendRequest(requestId: String) async throws { }
+
+    func rejectFriendRequest(requestId: String) async throws { }
+
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest] {
+        return []
     }
-    
-    func deleteUnlinkedFriend(memberId: UUID) async throws {
-        // No-op for tests
-    }
-    
-    func selfDeleteAccount() async throws {
-        // No-op for tests
-    }
+
+    func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws { }
 }
 
 final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
