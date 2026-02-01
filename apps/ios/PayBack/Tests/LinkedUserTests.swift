@@ -15,11 +15,8 @@ final class LinkedUserTests: XCTestCase {
         let testUserId = "user_test"
         let testUserLinkedId = mainMemberId // The test user is linked to the main member ID
         
-        let friendId = "member_friend"
-        
         // Scenario: Friend paid, split is between Friend and Main Member
         // This is how expenses look when created by the main account, but viewed by the linked account
-        let expensePaidBy = friendId
         let splitMemberId = mainMemberId // The split is assigned to the MAIN member ID
         
         // Check "My Split" resolution
