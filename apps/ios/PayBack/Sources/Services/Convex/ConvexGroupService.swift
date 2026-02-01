@@ -56,6 +56,19 @@ final class ConvexGroupService: GroupCloudService, Sendable {
         return []
     }
 
+    func fetchGroupsPaginated(cursor: String? = nil, limit: Int = 20) async throws -> (groups: [SpendingGroup], nextCursor: String?) {
+        let args: [String: ConvexEncodable?] = [
+            "cursor": cursor,
+            "limit": limit
+        ]
+        
+        for try await result in client.subscribe(to: "groups:listPaginated", with: args, yielding: ConvexPaginatedGroupsDTO.self).values {
+            let groups = result.items.compactMap { $0.toSpendingGroup() }
+            return (groups, result.nextCursor)
+        }
+        return ([], nil)
+    }
+
     func upsertGroup(_ group: SpendingGroup) async throws {
         try await createGroup(group)
     }

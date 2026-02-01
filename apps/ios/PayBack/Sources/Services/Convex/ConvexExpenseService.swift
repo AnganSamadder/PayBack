@@ -17,6 +17,22 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         }
         return []
     }
+
+    func fetchExpensesPage(groupDocId: String, cursor: String? = nil, limit: Int = 50) async throws -> (items: [Expense], nextCursor: String?) {
+        var args: [String: ConvexEncodable?] = [
+            "groupId": groupDocId,
+            "limit": limit
+        ]
+        
+        if let cursor = cursor {
+            args["cursor"] = cursor
+        }
+        
+        for try await result in client.subscribe(to: "expenses:listByGroupPaginated", with: args, yielding: ConvexPaginatedExpensesDTO.self).values {
+            return (items: result.items.map { $0.toExpense() }, nextCursor: result.nextCursor)
+        }
+        return (items: [], nextCursor: nil)
+    }
     
     private struct ExpenseDTO: Decodable {
         let id: String

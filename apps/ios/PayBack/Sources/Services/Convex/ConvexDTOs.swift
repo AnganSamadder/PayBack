@@ -89,14 +89,27 @@ struct ConvexSubexpenseDTO: Decodable, Sendable {
 
 // MARK: - Group DTOs
 
+/// Internal DTO for Convex paginated groups response
+struct ConvexPaginatedGroupsDTO: Decodable, Sendable {
+    let items: [ConvexGroupDTO]
+    let nextCursor: String?
+}
+
+/// Internal DTO for Convex paginated expenses response
+struct ConvexPaginatedExpensesDTO: Decodable, Sendable {
+    let items: [ConvexExpenseDTO]
+    let nextCursor: String?
+}
+
 /// Internal DTO for Convex group data
 struct ConvexGroupDTO: Decodable, Sendable {
-    let id: String
+    let id: String    // UUID string
     let name: String
     let created_at: Double
     let members: [ConvexGroupMemberDTO]
     let is_direct: Bool?
     let is_payback_generated_mock_data: Bool?
+    var _id: String? = nil // Convex document ID (e.g., "jd7..." format)
     
     /// Maps Convex DTO to domain SpendingGroup
     func toSpendingGroup() -> SpendingGroup? {
