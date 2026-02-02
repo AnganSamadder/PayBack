@@ -135,6 +135,21 @@ struct ConvexGroupMemberDTO: Decodable, Sendable {
     let name: String
     let profile_image_url: String?
     let profile_avatar_color: String?
+    let is_current_user: Bool?
+
+    init(
+        id: String,
+        name: String,
+        profile_image_url: String?,
+        profile_avatar_color: String?,
+        is_current_user: Bool? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.profile_image_url = profile_image_url
+        self.profile_avatar_color = profile_avatar_color
+        self.is_current_user = is_current_user
+    }
     
     /// Maps to domain GroupMember
     func toGroupMember() -> GroupMember? {
@@ -143,7 +158,8 @@ struct ConvexGroupMemberDTO: Decodable, Sendable {
             id: id,
             name: name,
             profileImageUrl: profile_image_url,
-            profileColorHex: profile_avatar_color
+            profileColorHex: profile_avatar_color,
+            isCurrentUser: is_current_user
         )
     }
 }
@@ -300,4 +316,3 @@ struct ConvexLinkAcceptResultDTO: Decodable, Sendable {
     let linked_account_id: String
     let linked_account_email: String
 }
-
