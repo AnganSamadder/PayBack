@@ -49,13 +49,22 @@ final class AccountLinkingIntegrationTests: XCTestCase {
         try await super.tearDown()
     }
     
-    private func login(as user: (id: String, email: String, name: String)) {
+    private func login(as user: (id: String, email: String, name: String)) async {
         sut.completeAuthentication(id: user.id, email: user.email, name: user.name)
+        // Wait for session to be set asynchronously
+        let timeout = Date().addingTimeInterval(5)
+        while sut.session?.account.id != user.id {
+            if Date() > timeout {
+                print("Login timed out for user \(user.email)")
+                break
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000) // 0.05s
+        }
     }
     
     func testFullLinkingFlow_UserAInvitesUserB_AcceptAndMerge() async throws {
         // Arrange
-        login(as: userA)
+        await login(as: userA)
         sut.addGroup(name: "Trip", memberNames: [userB.name])
         let group = sut.groups[0]
         let localBInA = group.members.first { $0.name == userB.name }!
@@ -65,9 +74,9 @@ final class AccountLinkingIntegrationTests: XCTestCase {
         // Act
         try await sut.sendLinkRequest(toEmail: userB.email, forFriend: localBInA)
         
-        login(as: userB)
+        await login(as: userB)
         try await sut.fetchLinkRequests()
-        try await sut.acceptLinkRequest(sut.linkRequests[0])
+        try await sut.acceptLinkRequest(sut.incomingLinkRequests[0])
         
         // Assert
         let friendsOfA = try await mockAccountService.fetchFriends(accountEmail: userA.email)
@@ -79,7 +88,7 @@ final class AccountLinkingIntegrationTests: XCTestCase {
     
     func testExpenseSyncing_UserBInheritsExpensesFromUserA() async throws {
         // Arrange
-        login(as: userA)
+        await login(as: userA)
         sut.addGroup(name: "Trip", memberNames: [userB.name])
         let group = sut.groups[0]
         let localB = group.members.first { $0.name == userB.name }!
@@ -108,8 +117,8 @@ final class AccountLinkingIntegrationTests: XCTestCase {
         try await mockAccountService.syncFriends(accountEmail: userA.email, friends: [linkedB])
         
         // Act
-        login(as: userB)
-        await sut.syncWithCloud()
+        await login(as: userB)
+        await sut.loadRemoteData()
         
         // Assert
         XCTAssertTrue(sut.groups.contains { $0.id == group.id })
@@ -118,17 +127,17 @@ final class AccountLinkingIntegrationTests: XCTestCase {
     
     func testSharedGroupContext_UserCSeesUserB_LinksToCorrectMemberId() async throws {
         // Arrange
-        login(as: userA)
+        await login(as: userA)
         sut.addGroup(name: "Project", memberNames: [userB.name, userC.name])
         let group = sut.groups[0]
         let memberB = group.members.first { $0.name == userB.name }!
         
-        login(as: userC)
+        await login(as: userC)
         let friendBForC = AccountFriend(memberId: memberB.id, name: userB.name)
-        try await sut.addFriend(friendBForC)
+        sut.friends.append(friendBForC)
         
         // Act
-        login(as: userB)
+        await login(as: userB)
         let linkRequest = LinkRequest(
             id: UUID(),
             requesterId: userA.id,
@@ -144,7 +153,7 @@ final class AccountLinkingIntegrationTests: XCTestCase {
         )
         await mockLinkRequestService.addIncomingRequest(linkRequest)
         try await sut.fetchLinkRequests()
-        try await sut.acceptLinkRequest(sut.linkRequests[0])
+        try await sut.acceptLinkRequest(sut.incomingLinkRequests[0])
         
         // Assert
         let friendsOfC = try await mockAccountService.fetchFriends(accountEmail: userC.email)
@@ -157,7 +166,7 @@ final class AccountLinkingIntegrationTests: XCTestCase {
     
     func testDeletion_LinkedFriendVsUnlinkedFriend() async throws {
         // Arrange
-        login(as: userA)
+        await login(as: userA)
         
         sut.addGroup(name: userB.name, memberNames: [userB.name])
         let groupB = sut.groups.first { $0.name == userB.name }!
@@ -195,7 +204,7 @@ final class AccountLinkingIntegrationTests: XCTestCase {
         
         let unlinkedC = AccountFriend(memberId: memberC.id, name: "Charlie")
         try await mockAccountService.syncFriends(accountEmail: userA.email, friends: [linkedB, unlinkedC])
-        await sut.syncFriends()
+        await sut.loadRemoteData()
         
         // Act & Assert: Delete Linked Friend B
         await sut.deleteLinkedFriend(memberId: memberB.id)
@@ -236,7 +245,7 @@ final class AccountLinkingIntegrationTests: XCTestCase {
     
     func testNicknamePreference_AffectsGroupDisplayName() async throws {
         // Arrange
-        login(as: userA)
+        await login(as: userA)
         
         sut.addGroup(name: userB.name, memberNames: [userB.name])
         var group = sut.groups[0]
