@@ -124,6 +124,65 @@ This file guides agentic coding assistants working in this repo.
 - Design system components are in `apps/ios/PayBack/Sources/DesignSystem`.
 - Tests are in `apps/ios/PayBack/Tests`.
 
+## Convex Data Model (PayBack)
+
+### Deployments
+
+- Debug iOS builds use the **development** deployment URL in `apps/ios/PayBack/Sources/Services/Convex/ConvexConfig.swift`.
+- Release iOS builds use the **production** deployment URL in `apps/ios/PayBack/Sources/Services/Convex/ConvexConfig.swift`.
+
+### Key Tables + Relationships
+
+- `accounts`: canonical user record; `id` is the Clerk subject used by `user_expenses.user_id`.
+- `groups`: `id` is a client UUID (string). `members[].id` is a member UUID string. `is_direct=true` indicates a 1:1 group.
+- `account_friends`: keyed by (`account_email`, `member_id`); controls direct-expense validation.
+- `expenses`: `id` is a client UUID (string). `group_id` matches `groups.id`. `participant_emails` drives visibility.
+- `user_expenses`: denormalized fanout for `expenses:list`; `user_id == accounts.id` and `expense_id == expenses.id`.
+- `member_aliases`: alias member IDs to canonical member IDs to preserve history across linking.
+
+### Fast Convex Snapshot (1 command)
+
+Use this when debugging "missing expenses" issues.
+
+```bash
+python - <<'PY'
+import json, subprocess
+
+DEPLOYMENT = "flippant-bobcat-304"  # Debug. Production is "tacit-marmot-746".
+
+def get(table, limit=1000):
+    out = subprocess.check_output(
+        ["npx", "convex", "data", table, "--deployment-name", DEPLOYMENT, "--limit", str(limit), "--format", "json"],
+        text=True,
+    ).strip()
+    if out.startswith("There are no documents"):
+        return []
+    return json.loads(out)
+
+tables = ["accounts", "groups", "account_friends", "expenses", "user_expenses"]
+data = {t: get(t) for t in tables}
+print("counts=", {t: len(v) for t, v in data.items()})
+
+groups_by_id = {g.get("id"): g for g in data["groups"] if isinstance(g, dict) and g.get("id")}
+direct_group_ids = {gid for gid, g in groups_by_id.items() if g.get("is_direct")}
+
+expense_counts_by_group = {}
+for e in data["expenses"]:
+    gid = e.get("group_id")
+    if gid:
+        expense_counts_by_group[gid] = expense_counts_by_group.get(gid, 0) + 1
+
+direct_expenses = sum(expense_counts_by_group.get(gid, 0) for gid in direct_group_ids)
+print("direct_groups=", len(direct_group_ids), "direct_expenses=", direct_expenses)
+PY
+```
+
+### Direct Expense Rule (Important)
+
+`convex/expenses.ts` rejects creating a direct expense unless every non-current-user involved member has a matching `account_friends` row with `status == "friend"`.
+
+This is the most common reason direct expenses don't appear after CSV import.
+
 ## Lint/Test Parity Reminder
 - If you change CI steps in `.github/workflows/ci.yml`, update `./scripts/test-ci-locally.sh` to match.
 - If you add a new testing/linting command, document it here.
@@ -150,4 +209,3 @@ When a user registers (or re-registers) with an email (`store` mutation):
 - **Function**: `performHardDelete` (internal/admin).
 - **Scope**: Wipes EVERYTHING immediately (Account, Friends, Groups, Expenses, Invites, Aliases).
 - **Use Case**: Admin tools or total data removal requests.
-
