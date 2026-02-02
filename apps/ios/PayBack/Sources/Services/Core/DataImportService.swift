@@ -288,6 +288,10 @@ struct DataImportService {
     /// - Returns: The result of the import operation
     @MainActor
     static func importData(from text: String, into store: AppStore, resolutions: [UUID: ImportResolution]? = nil) async -> ImportResult {
+        // Enable import mode to suppress real-time sync during bulk operations
+        store.isImporting = true
+        defer { store.isImporting = false }
+        
         // Validate format
         guard validateFormat(text) else {
             return .incompatibleFormat("The data format is not compatible with PayBack. Please ensure you're importing a valid PayBack export file.")
@@ -490,13 +494,30 @@ struct DataImportService {
                 let resolvedId = resId!
                 memberIdMapping[entry.memberId] = resolvedId
                 if entry.memberId == parsedData.currentUserId {
-                    members.append(GroupMember(id: store.currentUser.id, name: store.currentUser.name))
+                    members.append(
+                        GroupMember(
+                            id: store.currentUser.id,
+                            name: store.currentUser.name,
+                            profileImageUrl: store.currentUser.profileImageUrl,
+                            profileColorHex: store.currentUser.profileColorHex,
+                            isCurrentUser: true
+                        )
+                    )
                 } else {
                     members.append(GroupMember(id: resolvedId, name: entry.memberName, profileImageUrl: entry.profileImageUrl, profileColorHex: entry.profileColorHex))
                 }
             }
             if !members.contains(where: { $0.id == store.currentUser.id }) {
-                members.insert(GroupMember(id: store.currentUser.id, name: store.currentUser.name), at: 0)
+                members.insert(
+                    GroupMember(
+                        id: store.currentUser.id,
+                        name: store.currentUser.name,
+                        profileImageUrl: store.currentUser.profileImageUrl,
+                        profileColorHex: store.currentUser.profileColorHex,
+                        isCurrentUser: true
+                    ),
+                    at: 0
+                )
             }
 
             // DEDUPLICATION: Check if group already exists (by name + members)
@@ -556,7 +577,7 @@ struct DataImportService {
                     linkedAccountEmail: nil,
                     profileImageUrl: nil,
                     profileColorHex: nil,
-                    status: "peer"
+                    status: "friend"
                 )
                 store.addImportedFriend(newFriend)
                 friendsAdded += 1
@@ -566,6 +587,56 @@ struct DataImportService {
             }
             
             return parsedId
+        }
+        
+        // Ensure all group members (who aren't the current user) are added as friends BEFORE importing expenses
+        for parsedGroup in parsedData.groups {
+            let groupMemberEntries = parsedData.groupMembers.filter { $0.groupId == parsedGroup.id }
+            for entry in groupMemberEntries {
+                if entry.memberId == parsedData.currentUserId || entry.memberName.lowercased() == store.currentUser.name.lowercased() {
+                    continue
+                }
+                
+                let resolvedId = resolveMemberId(entry.memberId)
+                
+                if let existingFriend = store.friends.first(where: { $0.memberId == resolvedId }) {
+                    if existingFriend.status != "friend" {
+                        let upgradedFriend = AccountFriend(
+                            memberId: resolvedId,
+                            name: existingFriend.name,
+                            nickname: existingFriend.nickname,
+                            hasLinkedAccount: existingFriend.hasLinkedAccount,
+                            linkedAccountId: existingFriend.linkedAccountId,
+                            linkedAccountEmail: existingFriend.linkedAccountEmail,
+                            profileImageUrl: existingFriend.profileImageUrl,
+                            profileColorHex: existingFriend.profileColorHex,
+                            status: "friend"
+                        )
+                        store.addImportedFriend(upgradedFriend)
+                    }
+                    #if DEBUG
+                    print("[DataImportService] \(entry.memberName) already in friends list with ID \(resolvedId)")
+                    #endif
+                    continue
+                }
+                
+                let newFriend = AccountFriend(
+                    memberId: resolvedId,
+                    name: entry.memberName,
+                    nickname: nil,
+                    hasLinkedAccount: false,
+                    linkedAccountId: nil,
+                    linkedAccountEmail: nil,
+                    profileImageUrl: entry.profileImageUrl,
+                    profileColorHex: entry.profileColorHex,
+                    status: "friend"
+                )
+                store.addImportedFriend(newFriend)
+                friendsAdded += 1
+                #if DEBUG
+                print("[DataImportService] Added \(entry.memberName) as friend with ID \(resolvedId)")
+                #endif
+            }
         }
         
         // Import expenses
@@ -647,48 +718,10 @@ struct DataImportService {
             expensesAdded += 1
         }
         
-        // Ensure all group members (who aren't the current user) are added as friends
-        for parsedGroup in parsedData.groups {
-            let groupMemberEntries = parsedData.groupMembers.filter { $0.groupId == parsedGroup.id }
-            for entry in groupMemberEntries {
-                // Skip current user
-                if entry.memberId == parsedData.currentUserId || entry.memberName.lowercased() == store.currentUser.name.lowercased() {
-                    continue
-                }
-                
-                // Get the resolved ID for this member (must match what's in the group)
-                let resolvedId = resolveMemberId(entry.memberId)
-                
-                // Check if already a friend by ID
-                if store.friends.contains(where: { $0.memberId == resolvedId }) {
-                    #if DEBUG
-                    print("[DataImportService] \(entry.memberName) already in friends list with ID \(resolvedId)")
-                    #endif
-                    continue
-                }
-                
-                // Add as new friend with the SAME ID used in the group
-                let newFriend = AccountFriend(
-                    memberId: resolvedId,
-                    name: entry.memberName,
-                    nickname: nil,
-                    hasLinkedAccount: false,
-                    linkedAccountId: nil,
-                    linkedAccountEmail: nil,
-                    profileImageUrl: entry.profileImageUrl,
-                    profileColorHex: entry.profileColorHex,
-                    status: "peer"
-                )
-                store.addImportedFriend(newFriend)
-                friendsAdded += 1
-                #if DEBUG
-                print("[DataImportService] Added \(entry.memberName) as friend with ID \(resolvedId)")
-                #endif
-            }
-        }
-        
-        // Trigger a final bulk sync of all friends to ensure they're saved to Convex
+        // Trigger a final bulk sync of all data to ensure they're saved to Convex
         await store.syncFriendsToCloud()
+        await store.syncGroupsToCloud()
+        await store.syncExpensesToCloud()
         
         let summary = ImportSummary(
             friendsAdded: friendsAdded,

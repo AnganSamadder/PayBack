@@ -120,12 +120,11 @@ actor ConvexAccountService: AccountService {
                     status: friend.status
                 )
                 
-                let convexArgs: [String: String] = [
-                    "account_email": accountEmail,
+                let convexArgs: [String: ConvexEncodable?] = [
                     "member_id": args.member_id,
                     "name": args.name,
                     "nickname": args.nickname ?? "",
-                    "has_linked_account": String(args.has_linked_account),
+                    "has_linked_account": args.has_linked_account,
                     "linked_account_id": args.linked_account_id ?? "",
                     "linked_account_email": args.linked_account_email ?? "",
                     "status": args.status ?? ""

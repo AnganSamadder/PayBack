@@ -39,6 +39,10 @@ final class AppStore: ObservableObject {
     @Published var isCheckingAuth = true
     @Published var logoutAlert: LogoutAlert?
     
+    /// When true, suppresses all cloud writes (friend sync, group upsert, expense upsert).
+    /// Used during CSV import to batch local changes before syncing.
+    @Published var isImporting: Bool = false
+    
     // ... dependencies ...
 
     init(
@@ -69,7 +73,7 @@ final class AppStore: ObservableObject {
         self.groups = localData.groups
         self.expenses = localData.expenses
         self.friends = []
-        self.currentUser = GroupMember(name: "You")
+        self.currentUser = GroupMember(name: "You", isCurrentUser: true)
         
         // Setup subscriptions...
         $groups.combineLatest($expenses)
@@ -217,6 +221,7 @@ final class AppStore: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] remoteGroups in
                 guard let self = self else { return }
+                guard !self.isImporting else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenGroupIds = Set<UUID>()
                 let uniqueGroups = remoteGroups.filter { seenGroupIds.insert($0.id).inserted }
@@ -244,6 +249,7 @@ final class AppStore: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] remoteExpenses in
                 guard let self = self else { return }
+                guard !self.isImporting else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenExpenseIds = Set<UUID>()
                 let uniqueExpenses = remoteExpenses.filter { seenExpenseIds.insert($0.id).inserted }
@@ -264,6 +270,7 @@ final class AppStore: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] remoteFriends in
                 guard let self = self else { return }
+                guard !self.isImporting else { return }
                 // Deduplicate by memberId
                 var seenMemberIds = Set<UUID>()
                 let uniqueFriends = remoteFriends.filter { seenMemberIds.insert($0.memberId).inserted }
@@ -492,7 +499,13 @@ final class AppStore: ObservableObject {
         if let linkedId = account.linkedMemberId {
             await MainActor.run {
                 if self.currentUser.id != linkedId {
-                    self.currentUser = GroupMember(id: linkedId, name: self.currentUser.name)
+                    self.currentUser = GroupMember(
+                        id: linkedId,
+                        name: self.currentUser.name,
+                        profileImageUrl: self.currentUser.profileImageUrl,
+                        profileColorHex: self.currentUser.profileColorHex,
+                        isCurrentUser: true
+                    )
                 }
             }
             return account
@@ -511,7 +524,13 @@ final class AppStore: ObservableObject {
             #endif
         }
         await MainActor.run {
-            self.currentUser = GroupMember(id: memberId, name: self.currentUser.name)
+            self.currentUser = GroupMember(
+                id: memberId,
+                name: self.currentUser.name,
+                profileImageUrl: self.currentUser.profileImageUrl,
+                profileColorHex: self.currentUser.profileColorHex,
+                isCurrentUser: true
+            )
         }
         return updatedAccount
     }
@@ -570,7 +589,7 @@ final class AppStore: ObservableObject {
         
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
         // Without this, the next user logging in could inherit this user's member ID
-        currentUser = GroupMember(id: UUID(), name: "You")
+        currentUser = GroupMember(id: UUID(), name: "You", isCurrentUser: true)
         
         persistence.clear()
         
@@ -644,7 +663,13 @@ final class AppStore: ObservableObject {
 
     func applyDisplayName(_ name: String) {
         guard currentUser.name != name else { return }
-        currentUser = GroupMember(id: currentUser.id, name: name, profileImageUrl: currentUser.profileImageUrl, profileColorHex: currentUser.profileColorHex)
+        currentUser = GroupMember(
+            id: currentUser.id,
+            name: name,
+            profileImageUrl: currentUser.profileImageUrl,
+            profileColorHex: currentUser.profileColorHex,
+            isCurrentUser: true
+        )
         groups = groups.map { group in
             var group = group
             group.members = group.members.map { member in
@@ -753,8 +778,10 @@ final class AppStore: ObservableObject {
         groups.append(normalizedGroup)
         persistCurrentState()
 
-        Task { [group = normalizedGroup] in
-            try? await groupCloudService.upsertGroup(group)
+        if !isImporting {
+            Task { [group = normalizedGroup] in
+                try? await groupCloudService.upsertGroup(group)
+            }
         }
 
         scheduleFriendSync()
@@ -1013,8 +1040,8 @@ final class AppStore: ObservableObject {
             friends.append(friend)
             persistCurrentState()
             
-            // Sync to cloud
-            guard let session else { return }
+            // Sync to cloud (skip during import mode)
+            guard let session, !isImporting else { return }
             friendSyncTask?.cancel()
             friendSyncTask = Task { [friends] in
                 do {
@@ -1043,14 +1070,67 @@ final class AppStore: ObservableObject {
             #endif
         }
     }
+    
+    /// Syncs all groups to Convex (used after bulk import)
+    func syncGroupsToCloud() async {
+        guard session != nil else { return }
+
+        var failures = 0
+        for group in groups {
+            do {
+                try await groupCloudService.upsertGroup(group)
+            } catch {
+                failures += 1
+                #if DEBUG
+                print("⚠️ Failed to sync group \(group.id) to cloud: \(error.localizedDescription)")
+                #endif
+            }
+        }
+
+        #if DEBUG
+        if failures == 0 {
+            print("✅ Synced \(groups.count) groups to Convex after import")
+        } else {
+            print("⚠️ Synced \(groups.count - failures)/\(groups.count) groups to Convex after import")
+        }
+        #endif
+    }
+    
+    /// Syncs all expenses to Convex (used after bulk import)
+    func syncExpensesToCloud() async {
+        guard session != nil else { return }
+
+        var failures = 0
+        for expense in expenses {
+            let participants = makeParticipants(for: expense)
+            do {
+                try await expenseCloudService.upsertExpense(expense, participants: participants)
+            } catch {
+                failures += 1
+                #if DEBUG
+                print("⚠️ Failed to sync expense \(expense.id) to cloud: \(error.localizedDescription)")
+                #endif
+            }
+        }
+
+        #if DEBUG
+        if failures == 0 {
+            print("✅ Synced \(expenses.count) expenses to Convex after import")
+        } else {
+            print("⚠️ Synced \(expenses.count - failures)/\(expenses.count) expenses to Convex after import")
+        }
+        #endif
+    }
 
     // MARK: - Expenses
     func addExpense(_ expense: Expense) {
         expenses.append(expense)
         persistCurrentState()
-        let participants = makeParticipants(for: expense)
-        Task { [expense, participants] in
-            try? await expenseCloudService.upsertExpense(expense, participants: participants)
+        if !isImporting {
+            let participants = makeParticipants(for: expense)
+            Task { [expense, participants] in
+                try? await expenseCloudService.upsertExpense(expense, participants: participants)
+            }
         }
     }
 
@@ -1200,7 +1280,7 @@ final class AppStore: ObservableObject {
     // MARK: - Friend Sync
 
     private func scheduleFriendSync() {
-        guard let session else { return }
+        guard let session, !isImporting else { return }
         let mergedFriends = mergeFriends(remote: friends, derived: derivedFriendsFromGroups())
         friends = mergedFriends
         purgeCurrentUserFriendRecords()
@@ -1218,7 +1298,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func loadRemoteData() async {
+    func loadRemoteData() async {
         remoteLoadTask?.cancel()
         
         guard let session = self.session else { 
@@ -1337,7 +1417,15 @@ final class AppStore: ObservableObject {
             if member.id == currentUser.id {
                 containsCurrent = true
                 if seenIds.insert(currentUser.id).inserted {
-                    newMembers.append(GroupMember(id: currentUser.id, name: currentUser.name))
+                    newMembers.append(
+                        GroupMember(
+                            id: currentUser.id,
+                            name: currentUser.name,
+                            profileImageUrl: currentUser.profileImageUrl,
+                            profileColorHex: currentUser.profileColorHex,
+                            isCurrentUser: true
+                        )
+                    )
                 }
                 continue
             }
@@ -1356,7 +1444,15 @@ final class AppStore: ObservableObject {
         }
 
         if containsAlias && !containsCurrent {
-            newMembers.append(GroupMember(id: currentUser.id, name: currentUser.name))
+            newMembers.append(
+                GroupMember(
+                    id: currentUser.id,
+                    name: currentUser.name,
+                    profileImageUrl: currentUser.profileImageUrl,
+                    profileColorHex: currentUser.profileColorHex,
+                    isCurrentUser: true
+                )
+            )
             containsCurrent = true
             seenIds.insert(currentUser.id)
         }
