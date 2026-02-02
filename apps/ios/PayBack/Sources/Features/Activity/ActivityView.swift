@@ -190,7 +190,13 @@ struct ActivityView: View {
 
 
 private func addTestData() {
-    let current = GroupMember(id: store.currentUser.id, name: store.currentUser.name)
+    let current = GroupMember(
+        id: store.currentUser.id,
+        name: store.currentUser.name,
+        profileImageUrl: store.currentUser.profileImageUrl,
+        profileColorHex: store.currentUser.profileColorHex,
+        isCurrentUser: true
+    )
 
     let members: [String: UUID] = [
         "Alex": UUID(uuidString: "E8A7F4E2-2FAD-4F29-A46D-7C6C44B7B52F")!,
