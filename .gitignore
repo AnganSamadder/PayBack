@@ -142,3 +142,10 @@ scripts/node_modules/
 *.xcodeproj
 *.xcworkspace
 wm
+
+# Xcode/SwiftPM local checkouts (Xcode-managed, generated locally)
+Packages/
+LocalPackages/
+
+# Local agent artifacts
+roadmap/
