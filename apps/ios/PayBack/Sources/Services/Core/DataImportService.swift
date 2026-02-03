@@ -718,10 +718,21 @@ struct DataImportService {
             expensesAdded += 1
         }
         
-        // Trigger a final bulk sync of all data to ensure they're saved to Convex
+        #if !PAYBACK_CI_NO_CONVEX
+        let bulkResult = await performBulkImport(from: parsedData, accountService: Dependencies.current.accountService)
+        switch bulkResult {
+        case .partialSuccess(_, let bulkErrors):
+            errors.append(contentsOf: bulkErrors)
+        case .incompatibleFormat(let message):
+            errors.append(message)
+        default:
+            break
+        }
+        #else
         await store.syncFriendsToCloud()
         await store.syncGroupsToCloud()
         await store.syncExpensesToCloud()
+        #endif
         
         let summary = ImportSummary(
             friendsAdded: friendsAdded,
@@ -899,6 +910,7 @@ struct DataImportService {
 enum ImportError: Error, LocalizedError {
     case invalidFormat
     case parsingFailed(String)
+    case bulkImportFailed(String)
     
     var errorDescription: String? {
         switch self {
@@ -906,6 +918,147 @@ enum ImportError: Error, LocalizedError {
             return "The data format is not compatible with PayBack"
         case .parsingFailed(let details):
             return "Failed to parse data: \(details)"
+        case .bulkImportFailed(let details):
+            return "Bulk import failed: \(details)"
         }
     }
 }
+
+#if !PAYBACK_CI_NO_CONVEX
+extension DataImportService {
+    
+    // MARK: - Bulk Import Methods
+    
+    static func convertToBulkImportRequest(from parsed: ParsedExportData) -> BulkImportRequest {
+        let friends = parsed.friends.map { friend in
+            BulkFriendDTO(
+                member_id: friend.memberId.uuidString,
+                name: friend.name,
+                nickname: friend.nickname,
+                status: friend.status,
+                profile_image_url: friend.profileImageUrl,
+                profile_avatar_color: friend.profileColorHex
+            )
+        }
+        
+        let groups = parsed.groups.map { group in
+            let groupMemberEntries = parsed.groupMembers.filter { $0.groupId == group.id }
+            let members = groupMemberEntries.map { entry in
+                BulkGroupMemberDTO(
+                    id: entry.memberId.uuidString,
+                    name: entry.memberName,
+                    profile_avatar_color: entry.profileColorHex
+                )
+            }
+            return BulkGroupDTO(
+                id: group.id.uuidString,
+                name: group.name,
+                members: members,
+                is_direct: group.isDirect
+            )
+        }
+        
+        let expenses = parsed.expenses.map { expense in
+            let splitEntries = parsed.expenseSplits.filter { $0.expenseId == expense.id }
+            let splits = splitEntries.map { entry in
+                BulkSplitDTO(
+                    member_id: entry.memberId.uuidString,
+                    amount: entry.amount,
+                    percentage: nil
+                )
+            }
+            
+            let subexpenseEntries = parsed.expenseSubexpenses.filter { $0.expenseId == expense.id }
+            let subexpenses = subexpenseEntries.map { entry in
+                BulkSubexpenseDTO(
+                    description: "",
+                    member_id: expense.paidByMemberId.uuidString,
+                    amount: entry.amount
+                )
+            }
+            
+            return BulkExpenseDTO(
+                id: expense.id.uuidString,
+                group_id: expense.groupId.uuidString,
+                description: expense.description,
+                date: expense.date.timeIntervalSince1970 * 1000,
+                total_amount: expense.totalAmount,
+                paid_by_member_id: expense.paidByMemberId.uuidString,
+                splits: splits,
+                subexpenses: subexpenses,
+                is_settled: expense.isSettled
+            )
+        }
+        
+        return BulkImportRequest(friends: friends, groups: groups, expenses: expenses)
+    }
+    
+    static func chunkExpenses(from parsed: ParsedExportData, maxPerChunk: Int = 100) -> [[ParsedExpense]] {
+        guard !parsed.expenses.isEmpty else { return [] }
+        return stride(from: 0, to: parsed.expenses.count, by: maxPerChunk).map { startIndex in
+            let endIndex = min(startIndex + maxPerChunk, parsed.expenses.count)
+            return Array(parsed.expenses[startIndex..<endIndex])
+        }
+    }
+    
+    static func performBulkImport(
+        from parsed: ParsedExportData,
+        accountService: AccountService
+    ) async -> ImportResult {
+        let chunks = chunkExpenses(from: parsed, maxPerChunk: 100)
+        
+        var totalFriendsAdded = 0
+        var totalGroupsAdded = 0
+        var totalExpensesAdded = 0
+        var allErrors: [String] = []
+        
+        if chunks.isEmpty {
+            let request = convertToBulkImportRequest(from: parsed)
+            do {
+                let result = try await accountService.bulkImport(request: request)
+                totalFriendsAdded = result.created.friends
+                totalGroupsAdded = result.created.groups
+                totalExpensesAdded = result.created.expenses
+                allErrors.append(contentsOf: result.errors)
+            } catch {
+                return .incompatibleFormat("Bulk import failed: \(error.localizedDescription)")
+            }
+        } else {
+            for (index, chunk) in chunks.enumerated() {
+                var chunkParsed = parsed
+                chunkParsed.expenses = chunk
+                
+                if index > 0 {
+                    chunkParsed.friends = []
+                    chunkParsed.groups = []
+                    chunkParsed.groupMembers = []
+                }
+                
+                let request = convertToBulkImportRequest(from: chunkParsed)
+                
+                do {
+                    let result = try await accountService.bulkImport(request: request)
+                    totalFriendsAdded += result.created.friends
+                    totalGroupsAdded += result.created.groups
+                    totalExpensesAdded += result.created.expenses
+                    allErrors.append(contentsOf: result.errors)
+                } catch {
+                    allErrors.append("Chunk \(index + 1) failed: \(error.localizedDescription)")
+                }
+            }
+        }
+        
+        let summary = ImportSummary(
+            friendsAdded: totalFriendsAdded,
+            groupsAdded: totalGroupsAdded,
+            expensesAdded: totalExpensesAdded
+        )
+        
+        if allErrors.isEmpty {
+            return .success(summary)
+        } else {
+            return .partialSuccess(summary, errors: allErrors)
+        }
+    }
+}
+#endif
