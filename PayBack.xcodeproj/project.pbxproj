@@ -214,6 +214,7 @@
 		840A8FB1A3FE569567466A92 /* ReconciliationPerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CC45A098C92F0A8A972BC76 /* ReconciliationPerformanceTests.swift */; };
 		844A404F25DBBC64CD3D2D4B /* AppStoreQueryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 718969A0234C03DA6E147746 /* AppStoreQueryTests.swift */; };
 		8586425EE298E6046A36A1F4 /* PhoneNumberFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1FBE3342077415A70933D81 /* PhoneNumberFormatter.swift */; };
+		858BCF6F2F3D9E550CB24FF6 /* BulkImportEdgeCaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E9B24B6561666A6E61B05E7 /* BulkImportEdgeCaseTests.swift */; };
 		85C22FE14FD20548B86517CE /* InviteLinkServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5172CD1D2C8D0A943B65679 /* InviteLinkServiceTests.swift */; };
 		8696F070F63C57511BC1C349 /* TabBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2655061A8DC6428A76F311E7 /* TabBarTests.swift */; };
 		86BA96DBECDC66236FAB1DA8 /* ClerkEmailAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 387C17F0C12AF8DFD35B7123 /* ClerkEmailAuthService.swift */; };
@@ -361,6 +362,7 @@
 		D15A0AC8C11130133A38924C /* PhoneNumberFormatterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD16B0297CB11195D0BFCEE1 /* PhoneNumberFormatterTests.swift */; };
 		D250EB25801C16984E0C99C2 /* SignupDetailsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 999F61468DEA3A20EE566805 /* SignupDetailsView.swift */; };
 		D298F15F06EF689073715CF6 /* NavigationTransitionSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D4E113943C9D1F69EDF783D /* NavigationTransitionSettingsTests.swift */; };
+		D2E92590AA66CD61417E99FA /* BulkImportEdgeCaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E9B24B6561666A6E61B05E7 /* BulkImportEdgeCaseTests.swift */; };
 		D3220728174086BA9AB564A1 /* LoginViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3121780D688F8F76B749362 /* LoginViewTests.swift */; };
 		D36B4C673077ECB74ADA3587 /* CreateGroupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06E3B88C69A190E1380A4B7 /* CreateGroupView.swift */; };
 		D4131021354BEF16AF626707 /* PayBackError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69443F11A93F66BEE9237A98 /* PayBackError.swift */; };
@@ -476,6 +478,7 @@
 		0C0166AE6D51E4712BBA9180 /* AppStoreDataNormalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreDataNormalizationTests.swift; sourceTree = "<group>"; };
 		0DEEE08CB9798C9737AD7700 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		0E46479AB9B1ACE4165FC0C3 /* SmartIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartIcon.swift; sourceTree = "<group>"; };
+		0E9B24B6561666A6E61B05E7 /* BulkImportEdgeCaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BulkImportEdgeCaseTests.swift; sourceTree = "<group>"; };
 		102036A9B91896A6E8315357 /* ConvexInviteLinkService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexInviteLinkService.swift; sourceTree = "<group>"; };
 		104ABE14A97B8A00D7A3BCFD /* EmailAuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailAuthServiceTests.swift; sourceTree = "<group>"; };
 		113851BAEAD1EADFEE916193 /* ClerkAuthProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClerkAuthProvider.swift; sourceTree = "<group>"; };
@@ -1282,6 +1285,7 @@
 			isa = PBXGroup;
 			children = (
 				9D849478DFED15224C4A8734 /* BulkImportDTOTests.swift */,
+				0E9B24B6561666A6E61B05E7 /* BulkImportEdgeCaseTests.swift */,
 				7E04A969ADCC15BC6CF45350 /* CI-CD-SETUP.md */,
 				5FAE9450F81EF5717E30172F /* Info.plist */,
 				17FEB4FDC331D438F9C639F1 /* LinkedUserTests.swift */,
@@ -1681,6 +1685,7 @@
 				191EFD18ADF51854E04911F3 /* AsyncCancellationTests.swift in Sources */,
 				7DDE13F673F2ABCFDDFFEB8A /* AuthCoordinatorTests.swift in Sources */,
 				BD46708A68B17ADFF8079721 /* BulkImportDTOTests.swift in Sources */,
+				D2E92590AA66CD61417E99FA /* BulkImportEdgeCaseTests.swift in Sources */,
 				81367B490ED251DC9FBDF588 /* BusinessLogicErrorTests.swift in Sources */,
 				711576954E02DFC35AEB58E6 /* ClaimFriendRecordTests.swift in Sources */,
 				60840E41EBCCEDA7BCA497ED /* ClaimSubscriptionTests.swift in Sources */,
@@ -1822,6 +1827,7 @@
 				D415F4D4272A96180B43BDD1 /* AsyncCancellationTests.swift in Sources */,
 				268887829ABEDC4CD19A1B62 /* AuthCoordinatorTests.swift in Sources */,
 				BB392FD1D5BDCFF19D7A2E4A /* BulkImportDTOTests.swift in Sources */,
+				858BCF6F2F3D9E550CB24FF6 /* BulkImportEdgeCaseTests.swift in Sources */,
 				34AC378E0E4C4BF4CEE1286C /* BusinessLogicErrorTests.swift in Sources */,
 				64F485D7FD58418BC061999B /* ClaimFriendRecordTests.swift in Sources */,
 				C38B0571440DACE6DD9090C6 /* ClaimSubscriptionTests.swift in Sources */,
@@ -2186,6 +2192,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = apps/ios/PayBack/PayBack.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "apps/ios/PayBack/PayBack-Simulator.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				ENABLE_TESTABILITY = YES;
@@ -2205,6 +2212,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = apps/ios/PayBack/PayBack.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "apps/ios/PayBack/PayBack-Simulator.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				ENABLE_TESTABILITY = YES;
