@@ -298,4 +298,35 @@ final class ConvexAccountServiceTests: XCTestCase {
         XCTAssertEqual(updated?.linkedAccountId, "linked123")
         XCTAssertEqual(updated?.linkedAccountEmail, "linked@example.com")
     }
+
+    // MARK: - Bulk Import Tests
+
+    func testBulkImport() async throws {
+        let service = MockAccountService()
+        let request = BulkImportRequest(friends: [], groups: [], expenses: [])
+        
+        let result = try await service.bulkImport(request: request)
+        
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(result.created.friends, 0)
+        XCTAssertEqual(result.created.groups, 0)
+        XCTAssertEqual(result.created.expenses, 0)
+        XCTAssertTrue(result.errors.isEmpty)
+    }
+
+    func testBulkImport_WithData_ReturnsCorrectCounts() async throws {
+        let service = MockAccountService()
+        let request = BulkImportRequest(
+            friends: [BulkFriendDTO(member_id: UUID().uuidString, name: "Friend")],
+            groups: [BulkGroupDTO(id: UUID().uuidString, name: "Group", members: [], is_direct: false)],
+            expenses: []
+        )
+        
+        let result = try await service.bulkImport(request: request)
+        
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(result.created.friends, 1)
+        XCTAssertEqual(result.created.groups, 1)
+        XCTAssertEqual(result.created.expenses, 0)
+    }
 }

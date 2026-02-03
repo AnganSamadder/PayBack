@@ -399,6 +399,26 @@ actor ConvexAccountService: AccountService {
         }
         return [:]
     }
+
+    func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult {
+        let friends: [ConvexEncodable?] = request.friends
+        let groups: [ConvexEncodable?] = request.groups
+        let expenses: [ConvexEncodable?] = request.expenses
+
+        let args: [String: ConvexEncodable?] = [
+            "friends": friends,
+            "groups": groups,
+            "expenses": expenses
+        ]
+        
+        do {
+            return try await client.mutation("bulkImport:import", with: args)
+        } catch let error as PayBackError {
+            throw error
+        } catch {
+            throw PayBackError.underlying(message: error.localizedDescription)
+        }
+    }
 }
 
 #endif
