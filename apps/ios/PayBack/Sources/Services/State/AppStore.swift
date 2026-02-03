@@ -144,6 +144,16 @@ final class AppStore: ObservableObject {
 
             // Wait for Convex auth
             await convexAuth
+
+            // Avoid startup races where queries run before the server recognizes auth.
+            // This is especially important for `users:viewer`, which returns null when unauthenticated.
+            do {
+                try await waitForServerAuthentication()
+            } catch {
+                #if DEBUG
+                print("[AuthDebug] Server auth confirmation timed out: \(error)")
+                #endif
+            }
             #endif
             
             // 3. Convex Account Lookup
@@ -151,6 +161,11 @@ final class AppStore: ObservableObject {
             
             do {
                 let account = try await RetryPolicy.startup.execute {
+                    #if !PAYBACK_CI_NO_CONVEX
+                    // Ensure we are authenticated on the server before account lookup/creation.
+                    try await self.waitForServerAuthentication()
+                    #endif
+
                     if let account = try await accountService.lookupAccount(byEmail: email) {
                         AppConfig.markTiming("Account lookup complete (found)")
                         return account
@@ -1702,6 +1717,7 @@ final class AppStore: ObservableObject {
     var friendMembers: [GroupMember] {
         let overrides = friendNameOverrides()
         var seen: Set<UUID> = []
+        var seenGroupMemberNames: Set<String> = []
         var results: [GroupMember] = []
         
         // Build lookups from the Convex-synced friends array for metadata
@@ -1736,9 +1752,25 @@ final class AppStore: ObservableObject {
                     var enrichedMember = GroupMember(id: member.id, name: name)
                     enrichedMember.profileColorHex = friendData.profileColorHex ?? member.profileColorHex
                     results.append(enrichedMember)
+
+                    // Track group member names so we can avoid showing duplicate friend records
+                    // that only differ by memberId (common after imports).
+                    let originalKey = normalizedName(member.name)
+                    if !originalKey.isEmpty {
+                        seenGroupMemberNames.insert(originalKey)
+                    }
+                    let enrichedKey = normalizedName(name)
+                    if !enrichedKey.isEmpty {
+                        seenGroupMemberNames.insert(enrichedKey)
+                    }
                 } else {
                     // No metadata found - use group member as-is with its existing profile color
                     results.append(member)
+
+                    let key = normalizedName(member.name)
+                    if !key.isEmpty {
+                        seenGroupMemberNames.insert(key)
+                    }
                 }
             }
         }
@@ -1747,7 +1779,22 @@ final class AppStore: ObservableObject {
         // (e.g., friends synced from Convex that haven't been added to a group yet)
         for friend in friends where !isCurrentUserFriend(friend) {
             guard seen.insert(friend.memberId).inserted else { continue }
-            
+
+            // If a friend record has the same name as a group member but a different memberId,
+            // prefer the group member ID (it matches groups/expenses) to avoid duplicate entries.
+            if friend.hasLinkedAccount != true {
+                let friendNameKey = normalizedName(friend.name)
+                if !friendNameKey.isEmpty && seenGroupMemberNames.contains(friendNameKey) {
+                    continue
+                }
+                if let nickname = friend.nickname {
+                    let nickKey = normalizedName(nickname)
+                    if !nickKey.isEmpty && seenGroupMemberNames.contains(nickKey) {
+                        continue
+                    }
+                }
+            }
+
             let name = sanitizedFriendName(friend, overrides: overrides)
             var member = GroupMember(id: friend.memberId, name: name)
             member.profileColorHex = friend.profileColorHex
