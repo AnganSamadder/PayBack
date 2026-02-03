@@ -519,7 +519,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
 
         sut.groups = [
             SpendingGroup(
-                name: "Hii",
+                name: "Example Group",
                 members: [
                     GroupMember(id: sut.currentUser.id, name: sut.currentUser.name),
                     GroupMember(id: groupMemberId, name: "Example User")
@@ -558,7 +558,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
 
         sut.groups = [
             SpendingGroup(
-                name: "Hii",
+                name: "Example Group",
                 members: [
                     GroupMember(id: sut.currentUser.id, name: sut.currentUser.name),
                     GroupMember(id: groupMemberId, name: "Example User")
@@ -596,7 +596,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
 
         sut.groups = [
             SpendingGroup(
-                name: "Hii",
+                name: "Example Group",
                 members: [
                     GroupMember(id: sut.currentUser.id, name: sut.currentUser.name),
                     GroupMember(id: groupMemberId, name: "Ally")

@@ -9,7 +9,7 @@ export const createMockUser = async (
   }
 ) => {
   const email = overrides?.email ?? "test@example.com";
-  const name = overrides?.name ?? "Test User";
+  const name = overrides?.name ?? "Example User";
   const subject = overrides?.subject ?? "test-subject";
 
   const authenticated = t.withIdentity({

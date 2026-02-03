@@ -325,7 +325,7 @@ export const deleteSelfFriends = mutation({
             // 2. AND they are not linked (or linked to self, which is invalid anyway)
             // 3. AND/OR we deduce it from context (harder).
             
-            // The screenshot showed duplicates of "Angan Samadder" with "unset" linked account.
+  // The screenshot showed duplicates of "Example Person" with "unset" linked account.
             
             if (friend.name === user.display_name && !friend.has_linked_account) {
                  console.log(`Deleting self-friend for ${user.email}: ${friend.name} (${friend._id})`);

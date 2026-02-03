@@ -2088,8 +2088,8 @@ final class AppStore: ObservableObject {
         }
         
         // If friend is NOT linked, but has same name as user... 
-        // We should be careful. "Angan" might be "Angan" (me) or "Angan" (other).
-        // But if I Added a friend named "Angan", it's likely me if I am "Angan".
+        // We should be careful: a friend may have the same name as the current user.
+        // If the friend name equals the current user's display name, it is likely a self-reference.
         if !friend.hasLinkedAccount {
              return friendName == normalizedName(account.displayName)
         }

@@ -15,7 +15,7 @@ final class ClaimFriendRecordTests: XCTestCase {
             originalName: "testss",
             hasLinkedAccount: true,
             linkedAccountId: "acc-12345",
-            linkedAccountEmail: "angan@example.com",
+            linkedAccountEmail: "linked@example.com",
             profileImageUrl: nil,
             profileColorHex: "#FF5733"
         )
@@ -23,7 +23,7 @@ final class ClaimFriendRecordTests: XCTestCase {
         // Then: All linked properties should be accessible
         XCTAssertTrue(friend.hasLinkedAccount)
         XCTAssertEqual(friend.linkedAccountId, "acc-12345")
-        XCTAssertEqual(friend.linkedAccountEmail, "angan@example.com")
+        XCTAssertEqual(friend.linkedAccountEmail, "linked@example.com")
         XCTAssertEqual(friend.name, "Example Person")
         XCTAssertEqual(friend.originalName, "testss")
     }
