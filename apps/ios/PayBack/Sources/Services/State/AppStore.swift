@@ -1035,27 +1035,23 @@ final class AppStore: ObservableObject {
     // MARK: - Friend Management
     
     func addImportedFriend(_ friend: AccountFriend) {
-        // Check if already exists
-        if !friends.contains(where: { $0.memberId == friend.memberId }) {
-            friends.append(friend)
-            persistCurrentState()
-            
-            // Sync to cloud (skip during import mode)
-            guard let session, !isImporting else { return }
-            friendSyncTask?.cancel()
-            friendSyncTask = Task { [friends] in
-                do {
-                    try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: friends)
-                } catch {
-                    #if DEBUG
-                    print("⚠️ Failed to sync friends after import: \(error.localizedDescription)")
-                    #endif
-                }
-            }
+        guard !friends.contains(where: { $0.memberId == friend.memberId }) else { return }
+        
+        friends.append(friend)
+        persistCurrentState()
+        
+        if !isImporting {
+            Task { scheduleFriendSync() }
         }
     }
     
-    /// Syncs all friends to Convex (used after bulk import)
+    func resolveLinkedAccountsForImport(_ memberIds: [UUID]) async throws -> [UUID: (String, String)] {
+        if let convexService = accountService as? ConvexAccountService {
+            return try await convexService.resolveLinkedAccountsForMemberIds(memberIds)
+        }
+        return [:]
+    }
+    
     func syncFriendsToCloud() async {
         guard let session else { return }
         friendSyncTask?.cancel()
@@ -1071,7 +1067,6 @@ final class AppStore: ObservableObject {
         }
     }
     
-    /// Syncs all groups to Convex (used after bulk import)
     func syncGroupsToCloud() async {
         guard session != nil else { return }
 
@@ -1096,30 +1091,65 @@ final class AppStore: ObservableObject {
         #endif
     }
     
-    /// Syncs all expenses to Convex (used after bulk import)
     func syncExpensesToCloud() async {
         guard session != nil else { return }
 
-        var failures = 0
+        var successCount = 0
+        var failedExpenses: [(Expense, Error)] = []
+        
         for expense in expenses {
             let participants = makeParticipants(for: expense)
             do {
                 try await expenseCloudService.upsertExpense(expense, participants: participants)
+                successCount += 1
             } catch {
-                failures += 1
-                #if DEBUG
-                print("⚠️ Failed to sync expense \(expense.id) to cloud: \(error.localizedDescription)")
-                #endif
+                failedExpenses.append((expense, error))
+            }
+        }
+
+        if !failedExpenses.isEmpty {
+            Task {
+                await retryFailedExpenses(failedExpenses)
             }
         }
 
         #if DEBUG
-        if failures == 0 {
+        if failedExpenses.isEmpty {
             print("✅ Synced \(expenses.count) expenses to Convex after import")
         } else {
-            print("⚠️ Synced \(expenses.count - failures)/\(expenses.count) expenses to Convex after import")
+            print("⚠️ Synced \(successCount)/\(expenses.count) expenses to Convex after import")
         }
         #endif
+    }
+    
+    private func retryFailedExpenses(_ failedExpenses: [(Expense, Error)], attempt: Int = 1) async {
+        guard attempt <= 5 else {
+            #if DEBUG
+            print("⚠️ Max retry attempts reached. \(failedExpenses.count) expenses failed to sync.")
+            #endif
+            return
+        }
+        
+        let delay = Double(attempt) * 10.0
+        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        
+        var stillFailed: [(Expense, Error)] = []
+        
+        for (expense, _) in failedExpenses {
+            let participants = makeParticipants(for: expense)
+            do {
+                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                #if DEBUG
+                print("✅ Retried expense \(expense.id) successfully on attempt \(attempt)")
+                #endif
+            } catch {
+                stillFailed.append((expense, error))
+            }
+        }
+        
+        if !stillFailed.isEmpty {
+            await retryFailedExpenses(stillFailed, attempt: attempt + 1)
+        }
     }
 
     // MARK: - Expenses

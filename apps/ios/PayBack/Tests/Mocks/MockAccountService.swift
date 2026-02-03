@@ -164,4 +164,14 @@ actor MockAccountServiceForAppStore: AccountService {
     func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {
         if shouldFail { throw PayBackError.networkUnavailable }
     }
+    
+    func validateAccountIds(_ ids: [String]) async throws -> Set<String> {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        return Set(ids)
+    }
+    
+    func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        return [:]
+    }
 }

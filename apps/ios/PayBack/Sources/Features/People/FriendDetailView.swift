@@ -416,6 +416,8 @@ struct FriendDetailView: View {
                     Toggle("Prefer Nickname", isOn: $preferNickname)
                         .font(.system(.body, design: .rounded))
                         .tint(AppTheme.brand)
+                        .disabled(!(accountFriend?.hasValidNickname ?? false))
+                        .opacity((accountFriend?.hasValidNickname ?? false) ? 1.0 : 0.5)
                         .onChange(of: preferNickname) { oldValue, newValue in
                             if newValue && nicknameText.isEmpty {
                                 if let original = accountFriend?.originalNickname, !original.isEmpty {

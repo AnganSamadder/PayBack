@@ -10,6 +10,7 @@
 
 import type * as admin from "../admin.js";
 import type * as aliases from "../aliases.js";
+import type * as bulkImport from "../bulkImport.js";
 import type * as cleanup from "../cleanup.js";
 import type * as crons from "../crons.js";
 import type * as debug from "../debug.js";
@@ -38,6 +39,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   admin: typeof admin;
   aliases: typeof aliases;
+  bulkImport: typeof bulkImport;
   cleanup: typeof cleanup;
   crons: typeof crons;
   debug: typeof debug;

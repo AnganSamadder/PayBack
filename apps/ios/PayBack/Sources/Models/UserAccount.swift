@@ -39,61 +39,52 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     let memberId: UUID
     var name: String
     var nickname: String?
-    var originalName: String?     // Name before linking (for "Originally X" display)
-    var originalNickname: String? // Nickname before linking (preserved for restore)
-    var preferNickname: Bool      // Per-friend toggle: true = always show nickname
+    var originalName: String?
+    var originalNickname: String?
+    var preferNickname: Bool
     var hasLinkedAccount: Bool
     var linkedAccountId: String?
     var linkedAccountEmail: String?
     var profileImageUrl: String?
     var profileColorHex: String?
-    var status: String?  // "friend" or "peer" - indicates relationship type
+    var status: String?
     
     var id: UUID { memberId }
     
-    /// Returns the display name based on user preference
-    /// - Parameter showRealNames: If true, shows real name (with nickname underneath). If false, shows nickname (with real name underneath)
-    /// - Returns: The primary display name
+    var hasValidNickname: Bool {
+        guard let nick = nickname else { return false }
+        return !nick.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
     func displayName(showRealNames: Bool) -> String {
-        // Per-friend preference takes priority: if preferNickname is true, always use nickname
-        if preferNickname, let nick = nickname, !nick.isEmpty {
+        if preferNickname, hasValidNickname, let nick = nickname {
             return nick
         }
         
-        // For unlinked friends, always show the name (no nickname distinction)
         guard hasLinkedAccount else {
             return name
         }
         
-        // For linked friends with no nickname, always show real name
-        guard let nickname = nickname, !nickname.isEmpty else {
+        guard hasValidNickname, let nickname = nickname else {
             return name
         }
         
-        // Return based on global preference
         return showRealNames ? name : nickname
     }
     
-    /// Returns the secondary display name (shown smaller underneath)
-    /// - Parameter showRealNames: If true, shows nickname underneath. If false, shows real name underneath
-    /// - Returns: The secondary display name, or nil if not applicable
     func secondaryDisplayName(showRealNames: Bool) -> String? {
-        // Per-friend preference: if preferNickname, show real name as secondary
-        if preferNickname, let nick = nickname, !nick.isEmpty {
+        if preferNickname, hasValidNickname {
             return name
         }
         
-        // For unlinked friends, no secondary name
         guard hasLinkedAccount else {
             return nil
         }
         
-        // For linked friends with no nickname, no secondary name
-        guard let nickname = nickname, !nickname.isEmpty else {
+        guard hasValidNickname, let nickname = nickname else {
             return nil
         }
         
-        // Return opposite of primary based on global preference
         return showRealNames ? nickname : name
     }
     
@@ -125,7 +116,6 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         self.status = status
     }
     
-    // Codable implementation with backward compatibility
     enum CodingKeys: String, CodingKey {
         case memberId
         case name

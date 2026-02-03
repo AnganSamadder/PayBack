@@ -701,6 +701,14 @@ actor TestAccountService: AccountService {
     }
 
     func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws { }
+    
+    func validateAccountIds(_ ids: [String]) async throws -> Set<String> {
+        return Set(ids)
+    }
+    
+    func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
+        return [:]
+    }
 }
 
 final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {

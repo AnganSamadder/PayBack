@@ -43,6 +43,19 @@ protocol AccountService: Actor {
     
     /// Merges two unlinked friends (alias to alias)
     func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws
+    
+    /// Validates which account IDs exist in the system
+    /// Returns a set of valid account IDs
+    func validateAccountIds(_ ids: [String]) async throws -> Set<String>
+    
+    /// Resolves which member IDs have linked accounts (checking both current and historical UUIDs)
+    /// Returns mapping of member ID -> (account ID, email)
+    func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)]
+}
+
+struct LinkedAccountInfo: Codable, Sendable, Equatable {
+    let accountId: String
+    let email: String
 }
 
 struct IncomingFriendRequest: Identifiable, Sendable {
@@ -198,5 +211,13 @@ actor MockAccountService: AccountService {
     
     func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {
         // Mock
+    }
+    
+    func validateAccountIds(_ ids: [String]) async throws -> Set<String> {
+        return Set(ids)
+    }
+    
+    func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
+        return [:]
     }
 }

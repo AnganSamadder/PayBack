@@ -367,6 +367,38 @@ actor ConvexAccountService: AccountService {
         ]
         _ = try await client.mutation("aliases:mergeUnlinkedFriends", with: convexArgs)
     }
+    
+    func validateAccountIds(_ ids: [String]) async throws -> Set<String> {
+        let idsArray: [ConvexEncodable?] = ids
+        let args: [String: ConvexEncodable?] = ["ids": idsArray]
+        for try await validIds in client.subscribe(to: "users:validateAccountIds", with: args, yielding: [String].self).values {
+            return Set(validIds)
+        }
+        return Set()
+    }
+    
+    func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
+        let memberIdStrings = memberIds.map { $0.uuidString }
+        let memberIdsArray: [ConvexEncodable?] = memberIdStrings
+        let args: [String: ConvexEncodable?] = ["memberIds": memberIdsArray]
+        
+        struct ResolveResult: Decodable {
+            let member_id: String
+            let account_id: String
+            let email: String
+        }
+        
+        for try await results in client.subscribe(to: "users:resolveLinkedAccountsForMemberIds", with: args, yielding: [ResolveResult].self).values {
+            var mapping: [UUID: (String, String)] = [:]
+            for result in results {
+                if let memberId = UUID(uuidString: result.member_id) {
+                    mapping[memberId] = (result.account_id, result.email)
+                }
+            }
+            return mapping
+        }
+        return [:]
+    }
 }
 
 #endif

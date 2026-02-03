@@ -8,7 +8,8 @@ export default defineSchema({
     display_name: v.string(),
     profile_image_url: v.optional(v.string()), // URL to uploaded image
     profile_avatar_color: v.optional(v.string()), // Hex code for consistent generated avatar
-    linked_member_id: v.optional(v.string()), // UUID string
+    linked_member_id: v.optional(v.string()), // UUID string - current active member ID
+    equivalent_member_ids: v.optional(v.array(v.string())), // Historical UUIDs from linking/unlinking
     created_at: v.number(),
     updated_at: v.optional(v.number()),
   })

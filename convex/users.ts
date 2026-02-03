@@ -354,8 +354,20 @@ export const updateLinkedMemberId = mutation({
       throw new Error("User not found");
     }
 
+    const existingEquivalentIds = user.equivalent_member_ids || [];
+    let updatedEquivalentIds = [...existingEquivalentIds];
+    
+    if (user.linked_member_id && !existingEquivalentIds.includes(user.linked_member_id)) {
+      updatedEquivalentIds.push(user.linked_member_id);
+    }
+    
+    if (!updatedEquivalentIds.includes(args.linked_member_id)) {
+      updatedEquivalentIds.push(args.linked_member_id);
+    }
+
     await ctx.db.patch(user._id, {
       linked_member_id: args.linked_member_id,
+      equivalent_member_ids: updatedEquivalentIds,
       updated_at: Date.now(),
     });
 
@@ -452,5 +464,77 @@ export const sessionStatus = query({
       .unique();
 
     return user ? "active" : "deleted";
+  },
+});
+
+/**
+ * Validates a list of account IDs (auth IDs) and returns those that exist.
+ */
+export const validateAccountIds = query({
+  args: { ids: v.array(v.string()) },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Unauthenticated");
+    }
+
+    const existingIds: string[] = [];
+    for (const id of args.ids) {
+      const account = await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", id))
+        .unique();
+      if (account) {
+        existingIds.push(id);
+      }
+    }
+    return existingIds;
+  },
+});
+
+export const resolveLinkedAccountsForMemberIds = query({
+  args: { memberIds: v.array(v.string()) },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Unauthenticated");
+    }
+
+    const results: Array<{
+      member_id: string;
+      account_id: string;
+      email: string;
+    }> = [];
+
+    for (const memberId of args.memberIds) {
+      const accountByLinkedId = await ctx.db
+        .query("accounts")
+        .withIndex("by_linked_member_id", (q) => q.eq("linked_member_id", memberId))
+        .unique();
+
+      if (accountByLinkedId) {
+        results.push({
+          member_id: memberId,
+          account_id: accountByLinkedId.id,
+          email: accountByLinkedId.email,
+        });
+        continue;
+      }
+
+      const allAccounts = await ctx.db.query("accounts").collect();
+      for (const account of allAccounts) {
+        const equivalentIds = account.equivalent_member_ids || [];
+        if (equivalentIds.includes(memberId)) {
+          results.push({
+            member_id: memberId,
+            account_id: account.id,
+            email: account.email,
+          });
+          break;
+        }
+      }
+    }
+
+    return results;
   },
 });
