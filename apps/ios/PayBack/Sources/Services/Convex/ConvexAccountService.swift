@@ -353,12 +353,6 @@ actor ConvexAccountService: AccountService {
             throw PayBackError.accountNotFound(email: "current")
         }
         
-        let args: [String: Any] = [
-            "friendId1": friendId1,
-            "friendId2": friendId2,
-            "accountEmail": account.email
-        ]
-        // Note: mutation uses 'Any' for args in ConvexMobile wrapper often, checking type safety
         // Constructing dictionary for convex-swift
         let convexArgs: [String: ConvexEncodable] = [
             "friendId1": friendId1,
@@ -412,7 +406,8 @@ actor ConvexAccountService: AccountService {
         ]
         
         do {
-            return try await client.mutation("bulkImport:import", with: args)
+            // convex/bulkImport.ts exports `bulkImport`, so the public function name is `bulkImport:bulkImport`.
+            return try await client.mutation("bulkImport:bulkImport", with: args)
         } catch let error as PayBackError {
             throw error
         } catch {

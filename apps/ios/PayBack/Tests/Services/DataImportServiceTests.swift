@@ -23,7 +23,7 @@ final class DataImportServiceTests: XCTestCase {
         EXPORTED_AT: 2024-01-15T10:30:00Z
         ACCOUNT_EMAIL: test@example.com
         CURRENT_USER_ID: 11111111-1111-1111-1111-111111111111
-        CURRENT_USER_NAME: Test User
+        CURRENT_USER_NAME: Example User
         
         [FRIENDS]
         # member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email
@@ -131,7 +131,7 @@ final class DataImportServiceTests: XCTestCase {
         let text = createValidExportText()
         let parsed = try DataImportService.parseExport(text)
         
-        XCTAssertEqual(parsed.currentUserName, "Test User")
+        XCTAssertEqual(parsed.currentUserName, "Example User")
     }
     
     func testParseExport_WithInvalidFormat_ThrowsError() {
@@ -466,17 +466,79 @@ final class DataImportServiceTests: XCTestCase {
         XCTAssertEqual(expense.total_amount, 100.0)
         XCTAssertEqual(expense.paid_by_member_id, "3F5B8B7A-9E9D-4C1B-B6B1-3E2A3A6B4B5B")
         XCTAssertFalse(expense.is_settled)
+        XCTAssertEqual(expense.involved_member_ids.count, 2)
+        XCTAssertEqual(expense.participant_member_ids.count, 2)
+        XCTAssertEqual(expense.participants.count, 2)
         XCTAssertEqual(expense.splits.count, 2)
-        XCTAssertEqual(expense.subexpenses.count, 2)
+        XCTAssertEqual(expense.subexpenses?.count, 2)
         
         let expectedDateMs = ISO8601DateFormatter().date(from: "2026-01-20T19:00:00Z")!.timeIntervalSince1970 * 1000
         XCTAssertEqual(expense.date, expectedDateMs, accuracy: 1000)
+    }
+
+    func testBulkImportIntegration_ConvertsToBulkImportRequest_AllowsDuplicateMemberIdsInGroupMembersAndParticipantNames() throws {
+        // Given
+        var parsedData = ParsedExportData()
+        let currentUserId = UUID()
+        parsedData.currentUserId = currentUserId
+        parsedData.currentUserName = "Example User"
+
+        let group1Id = UUID()
+        let group2Id = UUID()
+        let sharedMemberId = UUID()
+
+        parsedData.groups = [
+            ParsedGroup(id: group1Id, name: "Group 1", isDirect: false, isDebug: false, createdAt: Date(), memberCount: 2),
+            ParsedGroup(id: group2Id, name: "Group 2", isDirect: false, isDebug: false, createdAt: Date(), memberCount: 2)
+        ]
+
+        // Same memberId appears in multiple GROUP_MEMBERS rows (valid export shape).
+        parsedData.groupMembers = [
+            ParsedGroupMember(groupId: group1Id, memberId: currentUserId, memberName: "Example User", profileImageUrl: nil, profileColorHex: nil),
+            ParsedGroupMember(groupId: group1Id, memberId: sharedMemberId, memberName: "T", profileImageUrl: nil, profileColorHex: nil),
+            ParsedGroupMember(groupId: group2Id, memberId: currentUserId, memberName: "Example User", profileImageUrl: nil, profileColorHex: nil),
+            ParsedGroupMember(groupId: group2Id, memberId: sharedMemberId, memberName: "Example User", profileImageUrl: nil, profileColorHex: nil)
+        ]
+
+        let expenseId = UUID()
+        parsedData.expenses = [
+            ParsedExpense(
+                id: expenseId,
+                groupId: group1Id,
+                description: "Dinner",
+                date: Date(),
+                totalAmount: 10.0,
+                paidByMemberId: sharedMemberId,
+                isSettled: false,
+                isDebug: false
+            )
+        ]
+
+        parsedData.expenseInvolvedMembers = [(expenseId: expenseId, memberId: sharedMemberId)]
+        parsedData.expenseSplits = [
+            ParsedExpenseSplit(expenseId: expenseId, splitId: UUID(), memberId: sharedMemberId, amount: 10.0, isSettled: false)
+        ]
+
+        // Duplicate participant names for the same expense+member should not crash.
+        parsedData.participantNames = [
+            (expenseId, sharedMemberId, "T"),
+            (expenseId, sharedMemberId, "Example User")
+        ]
+
+        // When
+        let request = DataImportService.convertToBulkImportRequest(from: parsedData)
+
+        // Then
+        XCTAssertEqual(request.expenses.count, 1)
+        let expense = request.expenses[0]
+        let participant = expense.participants.first(where: { $0.member_id == sharedMemberId.uuidString })
+        XCTAssertEqual(participant?.name, "Example User")
     }
     
     func testBulkImportIntegration_ChunksExpensesCorrectly() throws {
         var parsedData = ParsedExportData()
         parsedData.currentUserId = UUID()
-        parsedData.currentUserName = "Test User"
+        parsedData.currentUserName = "Example User"
         
         let groupId = UUID()
         let payerId = UUID()
@@ -486,7 +548,7 @@ final class DataImportServiceTests: XCTestCase {
         ]
         
         parsedData.groupMembers = [
-            ParsedGroupMember(groupId: groupId, memberId: parsedData.currentUserId!, memberName: "Test User", profileImageUrl: nil, profileColorHex: nil),
+            ParsedGroupMember(groupId: groupId, memberId: parsedData.currentUserId!, memberName: "Example User", profileImageUrl: nil, profileColorHex: nil),
             ParsedGroupMember(groupId: groupId, memberId: payerId, memberName: "Payer", profileImageUrl: nil, profileColorHex: nil)
         ]
         
@@ -540,7 +602,7 @@ final class DataImportServiceTests: XCTestCase {
     private func createTestParsedData() throws -> ParsedExportData {
         var data = ParsedExportData()
         data.currentUserId = UUID()
-        data.currentUserName = "Test User"
+        data.currentUserName = "Example User"
         
         let groupId = UUID()
         let friendId = UUID()
@@ -554,7 +616,7 @@ final class DataImportServiceTests: XCTestCase {
         ]
         
         data.groupMembers = [
-            ParsedGroupMember(groupId: groupId, memberId: data.currentUserId!, memberName: "Test User", profileImageUrl: nil, profileColorHex: nil),
+            ParsedGroupMember(groupId: groupId, memberId: data.currentUserId!, memberName: "Example User", profileImageUrl: nil, profileColorHex: nil),
             ParsedGroupMember(groupId: groupId, memberId: friendId, memberName: "Friend", profileImageUrl: nil, profileColorHex: nil)
         ]
         

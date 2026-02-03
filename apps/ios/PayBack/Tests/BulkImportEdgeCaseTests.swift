@@ -57,7 +57,7 @@ final class BulkImportEdgeCaseTests: XCTestCase {
             XCTFail("Expected success, got \(result)")
             return
         }
-        
+
         XCTAssertEqual(summary.friendsAdded, 1)
         XCTAssertEqual(summary.groupsAdded, 1)
         XCTAssertEqual(summary.expensesAdded, 1)
@@ -67,8 +67,8 @@ final class BulkImportEdgeCaseTests: XCTestCase {
         
         let request = calls[0]
         XCTAssertEqual(request.friends.first?.profile_image_url, nil)
-        XCTAssertEqual(request.friends.first?.profile_avatar_color, nil)
-        XCTAssertEqual(request.expenses.first?.subexpenses.count ?? 0, 0)
+        XCTAssertEqual(request.friends.first?.profile_avatar_color, "#64748B")
+        XCTAssertEqual(request.expenses.first?.subexpenses?.count ?? 0, 0)
     }
     
     func testBulkImportVariantB_CurrentFormat() async throws {
@@ -80,7 +80,7 @@ final class BulkImportEdgeCaseTests: XCTestCase {
             accountService: mockAccountService
         )
         
-        guard case .success(let summary) = result else {
+        guard case .success = result else {
             XCTFail("Expected success, got \(result)")
             return
         }
@@ -91,7 +91,7 @@ final class BulkImportEdgeCaseTests: XCTestCase {
         let request = calls[0]
         XCTAssertEqual(request.friends.first?.profile_image_url, "https://example.com/bob.jpg")
         XCTAssertEqual(request.friends.first?.profile_avatar_color, "#FF5733")
-        XCTAssertEqual(request.expenses.first?.subexpenses.count ?? 0, 2)
+        XCTAssertEqual(request.expenses.first?.subexpenses?.count ?? 0, 2)
     }
     
     func testBulkImportVariantC_DirectGroups() async throws {
@@ -146,7 +146,7 @@ final class BulkImportEdgeCaseTests: XCTestCase {
     func testBulkImport_DuplicateExpenseIds() async throws {
         var parsedData = ParsedExportData()
         parsedData.currentUserId = UUID()
-        parsedData.currentUserName = "Test User"
+        parsedData.currentUserName = "Example User"
         
         let expenseId = UUID()
         let groupId = UUID()
@@ -185,7 +185,7 @@ final class BulkImportEdgeCaseTests: XCTestCase {
     func testBulkImport_LargeBatch() async throws {
         var parsedData = ParsedExportData()
         parsedData.currentUserId = UUID()
-        parsedData.currentUserName = "Test User"
+        parsedData.currentUserName = "Example User"
         
         let groupId = UUID()
         parsedData.groups = [ParsedGroup(id: groupId, name: "G", isDirect: false, isDebug: false, createdAt: Date(), memberCount: 1)]

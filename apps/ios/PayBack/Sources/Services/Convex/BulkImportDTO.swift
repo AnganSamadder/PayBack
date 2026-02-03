@@ -55,26 +55,45 @@ struct BulkGroupDTO: Codable, ConvexEncodable {
 }
 
 struct BulkSplitDTO: Codable, ConvexEncodable {
+    let id: String
     let member_id: String
     let amount: Double
-    let percentage: Double?
+    let is_settled: Bool
 
-    init(member_id: String, amount: Double, percentage: Double? = nil) {
+    init(id: String, member_id: String, amount: Double, is_settled: Bool) {
+        self.id = id
         self.member_id = member_id
         self.amount = amount
-        self.percentage = percentage
+        self.is_settled = is_settled
     }
 }
 
 struct BulkSubexpenseDTO: Codable, ConvexEncodable {
-    let description: String
-    let member_id: String
+    let id: String
     let amount: Double
 
-    init(description: String, member_id: String, amount: Double) {
-        self.description = description
-        self.member_id = member_id
+    init(id: String, amount: Double) {
+        self.id = id
         self.amount = amount
+    }
+}
+
+struct BulkParticipantDTO: Codable, ConvexEncodable {
+    let member_id: String
+    let name: String
+    let linked_account_id: String?
+    let linked_account_email: String?
+
+    init(
+        member_id: String,
+        name: String,
+        linked_account_id: String? = nil,
+        linked_account_email: String? = nil
+    ) {
+        self.member_id = member_id
+        self.name = name
+        self.linked_account_id = linked_account_id
+        self.linked_account_email = linked_account_email
     }
 }
 
@@ -85,9 +104,12 @@ struct BulkExpenseDTO: Codable, ConvexEncodable {
     let date: Double
     let total_amount: Double
     let paid_by_member_id: String
+    let involved_member_ids: [String]
     let splits: [BulkSplitDTO]
-    let subexpenses: [BulkSubexpenseDTO]
     let is_settled: Bool
+    let participant_member_ids: [String]
+    let participants: [BulkParticipantDTO]
+    let subexpenses: [BulkSubexpenseDTO]?
 
     init(
         id: String,
@@ -96,9 +118,12 @@ struct BulkExpenseDTO: Codable, ConvexEncodable {
         date: Double,
         total_amount: Double,
         paid_by_member_id: String,
+        involved_member_ids: [String],
         splits: [BulkSplitDTO],
-        subexpenses: [BulkSubexpenseDTO],
-        is_settled: Bool
+        is_settled: Bool,
+        participant_member_ids: [String],
+        participants: [BulkParticipantDTO],
+        subexpenses: [BulkSubexpenseDTO]? = nil
     ) {
         self.id = id
         self.group_id = group_id
@@ -106,9 +131,12 @@ struct BulkExpenseDTO: Codable, ConvexEncodable {
         self.date = date
         self.total_amount = total_amount
         self.paid_by_member_id = paid_by_member_id
+        self.involved_member_ids = involved_member_ids
         self.splits = splits
-        self.subexpenses = subexpenses
         self.is_settled = is_settled
+        self.participant_member_ids = participant_member_ids
+        self.participants = participants
+        self.subexpenses = subexpenses
     }
 }
 

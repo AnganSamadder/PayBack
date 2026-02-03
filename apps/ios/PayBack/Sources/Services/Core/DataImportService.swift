@@ -387,6 +387,11 @@ struct DataImportService {
         }
         
         // Import friends (match by name, add if new)
+        // CRITICAL FIX: Clear nameToExistingId to prevent race condition with reconciliation.
+        // After conflict detection is complete, we want to create fresh friends for this import
+        // rather than reusing IDs from potentially stale reconciled data.
+        nameToExistingId.removeAll()
+        
         for parsedFriend in parsedData.friends {
             // Skip if this is the current user from the export
             if parsedFriend.memberId == parsedData.currentUserId {
@@ -589,6 +594,9 @@ struct DataImportService {
             return parsedId
         }
         
+        // Track which member NAMES we've already processed in this import session
+        var processedMemberNames = Set<String>()
+        
         // Ensure all group members (who aren't the current user) are added as friends BEFORE importing expenses
         for parsedGroup in parsedData.groups {
             let groupMemberEntries = parsedData.groupMembers.filter { $0.groupId == parsedGroup.id }
@@ -597,26 +605,17 @@ struct DataImportService {
                     continue
                 }
                 
+                // Skip if we already processed this member name in this import session
+                let normalizedName = entry.memberName.lowercased()
+                if processedMemberNames.contains(normalizedName) {
+                    continue
+                }
+                processedMemberNames.insert(normalizedName)
+                
                 let resolvedId = resolveMemberId(entry.memberId)
                 
-                if let existingFriend = store.friends.first(where: { $0.memberId == resolvedId }) {
-                    if existingFriend.status != "friend" {
-                        let upgradedFriend = AccountFriend(
-                            memberId: resolvedId,
-                            name: existingFriend.name,
-                            nickname: existingFriend.nickname,
-                            hasLinkedAccount: existingFriend.hasLinkedAccount,
-                            linkedAccountId: existingFriend.linkedAccountId,
-                            linkedAccountEmail: existingFriend.linkedAccountEmail,
-                            profileImageUrl: existingFriend.profileImageUrl,
-                            profileColorHex: existingFriend.profileColorHex,
-                            status: "friend"
-                        )
-                        store.addImportedFriend(upgradedFriend)
-                    }
-                    #if DEBUG
-                    print("[DataImportService] \(entry.memberName) already in friends list with ID \(resolvedId)")
-                    #endif
+                // resolveMemberId may have already added this friend - skip the rest if so
+                if store.friends.contains(where: { $0.memberId == resolvedId }) {
                     continue
                 }
                 
@@ -930,6 +929,37 @@ extension DataImportService {
     // MARK: - Bulk Import Methods
     
     static func convertToBulkImportRequest(from parsed: ParsedExportData) -> BulkImportRequest {
+        let friendsByMemberId: [UUID: ParsedFriend] = Dictionary(
+            parsed.friends.map { ($0.memberId, $0) },
+            uniquingKeysWith: { _, new in new }
+        )
+
+        func preferredName(existing: String, new: String) -> String {
+            let existingTrimmed = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+            let newTrimmed = new.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            func isBad(_ s: String) -> Bool {
+                s.isEmpty || s.lowercased() == "you"
+            }
+
+            if isBad(existingTrimmed) && !isBad(newTrimmed) {
+                return new
+            }
+            if !isBad(existingTrimmed) && isBad(newTrimmed) {
+                return existing
+            }
+
+            // Prefer the more informative value.
+            return newTrimmed.count > existingTrimmed.count ? new : existing
+        }
+
+        let groupMemberNamesByMemberId: [UUID: String] = Dictionary(
+            parsed.groupMembers.map { ($0.memberId, $0.memberName) },
+            uniquingKeysWith: { existing, new in
+                preferredName(existing: existing, new: new)
+            }
+        )
+
         let friends = parsed.friends.map { friend in
             BulkFriendDTO(
                 member_id: friend.memberId.uuidString,
@@ -937,7 +967,7 @@ extension DataImportService {
                 nickname: friend.nickname,
                 status: friend.status,
                 profile_image_url: friend.profileImageUrl,
-                profile_avatar_color: friend.profileColorHex
+                profile_avatar_color: friend.profileColorHex ?? "#64748B"
             )
         }
         
@@ -959,24 +989,87 @@ extension DataImportService {
         }
         
         let expenses = parsed.expenses.map { expense in
+            let involvedEntries = parsed.expenseInvolvedMembers.filter { $0.expenseId == expense.id }
+            var involvedMemberIds: [UUID] = []
+            var involvedSet = Set<UUID>()
+
+            func appendInvolved(_ id: UUID) {
+                guard !involvedSet.contains(id) else { return }
+                involvedSet.insert(id)
+                involvedMemberIds.append(id)
+            }
+
+            // Always include payer.
+            appendInvolved(expense.paidByMemberId)
+            for entry in involvedEntries {
+                appendInvolved(entry.memberId)
+            }
+
+            let participantNameEntries = parsed.participantNames.filter { $0.expenseId == expense.id }
+            let participantNamesByMemberId: [UUID: String] = Dictionary(
+                participantNameEntries.map { ($0.memberId, $0.name) },
+                uniquingKeysWith: { existing, new in
+                    preferredName(existing: existing, new: new)
+                }
+            )
+
+            func nameForMember(_ memberId: UUID) -> String {
+                if let name = participantNamesByMemberId[memberId] {
+                    return name
+                }
+                if let name = groupMemberNamesByMemberId[memberId] {
+                    return name
+                }
+                if let friend = friendsByMemberId[memberId] {
+                    return friend.name
+                }
+                return "Unknown"
+            }
+
+            let participants: [BulkParticipantDTO] = involvedMemberIds.map { memberId in
+                let friend = friendsByMemberId[memberId]
+                let linkedAccountId = (friend?.hasLinkedAccount ?? false) ? friend?.linkedAccountId : nil
+                let linkedAccountEmail = (friend?.hasLinkedAccount ?? false) ? friend?.linkedAccountEmail : nil
+                return BulkParticipantDTO(
+                    member_id: memberId.uuidString,
+                    name: nameForMember(memberId),
+                    linked_account_id: linkedAccountId,
+                    linked_account_email: linkedAccountEmail
+                )
+            }
+
+            let participantMemberIds = involvedMemberIds.map { $0.uuidString }
+            let involvedMemberIdStrings = participantMemberIds
+
             let splitEntries = parsed.expenseSplits.filter { $0.expenseId == expense.id }
-            let splits = splitEntries.map { entry in
-                BulkSplitDTO(
-                    member_id: entry.memberId.uuidString,
-                    amount: entry.amount,
-                    percentage: nil
-                )
+            let splits: [BulkSplitDTO]
+            if splitEntries.isEmpty {
+                splits = [
+                    BulkSplitDTO(
+                        id: UUID().uuidString,
+                        member_id: expense.paidByMemberId.uuidString,
+                        amount: expense.totalAmount,
+                        is_settled: expense.isSettled
+                    )
+                ]
+            } else {
+                splits = splitEntries.map { entry in
+                    BulkSplitDTO(
+                        id: entry.splitId.uuidString,
+                        member_id: entry.memberId.uuidString,
+                        amount: entry.amount,
+                        is_settled: entry.isSettled
+                    )
+                }
             }
-            
+
             let subexpenseEntries = parsed.expenseSubexpenses.filter { $0.expenseId == expense.id }
-            let subexpenses = subexpenseEntries.map { entry in
-                BulkSubexpenseDTO(
-                    description: "",
-                    member_id: expense.paidByMemberId.uuidString,
-                    amount: entry.amount
-                )
-            }
-            
+            let subexpenses: [BulkSubexpenseDTO]? = subexpenseEntries.isEmpty
+                ? nil
+                : subexpenseEntries.map { entry in
+                    BulkSubexpenseDTO(id: entry.subexpenseId.uuidString, amount: entry.amount)
+                }
+
             return BulkExpenseDTO(
                 id: expense.id.uuidString,
                 group_id: expense.groupId.uuidString,
@@ -984,9 +1077,12 @@ extension DataImportService {
                 date: expense.date.timeIntervalSince1970 * 1000,
                 total_amount: expense.totalAmount,
                 paid_by_member_id: expense.paidByMemberId.uuidString,
+                involved_member_ids: involvedMemberIdStrings,
                 splits: splits,
-                subexpenses: subexpenses,
-                is_settled: expense.isSettled
+                is_settled: expense.isSettled,
+                participant_member_ids: participantMemberIds,
+                participants: participants,
+                subexpenses: subexpenses
             )
         }
         
