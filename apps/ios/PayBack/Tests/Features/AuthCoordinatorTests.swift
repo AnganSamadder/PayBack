@@ -95,7 +95,7 @@ final class AuthCoordinatorTests: XCTestCase {
     func testLogin_Success_WithExistingAccount() async {
         let testEmail = "test@example.com"
         let testPassword = "password123"
-        let existingAccount = UserAccount(id: "123", email: testEmail, displayName: "Test User")
+        let existingAccount = UserAccount(id: "123", email: testEmail, displayName: "Example User")
         
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",

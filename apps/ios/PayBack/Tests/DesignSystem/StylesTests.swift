@@ -302,13 +302,13 @@ final class StylesTests: XCTestCase {
     }
     
     func testAvatarViewWithCustomSize() {
-        let avatar = AvatarView(name: "Test User", size: 80)
+        let avatar = AvatarView(name: "Example User", size: 80)
         XCTAssertNotNil(avatar)
         _ = avatar.body
     }
     
     func testAvatarViewDefaultSize() {
-        let avatar = AvatarView(name: "Test User")
+        let avatar = AvatarView(name: "Example User")
         XCTAssertNotNil(avatar)
         _ = avatar.body
     }
@@ -333,8 +333,8 @@ final class StylesTests: XCTestCase {
     
     func testAvatarViewColorConsistency() {
         // Same name should produce same color
-        let avatar1 = AvatarView(name: "Test User", size: 40)
-        let avatar2 = AvatarView(name: "Test User", size: 40)
+        let avatar1 = AvatarView(name: "Example User", size: 40)
+        let avatar2 = AvatarView(name: "Example User", size: 40)
         XCTAssertNotNil(avatar1)
         XCTAssertNotNil(avatar2)
         _ = avatar1.body

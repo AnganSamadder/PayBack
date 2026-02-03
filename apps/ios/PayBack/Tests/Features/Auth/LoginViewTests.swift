@@ -182,7 +182,7 @@ final class LoginViewTests: XCTestCase {
     func testSignupFormValidation_RequiresPasswordsToMatch() {
         // Test the full form validation logic
         let email = "test@example.com"
-        let name = "Test User"
+        let name = "Example User"
         let passwordInput = "password123"
         let confirmPasswordInput = "password123"
         
@@ -200,7 +200,7 @@ final class LoginViewTests: XCTestCase {
     
     func testSignupFormValidation_ReturnsFalseWhenPasswordsDontMatch() {
         let email = "test@example.com"
-        let name = "Test User"
+        let name = "Example User"
         let passwordInput = "password123"
         let confirmPasswordInput = "differentPassword"
         

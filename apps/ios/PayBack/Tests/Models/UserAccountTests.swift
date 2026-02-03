@@ -9,12 +9,12 @@ final class UserAccountTests: XCTestCase {
         let account = UserAccount(
             id: "user123",
             email: "test@example.com",
-            displayName: "Test User"
+            displayName: "Example User"
         )
         
         XCTAssertEqual(account.id, "user123")
         XCTAssertEqual(account.email, "test@example.com")
-        XCTAssertEqual(account.displayName, "Test User")
+        XCTAssertEqual(account.displayName, "Example User")
         XCTAssertNil(account.linkedMemberId)
         XCTAssertNotNil(account.createdAt)
     }

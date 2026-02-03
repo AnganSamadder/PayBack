@@ -256,7 +256,7 @@ final class ConvexDTOExtendedTests: XCTestCase {
         let dto = ConvexUserAccountDTO(
             id: "user-123",
             email: "test@example.com",
-            display_name: "Test User",
+            display_name: "Example User",
             profile_image_url: nil,
             profile_avatar_color: nil
         )
@@ -265,7 +265,7 @@ final class ConvexDTOExtendedTests: XCTestCase {
         
         XCTAssertEqual(account.id, "user-123")
         XCTAssertEqual(account.email, "test@example.com")
-        XCTAssertEqual(account.displayName, "Test User")
+        XCTAssertEqual(account.displayName, "Example User")
     }
     
     func testConvexUserAccountDTO_toUserAccount_NilDisplayName_UsesEmail() {

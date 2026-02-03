@@ -11,7 +11,7 @@ final class DataImportExportExtendedTests: XCTestCase {
         // Setup a current user
         let currentUser = GroupMember(
             id: UUID(),
-            name: "Test User",
+            name: "Example User",
             profileImageUrl: nil,
             profileColorHex: "#000000"
         )
@@ -60,7 +60,7 @@ final class DataImportExportExtendedTests: XCTestCase {
         EXPORTED_AT: 2024-01-01T12:00:00Z
         ACCOUNT_EMAIL: test@example.com
         CURRENT_USER_ID: \(store.currentUser.id.uuidString)
-        CURRENT_USER_NAME: Test User
+        CURRENT_USER_NAME: Example User
         
         [FRIENDS]
         # member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email,profile_image_url,profile_avatar_color
@@ -112,7 +112,7 @@ final class DataImportExportExtendedTests: XCTestCase {
         EXPORTED_AT: 2024-01-01T12:00:00Z
         ACCOUNT_EMAIL: test@example.com
         CURRENT_USER_ID: \(store.currentUser.id.uuidString)
-        CURRENT_USER_NAME: Test User
+        CURRENT_USER_NAME: Example User
         
         [FRIENDS]
         # member_id,name...
@@ -154,7 +154,7 @@ final class DataImportExportExtendedTests: XCTestCase {
         EXPORTED_AT: 2024-01-01T12:00:00Z
         ACCOUNT_EMAIL: test@example.com
         CURRENT_USER_ID: \(store.currentUser.id.uuidString)
-        CURRENT_USER_NAME: Test User
+        CURRENT_USER_NAME: Example User
         
         [FRIENDS]
         # member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email,profile_image_url,profile_avatar_color
@@ -189,7 +189,7 @@ final class DataImportExportExtendedTests: XCTestCase {
         EXPORTED_AT: 2024-01-01T12:00:00Z
         ACCOUNT_EMAIL: test@example.com
         CURRENT_USER_ID: \(store.currentUser.id.uuidString)
-        CURRENT_USER_NAME: Test User
+        CURRENT_USER_NAME: Example User
         
         [FRIENDS]
         # member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email,profile_image_url,profile_avatar_color

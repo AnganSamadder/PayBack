@@ -175,12 +175,12 @@ final class ConvexAccountServiceTests: XCTestCase {
         let account = UserAccount(
             id: "user123",
             email: "user@example.com",
-            displayName: "Test User"
+            displayName: "Example User"
         )
         
         XCTAssertEqual(account.id, "user123")
         XCTAssertEqual(account.email, "user@example.com")
-        XCTAssertEqual(account.displayName, "Test User")
+        XCTAssertEqual(account.displayName, "Example User")
     }
     
     func testUserAccount_Identifiable_ReturnsId() {
@@ -206,7 +206,7 @@ final class ConvexAccountServiceTests: XCTestCase {
         let original = UserAccount(
             id: "user123",
             email: "user@example.com",
-            displayName: "Test User"
+            displayName: "Example User"
         )
         
         let encoder = JSONEncoder()

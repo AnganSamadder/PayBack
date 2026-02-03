@@ -46,7 +46,7 @@ final class ClaimSubscriptionTests: XCTestCase {
                 creatorName: nil,
                 creatorProfileImageUrl: nil,
                 targetMemberId: UUID(),
-                targetMemberName: "Test User",
+                targetMemberName: "Example User",
                 createdAt: Date(),
                 expiresAt: Date().addingTimeInterval(86400)
             ),

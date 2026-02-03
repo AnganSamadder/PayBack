@@ -7,7 +7,7 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
     private var requests: [UUID: LinkRequest] = [:]
     private var userEmail: String = "user@example.com"
     private var requesterId: String = "test-requester-123"
-    private var requesterName: String = "Test User"
+    private var requesterName: String = "Example User"
     
     /// Create a new link request
     func createLinkRequest(
@@ -179,7 +179,7 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
         requests.removeAll()
         userEmail = "user@example.com"
         requesterId = "test-requester-123"
-        requesterName = "Test User"
+        requesterName = "Example User"
     }
     
     /// Add an incoming request directly - test helper
