@@ -110,6 +110,11 @@ This file guides agentic coding assistants working in this repo.
 - Keep tests deterministic and avoid reliance on external state.
 - Use existing test helpers and fixtures where possible.
 
+#### Test Data Hygiene
+- Never use real people names, team member names, or any personal emails/handles in tests or test fixtures.
+- Prefer generic placeholders: `Example User`, `Example Person`, `Sample Member`, `example@example.com`.
+- Avoid hard-coding names that can be confused with real users (e.g. do not use the repo owner's name).
+
 ### Colors and Styling
 - Use `AppTheme` for colors; avoid hard-coded UIColor/Color values.
 - Follow design-system components (`AvatarView`, `GroupIcon`, `EmptyStateView`) rather than reinventing.
