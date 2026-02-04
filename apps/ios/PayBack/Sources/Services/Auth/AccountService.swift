@@ -51,6 +51,11 @@ protocol AccountService: Actor {
     /// Resolves which member IDs have linked accounts (checking both current and historical UUIDs)
     /// Returns mapping of member ID -> (account ID, email)
     func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)]
+
+    #if !PAYBACK_CI_NO_CONVEX
+    /// Performs a bulk import of friends, groups, and expenses
+    func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult
+    #endif
 }
 
 struct LinkedAccountInfo: Codable, Sendable, Equatable {
@@ -220,4 +225,14 @@ actor MockAccountService: AccountService {
     func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
         return [:]
     }
+
+    #if !PAYBACK_CI_NO_CONVEX
+    func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult {
+        return BulkImportResult(
+            success: true,
+            created: .init(friends: request.friends.count, groups: request.groups.count, expenses: request.expenses.count),
+            errors: []
+        )
+    }
+    #endif
 }

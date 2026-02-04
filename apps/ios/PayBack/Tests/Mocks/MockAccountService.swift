@@ -174,4 +174,15 @@ actor MockAccountServiceForAppStore: AccountService {
         if shouldFail { throw PayBackError.networkUnavailable }
         return [:]
     }
+
+    #if !PAYBACK_CI_NO_CONVEX
+    func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        return BulkImportResult(
+            success: true,
+            created: .init(friends: request.friends.count, groups: request.groups.count, expenses: request.expenses.count),
+            errors: []
+        )
+    }
+    #endif
 }

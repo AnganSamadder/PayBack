@@ -20,7 +20,7 @@ final class LinkedUserTests: XCTestCase {
         let splitMemberId = mainMemberId // The split is assigned to the MAIN member ID
         
         // Check "My Split" resolution
-        // The current user (Test User) should see this split as THEIRS
+        // The current user (Example User) should see this split as THEIRS
         let isMySplit = isMe(splitMemberId, currentUserId: testUserId, linkedMemberId: testUserLinkedId)
         
         XCTAssertTrue(isMySplit, "Linked user should identify the main member's split as their own")

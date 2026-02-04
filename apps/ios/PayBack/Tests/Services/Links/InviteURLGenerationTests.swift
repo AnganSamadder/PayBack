@@ -2,7 +2,7 @@
 //  InviteURLGenerationTests.swift
 //  PayBackTests
 //
-//  Created by Angan Samadder on 2026-01-08.
+//  Created on 2026-01-08.
 //
 
 import XCTest

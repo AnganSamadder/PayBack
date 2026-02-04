@@ -113,7 +113,7 @@ final class AccountServiceTests: XCTestCase {
     func test_lookupAccount_existingEmail_returnsAccount() async throws {
         // Given
         let email = "test@example.com"
-        let displayName = "Test User"
+        let displayName = "Example User"
         _ = try await sut.createAccount(email: email, displayName: displayName)
         
         // When

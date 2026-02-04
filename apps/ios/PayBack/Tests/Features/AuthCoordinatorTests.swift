@@ -95,7 +95,7 @@ final class AuthCoordinatorTests: XCTestCase {
     func testLogin_Success_WithExistingAccount() async {
         let testEmail = "test@example.com"
         let testPassword = "password123"
-        let existingAccount = UserAccount(id: "123", email: testEmail, displayName: "Test User")
+        let existingAccount = UserAccount(id: "123", email: testEmail, displayName: "Example User")
         
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
@@ -709,6 +709,16 @@ actor TestAccountService: AccountService {
     func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
         return [:]
     }
+
+    #if !PAYBACK_CI_NO_CONVEX
+    func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult {
+        return BulkImportResult(
+            success: true,
+            created: .init(friends: request.friends.count, groups: request.groups.count, expenses: request.expenses.count),
+            errors: []
+        )
+    }
+    #endif
 }
 
 final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {

@@ -82,7 +82,7 @@ final class UIViewsMinimalTests: XCTestCase {
         let error2 = AddFriendSheet.SearchState.error("Test error")
         XCTAssertEqual(error1, error2)
         
-        let account = UserAccount(id: "test-id", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-id", email: "test@example.com", displayName: "Example User")
         let found1 = AddFriendSheet.SearchState.found(account)
         let found2 = AddFriendSheet.SearchState.found(account)
         XCTAssertEqual(found1, found2)

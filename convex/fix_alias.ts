@@ -4,17 +4,19 @@ import { v } from "convex/values";
 export const repairAlias = mutation({
   args: {},
   handler: async (ctx) => {
-    const mainUserEmail = "rio.angan@gmail.com";
-    const deletedUserEmail = "deleted:rio.angan+test@gmail.com";
+    // NOTE: Set these env vars when running this one-off script.
+    // Defaults are placeholders to avoid committing personal emails.
+    const mainUserEmail = process.env.MAIN_USER_EMAIL ?? "user@example.com";
+    const deletedUserEmail = process.env.DELETED_USER_EMAIL ?? "deleted:user@example.com";
 
     const friend = await ctx.db
       .query("account_friends")
       .withIndex("by_account_email", (q) => q.eq("account_email", mainUserEmail))
-      .filter((q) => q.eq(q.field("name"), "Test User"))
+      .filter((q) => q.eq(q.field("name"), "Example User"))
       .first();
 
     if (!friend) {
-      return { success: false, message: "Test User friend record not found" };
+      return { success: false, message: "Example User friend record not found" };
     }
     const idA = friend.member_id;
 
@@ -59,9 +61,9 @@ export const repairAlias = mutation({
         for (const group of groups) {
             let changed = false;
             const newMembers = group.members.map(m => {
-                if (m.id === idA && m.name !== "Test User") {
+                if (m.id === idA && m.name !== "Example User") {
                     changed = true;
-                    return { ...m, name: "Test User" };
+                    return { ...m, name: "Example User" };
                 }
                 return m;
             });
@@ -75,9 +77,9 @@ export const repairAlias = mutation({
         for (const expense of expenses) {
             let changed = false;
             const newParticipants = expense.participants.map(p => {
-                if (p.member_id === idA && p.name !== "Test User") {
+                if (p.member_id === idA && p.name !== "Example User") {
                     changed = true;
-                    return { ...p, name: "Test User" };
+                    return { ...p, name: "Example User" };
                 }
                 return p;
             });
