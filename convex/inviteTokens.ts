@@ -215,6 +215,15 @@ export const claim = mutation({
       throw new Error("You cannot claim your own invite");
     }
 
+    const alreadyLinkedAccount = await ctx.db
+      .query("accounts")
+      .withIndex("by_member_id", (q) => q.eq("member_id", token.target_member_id))
+      .first();
+
+    if (alreadyLinkedAccount && alreadyLinkedAccount._id !== user._id) {
+      throw new Error("This member is already linked to another account");
+    }
+
     const now = Date.now();
 
     if (token.expires_at < now) {
@@ -527,6 +536,15 @@ export const _internalClaimForAccount = internalMutation({
 
     if (token.creator_email === user.email || token.creator_id === user.id) {
       throw new Error("You cannot claim your own invite");
+    }
+
+    const alreadyLinkedAccount = await ctx.db
+      .query("accounts")
+      .withIndex("by_member_id", (q) => q.eq("member_id", token.target_member_id))
+      .first();
+
+    if (alreadyLinkedAccount && alreadyLinkedAccount._id !== user._id) {
+      throw new Error("This member is already linked to another account");
     }
 
     const now = Date.now();

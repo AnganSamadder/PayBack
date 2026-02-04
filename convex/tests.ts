@@ -326,37 +326,31 @@ export const test_cross_link_rejected = internalMutation({
       expires_at: now + 86400000,
     });
 
-    // RED: Simulate what would happen if B was allowed to claim A's member_id
-    // We manually create a cross-link alias to test that validation prevents it
-    const badAliasId = await ctx.db.insert("member_aliases", {
-      canonical_member_id: `member-b-${now}`, // B's canonical
-      alias_member_id: contestedMemberId, // But this is A's canonical! Invalid!
-      account_email: `test-b-cross-${now}@example.com`,
-      created_at: now,
-    });
+    // RED: Claiming an invite that targets another user's canonical member_id should fail.
+    try {
+      await ctx.runMutation(internal.inviteTokens._internalClaimForAccount, {
+        userAccountId: accountBId,
+        tokenId: `test-token-cross-${now}`,
+      });
+      throw new Error("Cross-link claim should have been rejected");
+    } catch (error: any) {
+      if (error.message === "Cross-link claim should have been rejected") {
+        throw error;
+      }
+      assertTrue(
+        error.message.toLowerCase().includes("already linked"),
+        `Expected error message to contain "already linked", but got: ${error.message}`
+      );
+    }
 
-    // Check member_aliases table - this cross-link should NOT exist if validation works
-    const crossLinkAlias = await ctx.db
-      .query("member_aliases")
-      .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", contestedMemberId))
-      .first();
-
-    // RED: If validation is working, this cross-link should be rejected/cleaned
-    assertNull(
-      crossLinkAlias,
-      "Cross-link alias should not exist. A's member_id cannot become B's alias. " +
-        "Add validation: check if target_member_id is already another account's member_id."
-    );
-
-    // Cleanup (only if we get here)
-    await ctx.db.delete(badAliasId);
+    // Cleanup
     await ctx.db.delete(tokenId);
     await ctx.db.delete(accountBId);
     await ctx.db.delete(accountAId);
 
     return {
       success: true,
-      message: "Cross-link rejection verified.",
+      message: "Cross-link rejection verified via claim path.",
     };
   },
 });
