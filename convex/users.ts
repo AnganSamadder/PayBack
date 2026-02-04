@@ -1,10 +1,11 @@
 import { mutation, query, action } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { getAllEquivalentMemberIds } from "./aliases";
+import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { checkRateLimit } from "./rateLimit";
 
 const MAX_SAMPLE_IDS = 10;
+const MAX_EQUIVALENT_MEMBER_IDS = 50;
 
 const sampleIds = (ids: string[]) => ids.slice(0, MAX_SAMPLE_IDS);
 
@@ -134,12 +135,12 @@ export async function cleanupOrphanedDataForEmail(
           )
           .collect()
       : [];
-  const allFriendsForLinkedEmail = await ctx.db
+  const linkedByEmail = await ctx.db
     .query("account_friends")
+    .withIndex("by_linked_account_email", (q: any) =>
+      q.eq("linked_account_email", email)
+    )
     .collect();
-  const linkedByEmail = allFriendsForLinkedEmail.filter(
-    (friend: any) => friend.linked_account_email === email
-  );
   const linkedByIdMap = new Map<string, any>();
   for (const friend of linkedById) {
     linkedByIdMap.set(friend._id, friend);
@@ -168,8 +169,6 @@ export async function cleanupOrphanedDataForEmail(
   logSelfHeal(baseLog, "unlink_from_others", {
     unlinkedCount: unlinkedIds.length,
     sampleIds: sampleIds(unlinkedIds),
-    scanUsed: true,
-    scanReason: "linked_account_email has no index",
   });
 
   const incomingRequests = await ctx.db
@@ -185,10 +184,12 @@ export async function cleanupOrphanedDataForEmail(
     requestIds.push(req._id);
     incomingCount++;
   }
-  const allRequests = await ctx.db.query("link_requests").collect();
+  const outgoingRequests = await ctx.db
+    .query("link_requests")
+    .withIndex("by_requester_email", (q: any) => q.eq("requester_email", email))
+    .collect();
   let outgoingCount = 0;
-  for (const req of allRequests) {
-    if (req.requester_email !== email) continue;
+  for (const req of outgoingRequests) {
     if (deletedRequestIds.has(req._id)) continue;
     await ctx.db.delete(req._id);
     deletedRequestIds.add(req._id);
@@ -200,22 +201,20 @@ export async function cleanupOrphanedDataForEmail(
     incomingCount,
     outgoingCount,
     sampleIds: sampleIds(requestIds),
-    scanUsed: true,
-    scanReason: "requester_email has no index",
   });
 
-  const allInvites = await ctx.db.query("invite_tokens").collect();
+  const allInvites = await ctx.db
+    .query("invite_tokens")
+    .withIndex("by_creator_email", (q: any) => q.eq("creator_email", email))
+    .collect();
   const inviteIds: string[] = [];
   for (const invite of allInvites) {
-    if (invite.creator_email !== email) continue;
     await ctx.db.delete(invite._id);
     inviteIds.push(invite._id);
   }
   logSelfHeal(baseLog, "delete_invite_tokens", {
     deletedCount: inviteIds.length,
     sampleIds: sampleIds(inviteIds),
-    scanUsed: true,
-    scanReason: "creator_email has no index",
   });
 
   logSelfHeal(baseLog, "complete", {
@@ -337,7 +336,7 @@ export const viewer = query({
  * Updates the linked_member_id for the current user.
  * This links the user's account to a member from another user's friend list.
  */
-export const updateLinkedMemberId = mutation({
+  export const updateLinkedMemberId = mutation({
   args: { linked_member_id: v.string() },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -355,15 +354,16 @@ export const updateLinkedMemberId = mutation({
     }
 
     const existingEquivalentIds = user.equivalent_member_ids || [];
-    let updatedEquivalentIds = [...existingEquivalentIds];
-    
-    if (user.linked_member_id && !existingEquivalentIds.includes(user.linked_member_id)) {
-      updatedEquivalentIds.push(user.linked_member_id);
-    }
-    
-    if (!updatedEquivalentIds.includes(args.linked_member_id)) {
-      updatedEquivalentIds.push(args.linked_member_id);
-    }
+    const prioritizedIds = [
+      args.linked_member_id,
+      user.linked_member_id,
+      ...existingEquivalentIds,
+    ].filter((id): id is string => typeof id === "string" && id.length > 0);
+
+    const updatedEquivalentIds = Array.from(new Set(prioritizedIds)).slice(
+      0,
+      MAX_EQUIVALENT_MEMBER_IDS
+    );
 
     await ctx.db.patch(user._id, {
       linked_member_id: args.linked_member_id,
@@ -519,6 +519,25 @@ export const resolveLinkedAccountsForMemberIds = query({
           email: accountByLinkedId.email,
         });
         continue;
+      }
+
+      const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, memberId);
+      if (canonicalId !== memberId) {
+        const accountByCanonicalId = await ctx.db
+          .query("accounts")
+          .withIndex("by_linked_member_id", (q) =>
+            q.eq("linked_member_id", canonicalId)
+          )
+          .unique();
+
+        if (accountByCanonicalId) {
+          results.push({
+            member_id: memberId,
+            account_id: accountByCanonicalId.id,
+            email: accountByCanonicalId.email,
+          });
+          continue;
+        }
       }
 
       const allAccounts = await ctx.db.query("accounts").collect();
