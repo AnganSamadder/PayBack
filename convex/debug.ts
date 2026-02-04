@@ -6,8 +6,13 @@ async function checkAdmin(ctx: QueryCtx) {
     throw new Error("Unauthenticated");
   }
 
-  const adminEmails = process.env.ADMIN_EMAILS?.split(",") || [];
-  if (!identity.email || !adminEmails.includes(identity.email)) {
+  const adminEmails = (process.env.ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+  const identityEmail = identity.email?.trim().toLowerCase();
+
+  if (!identityEmail || !adminEmails.includes(identityEmail)) {
     throw new Error("Not authorized: Admin access required");
   }
 }

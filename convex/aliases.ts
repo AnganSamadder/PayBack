@@ -1,6 +1,5 @@
-import { query, internalQuery, mutation } from "./_generated/server";
+import { query, internalQuery, mutation, DatabaseReader } from "./_generated/server";
 import { v } from "convex/values";
-import { DatabaseReader, DatabaseWriter } from "./_generated/server";
 
 /**
  * Internal helper for transitive alias resolution.

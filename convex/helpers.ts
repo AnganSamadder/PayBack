@@ -1,5 +1,4 @@
 import { MutationCtx, QueryCtx } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
 
 export async function getCurrentUserOrThrow(ctx: QueryCtx | MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
