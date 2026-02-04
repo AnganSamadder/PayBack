@@ -298,12 +298,18 @@ export const claim = mutation({
         // Store original name only if it differs from the new name
         const shouldStoreOriginalName = friendRecord.name !== user.display_name;
         
+        const nicknameMatches =
+          friendRecord.nickname &&
+          friendRecord.nickname.trim().toLowerCase() ===
+            user.display_name.trim().toLowerCase();
+
         await ctx.db.patch(friendRecord._id, {
           has_linked_account: true,
           linked_account_id: user.id,
           linked_account_email: user.email,
           // Update name to the linked user's real display name
           name: user.display_name,
+          nickname: nicknameMatches ? undefined : friendRecord.nickname,
           // Store the original name they had for this friend (for "Originally X" display)
           original_name: shouldStoreOriginalName ? friendRecord.name : undefined,
           updated_at: now,
@@ -331,12 +337,18 @@ export const claim = mutation({
           .unique();
 
         if (claimantFriendRecord) {
+          const nicknameMatches =
+            claimantFriendRecord.nickname &&
+            claimantFriendRecord.nickname.trim().toLowerCase() ===
+              creatorAccount.display_name.trim().toLowerCase();
+
           // Update existing record
           await ctx.db.patch(claimantFriendRecord._id, {
             has_linked_account: true,
             linked_account_id: creatorAccount.id,
             linked_account_email: creatorAccount.email,
             name: creatorAccount.display_name,
+            nickname: nicknameMatches ? undefined : claimantFriendRecord.nickname,
             updated_at: now,
           });
         } else {
