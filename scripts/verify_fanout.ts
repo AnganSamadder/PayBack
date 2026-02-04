@@ -1,5 +1,3 @@
-import { execSync } from "child_process";
-
 console.log("Starting Fan-Out Verification...");
 
 try {

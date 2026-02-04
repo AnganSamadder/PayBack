@@ -124,7 +124,6 @@ function analyzeCSV(filePath) {
     });
     console.log("");
 
-    const friendIds = new Set(data.sections.FRIENDS.map(f => f[0]));
     const groupIds = new Set(data.sections.GROUPS.map(g => g[0]));
     const expenseIds = new Set(data.sections.EXPENSES.map(e => e[0]));
     
