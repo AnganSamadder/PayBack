@@ -233,43 +233,36 @@ export const test_self_claim_rejected = internalMutation({
     // and User A themselves tries to claim it)
     const tokenId = await ctx.db.insert("invite_tokens", {
       id: `test-token-self-${now}`,
-      creator_id: `other-account-${now}`,
-      creator_email: `other@example.com`,
+      creator_id: userAccountId,
+      creator_email: userEmail,
       target_member_id: userMemberId, // Same as the claimant's member_id!
       target_member_name: "Self User",
       created_at: now,
       expires_at: now + 86400000,
     });
 
-    // RED: Simulate what would happen if self-claim was allowed (this is the bug)
-    // We manually create a self-referential alias to test that validation prevents it
-    const badAliasId = await ctx.db.insert("member_aliases", {
-      canonical_member_id: userMemberId,
-      alias_member_id: userMemberId, // Self-link - should be impossible!
-      account_email: userEmail,
-      created_at: now,
-    });
+    // RED: Attempt to claim the token targeting our own member_id.
+    // This should throw an error.
+    try {
+      await ctx.runMutation(internal.inviteTokens._internalClaimForAccount, {
+        userAccountId: userAccountId,
+        tokenId: `test-token-self-${now}`,
+      });
+      throw new Error("Self-claim should have been rejected by _internalClaimForAccount");
+    } catch (error: any) {
+      // If it's the error we threw above, re-throw it to fail the test
+      if (error.message === "Self-claim should have been rejected by _internalClaimForAccount") {
+        throw error;
+      }
 
-    // Query the account - it should NOT have itself in alias_member_ids
-    const userAfter = await ctx.db.get(userAccountId);
-    assertNotNull(userAfter, "User should exist");
+      // Otherwise, assert that the error message is what we expect
+      assertTrue(
+        error.message.toLowerCase().includes("own invite"),
+        `Expected error message to contain "own invite", but got: ${error.message}`
+      );
+    }
 
-    // RED: The system should have validation that prevents self-aliases
-    // This assertion will FAIL until we add validation to prevent self-links
-    const selfAlias = await ctx.db
-      .query("member_aliases")
-      .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", userMemberId))
-      .first();
-
-    // This SHOULD be null if validation is working
-    assertNull(
-      selfAlias,
-      "Self-alias should never exist. The insert should have been rejected or auto-cleaned. " +
-        "Add validation to mergeMemberIds/claimInvite to prevent canonical == alias."
-    );
-
-    // Cleanup (only if we get here)
-    await ctx.db.delete(badAliasId);
+    // Cleanup
     await ctx.db.delete(tokenId);
     await ctx.db.delete(userAccountId);
 

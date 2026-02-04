@@ -211,6 +211,10 @@ export const claim = mutation({
       throw new Error("Token not found");
     }
 
+    if (token.creator_email === user.email || token.creator_id === user.id) {
+      throw new Error("You cannot claim your own invite");
+    }
+
     const now = Date.now();
 
     if (token.expires_at < now) {
@@ -520,6 +524,10 @@ export const _internalClaimForAccount = internalMutation({
       .unique();
 
     if (!token) throw new Error("Token not found");
+
+    if (token.creator_email === user.email || token.creator_id === user.id) {
+      throw new Error("You cannot claim your own invite");
+    }
 
     const now = Date.now();
 
