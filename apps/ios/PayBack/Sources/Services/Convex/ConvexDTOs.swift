@@ -312,7 +312,19 @@ struct ConvexExpensePreviewDTO: Decodable, Sendable {
 
 /// Internal DTO for link accept result
 struct ConvexLinkAcceptResultDTO: Decodable, Sendable {
-    let linked_member_id: String
     let linked_account_id: String
     let linked_account_email: String
+    private let _linked_member_id: String?
+    private let member_id: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case linked_account_id
+        case linked_account_email
+        case _linked_member_id = "linked_member_id"
+        case member_id
+    }
+    
+    var linked_member_id: String {
+        return member_id ?? _linked_member_id ?? ""
+    }
 }

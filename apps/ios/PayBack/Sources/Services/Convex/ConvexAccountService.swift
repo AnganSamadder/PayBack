@@ -20,6 +20,8 @@ actor ConvexAccountService: AccountService {
         let profile_avatar_color: String?
         let linked_member_id: String?
         let equivalent_member_ids: [String]?
+        let member_id: String?
+        let alias_member_ids: [String]?
     }
 
     func lookupAccount() async throws -> UserAccount? {
@@ -29,8 +31,8 @@ actor ConvexAccountService: AccountService {
                  id: dto.id,
                  email: dto.email,
                  displayName: dto.display_name,
-                 linkedMemberId: dto.linked_member_id.flatMap { UUID(uuidString: $0) },
-                 equivalentMemberIds: (dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
+                 linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
+                 equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
                  profileImageUrl: dto.profile_image_url,
                  profileColorHex: dto.profile_avatar_color
              )
@@ -54,7 +56,7 @@ actor ConvexAccountService: AccountService {
                  id: dto.id,
                  email: dto.email,
                  displayName: dto.display_name,
-                 linkedMemberId: dto.linked_member_id.flatMap { UUID(uuidString: $0) },
+                 linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
                  profileImageUrl: dto.profile_image_url,
                  profileColorHex: dto.profile_avatar_color
              )
@@ -271,8 +273,8 @@ actor ConvexAccountService: AccountService {
                             id: dto.id,
                             email: dto.email,
                             displayName: dto.display_name,
-                            linkedMemberId: dto.linked_member_id.flatMap { UUID(uuidString: $0) },
-                            equivalentMemberIds: (dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
+                            linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
+                            equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
                             profileImageUrl: dto.profile_image_url,
                             profileColorHex: dto.profile_avatar_color
                         )
