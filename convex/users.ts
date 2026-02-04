@@ -9,6 +9,29 @@ const MAX_EQUIVALENT_MEMBER_IDS = 50;
 
 const sampleIds = (ids: string[]) => ids.slice(0, MAX_SAMPLE_IDS);
 
+export interface CreateAccountInput {
+  id: string;
+  email: string;
+  display_name: string;
+  profile_avatar_color?: string;
+}
+
+export async function createAccountRecord(
+  ctx: { db: { insert: (table: "accounts", data: any) => Promise<any> } },
+  input: CreateAccountInput
+) {
+  const now = Date.now();
+  return ctx.db.insert("accounts", {
+    id: input.id,
+    email: input.email,
+    display_name: input.display_name,
+    profile_avatar_color: input.profile_avatar_color || getRandomAvatarColor(),
+    member_id: crypto.randomUUID(),
+    created_at: now,
+    updated_at: now,
+  });
+}
+
 const logSelfHeal = (
   base: { operationId: string; email: string; subject: string },
   step: string,
@@ -275,14 +298,10 @@ export const store = mutation({
       subject: identity.subject,
     });
 
-    // Create new user
-    const newUserId = await ctx.db.insert("accounts", {
-        id: identity.subject, // Using Clerk ID as our specific ID field if useful, or just reliance on _id
-        email: identity.email!,
-        display_name: identity.name || identity.email!.split("@")[0] || "User",
-        profile_avatar_color: getRandomAvatarColor(),
-        created_at: Date.now(),
-        updated_at: Date.now(),
+    const newUserId = await createAccountRecord(ctx, {
+      id: identity.subject,
+      email: identity.email!,
+      display_name: identity.name || identity.email!.split("@")[0] || "User",
     });
 
     return newUserId;
