@@ -46,7 +46,8 @@ export default defineSchema({
   })
     .index("by_account_email", ["account_email"])
     .index("by_account_email_and_member_id", ["account_email", "member_id"])
-    .index("by_linked_account_id", ["linked_account_id"]),
+    .index("by_linked_account_id", ["linked_account_id"])
+    .index("by_linked_account_email", ["linked_account_email"]),
 
   // Member aliases for account linking - maps alias member IDs to canonical member IDs
   // When a receiver claims an invite and already has a linked_member_id (canonical),
@@ -162,6 +163,7 @@ export default defineSchema({
   })
     .index("by_recipient_email", ["recipient_email"])
     .index("by_requester_id", ["requester_id"])
+    .index("by_requester_email", ["requester_email"])
     .index("by_client_id", ["id"]),
 
   invite_tokens: defineTable({
@@ -176,8 +178,16 @@ export default defineSchema({
     claimed_at: v.optional(v.number()),
   })
     .index("by_creator_id", ["creator_id"])
+    .index("by_creator_email", ["creator_email"])
     .index("by_claimed_by", ["claimed_by"])
     .index("by_client_id", ["id"]),
+
+  janitor_state: defineTable({
+    key: v.string(),
+    account_friends_cursor: v.optional(v.string()),
+    groups_cursor: v.optional(v.string()),
+    updated_at: v.number(),
+  }).index("by_key", ["key"]),
 
   rate_limits: defineTable({
     key: v.string(), // rate_limit:{userId}:{action}

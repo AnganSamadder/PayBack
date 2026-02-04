@@ -26,11 +26,32 @@ export const cleanupOrphans = internalMutation({
       })
     );
 
-    const allFriends = await ctx.db.query("account_friends").take(100);
-    const friendEmails = new Set(allFriends.map((f) => f.account_email));
+    const stateKey = "default";
+    const existingState = await ctx.db
+      .query("janitor_state")
+      .withIndex("by_key", (q) => q.eq("key", stateKey))
+      .unique();
 
-    const allGroups = await ctx.db.query("groups").take(50);
-    const groupEmails = new Set(allGroups.map((g) => g.owner_email));
+    const stateId =
+      existingState?._id ??
+      (await ctx.db.insert("janitor_state", {
+        key: stateKey,
+        account_friends_cursor: undefined,
+        groups_cursor: undefined,
+        updated_at: Date.now(),
+      }));
+
+    const friendsPage = await ctx.db.query("account_friends").paginate({
+      numItems: 100,
+      cursor: existingState?.account_friends_cursor ?? null,
+    });
+    const friendEmails = new Set(friendsPage.page.map((f) => f.account_email));
+
+    const groupsPage = await ctx.db.query("groups").paginate({
+      numItems: 50,
+      cursor: existingState?.groups_cursor ?? null,
+    });
+    const groupEmails = new Set(groupsPage.page.map((g) => g.owner_email));
 
     const emailsToCheck = new Set([...friendEmails, ...groupEmails]);
 
@@ -42,8 +63,18 @@ export const cleanupOrphans = internalMutation({
         friendEmailCount: friendEmails.size,
         groupEmailCount: groupEmails.size,
         totalUniqueEmails: emailsToCheck.size,
+        friendPageSize: friendsPage.page.length,
+        groupsPageSize: groupsPage.page.length,
+        friendCursorWasNull: (existingState?.account_friends_cursor ?? null) === null,
+        groupsCursorWasNull: (existingState?.groups_cursor ?? null) === null,
       })
     );
+
+    await ctx.db.patch(stateId, {
+      account_friends_cursor: friendsPage.isDone ? undefined : friendsPage.continueCursor,
+      groups_cursor: groupsPage.isDone ? undefined : groupsPage.continueCursor,
+      updated_at: Date.now(),
+    });
 
     const orphanedEmails: string[] = [];
     for (const email of emailsToCheck) {
