@@ -8,12 +8,26 @@ export default defineSchema({
     display_name: v.string(),
     profile_image_url: v.optional(v.string()), // URL to uploaded image
     profile_avatar_color: v.optional(v.string()), // Hex code for consistent generated avatar
+
+    // === CANONICAL FIELDS (new - preferred for all new code) ===
+    // member_id: The single source-of-truth member ID for this account.
+    // During migration, this mirrors linked_member_id but will become authoritative.
+    member_id: v.optional(v.string()),
+    // alias_member_ids: All member IDs that alias to this account's canonical member_id.
+    // Maintained in sync with member_aliases table for denormalized lookup.
+    alias_member_ids: v.optional(v.array(v.string())),
+
+    // === LEGACY FIELDS (deprecated - kept for backwards compatibility) ===
+    // @deprecated Use member_id instead. Will be removed after migration completes.
     linked_member_id: v.optional(v.string()), // UUID string - current active member ID
+    // @deprecated Use alias_member_ids instead. Will be removed after migration completes.
     equivalent_member_ids: v.optional(v.array(v.string())), // Historical UUIDs from linking/unlinking
+
     created_at: v.number(),
     updated_at: v.optional(v.number()),
   })
     .index("by_email", ["email"])
+    .index("by_member_id", ["member_id"])
     .index("by_linked_member_id", ["linked_member_id"])
     .index("by_auth_id", ["id"]),
 
