@@ -1,6 +1,7 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUserOrThrow, reconcileUserExpenses } from "./helpers";
+import { resolveCanonicalMemberIdInternal } from "./aliases";
 
 const friendValidator = v.object({
   member_id: v.string(),
@@ -72,6 +73,87 @@ export const bulkImport = mutation({
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+
+    for (const friend of args.friends) {
+      const originalId = friend.member_id;
+      friend.member_id = await resolveCanonicalMemberIdInternal(ctx.db, originalId);
+      if (friend.member_id !== originalId) {
+        console.log(`Resolved friend member_id: ${originalId} -> ${friend.member_id}`);
+      }
+    }
+
+    for (const group of args.groups) {
+      for (const member of group.members) {
+        const originalId = member.id;
+        member.id = await resolveCanonicalMemberIdInternal(ctx.db, originalId);
+        if (member.id !== originalId) {
+          console.log(`Resolved group member id: ${originalId} -> ${member.id}`);
+        }
+      }
+    }
+
+    for (const expense of args.expenses) {
+      const originalPaidBy = expense.paid_by_member_id;
+      expense.paid_by_member_id = await resolveCanonicalMemberIdInternal(
+        ctx.db,
+        originalPaidBy
+      );
+      if (expense.paid_by_member_id !== originalPaidBy) {
+        console.log(
+          `Resolved expense paid_by_member_id: ${originalPaidBy} -> ${expense.paid_by_member_id}`
+        );
+      }
+
+      for (let i = 0; i < expense.involved_member_ids.length; i++) {
+        const originalId = expense.involved_member_ids[i];
+        expense.involved_member_ids[i] = await resolveCanonicalMemberIdInternal(
+          ctx.db,
+          originalId
+        );
+        if (expense.involved_member_ids[i] !== originalId) {
+          console.log(
+            `Resolved expense involved_member_id: ${originalId} -> ${expense.involved_member_ids[i]}`
+          );
+        }
+      }
+
+      for (const split of expense.splits) {
+        const originalId = split.member_id;
+        split.member_id = await resolveCanonicalMemberIdInternal(ctx.db, originalId);
+        if (split.member_id !== originalId) {
+          console.log(
+            `Resolved expense split member_id: ${originalId} -> ${split.member_id}`
+          );
+        }
+      }
+
+      for (let i = 0; i < expense.participant_member_ids.length; i++) {
+        const originalId = expense.participant_member_ids[i];
+        expense.participant_member_ids[i] = await resolveCanonicalMemberIdInternal(
+          ctx.db,
+          originalId
+        );
+        if (expense.participant_member_ids[i] !== originalId) {
+          console.log(
+            `Resolved expense participant_member_id: ${originalId} -> ${expense.participant_member_ids[i]}`
+          );
+        }
+      }
+
+      for (const participant of expense.participants) {
+        const originalId = participant.member_id;
+        participant.member_id = await resolveCanonicalMemberIdInternal(
+          ctx.db,
+          originalId
+        );
+        if (participant.member_id !== originalId) {
+          console.log(
+            `Resolved expense participant member_id: ${originalId} -> ${participant.member_id}`
+          );
+        }
+      }
+    }
+
     const errors: string[] = [];
     const created = { friends: 0, groups: 0, expenses: 0 };
 
