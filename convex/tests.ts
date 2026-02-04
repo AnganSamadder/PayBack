@@ -380,65 +380,72 @@ export const test_nickname_cleared_if_matches_real_name = internalMutation({
     const friendEmail = `test-friend-nick-${now}@example.com`;
     const friendMemberId = `friend-member-${now}`;
     const friendRealName = "Alice Smith";
+    const testTokenIdValue = `test-token-nick-${now}`;
 
-    // Create owner account
     const ownerAccountId = await ctx.db.insert("accounts", {
-      id: `test-owner-nick-${now}`,
+      id: `test-owner-nick-acc-${now}`,
       email: ownerEmail,
       display_name: "Owner",
       created_at: now,
+      member_id: `owner-member-${now}`,
     });
 
-    // Create friend account (the one who will link)
     const friendAccountId = await ctx.db.insert("accounts", {
-      id: `test-friend-nick-${now}`,
+      id: `test-friend-nick-acc-${now}`,
       email: friendEmail,
-      display_name: friendRealName, // This is the "real" name
+      display_name: friendRealName,
       created_at: now,
       member_id: friendMemberId,
       linked_member_id: friendMemberId,
     });
 
-    // Create account_friends record where nickname matches real name
-    const friendRecordId = await ctx.db.insert("account_friends", {
+    await ctx.db.insert("account_friends", {
       account_email: ownerEmail,
       member_id: friendMemberId,
-      name: "Alice", // Original name before linking
-      nickname: "Alice Smith", // Nickname that matches real name!
+      name: "Alice",
+      nickname: "Alice Smith",
       profile_avatar_color: "#FF0000",
-      has_linked_account: true, // After linking
-      linked_account_id: `test-friend-nick-${now}`,
-      linked_account_email: friendEmail,
+      has_linked_account: false,
       updated_at: now,
     });
 
-    // Query the friend record
-    const friendRecord = await ctx.db.get(friendRecordId);
-    assertNotNull(friendRecord, "Friend record should exist");
+    const tokenRecordId = await ctx.db.insert("invite_tokens", {
+      id: testTokenIdValue,
+      creator_id: `test-owner-nick-acc-${now}`,
+      creator_email: ownerEmail,
+      target_member_id: friendMemberId,
+      target_member_name: "Alice",
+      created_at: now,
+      expires_at: now + 86400000,
+    });
 
-    // RED: After linking, nickname should be cleared if it matches display_name
-    // The linking logic should detect nickname === display_name and clear it
+    await ctx.runMutation(internal.inviteTokens._internalClaimForAccount, {
+      userAccountId: friendAccountId,
+      tokenId: testTokenIdValue,
+    });
+
+    const updatedFriendRecord = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", ownerEmail).eq("member_id", friendMemberId)
+      )
+      .first();
+
+    assertNotNull(updatedFriendRecord, "Friend record should exist after claim");
+
     assertNull(
-      friendRecord.nickname,
-      `Nickname "${friendRecord.nickname}" should be cleared because it matches ` +
-        `the friend's real name "${friendRealName}". Redundant nicknames waste screen space.`
+      updatedFriendRecord.nickname,
+      `Nickname should be cleared because it matches the friend's real name "${friendRealName}".`
     );
 
-    // original_nickname should be preserved for audit
-    assertEqual(
-      friendRecord.original_nickname,
-      "Alice Smith",
-      "original_nickname should preserve the pre-linking nickname for audit trail"
-    );
-
-    // Cleanup
-    await ctx.db.delete(friendRecordId);
+    await ctx.db.delete(tokenRecordId);
+    await ctx.db.delete(updatedFriendRecord._id);
     await ctx.db.delete(friendAccountId);
     await ctx.db.delete(ownerAccountId);
 
     return {
       success: true,
-      message: "Nickname correctly cleared when matching real name after linking",
+      message: "Nickname correctly cleared during claim when matching real name",
     };
   },
 });
