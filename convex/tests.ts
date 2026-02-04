@@ -14,6 +14,7 @@
 
 import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 
 // ============================================================================
 // HELPER: Assertion function for test failures
@@ -146,10 +147,10 @@ export const test_claim_creates_alias_not_overwrites = internalMutation({
       expires_at: now + 86400000,
     });
 
-    // Simulate claiming the invite (should create alias)
-    // RED: This is where the production code needs to create an alias
-    // For now, we manually create what SHOULD happen to verify assertions
-    // In reality, the claimInvite mutation should do this automatically
+    await ctx.runMutation(internal.inviteTokens._internalClaimForAccount, {
+      userAccountId: userBAccountId,
+      tokenId: `test-token-${now}`,
+    });
 
     // Query the account to verify member_id hasn't changed
     const userBAfterClaim = await ctx.db.get(userBAccountId);

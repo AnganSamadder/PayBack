@@ -1,6 +1,8 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
+import { resolveCanonicalMemberIdInternal } from "./aliases";
+import { Id } from "./_generated/dataModel";
 
 // Helper to get current authenticated user
 async function getCurrentUser(ctx: any) {
@@ -225,9 +227,42 @@ export const claim = mutation({
       claimed_at: now,
     });
 
-    // Update the current user's linked_member_id
+    // Alias target_member_id → user's canonical member_id (preserves user's member_id)
+    const userCanonicalMemberId = user.member_id;
+    if (!userCanonicalMemberId) {
+      throw new Error("User account does not have a member_id assigned");
+    }
+
+    const resolvedTarget = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      token.target_member_id
+    );
+
+    if (resolvedTarget !== userCanonicalMemberId) {
+      const existingAlias = await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id", (q) =>
+          q.eq("alias_member_id", token.target_member_id)
+        )
+        .first();
+
+      if (!existingAlias) {
+        await ctx.db.insert("member_aliases", {
+          canonical_member_id: userCanonicalMemberId,
+          alias_member_id: token.target_member_id,
+          account_email: user.email,
+          created_at: now,
+        });
+      }
+    }
+
+    const currentAliases = user.alias_member_ids || [];
+    const newAliasSet = new Set(currentAliases);
+    newAliasSet.add(token.target_member_id);
+    const updatedAliases = Array.from(newAliasSet);
+
     await ctx.db.patch(user._id, {
-      linked_member_id: token.target_member_id,
+      alias_member_ids: updatedAliases,
       updated_at: now,
     });
 
@@ -467,5 +502,73 @@ export const revoke = mutation({
 
     // Delete the token
     await ctx.db.delete(token._id);
+  },
+});
+
+export const _internalClaimForAccount = internalMutation({
+  args: {
+    userAccountId: v.id("accounts"),
+    tokenId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userAccountId);
+    if (!user) throw new Error("User not found");
+
+    const token = await ctx.db
+      .query("invite_tokens")
+      .withIndex("by_client_id", (q) => q.eq("id", args.tokenId))
+      .unique();
+
+    if (!token) throw new Error("Token not found");
+
+    const now = Date.now();
+
+    await ctx.db.patch(token._id, {
+      claimed_by: user.id,
+      claimed_at: now,
+    });
+
+    const userCanonicalMemberId = user.member_id;
+    if (!userCanonicalMemberId) {
+      throw new Error("User account does not have a member_id assigned");
+    }
+
+    const resolvedTarget = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      token.target_member_id
+    );
+
+    if (resolvedTarget !== userCanonicalMemberId) {
+      const existingAlias = await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id", (q) =>
+          q.eq("alias_member_id", token.target_member_id)
+        )
+        .first();
+
+      if (!existingAlias) {
+        await ctx.db.insert("member_aliases", {
+          canonical_member_id: userCanonicalMemberId,
+          alias_member_id: token.target_member_id,
+          account_email: user.email,
+          created_at: now,
+        });
+      }
+    }
+
+    const currentAliases = user.alias_member_ids || [];
+    const newAliasSet = new Set(currentAliases);
+    newAliasSet.add(token.target_member_id);
+    const updatedAliases = Array.from(newAliasSet);
+
+    await ctx.db.patch(user._id, {
+      alias_member_ids: updatedAliases,
+      updated_at: now,
+    });
+
+    return {
+      canonical_member_id: userCanonicalMemberId,
+      alias_member_ids: updatedAliases,
+    };
   },
 });
