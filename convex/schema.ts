@@ -9,26 +9,18 @@ export default defineSchema({
     profile_image_url: v.optional(v.string()), // URL to uploaded image
     profile_avatar_color: v.optional(v.string()), // Hex code for consistent generated avatar
 
-    // === CANONICAL FIELDS (new - preferred for all new code) ===
+    // === CANONICAL FIELDS ===
     // member_id: The single source-of-truth member ID for this account.
-    // During migration, this mirrors linked_member_id but will become authoritative.
     member_id: v.optional(v.string()),
     // alias_member_ids: All member IDs that alias to this account's canonical member_id.
     // Maintained in sync with member_aliases table for denormalized lookup.
     alias_member_ids: v.optional(v.array(v.string())),
-
-    // === LEGACY FIELDS (deprecated - kept for backwards compatibility) ===
-    // @deprecated Use member_id instead. Will be removed after migration completes.
-    linked_member_id: v.optional(v.string()), // UUID string - current active member ID
-    // @deprecated Use alias_member_ids instead. Will be removed after migration completes.
-    equivalent_member_ids: v.optional(v.array(v.string())), // Historical UUIDs from linking/unlinking
 
     created_at: v.number(),
     updated_at: v.optional(v.number()),
   })
     .index("by_email", ["email"])
     .index("by_member_id", ["member_id"])
-    .index("by_linked_member_id", ["linked_member_id"])
     .index("by_auth_id", ["id"]),
 
   friend_requests: defineTable({
@@ -64,11 +56,11 @@ export default defineSchema({
     .index("by_linked_account_email", ["linked_account_email"]),
 
   // Member aliases for account linking - maps alias member IDs to canonical member IDs
-  // When a receiver claims an invite and already has a linked_member_id (canonical),
+  // When a receiver claims an invite and already has a canonical member_id,
   // the sender's target_member_id becomes an alias pointing to the receiver's canonical ID.
   // All alias lookups are transitive: if A→B and B→C, then A resolves to C.
   member_aliases: defineTable({
-    canonical_member_id: v.string(), // The "real" member ID (receiver's existing linked_member_id)
+    canonical_member_id: v.string(), // The "real" member ID (receiver's existing canonical member_id)
     alias_member_id: v.string(), // The member ID that aliases to canonical (sender's target_member_id)
     account_email: v.string(), // The account that created this alias relationship
     created_at: v.number(),

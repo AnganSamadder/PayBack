@@ -39,7 +39,7 @@ export const repairAlias = mutation({
 
     if (!idB) {
         const mainUser = await ctx.db.query("accounts").withIndex("by_email", q => q.eq("email", mainUserEmail)).unique();
-        const mainUserId = mainUser?.linked_member_id;
+        const mainUserId = mainUser?.member_id;
         
         for (const expense of ghostExpenses) {
             const externalParticipant = expense.participants.find(p => p.member_id !== mainUserId);

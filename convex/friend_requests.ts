@@ -1,6 +1,7 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
+import { resolveCanonicalMemberIdInternal } from "./aliases";
 
 /**
  * Sends a friend request to a user by email.
@@ -45,34 +46,36 @@ export const send = mutation({
     });
 
     // Update Sender's friend list (Optimistic: "Request Sent")
-    // We assume linked_member_id exists for a real account
-    if (recipient.linked_member_id) {
-        const existingFriend = await ctx.db
-            .query("account_friends")
-            .withIndex("by_account_email_and_member_id", (q) => 
-                q.eq("account_email", sender.email).eq("member_id", recipient.linked_member_id!)
-            )
-            .unique();
+    const recipientCanonicalId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      recipient.member_id ?? recipient.id
+    );
 
-        if (existingFriend) {
-            await ctx.db.patch(existingFriend._id, {
-                status: "request_sent",
-                updated_at: Date.now()
-            });
-        } else {
-            await ctx.db.insert("account_friends", {
-                account_email: sender.email,
-                member_id: recipient.linked_member_id!,
-                name: recipient.display_name,
-                status: "request_sent",
-                has_linked_account: true,
-                linked_account_id: recipient._id,
-                linked_account_email: recipient.email,
-                profile_image_url: recipient.profile_image_url,
-                profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
-                updated_at: Date.now(),
-            });
-        }
+    const existingFriend = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", sender.email).eq("member_id", recipientCanonicalId)
+      )
+      .unique();
+
+    if (existingFriend) {
+      await ctx.db.patch(existingFriend._id, {
+        status: "request_sent",
+        updated_at: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("account_friends", {
+        account_email: sender.email,
+        member_id: recipientCanonicalId,
+        name: recipient.display_name,
+        status: "request_sent",
+        has_linked_account: true,
+        linked_account_id: recipient._id,
+        linked_account_email: recipient.email,
+        profile_image_url: recipient.profile_image_url,
+        profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
+        updated_at: Date.now(),
+      });
     }
     
     return { success: true };
@@ -109,69 +112,75 @@ export const accept = mutation({
     });
 
     // 2. Add Sender to Recipient's Friends
-    if (sender.linked_member_id) {
-         const existingFriend = await ctx.db
-            .query("account_friends")
-            .withIndex("by_account_email_and_member_id", (q) => 
-                q.eq("account_email", recipient.email).eq("member_id", sender.linked_member_id!)
-            )
-            .unique();
+    const senderCanonicalId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      sender.member_id ?? sender.id
+    );
 
-         if (existingFriend) {
-             await ctx.db.patch(existingFriend._id, {
-                 status: "friend",
-                 has_linked_account: true,
-                 linked_account_id: sender._id,
-                 linked_account_email: sender.email,
-                 updated_at: Date.now()
-             });
-         } else {
-             await ctx.db.insert("account_friends", {
-                 account_email: recipient.email,
-                 member_id: sender.linked_member_id!,
-                 name: sender.display_name,
-                 status: "friend",
-                 has_linked_account: true,
-                 linked_account_id: sender._id,
-                 linked_account_email: sender.email,
-                 profile_image_url: sender.profile_image_url,
-                 profile_avatar_color: sender.profile_avatar_color ?? getRandomAvatarColor(),
-                 updated_at: Date.now(),
-             });
-         }
+    const existingFriendForRecipient = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", recipient.email).eq("member_id", senderCanonicalId)
+      )
+      .unique();
+
+    if (existingFriendForRecipient) {
+      await ctx.db.patch(existingFriendForRecipient._id, {
+        status: "friend",
+        has_linked_account: true,
+        linked_account_id: sender._id,
+        linked_account_email: sender.email,
+        updated_at: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("account_friends", {
+        account_email: recipient.email,
+        member_id: senderCanonicalId,
+        name: sender.display_name,
+        status: "friend",
+        has_linked_account: true,
+        linked_account_id: sender._id,
+        linked_account_email: sender.email,
+        profile_image_url: sender.profile_image_url,
+        profile_avatar_color: sender.profile_avatar_color ?? getRandomAvatarColor(),
+        updated_at: Date.now(),
+      });
     }
 
     // 3. Add Recipient to Sender's Friends (Mutual)
-    if (recipient.linked_member_id) {
-         const existingFriend = await ctx.db
-            .query("account_friends")
-            .withIndex("by_account_email_and_member_id", (q) => 
-                q.eq("account_email", sender.email).eq("member_id", recipient.linked_member_id!)
-            )
-            .unique();
+    const recipientCanonicalId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      recipient.member_id ?? recipient.id
+    );
 
-         if (existingFriend) {
-             await ctx.db.patch(existingFriend._id, {
-                 status: "friend",
-                 has_linked_account: true,
-                 linked_account_id: recipient._id,
-                 linked_account_email: recipient.email,
-                 updated_at: Date.now()
-             });
-         } else {
-             await ctx.db.insert("account_friends", {
-                 account_email: sender.email,
-                 member_id: recipient.linked_member_id!,
-                 name: recipient.display_name,
-                 status: "friend",
-                 has_linked_account: true,
-                 linked_account_id: recipient._id,
-                 linked_account_email: recipient.email,
-                 profile_image_url: recipient.profile_image_url,
-                 profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
-                 updated_at: Date.now(),
-             });
-         }
+    const existingFriendForSender = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", sender.email).eq("member_id", recipientCanonicalId)
+      )
+      .unique();
+
+    if (existingFriendForSender) {
+      await ctx.db.patch(existingFriendForSender._id, {
+        status: "friend",
+        has_linked_account: true,
+        linked_account_id: recipient._id,
+        linked_account_email: recipient.email,
+        updated_at: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("account_friends", {
+        account_email: sender.email,
+        member_id: recipientCanonicalId,
+        name: recipient.display_name,
+        status: "friend",
+        has_linked_account: true,
+        linked_account_id: recipient._id,
+        linked_account_email: recipient.email,
+        profile_image_url: recipient.profile_image_url,
+        profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
+        updated_at: Date.now(),
+      });
     }
 
     return { success: true };

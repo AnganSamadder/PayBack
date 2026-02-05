@@ -89,7 +89,7 @@ export const getAliasesForMember = query({
  * Internal helper to get all member IDs that resolve to the same canonical ID.
  * Returns the canonical ID plus all aliases pointing to it.
  * 
- * Useful for membership checks: user.linked_member_id might be canonical,
+ * Useful for membership checks: user.member_id might be canonical,
  * but group member might have an alias ID.
  */
 export async function getAllEquivalentMemberIds(

@@ -135,9 +135,8 @@ export const accept = mutation({
       status: "accepted",
     });
 
-    // Update the accepting user's linked_member_id
     await ctx.db.patch(user._id, {
-      linked_member_id: request.target_member_id,
+      member_id: request.target_member_id,
       updated_at: now,
     });
 
@@ -159,7 +158,7 @@ export const accept = mutation({
     }
 
     return {
-      linked_member_id: request.target_member_id,
+      canonical_member_id: request.target_member_id,
       linked_account_id: user.id,
       linked_account_email: user.email,
     };

@@ -1,6 +1,6 @@
 import { mutation, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
-import { getAllEquivalentMemberIds } from "./aliases";
+import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -57,7 +57,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     email: account.email,
     subject: account.id,
     accountId: account._id,
-    linkedMemberId: account.linked_member_id,
+    memberId: account.member_id,
   };
 
   logHardDelete(baseLog, "start", { message: "Starting hard delete" });
@@ -184,8 +184,8 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     const isZombie =
       z.linked_account_email === account.email ||
       z.linked_account_id === account.id ||
-      (account.linked_member_id &&
-        z.linked_account_id === account.linked_member_id);
+      (account.member_id &&
+        z.linked_account_id === account.member_id);
 
     if (isZombie && z.has_linked_account && !unlinkedSet.has(z._id)) {
       await ctx.db.patch(z._id, {
@@ -250,11 +250,11 @@ async function performHardDelete(ctx: any, account: any, source: string) {
 
   let aliasesDeleted = 0;
   const aliasIds: string[] = [];
-  if (account.linked_member_id) {
+  if (account.member_id) {
     const aliasesAsCanonical = await ctx.db
       .query("member_aliases")
       .withIndex("by_canonical_member_id", (q: any) =>
-        q.eq("canonical_member_id", account.linked_member_id!)
+        q.eq("canonical_member_id", account.member_id!)
       )
       .collect();
 
@@ -267,7 +267,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     const aliasesAsAlias = await ctx.db
       .query("member_aliases")
       .withIndex("by_alias_member_id", (q: any) =>
-        q.eq("alias_member_id", account.linked_member_id!)
+        q.eq("alias_member_id", account.member_id!)
       )
       .collect();
 
@@ -394,6 +394,24 @@ export const deleteSubexpensesTable = mutation({
     }
     
     return { deleted, message: `Deleted ${deleted} rows from orphaned subexpenses table` };
+  },
+});
+
+export const removeLegacyFields = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const accounts = await ctx.db.query("accounts").collect();
+    let patched = 0;
+    for (const acc of accounts) {
+      if ((acc as any).linked_member_id !== undefined || (acc as any).equivalent_member_ids !== undefined) {
+        await ctx.db.patch(acc._id, {
+          linked_member_id: undefined,
+          equivalent_member_ids: undefined,
+        });
+        patched++;
+      }
+    }
+    return { patched, total: accounts.length };
   },
 });
 
@@ -645,10 +663,11 @@ export const selfDeleteAccount = mutation({
 
     let friendshipsUnlinked = 0;
 
-    if (user.linked_member_id) {
+    if (user.member_id) {
+      const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id);
       const equivalentIds = await getAllEquivalentMemberIds(
         ctx.db,
-        user.linked_member_id
+        canonicalId
       );
 
       const allFriends = await ctx.db.query("account_friends").collect();

@@ -1,7 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { getAllEquivalentMemberIds } from "./aliases";
+import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { checkRateLimit } from "./rateLimit";
 
 // Helper to get current user or throw
@@ -92,15 +92,19 @@ export const list = query({
         .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
         .collect();
         
-    // Check by membership (if user has a linked member ID)
+    // Check by membership (using canonical member_id + aliases)
     let groupsByMembership: any[] = [];
-    if (user.linked_member_id) {
-        const equivalentIds = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
-        const allGroups = await ctx.db.query("groups").collect();
-        groupsByMembership = allGroups.filter(g => 
-            g.members.some(m => equivalentIds.includes(m.id))
-        );
-    }
+    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      user.member_id ?? user.id
+    );
+    const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+    const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
+
+    const allGroups = await ctx.db.query("groups").collect();
+    groupsByMembership = allGroups.filter((g) =>
+      g.members.some((m) => membershipIds.has(m.id))
+    );
     
     // Merge results
     const groupMap = new Map();
@@ -152,13 +156,18 @@ export const get = query({
         
         // Auth check
         if (group.owner_id !== user._id && group.owner_email !== user.email) {
-            if (user.linked_member_id) {
-                const equivalentIds = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
-                if (group.members.some(m => equivalentIds.includes(m.id))) {
-                    return group;
-                }
+            const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+              ctx.db,
+              user.member_id ?? user.id
+            );
+            const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+            const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
+
+            if (!group.members.some((m) => membershipIds.has(m.id))) {
+              return null;
             }
-            return null;
+
+            return group;
         }
         
         return group;
@@ -258,13 +267,14 @@ export const leaveGroup = mutation({
 
     if (!group) throw new Error("Group not found");
 
-    let equivalentIds = [user.id];
-    if (user.linked_member_id) {
-        const aliases = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
-        equivalentIds = [...equivalentIds, ...aliases];
-    }
-    
-    const newMembers = group.members.filter(m => !equivalentIds.includes(m.id));
+    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      user.member_id ?? user.id
+    );
+    const aliases = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+    const membershipIds = new Set([canonicalMemberId, ...aliases]);
+
+    const newMembers = group.members.filter((m) => !membershipIds.has(m.id));
     
     if (newMembers.length === 0) {
         await ctx.db.delete(group._id);

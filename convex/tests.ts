@@ -53,12 +53,8 @@ function assertTrue(condition: boolean, message: string): void {
  * a unique member_id that is populated in accounts.member_id.
  *
  * EXPECTED BEHAVIOR:
- * - New accounts should have member_id populated (not just linked_member_id)
+ * - New accounts should have member_id populated
  * - member_id should be a valid UUID string
- *
- * CURRENT STATE (RED):
- * - The store mutation likely only sets linked_member_id
- * - The new canonical member_id field may not be set
  */
 export const test_member_id_assigned_at_creation = internalMutation({
   args: {},
@@ -71,6 +67,7 @@ export const test_member_id_assigned_at_creation = internalMutation({
       id: `test-account-${Date.now()}`,
       email: testEmail,
       display_name: testDisplayName,
+      member_id: `member-${Date.now()}`,
       created_at: Date.now(),
     });
 
@@ -83,7 +80,7 @@ export const test_member_id_assigned_at_creation = internalMutation({
     assertNotNull(
       account.member_id,
       "Account should have member_id assigned at creation. " +
-        "This is the canonical field that replaces linked_member_id."
+        "This is the canonical field."
     );
 
     // Verify member_id looks like a UUID
@@ -114,9 +111,6 @@ export const test_member_id_assigned_at_creation = internalMutation({
  * - B.member_id remains unchanged
  * - B.alias_member_ids includes the invite's target_member_id
  * - member_aliases table has record: target_member_id -> B.member_id
- *
- * CURRENT STATE (RED):
- * - The alias logic may overwrite B's linked_member_id instead of aliasing
  */
 export const test_claim_creates_alias_not_overwrites = internalMutation({
   args: {},
@@ -133,7 +127,6 @@ export const test_claim_creates_alias_not_overwrites = internalMutation({
       display_name: "User B",
       created_at: now,
       member_id: userBCanonicalMemberId, // B's canonical member_id
-      linked_member_id: userBCanonicalMemberId, // Legacy field sync
     });
 
     // Create an invite token from User A targeting a different member_id
@@ -225,7 +218,6 @@ export const test_self_claim_rejected = internalMutation({
       display_name: "Self User",
       created_at: now,
       member_id: userMemberId,
-      linked_member_id: userMemberId,
     });
 
     // Create an invite token that targets the same user's member_id
@@ -302,7 +294,6 @@ export const test_cross_link_rejected = internalMutation({
       display_name: "Account A",
       created_at: now,
       member_id: contestedMemberId, // A owns this member_id
-      linked_member_id: contestedMemberId,
     });
 
     // Create Account B who will try to claim the same member_id
@@ -312,7 +303,6 @@ export const test_cross_link_rejected = internalMutation({
       display_name: "Account B",
       created_at: now,
       member_id: `member-b-${now}`, // B has their own member_id
-      linked_member_id: `member-b-${now}`,
     });
 
     // Create an invite targeting the contested member_id
@@ -396,7 +386,6 @@ export const test_nickname_cleared_if_matches_real_name = internalMutation({
       display_name: friendRealName,
       created_at: now,
       member_id: friendMemberId,
-      linked_member_id: friendMemberId,
     });
 
     await ctx.db.insert("account_friends", {

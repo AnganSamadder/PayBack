@@ -318,9 +318,8 @@ async function claimForUser(ctx: any, user: any, token: any) {
   // 2. Create/update friend record for the CLAIMANT to see the CREATOR
   // This ensures the claimant has the creator in their friends list
   if (creatorAccount) {
-    // Use creator's linked_member_id if available, otherwise they might not have linked yet
-    // In that case, we can still create a friend record using the creator's account info
-    const creatorMemberId = creatorAccount.linked_member_id;
+    // Use creator's canonical member_id; if missing, skip until they link
+    const creatorMemberId = creatorAccount.member_id;
 
     if (creatorMemberId) {
       // Check if claimant already has a friend record for the creator
@@ -373,8 +372,7 @@ async function claimForUser(ctx: any, user: any, token: any) {
         });
       }
     }
-    // Note: If creator doesn't have a linked_member_id, they'll appear 
-    // in the claimant's friends list once they sync through shared groups
+    // If the creator lacks a member_id, they'll appear after their account links and syncs via shared groups
   }
 
   // 3. Transitive linking: Find all groups containing the target member
@@ -394,10 +392,10 @@ async function claimForUser(ctx: any, user: any, token: any) {
     // Find linked accounts for all group members
     for (const member of group.members) {
       if (member.id !== token.target_member_id) {
-        // Find account that has this member as their linked_member_id
+        // Find account that has this member as their canonical member_id
         const linkedAccount = await ctx.db
           .query("accounts")
-          .filter((q: any) => q.eq(q.field("linked_member_id"), member.id))
+          .withIndex("by_member_id", (q: any) => q.eq("member_id", member.id))
           .first();
 
         if (linkedAccount && linkedAccount.email !== token.creator_email) {
@@ -480,11 +478,8 @@ async function claimForUser(ctx: any, user: any, token: any) {
   }
 
   return {
-    linked_member_id: token.target_member_id,
-    linked_account_id: user.id,
-    linked_account_email: user.email,
-    userCanonicalMemberId,
-    updatedAliases,
+    canonical_member_id: userCanonicalMemberId,
+    alias_member_ids: updatedAliases,
   };
 }
 
@@ -512,9 +507,8 @@ export const claim = mutation({
     const result = await claimForUser(ctx, user, token);
 
     return {
-      linked_member_id: result.linked_member_id,
-      linked_account_id: result.linked_account_id,
-      linked_account_email: result.linked_account_email,
+      canonical_member_id: result.canonical_member_id,
+      alias_member_ids: result.alias_member_ids,
     };
   },
 });
@@ -587,9 +581,8 @@ export const _internalClaimForAccount = internalMutation({
     const result = await claimForUser(ctx, user, token);
 
     return {
-      canonical_member_id: result.userCanonicalMemberId,
-      alias_member_ids: result.updatedAliases,
+      canonical_member_id: result.canonical_member_id,
+      alias_member_ids: result.alias_member_ids,
     };
   },
 });
-

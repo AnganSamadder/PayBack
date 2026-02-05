@@ -52,16 +52,16 @@ export const debugUserData = query({
       result.push({
         email: account.email,
         display_name: account.display_name,
-        linked_member_id: account.linked_member_id || "NOT SET",
+        member_id: account.member_id || "NOT SET",
         groupCount: groups.length,
         expenseCount: expenses.length,
         memberNamesInGroups: memberNamesInGroups.slice(0, 5),
         paidByMemberIds: paidByIds.slice(0, 5),
-        linkedIdMatchesGroups: account.linked_member_id
-          ? memberIdsInGroups.includes(account.linked_member_id)
+        canonicalIdMatchesGroups: account.member_id
+          ? memberIdsInGroups.includes(account.member_id)
           : false,
-        linkedIdMatchesExpenses: account.linked_member_id
-          ? paidByIds.includes(account.linked_member_id)
+        canonicalIdMatchesExpenses: account.member_id
+          ? paidByIds.includes(account.member_id)
           : false,
       });
     }

@@ -339,24 +339,26 @@ export const viewer = query({
       return null;
     }
 
-    let equivalentMemberIds: string[] = [];
-    if (user.linked_member_id) {
-      equivalentMemberIds = await getAllEquivalentMemberIds(ctx.db, user.linked_member_id);
-    }
+    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      user.member_id ?? user.id
+    );
+    const equivalentMemberIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
 
     return {
       ...user,
-      equivalent_member_ids: equivalentMemberIds,
+      member_id: canonicalMemberId,
+      alias_member_ids: equivalentMemberIds.filter((id) => id !== canonicalMemberId),
     };
   },
 });
 
 /**
- * Updates the linked_member_id for the current user.
- * This links the user's account to a member from another user's friend list.
+ * Updates the canonical member_id for the current user.
+ * This links the user's account to a member from another user's friend list using canonical identity.
  */
-  export const updateLinkedMemberId = mutation({
-  args: { linked_member_id: v.string() },
+export const updateLinkedMemberId = mutation({
+  args: { member_id: v.string() },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
@@ -372,21 +374,19 @@ export const viewer = query({
       throw new Error("User not found");
     }
 
-    const existingEquivalentIds = user.equivalent_member_ids || [];
-    const prioritizedIds = [
-      args.linked_member_id,
-      user.linked_member_id,
-      ...existingEquivalentIds,
-    ].filter((id): id is string => typeof id === "string" && id.length > 0);
+    const currentAliases = user.alias_member_ids || [];
+    const currentCanonical = user.member_id;
 
-    const updatedEquivalentIds = Array.from(new Set(prioritizedIds)).slice(
-      0,
-      MAX_EQUIVALENT_MEMBER_IDS
-    );
+    const newAliasSet = new Set<string>(currentAliases);
+    if (currentCanonical && currentCanonical !== args.member_id) {
+      newAliasSet.add(currentCanonical);
+    }
+
+    const updatedAliases = Array.from(newAliasSet).slice(0, MAX_EQUIVALENT_MEMBER_IDS);
 
     await ctx.db.patch(user._id, {
-      linked_member_id: args.linked_member_id,
-      equivalent_member_ids: updatedEquivalentIds,
+      member_id: args.member_id,
+      alias_member_ids: updatedAliases,
       updated_at: Date.now(),
     });
 
@@ -526,50 +526,34 @@ export const resolveLinkedAccountsForMemberIds = query({
     }> = [];
 
     for (const memberId of args.memberIds) {
-      const accountByLinkedId = await ctx.db
+      const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, memberId);
+
+      const accountByCanonicalId = await ctx.db
         .query("accounts")
-        .withIndex("by_linked_member_id", (q) => q.eq("linked_member_id", memberId))
+        .withIndex("by_member_id", (q) => q.eq("member_id", canonicalId))
         .unique();
 
-      if (accountByLinkedId) {
+      if (accountByCanonicalId) {
         results.push({
           member_id: memberId,
-          account_id: accountByLinkedId.id,
-          email: accountByLinkedId.email,
+          account_id: accountByCanonicalId.id,
+          email: accountByCanonicalId.email,
         });
         continue;
       }
 
-      const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, memberId);
-      if (canonicalId !== memberId) {
-        const accountByCanonicalId = await ctx.db
-          .query("accounts")
-          .withIndex("by_linked_member_id", (q) =>
-            q.eq("linked_member_id", canonicalId)
-          )
-          .unique();
-
-        if (accountByCanonicalId) {
-          results.push({
-            member_id: memberId,
-            account_id: accountByCanonicalId.id,
-            email: accountByCanonicalId.email,
-          });
-          continue;
-        }
-      }
-
       const allAccounts = await ctx.db.query("accounts").collect();
-      for (const account of allAccounts) {
-        const equivalentIds = account.equivalent_member_ids || [];
-        if (equivalentIds.includes(memberId)) {
-          results.push({
-            member_id: memberId,
-            account_id: account.id,
-            email: account.email,
-          });
-          break;
-        }
+      const match = allAccounts.find((account) => {
+        const aliases = account.alias_member_ids || [];
+        return aliases.includes(memberId) || aliases.includes(canonicalId);
+      });
+
+      if (match) {
+        results.push({
+          member_id: memberId,
+          account_id: match.id,
+          email: match.email,
+        });
       }
     }
 
