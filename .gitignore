@@ -94,8 +94,6 @@ PHASE_*.md
 # Environment & Secrets
 .env
 .env.*
-.env.supabase.local
-.env.supabase
 *.key
 *.pem
 *.secret
@@ -108,8 +106,6 @@ credentials/
 
 # SPM artifacts
 Artifacts/
-SupabaseConfig.plist
-apps/ios/PayBack/SupabaseConfig.plist
 
 # Kiro IDE
 .kiro/
@@ -130,8 +126,6 @@ apps/ios/PayBack/SupabaseConfig.plist
 .github/prompts/
 *.log
 coverage-report.txt
-
-.supabase-swift/
 
 
 # Helper Scripts

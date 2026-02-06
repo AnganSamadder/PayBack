@@ -177,7 +177,7 @@ actor ConvexAccountService: AccountService {
     
     func updateLinkedMember(accountId: String, memberId: UUID?) async throws {
         guard let memberId = memberId else { return }
-        let args: [String: ConvexEncodable?] = ["linked_member_id": memberId.uuidString]
+        let args: [String: ConvexEncodable?] = ["member_id": memberId.uuidString]
         _ = try await client.mutation("users:updateLinkedMemberId", with: args)
     }
     
