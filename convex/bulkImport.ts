@@ -139,6 +139,8 @@ export const bulkImport = mutation({
       if (!friend.profile_avatar_color) errors.push(`friends[${i}]: missing profile_avatar_color`);
     }
 
+    const memberIdMap = new Map<string, string>();
+
     // Process Friends
     for (const friend of args.friends) {
       const existing = await ctx.db
@@ -147,6 +149,18 @@ export const bulkImport = mutation({
           q.eq("account_email", user.email).eq("member_id", friend.member_id)
         )
         .unique();
+
+      // Check for existing by name if ID didn't match (Soft Match)
+      let existingByName = null;
+      if (!existing) {
+         const allFriends = await ctx.db
+            .query("account_friends")
+            .withIndex("by_account_email", q => q.eq("account_email", user.email))
+            .collect();
+         existingByName = allFriends.find(f => f.name === friend.name);
+      }
+
+      const match = existing || existingByName;
 
       // Check if linked account still exists. If not, strip the link.
       let finalLinkedEmail = friend.linked_account_email;
@@ -173,10 +187,13 @@ export const bulkImport = mutation({
         }
       }
 
-      if (existing) {
+      if (match) {
+        // Map the IMPORT ID to the EXISTING ID
+        memberIdMap.set(friend.member_id, match.member_id);
+
         // Update existing friend if new link info is available
-        if (finalLinkedEmail && !existing.linked_account_email) {
-          await ctx.db.patch(existing._id, {
+        if (finalLinkedEmail && !match.linked_account_email) {
+          await ctx.db.patch(match._id, {
             has_linked_account: finalHasLinked,
             linked_account_id: finalLinkedAccountId,
             linked_account_email: finalLinkedEmail,
@@ -194,22 +211,22 @@ export const bulkImport = mutation({
                 .unique();
                 
              if (linkedAccount) {
-                await reconcileExpensesForMember(ctx, user.email, existing.member_id, linkedAccount.id);
+                await reconcileExpensesForMember(ctx, user.email, match.member_id, linkedAccount.id);
              }
           }
         }
         
         // Ensure alias exists if we have a link (for existing records too)
-        if (linkedMemberId && friend.member_id !== linkedMemberId) {
+        if (linkedMemberId && match.member_id !== linkedMemberId) {
              const existingAlias = await ctx.db
                 .query("member_aliases")
-                .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", friend.member_id))
+                .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", match.member_id))
                 .unique();
                 
              if (!existingAlias) {
                  await ctx.db.insert("member_aliases", {
                      account_email: user.email,
-                     alias_member_id: friend.member_id,
+                     alias_member_id: match.member_id,
                      canonical_member_id: linkedMemberId,
                      created_at: Date.now(),
                  });
@@ -218,7 +235,33 @@ export const bulkImport = mutation({
         continue;
       }
 
-      // Create new friend
+      // Check if this ID is already an alias for a known user (Robust Fix)
+      // This handles cases where the CSV has an old/garbage ID that we *know*
+      const knownAlias = await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", friend.member_id))
+        .unique();
+
+      if (knownAlias) {
+         const canonicalFriend = await ctx.db
+            .query("account_friends")
+            .withIndex("by_account_email_and_member_id", (q) =>
+              q.eq("account_email", user.email).eq("member_id", knownAlias.canonical_member_id)
+            )
+            .unique();
+
+         if (canonicalFriend) {
+             memberIdMap.set(friend.member_id, knownAlias.canonical_member_id);
+             continue; 
+         }
+         
+         memberIdMap.set(friend.member_id, knownAlias.canonical_member_id);
+         friend.member_id = knownAlias.canonical_member_id;
+      }
+
+      // NO MATCH FOUND - Create New Friend
+      memberIdMap.set(friend.member_id, friend.member_id); // Map to itself
+
       await ctx.db.insert("account_friends", {
         account_email: user.email,
         member_id: friend.member_id,
@@ -281,10 +324,17 @@ export const bulkImport = mutation({
         groupRefMap.set(group.id, existing._id);
         continue;
       }
+      
+      // Remap members
+      const remappedMembers = group.members.map(m => ({
+          ...m,
+          id: memberIdMap.get(m.id) || m.id
+      }));
+
       const groupDocId = await ctx.db.insert("groups", {
         id: group.id,
         name: group.name,
-        members: group.members,
+        members: remappedMembers,
         owner_email: user.email,
         owner_account_id: user.id,
         owner_id: user._id,
@@ -313,6 +363,13 @@ export const bulkImport = mutation({
           participantEmails.push(p.linked_account_email);
         }
       }
+      
+      // Remap IDs in Expense
+      const remappedPaidBy = memberIdMap.get(expense.paid_by_member_id) || expense.paid_by_member_id;
+      const remappedInvolved = expense.involved_member_ids.map(id => memberIdMap.get(id) || id);
+      const remappedSplits = expense.splits.map(s => ({ ...s, member_id: memberIdMap.get(s.member_id) || s.member_id }));
+      const remappedParticipantIds = expense.participant_member_ids.map(id => memberIdMap.get(id) || id);
+      const remappedParticipants = expense.participants.map(p => ({ ...p, member_id: memberIdMap.get(p.member_id) || p.member_id }));
 
       await ctx.db.insert("expenses", {
         id: expense.id,
@@ -321,15 +378,15 @@ export const bulkImport = mutation({
         description: expense.description,
         date: expense.date,
         total_amount: expense.total_amount,
-        paid_by_member_id: expense.paid_by_member_id,
-        involved_member_ids: expense.involved_member_ids,
-        splits: expense.splits,
+        paid_by_member_id: remappedPaidBy,
+        involved_member_ids: remappedInvolved,
+        splits: remappedSplits,
         is_settled: expense.is_settled,
         owner_email: user.email,
         owner_account_id: user.id,
         owner_id: user._id,
-        participant_member_ids: expense.participant_member_ids,
-        participants: expense.participants,
+        participant_member_ids: remappedParticipantIds,
+        participants: remappedParticipants,
         participant_emails: participantEmails,
         linked_participants: expense.linked_participants,
         subexpenses: expense.subexpenses,
