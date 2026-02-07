@@ -214,3 +214,32 @@ When a user registers (or re-registers) with an email (`store` mutation):
 - **Function**: `performHardDelete` (internal/admin).
 - **Scope**: Wipes EVERYTHING immediately (Account, Friends, Groups, Expenses, Invites, Aliases).
 - **Use Case**: Admin tools or total data removal requests.
+
+## Canonical Identity & Aliasing (2026-02-04)
+
+### New Model
+- **Source of Truth**: `member_id` is the immutable identifier for an account (assigned at creation).
+- **Legacy Removal**: `linked_member_id` and `equivalent_member_ids` have been removed from the schema and codebase.
+- **Linking**: Account linking creates records in `member_aliases` table mapping `alias_member_id` -> `canonical_member_id`.
+- **Resolution**: Use `resolveCanonicalMemberIdInternal` helper to resolve any ID (alias or canonical) to the canonical ID.
+
+### Migration Learnings
+- **Data Integrity**: When migrating, ensure `member_aliases` are populated (e.g. from `invite_tokens`) *before* removing legacy fields, to preserve link history.
+- **iOS Compatibility**: The backend returns `canonical_member_id`. iOS DTOs (`ConvexLinkAcceptResultDTO`) map this to the `linked_member_id` property to maintain app compatibility without full refactor.
+- **Import Logic**: `bulkImport` uses `resolveCanonicalMemberIdInternal` to ensure legacy IDs in import files are correctly mapped to current canonical IDs.
+
+### Direct Groups & Balance Calculation
+- **is_direct Flag**: Direct groups (1:1 friendships) MUST have `is_direct: true`. If this flag is missing, iOS treats it as a group.
+- **Import ID Resolution**: When importing, IDs may differ from current canonical IDs. Always ensure aliases exist or merge IDs by name if "Paid by Unknown" occurs.
+- **Fix**: Run `fixIdsByName` (merge by name) if import creates mismatched IDs.
+
+### "Paid by Unknown" Symptom
+- **Symptom**: Expenses appear in activity but show "Paid by Unknown" and are excluded from friend balance (0 balance).
+- **Cause**: The expense record uses a Legacy ID (Alias) for the payer, but the user's Account uses a Canonical ID, and no link exists between them.
+- **Resolution**: Run a migration (like `fixIdsByName`) to detect expenses where the Payer Name matches the Account Name but IDs differ, then create an alias record and canonicalize the expense ID.
+
+### Account Deletion & Auto-Login Behavior (2026-02-06)
+- **Constraint**: Accounts should NOT be auto-created during session restoration (app restart).
+- **Explicit Login**: Explicit Sign In (entering credentials) SHOULD create the account if it's missing (e.g. recreating after wipe), as it indicates user intent.
+- **Problem**: Previously, `checkSession` (auto-login) would auto-create data if Clerk session persisted but Convex account was gone.
+- **Fix**: Updated `AppStore.checkSession` to throw `accountNotFound` and trigger `signOut` instead of creating. `login` and `signup` allow creation.
