@@ -171,9 +171,10 @@ final class AppStore: ObservableObject {
                         return account
                     } else {
                         AppConfig.markTiming("Account lookup complete (not found)")
-                        let account = try await accountService.createAccount(email: email, displayName: displayName)
-                        AppConfig.markTiming("Account created")
-                        return account
+                        // Account deleted/missing. Do not auto-create on session restore.
+                        // Force sign out to ensure clean state next time.
+                        await self.signOut()
+                        throw PayBackError.accountNotFound(email: email)
                     }
                 }
                 
@@ -348,7 +349,9 @@ final class AppStore: ObservableObject {
         let normalizedEmail = try accountService.normalizedEmail(from: email)
         let result = try await emailAuthService.signIn(email: normalizedEmail, password: password)
         
-        return try await performConvexAuthAndSetup(email: normalizedEmail, name: result.displayName)
+        // Explicit login implies intent to use the app. If account is missing (e.g. wiped),
+        // recreate it to allow access. Only checkSession (auto-login) restricts creation.
+        return try await performConvexAuthAndSetup(email: normalizedEmail, name: result.displayName, allowCreation: true)
     }
     
     /// Centralized signup. returns result so coordinator can handle verification step.
@@ -365,8 +368,8 @@ final class AppStore: ObservableObject {
         )
         
         if case .complete(let authResult) = result {
-            // Auto-login if complete
-            _ = try await performConvexAuthAndSetup(email: normalizedEmail, name: authResult.displayName)
+            // Auto-login if complete (Signup flow -> allow creation)
+            _ = try await performConvexAuthAndSetup(email: normalizedEmail, name: authResult.displayName, allowCreation: true)
         }
         
         return result
@@ -377,11 +380,12 @@ final class AppStore: ObservableObject {
         let authResult = try await emailAuthService.verifyCode(code: code)
         let displayName = pendingDisplayName?.isEmpty == false ? pendingDisplayName : authResult.displayName
         
-        return try await performConvexAuthAndSetup(email: authResult.email, name: displayName)
+        // Verification usually implies signup or explicit login intent. Allow creation if needed (e.g. verified signup).
+        return try await performConvexAuthAndSetup(email: authResult.email, name: displayName, allowCreation: true)
     }
     
     /// Shared helper to authenticate Convex, wait for server, and setup session
-    private func performConvexAuthAndSetup(email: String, name: String?) async throws -> UserAccount {
+    private func performConvexAuthAndSetup(email: String, name: String?, allowCreation: Bool) async throws -> UserAccount {
         #if !PAYBACK_CI_NO_CONVEX
         // 1. Authenticate Convex
         await Dependencies.authenticateConvex()
@@ -404,7 +408,11 @@ final class AppStore: ObservableObject {
         if let existing = try await accountService.lookupAccount(byEmail: email) {
             account = existing
         } else {
-            account = try await accountService.createAccount(email: email, displayName: fallbackName)
+            if allowCreation {
+                account = try await accountService.createAccount(email: email, displayName: fallbackName)
+            } else {
+                throw PayBackError.accountNotFound(email: email)
+            }
         }
         
         // 4. Update Local Session
@@ -436,7 +444,7 @@ final class AppStore: ObservableObject {
     func completeAuthentication(id: String, email: String, name: String?) {
         Task {
             do {
-                _ = try await performConvexAuthAndSetup(email: email, name: name)
+                _ = try await performConvexAuthAndSetup(email: email, name: name, allowCreation: true)
             } catch {
                 print("Failed to complete authentication: \(error)")
             }

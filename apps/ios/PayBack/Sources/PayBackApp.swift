@@ -97,6 +97,16 @@ struct RootViewWithStore: View {
         .onOpenURL { url in
             handleDeepLink(url)
         }
+        .alert(item: $store.logoutAlert) { alert in
+            switch alert {
+            case .accountDeleted:
+                return Alert(
+                    title: Text("Account Deleted"),
+                    message: Text("Your account has been deleted. If this was a mistake, please contact support."),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
+        }
     }
     
     private func handleScenePhaseChange(oldPhase: ScenePhase, newPhase: ScenePhase) {
