@@ -2,9 +2,6 @@ import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 
-/**
- * Lists all friends for the current authenticated user.
- */
 export const list = query({
   args: {},
   handler: async (ctx) => {
@@ -23,7 +20,48 @@ export const list = query({
       .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
       .collect();
 
-    return friends;
+    const validatedFriends = [];
+    for (const friend of friends) {
+      if (friend.has_linked_account && friend.linked_account_email) {
+        const linkedAccount = await ctx.db
+          .query("accounts")
+          .withIndex("by_email", (q) => q.eq("email", friend.linked_account_email!))
+          .unique();
+
+        if (!linkedAccount) {
+          validatedFriends.push({
+            ...friend,
+            has_linked_account: false,
+            linked_account_id: undefined,
+            linked_account_email: undefined,
+            linked_member_id: undefined,
+          });
+          continue;
+        }
+      }
+
+      if (friend.has_linked_account && friend.linked_member_id) {
+        const linkedByMemberId = await ctx.db
+          .query("accounts")
+          .withIndex("by_member_id", (q) => q.eq("member_id", friend.linked_member_id!))
+          .unique();
+
+        if (!linkedByMemberId) {
+          validatedFriends.push({
+            ...friend,
+            has_linked_account: false,
+            linked_account_id: undefined,
+            linked_account_email: undefined,
+            linked_member_id: undefined,
+          });
+          continue;
+        }
+      }
+
+      validatedFriends.push(friend);
+    }
+
+    return validatedFriends;
   },
 });
 
