@@ -240,6 +240,14 @@ When a user registers (or re-registers) with an email (`store` mutation):
 - **Import ID Resolution**: When importing, IDs may differ from current canonical IDs. Always ensure aliases exist or merge IDs by name if "Paid by Unknown" occurs.
 - **Fix**: Run `fixIdsByName` (merge by name) if import creates mismatched IDs.
 
+### Import ID Consistency (2026-02-07)
+- **Problem**: CSV imports may contain inconsistent IDs (e.g., Friend List uses ID A, Group Member uses ID B) or drift from the database.
+- **Solution**: `bulkImport` implements **ID Remapping**.
+  - It builds a map of `Import ID -> Database ID`.
+  - If a friend matches by ID or Name, the existing Database ID is used.
+  - All references in Groups and Expenses are remapped to this consistent ID.
+  - This ensures `isFriend` checks in iOS pass and prevents "Ghost Members" (Group members who aren't recognized as friends).
+
 ### "Paid by Unknown" Symptom
 - **Symptom**: Expenses appear in activity but show "Paid by Unknown" and are excluded from friend balance (0 balance).
 - **Cause**: The expense record uses a Legacy ID (Alias) for the payer, but the user's Account uses a Canonical ID, and no link exists between them.

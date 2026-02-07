@@ -244,10 +244,26 @@ struct GroupDetailView: View {
         let items = store.expenses(in: groupId)
         var paidByMember: Double = 0
         var owes: Double = 0
+        
         for exp in items {
+            // Skip fully settled expenses entirely
+            if exp.isSettled { continue }
+            
             if exp.paidByMemberId == member.id {
-                paidByMember += exp.totalAmount
+                // If member paid, they are credited with the total amount...
+                var credit = exp.totalAmount
+                
+                // ...MINUS any splits that are already settled (reimbursed)
+                // This handles partial settlements correctly
+                for split in exp.splits {
+                    if split.isSettled {
+                        credit -= split.amount
+                    }
+                }
+                paidByMember += credit
             }
+            
+            // If member owes money (their split is not settled), debit them
             if let split = exp.splits.first(where: { $0.memberId == member.id }), !split.isSettled {
                 owes += split.amount
             }
