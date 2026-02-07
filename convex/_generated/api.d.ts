@@ -27,7 +27,6 @@ import type * as maintenance from "../maintenance.js";
 import type * as migrations from "../migrations.js";
 import type * as migrations_backfill_ids from "../migrations/backfill_ids.js";
 import type * as rateLimit from "../rateLimit.js";
-import type * as temp_debug from "../temp_debug.js";
 import type * as tests from "../tests.js";
 import type * as users from "../users.js";
 import type * as utils from "../utils.js";
@@ -58,7 +57,6 @@ declare const fullApi: ApiFromModules<{
   migrations: typeof migrations;
   "migrations/backfill_ids": typeof migrations_backfill_ids;
   rateLimit: typeof rateLimit;
-  temp_debug: typeof temp_debug;
   tests: typeof tests;
   users: typeof users;
   utils: typeof utils;

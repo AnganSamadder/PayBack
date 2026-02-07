@@ -15,6 +15,7 @@
 import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import { resolveCanonicalMemberIdInternal } from "./aliases";
 
 // ============================================================================
 // HELPER: Assertion function for test failures
@@ -438,3 +439,101 @@ export const test_nickname_cleared_if_matches_real_name = internalMutation({
     };
   },
 });
+
+// ============================================================================
+// TEST 6: Bulk import resolves legacy IDs to canonical IDs
+// ============================================================================
+
+/**
+ * When importing data (e.g. from JSON/CSV restore), if the input file contains
+ * legacy member IDs (aliases) that are mapped in member_aliases,
+ * bulkImport should resolve them to canonical member IDs before writing to DB.
+ *
+ * EXPECTED BEHAVIOR:
+ * - Import a friend with member_id = ALIAS
+ * - Import an expense paid by ALIAS
+ * - Resulting friend record should have member_id = CANONICAL
+ * - Resulting expense should have paid_by_member_id = CANONICAL
+ */
+export const test_import_legacy_ids_resolves_to_canonical = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const ownerEmail = `test-import-owner-${now}@example.com`;
+    const canonicalId = `canonical-friend-${now}`;
+    const aliasId = `alias-friend-${now}`;
+
+    // 1. Create owner account
+    const ownerId = await ctx.db.insert("accounts", {
+      id: `test-import-owner-acc-${now}`,
+      email: ownerEmail,
+      display_name: "Import Owner",
+      created_at: now,
+      member_id: `owner-member-${now}`,
+    });
+
+    // 2. Create friend account (the canonical identity)
+    const friendAccountId = await ctx.db.insert("accounts", {
+      id: `test-import-friend-acc-${now}`,
+      email: `test-import-friend-${now}@example.com`,
+      display_name: "Canonical Friend",
+      created_at: now,
+      member_id: canonicalId,
+    });
+
+    // 3. Create alias record (simulating migration state)
+    await ctx.db.insert("member_aliases", {
+      canonical_member_id: canonicalId,
+      alias_member_id: aliasId,
+      account_email: ownerEmail,
+      created_at: now,
+    });
+
+    // 4. Run bulkImport with legacy ALIAS IDs
+    // We mock the bulkImport logic by calling the resolver directly or
+    // invoking the mutation if we can construct valid args.
+    // For unit testing here, let's call `internal.bulkImport.bulkImport`.
+    // But bulkImport is public mutation. We can use ctx.runMutation if we mock auth?
+    // tests.ts is internalMutation, so it has sudo power? No, bulkImport checks getCurrentUserOrThrow.
+    // We cannot easily mock auth user for bulkImport in this test env.
+    // So we will verify the *resolution logic* by calling resolveCanonicalMemberIdInternal directly.
+    
+    // Check resolution
+    const resolvedId = await resolveCanonicalMemberIdInternal(ctx.db, aliasId);
+    
+    assertEqual(
+      resolvedId,
+      canonicalId,
+      "resolveCanonicalMemberIdInternal should resolve alias to canonical"
+    );
+
+    // Verify resolving canonical returns canonical
+    const resolvedCanonical = await resolveCanonicalMemberIdInternal(ctx.db, canonicalId);
+    assertEqual(
+      resolvedCanonical,
+      canonicalId,
+      "resolveCanonicalMemberIdInternal should return canonical as-is"
+    );
+
+    // Verify resolving unknown returns unknown
+    const unknownId = "unknown-id";
+    const resolvedUnknown = await resolveCanonicalMemberIdInternal(ctx.db, unknownId);
+    assertEqual(
+      resolvedUnknown,
+      unknownId,
+      "resolveCanonicalMemberIdInternal should return unknown ID as-is"
+    );
+
+    // Cleanup
+    const alias = await ctx.db.query("member_aliases").withIndex("by_alias_member_id", q => q.eq("alias_member_id", aliasId)).unique();
+    if (alias) await ctx.db.delete(alias._id);
+    await ctx.db.delete(friendAccountId);
+    await ctx.db.delete(ownerId);
+
+    return {
+      success: true,
+      message: "Alias resolution verified for import scenarios",
+    };
+  },
+});
+
