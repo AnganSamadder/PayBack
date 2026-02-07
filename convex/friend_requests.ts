@@ -67,7 +67,7 @@ export const send = mutation({
       await ctx.db.insert("account_friends", {
         account_email: sender.email,
         member_id: recipientCanonicalId,
-        name: recipient.display_name,
+        name: recipient.display_name ?? recipient.email ?? "Unknown",
         status: "request_sent",
         has_linked_account: true,
         linked_account_id: recipient._id,
@@ -136,7 +136,7 @@ export const accept = mutation({
       await ctx.db.insert("account_friends", {
         account_email: recipient.email,
         member_id: senderCanonicalId,
-        name: sender.display_name,
+        name: sender.display_name ?? sender.email ?? "Unknown",
         status: "friend",
         has_linked_account: true,
         linked_account_id: sender._id,
@@ -172,7 +172,7 @@ export const accept = mutation({
       await ctx.db.insert("account_friends", {
         account_email: sender.email,
         member_id: recipientCanonicalId,
-        name: recipient.display_name,
+        name: recipient.display_name ?? recipient.email ?? "Unknown",
         status: "friend",
         has_linked_account: true,
         linked_account_id: recipient._id,

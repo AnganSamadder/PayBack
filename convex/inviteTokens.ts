@@ -304,7 +304,7 @@ async function claimForUser(ctx: any, user: any, token: any) {
           has_linked_account: true,
           linked_account_id: user.id,
           linked_account_email: user.email,
-          name: user.display_name,
+          name: user.display_name ?? user.email ?? "Unknown",
           nickname: friendRecord.nickname,
           original_name: shouldStoreOriginalName ? friendRecord.name : undefined,
           updated_at: now,
@@ -345,7 +345,7 @@ async function claimForUser(ctx: any, user: any, token: any) {
             has_linked_account: true,
             linked_account_id: creatorAccount.id,
             linked_account_email: creatorAccount.email,
-            name: creatorAccount.display_name,
+            name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
             updated_at: now,
           });
         } else {
@@ -363,7 +363,7 @@ async function claimForUser(ctx: any, user: any, token: any) {
         await ctx.db.insert("account_friends", {
           account_email: user.email,
           member_id: creatorMemberId,
-          name: creatorAccount.display_name,
+          name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
           has_linked_account: true,
           linked_account_id: creatorAccount.id,
           linked_account_email: creatorAccount.email,

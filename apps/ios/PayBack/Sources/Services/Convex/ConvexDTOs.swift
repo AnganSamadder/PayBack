@@ -20,9 +20,56 @@ struct ConvexExpenseDTO: Decodable, Sendable {
     let participants: [ConvexParticipantDTO]?
     let subexpenses: [ConvexSubexpenseDTO]?
     
+    init(
+        id: String,
+        group_id: String,
+        description: String,
+        date: Double,
+        total_amount: Double,
+        paid_by_member_id: String,
+        involved_member_ids: [String],
+        splits: [ConvexSplitDTO],
+        is_settled: Bool,
+        owner_email: String?,
+        owner_account_id: String?,
+        participant_member_ids: [String]?,
+        participants: [ConvexParticipantDTO]?,
+        subexpenses: [ConvexSubexpenseDTO]?
+    ) {
+        self.id = id
+        self.group_id = group_id
+        self.description = description
+        self.date = date
+        self.total_amount = total_amount
+        self.paid_by_member_id = paid_by_member_id
+        self.involved_member_ids = involved_member_ids
+        self.splits = splits
+        self.is_settled = is_settled
+        self.owner_email = owner_email
+        self.owner_account_id = owner_account_id
+        self.participant_member_ids = participant_member_ids
+        self.participants = participants
+        self.subexpenses = subexpenses
+    }
+    
     /// Maps Convex DTO to domain Expense model
     func toExpense() -> Expense {
-        Expense(
+        func buildParticipantNamesMap() -> [UUID: String]? {
+            guard let participants = participants, !participants.isEmpty else { return nil }
+            var map: [UUID: String] = [:]
+            for p in participants {
+                guard let memberId = UUID(uuidString: p.member_id) else { continue }
+                let trimmedName = p.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedName.isEmpty {
+                    map[memberId] = trimmedName
+                }
+            }
+            return map.isEmpty ? nil : map
+        }
+        
+        let participantNames = buildParticipantNamesMap()
+        
+        return Expense(
             id: UUID(uuidString: id) ?? UUID(),
             groupId: UUID(uuidString: group_id) ?? UUID(),
             description: description,
@@ -32,6 +79,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
             involvedMemberIds: involved_member_ids.compactMap { UUID(uuidString: $0) },
             splits: splits.map { $0.toExpenseSplit() },
             isSettled: is_settled,
+            participantNames: participantNames,
             subexpenses: subexpenses?.map { $0.toSubexpense() }
         )
     }
@@ -61,6 +109,13 @@ struct ConvexParticipantDTO: Decodable, Sendable {
     let name: String
     let linked_account_id: String?
     let linked_account_email: String?
+    
+    init(member_id: String, name: String, linked_account_id: String?, linked_account_email: String?) {
+        self.member_id = member_id
+        self.name = name
+        self.linked_account_id = linked_account_id
+        self.linked_account_email = linked_account_email
+    }
     
     /// Maps to domain ExpenseParticipant
     func toExpenseParticipant() -> ExpenseParticipant {
@@ -181,9 +236,10 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
     /// Maps to domain AccountFriend
     func toAccountFriend() -> AccountFriend? {
         guard let memberId = UUID(uuidString: member_id) else { return nil }
+        let safeName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown" : name
         return AccountFriend(
             memberId: memberId,
-            name: name,
+            name: safeName,
             nickname: nickname,
             originalName: original_name,
             hasLinkedAccount: has_linked_account ?? false,

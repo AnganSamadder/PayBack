@@ -85,10 +85,13 @@ export const upsert = mutation({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Unauthenticated");
 
+    // Ensure name is never empty
+    const safeName = args.name?.trim() || "Unknown";
+
     let normalizedNickname = args.nickname;
     if (
       normalizedNickname &&
-      normalizedNickname.trim().toLowerCase() === args.name.trim().toLowerCase()
+      normalizedNickname.trim().toLowerCase() === safeName.toLowerCase()
     ) {
       normalizedNickname = undefined;
     }
@@ -102,7 +105,7 @@ export const upsert = mutation({
 
     if (existing) {
       await ctx.db.patch(existing._id, {
-        name: args.name,
+        name: safeName,
         nickname: normalizedNickname,
         original_name: args.original_name,
         original_nickname: args.original_nickname,
@@ -118,7 +121,7 @@ export const upsert = mutation({
       return await ctx.db.insert("account_friends", {
         account_email: identity.email!,
         member_id: args.member_id,
-        name: args.name,
+        name: safeName,
         nickname: normalizedNickname,
         original_name: args.original_name,
         original_nickname: args.original_nickname,

@@ -265,7 +265,7 @@ export const bulkImport = mutation({
       await ctx.db.insert("account_friends", {
         account_email: user.email,
         member_id: friend.member_id,
-        name: friend.name,
+        name: friend.name || "Unknown",
         nickname: friend.nickname,
         profile_avatar_color: friend.profile_avatar_color,
         has_linked_account: finalHasLinked,
