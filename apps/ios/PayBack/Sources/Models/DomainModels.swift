@@ -5,15 +5,23 @@ struct GroupMember: Identifiable, Codable, Hashable, Sendable {
     var name: String
     var profileImageUrl: String?
     var profileColorHex: String?
-    // Optional to support loading old data where this field didn't exist
     var isCurrentUser: Bool?
+    var accountFriendMemberId: UUID?
 
-    init(id: UUID = UUID(), name: String, profileImageUrl: String? = nil, profileColorHex: String? = nil, isCurrentUser: Bool? = nil) {
+    init(
+        id: UUID = UUID(),
+        name: String,
+        profileImageUrl: String? = nil,
+        profileColorHex: String? = nil,
+        isCurrentUser: Bool? = nil,
+        accountFriendMemberId: UUID? = nil
+    ) {
         self.id = id
         self.name = name
         self.profileImageUrl = profileImageUrl
         self.profileColorHex = profileColorHex
         self.isCurrentUser = isCurrentUser
+        self.accountFriendMemberId = accountFriendMemberId
     }
     
     // Helper to safely check if this is the current user

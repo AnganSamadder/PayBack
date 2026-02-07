@@ -139,11 +139,13 @@ struct FriendDetailView: View {
     // MARK: - Nickname Properties
     
     private var accountFriend: AccountFriend? {
-        store.friends.first { $0.memberId == friend.id }
+        let lookupId = friend.accountFriendMemberId ?? friend.id
+        return store.friends.first { $0.memberId == lookupId }
     }
     
     private var isFriend: Bool {
-        store.friends.contains { $0.memberId == friend.id }
+        let lookupId = friend.accountFriendMemberId ?? friend.id
+        return store.friends.contains { $0.memberId == lookupId }
     }
     
     private var unlinkedFriends: [AccountFriend] {

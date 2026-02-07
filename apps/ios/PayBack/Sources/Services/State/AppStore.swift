@@ -1757,7 +1757,11 @@ final class AppStore: ObservableObject {
                 if let friendData = friendData {
                     // Enrich with AccountFriend data (profile color, linking status, etc.)
                     let name = sanitizedFriendName(friendData, overrides: overrides)
-                    var enrichedMember = GroupMember(id: member.id, name: name)
+                    var enrichedMember = GroupMember(
+                        id: member.id,
+                        name: name,
+                        accountFriendMemberId: friendData.memberId
+                    )
                     enrichedMember.profileColorHex = friendData.profileColorHex ?? member.profileColorHex
                     results.append(enrichedMember)
 
@@ -1804,7 +1808,11 @@ final class AppStore: ObservableObject {
             }
 
             let name = sanitizedFriendName(friend, overrides: overrides)
-            var member = GroupMember(id: friend.memberId, name: name)
+            var member = GroupMember(
+                id: friend.memberId,
+                name: name,
+                accountFriendMemberId: friend.memberId
+            )
             member.profileColorHex = friend.profileColorHex
             results.append(member)
         }
