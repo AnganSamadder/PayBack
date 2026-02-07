@@ -54,7 +54,8 @@ export default defineSchema({
     .index("by_account_email", ["account_email"])
     .index("by_account_email_and_member_id", ["account_email", "member_id"])
     .index("by_linked_account_id", ["linked_account_id"])
-    .index("by_linked_account_email", ["linked_account_email"]),
+    .index("by_linked_account_email", ["linked_account_email"])
+    .index("by_linked_member_id", ["linked_member_id"]),
 
   // Member aliases for account linking - maps alias member IDs to canonical member IDs
   // When a receiver claims an invite and already has a canonical member_id,
