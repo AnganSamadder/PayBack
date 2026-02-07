@@ -2174,7 +2174,7 @@ final class AppStore: ObservableObject {
                 existing.linkedAccountEmail = friend.linkedAccountEmail
                 existing.linkedAccountId = friend.linkedAccountId
                 combined[friend.memberId] = existing
-            } else if friend.hasLinkedAccount {
+            } else {
                 combined[friend.memberId] = friend
             }
         }
