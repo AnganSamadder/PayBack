@@ -251,6 +251,7 @@ When a user registers (or re-registers) with an email (`store` mutation):
   - If a friend matches by ID or Name, the existing Database ID is used.
   - All references in Groups and Expenses are remapped to this consistent ID.
   - This ensures `isFriend` checks in iOS pass and prevents "Ghost Members" (Group members who aren't recognized as friends).
+- **Regression Testing**: Added `convex/tests/import_robustness.test.ts` to verify alias handling and ID remapping during imports. Always add regression tests when fixing data integrity issues.
 
 ### "Paid by Unknown" Symptom
 - **Symptom**: Expenses appear in activity but show "Paid by Unknown" and are excluded from friend balance (0 balance).
