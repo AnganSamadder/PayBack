@@ -2,6 +2,7 @@ import { mutation, query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { resolveCanonicalMemberIdInternal } from "./aliases";
+import { reconcileUserExpenses } from "./helpers";
 import { Id } from "./_generated/dataModel";
 
 // Helper to get current authenticated user
@@ -473,6 +474,20 @@ async function claimForUser(ctx: any, user: any, token: any) {
           participants: updatedParticipants,
           updated_at: now,
         });
+
+        // Reconcile user_expenses to ensure the new participant sees this expense
+        // Resolve all participant emails to user IDs
+        const allParticipantEmails = [...(expense.participant_emails || [])];
+        if (!allParticipantEmails.includes(user.email)) {
+            allParticipantEmails.push(user.email);
+        }
+        
+        const participantUsers = await Promise.all(allParticipantEmails.map(email => 
+            ctx.db.query("accounts").withIndex("by_email", q => q.eq("email", email)).unique()
+        ));
+        const participantUserIds = participantUsers.filter(u => u !== null).map(u => u!.id);
+        
+        await reconcileUserExpenses(ctx, expense.id, participantUserIds);
       }
     }
   }
@@ -509,6 +524,8 @@ export const claim = mutation({
     return {
       canonical_member_id: result.canonical_member_id,
       alias_member_ids: result.alias_member_ids,
+      linked_account_id: user.id,
+      linked_account_email: user.email,
     };
   },
 });
@@ -583,6 +600,8 @@ export const _internalClaimForAccount = internalMutation({
     return {
       canonical_member_id: result.canonical_member_id,
       alias_member_ids: result.alias_member_ids,
+      linked_account_id: user.id,
+      linked_account_email: user.email,
     };
   },
 });
