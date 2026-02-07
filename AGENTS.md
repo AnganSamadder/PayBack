@@ -196,6 +196,35 @@ This is the most common reason direct expenses don't appear after CSV import.
 - If you change CI steps in `.github/workflows/ci.yml`, update `./scripts/test-ci-locally.sh` to match.
 - If you add a new testing/linting command, document it here.
 
+## Data Consistency & Imports
+
+### Data Integrity Principles
+- **Source of Truth**: `member_id` is the immutable identifier for an account (assigned at creation).
+- **Identity Resolution**: Always use `resolveCanonicalMemberIdInternal` helper to resolve any ID (alias or canonical) to the canonical ID.
+- **Legacy Support**: `linked_member_id` persists links, but `member_aliases` table handles the actual ID redirection.
+
+### Import robustness
+- **Drift Prevention**: Imports must assume the local data (CSV) might be stale or contain old IDs.
+- **Canonical Alias Resolution**: The `bulkImport` mutation implements ID Remapping:
+  1. Checks if an imported ID is a known alias.
+  2. If yes, remaps all references (Friends, Groups, Expenses) to the Canonical ID.
+  3. Checks if a friend already exists for the Canonical ID and merges instead of creating a duplicate.
+- **Self-Healing**: This logic automatically upgrades legacy IDs to canonical ones during import, preventing "Ghost Members" or duplicate friends.
+
+### Common Data Issues & Fixes
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| **"Paid by Unknown"** | Expense uses Legacy ID (Alias) but Account uses Canonical ID | Run migration (e.g. `fixIdsByName`) to create alias record. |
+| **Duplicate Friends** | Import created new friend because ID didn't match existing | Use `bulkImport`'s built-in deduplication (matches by ID *or* Name). |
+| **Ghost Member** | Group member has different ID than Friend List record | Ensure `bulkImport` remaps *all* tables (Groups, Expenses) to the same Canonical ID. |
+| **Missing History** | User linked but expenses not visible | Trigger `reconcileExpensesForMember` when linking to backfill `user_expenses`. |
+
+### Ghost Data Handling
+- **Scenario**: User hard deletes account, then re-imports data from a backup.
+- **Risk**: Import creates "Manual Friend" with old ID. User recreates account (new ID). Result: Ghost (unlinked) friend.
+- **Fix**: `bulkImport` detects this via aliases/name matching and merges the old data into the new account identity if possible, or keeps it consistent as a manual friend.
+
 ## User Lifecycle & Cleanup Logic
 
 ### The "Ghost User" State
@@ -219,61 +248,29 @@ When a user registers (or re-registers) with an email (`store` mutation):
 - **Scope**: Wipes EVERYTHING immediately (Account, Friends, Groups, Expenses, Invites, Aliases).
 - **Use Case**: Admin tools or total data removal requests.
 
-### Canonical Identity & Aliasing (2026-02-04)
-
-### New Model
-- **Source of Truth**: `member_id` is the immutable identifier for an account (assigned at creation).
-- **Legacy Removal**: `linked_member_id` and `equivalent_member_ids` have been removed from the schema and codebase.
-- **Linking**: Account linking creates records in `member_aliases` table mapping `alias_member_id` -> `canonical_member_id`.
-- **Resolution**: Use `resolveCanonicalMemberIdInternal` helper to resolve any ID (alias or canonical) to the canonical ID.
-
-### Import & Linking Logic (2026-02-07)
-- **Validation**: `bulkImport` must explicitly validate `linked_account_email` against the `accounts` table.
-- **Ghost Links**: If the linked account does not exist (deleted), the link MUST be stripped, reverting the friend to "Manual" status.
-- **Updates**: Existing "Manual" friends must be upgraded to "Linked" if a valid link is provided during import.
-- **Reconciliation**: Linking a user triggers `reconcileExpensesForMember` to backfill `user_expenses` visibility for past expenses.
-- **Schema**: `account_friends` includes `linked_member_id` to persist the canonical link.
-
-### Migration Learnings
-- **Data Integrity**: When migrating, ensure `member_aliases` are populated (e.g. from `invite_tokens`) *before* removing legacy fields, to preserve link history.
-- **iOS Compatibility**: The backend returns `canonical_member_id`. iOS DTOs (`ConvexLinkAcceptResultDTO`) map this to the `linked_member_id` property to maintain app compatibility without full refactor.
-- **Import Logic**: `bulkImport` uses `resolveCanonicalMemberIdInternal` to ensure legacy IDs in import files are correctly mapped to current canonical IDs.
-
-### Direct Groups & Balance Calculation
-- **is_direct Flag**: Direct groups (1:1 friendships) MUST have `is_direct: true`. If this flag is missing, iOS treats it as a group.
-- **Import ID Resolution**: When importing, IDs may differ from current canonical IDs. Always ensure aliases exist or merge IDs by name if "Paid by Unknown" occurs.
-- **Fix**: Run `fixIdsByName` (merge by name) if import creates mismatched IDs.
-
-### Import ID Consistency (2026-02-07)
-- **Problem**: CSV imports may contain inconsistent IDs (e.g., Friend List uses ID A, Group Member uses ID B) or drift from the database.
-- **Solution**: `bulkImport` implements **ID Remapping**.
-  - It builds a map of `Import ID -> Database ID`.
-  - If a friend matches by ID or Name, the existing Database ID is used.
-  - All references in Groups and Expenses are remapped to this consistent ID.
-  - This ensures `isFriend` checks in iOS pass and prevents "Ghost Members" (Group members who aren't recognized as friends).
-- **Regression Testing**: Added `convex/tests/import_robustness.test.ts` to verify alias handling and ID remapping during imports. Always add regression tests when fixing data integrity issues.
-
-### "Paid by Unknown" Symptom
-- **Symptom**: Expenses appear in activity but show "Paid by Unknown" and are excluded from friend balance (0 balance).
-- **Cause**: The expense record uses a Legacy ID (Alias) for the payer, but the user's Account uses a Canonical ID, and no link exists between them.
-- **Resolution**: Run a migration (like `fixIdsByName`) to detect expenses where the Payer Name matches the Account Name but IDs differ, then create an alias record and canonicalize the expense ID.
-
-### Balance Calculation (2026-02-07)
-- **Settled Expenses**: Fully settled expenses (`is_settled: true`) MUST be excluded from net balance calculations. Including them causes the payer to show a positive "Get" balance even after reimbursement.
-- **Partial Settlements**: For partially settled expenses, the payer's credit must be reduced by the sum of *settled splits*.
-- **Fix**: Updated `GroupDetailView.swift` logic to filter settled expenses/splits correctly.
-
-### Ghost Data & Hard Deletes (2026-02-07)
-- **Scenario**: User hard deletes account, then re-imports data from a backup (CSV) that contains the old account's ID.
-- **Problem**: The import creates a "Manual Friend" with the old ID. Later, if the user recreates their account, they get a *new* ID. The manual friend remains "Ghost" (unlinked, duplicate).
-- **Solution (Backend)**: `bulkImport` now implements **Canonical Alias Resolution**:
-  1. Checks if an imported ID is a known alias.
-  2. If yes, remaps all references to the Canonical ID.
-  3. Checks if a friend already exists for the Canonical ID and merges/updates instead of creating a duplicate.
-- **Cleanup**: If ghosts exist, use `fix_placeholder` logic to rename them or `fixIdsByName` to link them.
-
-### Account Deletion & Auto-Login Behavior (2026-02-06)
+### Account Deletion & Auto-Login Behavior
 - **Constraint**: Accounts should NOT be auto-created during session restoration (app restart).
 - **Explicit Login**: Explicit Sign In (entering credentials) SHOULD create the account if it's missing (e.g. recreating after wipe), as it indicates user intent.
 - **Problem**: Previously, `checkSession` (auto-login) would auto-create data if Clerk session persisted but Convex account was gone.
 - **Fix**: Updated `AppStore.checkSession` to throw `accountNotFound` and trigger `signOut` instead of creating. `login` and `signup` allow creation.
+
+## Testing Strategy & Standards
+
+### Philosophy
+- **TDD (Test Driven Development)**: Write the test *before* the fix.
+- **Regression Testing**: Every bug fix MUST include a permanent regression test to prevent recurrence.
+- **Integration over Unit**: Use `convex-test` to test the full mutation logic against a real-like database schema.
+
+### How We Test
+1.  **Convex Tests**: Located in `convex/tests/`. Use `convex-test` and `vitest`.
+2.  **Schema Compliance**: Tests must use `schema` definition to ensure data validity.
+3.  **Data Integrity**: Tests should verify relationships (e.g., "Does the group member ID match the friend ID?").
+
+### Critical Test Patterns
+- **Import Robustness**: Verify that imports handle alias IDs, ID mismatches, and name matching correctly. (See `convex/tests/import_robustness.test.ts`).
+- **Lifecycle**: Verify account creation, deletion, and linking flows.
+
+## Balance Calculation Logic
+- **Rule**: Fully settled expenses (`is_settled: true`) must be EXCLUDED from net balance calculations.
+- **Partial Settlements**: For partially settled expenses, credit must be reduced by the sum of *settled splits*.
+- **Implementation**: See `GroupDetailView.swift` logic.
