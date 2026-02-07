@@ -408,7 +408,9 @@ struct DataImportService {
                 case .linkToExisting(let id):
                     matchedExistingId = id
                 case .createNew:
-                    matchedExistingId = nil // Explicitly create new
+                    // FIX: Still check if we've already created a new ID for this name in THIS import session.
+                    // .createNew means "distinct from existing app data" NOT "distinct from other occurrences in this import."
+                    matchedExistingId = nameToExistingId[parsedFriend.name.lowercased()]
                 }
             } else {
                 // Fallback to auto-match by name if no resolution context (legacy behavior)
@@ -482,7 +484,9 @@ struct DataImportService {
                         case .linkToExisting(let id):
                             resId = id
                         case .createNew:
-                            resId = nil
+                            // FIX: Still check if we've already created a new ID for this name in THIS import session.
+                            // .createNew means "distinct from existing app data" NOT "distinct from other occurrences in this import."
+                            resId = nameToExistingId[entry.memberName.lowercased()]
                         }
                     } else {
                          // Auto-match fallback
