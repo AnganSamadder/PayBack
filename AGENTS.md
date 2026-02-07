@@ -257,6 +257,20 @@ When a user registers (or re-registers) with an email (`store` mutation):
 - **Cause**: The expense record uses a Legacy ID (Alias) for the payer, but the user's Account uses a Canonical ID, and no link exists between them.
 - **Resolution**: Run a migration (like `fixIdsByName`) to detect expenses where the Payer Name matches the Account Name but IDs differ, then create an alias record and canonicalize the expense ID.
 
+### Balance Calculation (2026-02-07)
+- **Settled Expenses**: Fully settled expenses (`is_settled: true`) MUST be excluded from net balance calculations. Including them causes the payer to show a positive "Get" balance even after reimbursement.
+- **Partial Settlements**: For partially settled expenses, the payer's credit must be reduced by the sum of *settled splits*.
+- **Fix**: Updated `GroupDetailView.swift` logic to filter settled expenses/splits correctly.
+
+### Ghost Data & Hard Deletes (2026-02-07)
+- **Scenario**: User hard deletes account, then re-imports data from a backup (CSV) that contains the old account's ID.
+- **Problem**: The import creates a "Manual Friend" with the old ID. Later, if the user recreates their account, they get a *new* ID. The manual friend remains "Ghost" (unlinked, duplicate).
+- **Solution (Backend)**: `bulkImport` now implements **Canonical Alias Resolution**:
+  1. Checks if an imported ID is a known alias.
+  2. If yes, remaps all references to the Canonical ID.
+  3. Checks if a friend already exists for the Canonical ID and merges/updates instead of creating a duplicate.
+- **Cleanup**: If ghosts exist, use `fix_placeholder` logic to rename them or `fixIdsByName` to link them.
+
 ### Account Deletion & Auto-Login Behavior (2026-02-06)
 - **Constraint**: Accounts should NOT be auto-created during session restoration (app restart).
 - **Explicit Login**: Explicit Sign In (entering credentials) SHOULD create the account if it's missing (e.g. recreating after wipe), as it indicates user intent.
