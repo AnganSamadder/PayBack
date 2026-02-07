@@ -51,3 +51,40 @@ export async function reconcileUserExpenses(
     ctx.db.delete(row._id)
   ));
 }
+
+/**
+ * Finds all expenses owned by the current user that involve a specific member ID,
+ * and ensures the target user ID has visibility (user_expenses row) for them.
+ */
+export async function reconcileExpensesForMember(
+  ctx: MutationCtx,
+  ownerEmail: string,
+  memberId: string,
+  targetUserId: string
+) {
+  const expenses = await ctx.db
+    .query("expenses")
+    .withIndex("by_owner_email", (q) => q.eq("owner_email", ownerEmail))
+    .collect();
+
+  const relevantExpenses = expenses.filter(e => 
+    e.involved_member_ids.includes(memberId) || 
+    e.paid_by_member_id === memberId
+  );
+
+  await Promise.all(relevantExpenses.map(async (expense) => {
+    const userExpenses = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", expense.id))
+      .filter(q => q.eq(q.field("user_id"), targetUserId))
+      .first();
+
+    if (!userExpenses) {
+      await ctx.db.insert("user_expenses", {
+        user_id: targetUserId,
+        expense_id: expense.id,
+        updated_at: Date.now(),
+      });
+    }
+  }));
+}

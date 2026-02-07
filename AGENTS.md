@@ -215,13 +215,20 @@ When a user registers (or re-registers) with an email (`store` mutation):
 - **Scope**: Wipes EVERYTHING immediately (Account, Friends, Groups, Expenses, Invites, Aliases).
 - **Use Case**: Admin tools or total data removal requests.
 
-## Canonical Identity & Aliasing (2026-02-04)
+### Canonical Identity & Aliasing (2026-02-04)
 
 ### New Model
 - **Source of Truth**: `member_id` is the immutable identifier for an account (assigned at creation).
 - **Legacy Removal**: `linked_member_id` and `equivalent_member_ids` have been removed from the schema and codebase.
 - **Linking**: Account linking creates records in `member_aliases` table mapping `alias_member_id` -> `canonical_member_id`.
 - **Resolution**: Use `resolveCanonicalMemberIdInternal` helper to resolve any ID (alias or canonical) to the canonical ID.
+
+### Import & Linking Logic (2026-02-07)
+- **Validation**: `bulkImport` must explicitly validate `linked_account_email` against the `accounts` table.
+- **Ghost Links**: If the linked account does not exist (deleted), the link MUST be stripped, reverting the friend to "Manual" status.
+- **Updates**: Existing "Manual" friends must be upgraded to "Linked" if a valid link is provided during import.
+- **Reconciliation**: Linking a user triggers `reconcileExpensesForMember` to backfill `user_expenses` visibility for past expenses.
+- **Schema**: `account_friends` includes `linked_member_id` to persist the canonical link.
 
 ### Migration Learnings
 - **Data Integrity**: When migrating, ensure `member_aliases` are populated (e.g. from `invite_tokens`) *before* removing legacy fields, to preserve link history.

@@ -46,6 +46,7 @@ export default defineSchema({
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
+    linked_member_id: v.optional(v.string()), // Canonical Member ID link
     status: v.optional(v.string()),
     profile_image_url: v.optional(v.string()),
     updated_at: v.number(),
