@@ -6,6 +6,10 @@ This file guides agentic coding assistants working in this repo.
 - Applies to the entire repository.
 - No Cursor or Copilot instruction files were found in this repo.
 
+## Tooling Standards
+- **Runtime**: Always use `bun` or `bunx` for JavaScript/TypeScript tasks (e.g. `bunx convex ...`).
+- **Dependencies**: Do not use `npm` or `yarn` unless strictly necessary.
+
 ## CI Environment Constraints
 - Xcode Cloud runs on x86 and does not support Convex testing.
 - Do not add build steps that require running the Convex backend in CI.
