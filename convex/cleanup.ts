@@ -158,51 +158,48 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     sampleIds: sampleIds(ownedExpenseIds),
   });
 
-  const linkedInOthersLists = await ctx.db
+  const deletedFriendRecordIds: string[] = [];
+
+  const linkedById = await ctx.db
     .query("account_friends")
     .withIndex("by_linked_account_id", (q: any) =>
       q.eq("linked_account_id", account.id)
     )
     .collect();
-  const unlinkedIds: string[] = [];
-  const unlinkedSet = new Set<string>();
-  for (const friendRecord of linkedInOthersLists) {
-    await ctx.db.patch(friendRecord._id, {
-      has_linked_account: false,
-      linked_account_id: undefined,
-      linked_account_email: undefined,
-      updated_at: Date.now(),
-    });
-    unlinkedIds.push(friendRecord._id);
-    unlinkedSet.add(friendRecord._id);
+  for (const fr of linkedById) {
+    await ctx.db.delete(fr._id);
+    deletedFriendRecordIds.push(fr._id);
   }
 
-  const potentialZombies = await ctx.db.query("account_friends").collect();
-  for (const z of potentialZombies) {
-    if (z.account_email === account.email) continue;
+  const linkedByEmail = await ctx.db
+    .query("account_friends")
+    .withIndex("by_linked_account_email", (q: any) =>
+      q.eq("linked_account_email", account.email)
+    )
+    .collect();
+  for (const fr of linkedByEmail) {
+    if (deletedFriendRecordIds.includes(fr._id)) continue;
+    await ctx.db.delete(fr._id);
+    deletedFriendRecordIds.push(fr._id);
+  }
 
-    const isZombie =
-      z.linked_account_email === account.email ||
-      z.linked_account_id === account.id ||
-      (account.member_id &&
-        z.linked_account_id === account.member_id);
-
-    if (isZombie && z.has_linked_account && !unlinkedSet.has(z._id)) {
-      await ctx.db.patch(z._id, {
-        has_linked_account: false,
-        linked_account_id: undefined,
-        linked_account_email: undefined,
-        updated_at: Date.now(),
-      });
-      unlinkedIds.push(z._id);
-      unlinkedSet.add(z._id);
+  if (account.member_id) {
+    const linkedByMemberId = await ctx.db
+      .query("account_friends")
+      .withIndex("by_linked_member_id", (q: any) =>
+        q.eq("linked_member_id", account.member_id)
+      )
+      .collect();
+    for (const fr of linkedByMemberId) {
+      if (deletedFriendRecordIds.includes(fr._id)) continue;
+      await ctx.db.delete(fr._id);
+      deletedFriendRecordIds.push(fr._id);
     }
   }
-  logHardDelete(baseLog, "unlink_from_others", {
-    unlinkedCount: unlinkedIds.length,
-    sampleIds: sampleIds(unlinkedIds),
-    scanUsed: true,
-    scanReason: "linked_account_email has no index",
+
+  logHardDelete(baseLog, "delete_linked_friend_records", {
+    deletedCount: deletedFriendRecordIds.length,
+    sampleIds: sampleIds(deletedFriendRecordIds),
   });
 
   const incomingRequests = await ctx.db
@@ -288,7 +285,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     groupsDeleted: groupIds.length,
     groupExpensesDeleted: groupExpenseIds.length,
     expensesDeleted: ownedExpenseIds.length,
-    unlinkedFriends: unlinkedIds.length,
+    linkedFriendRecordsDeleted: deletedFriendRecordIds.length,
     linkRequestsDeleted: deletedRequests,
     invitesDeleted: inviteIds.length,
     aliasesDeleted,
@@ -300,6 +297,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     friendsDeleted: friendIds.length,
     groupsDeleted: groupIds.length,
     expensesDeleted: ownedExpenseIds.length + groupExpenseIds.length,
+    linkedFriendRecordsDeleted: deletedFriendRecordIds.length,
     aliasesDeleted,
   };
 }

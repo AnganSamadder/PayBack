@@ -262,6 +262,121 @@ export async function cleanupOrphanedDataForEmail(
   };
 }
 
+export async function hardCleanupOrphanedAccount(
+  ctx: any,
+  { email }: { email: string }
+) {
+  const operationId = crypto.randomUUID();
+
+  const friends = await ctx.db
+    .query("account_friends")
+    .withIndex("by_account_email", (q: any) => q.eq("account_email", email))
+    .collect();
+  
+  let friendsDeleted = 0;
+  for (const friend of friends) {
+    await ctx.db.delete(friend._id);
+    friendsDeleted++;
+  }
+
+  const linkedByEmail = await ctx.db
+    .query("account_friends")
+    .withIndex("by_linked_account_email", (q: any) => q.eq("linked_account_email", email))
+    .collect();
+  
+  let linkedFriendsDeleted = 0;
+  for (const friend of linkedByEmail) {
+    await ctx.db.delete(friend._id);
+    linkedFriendsDeleted++;
+  }
+
+  const groupsByEmail = await ctx.db
+    .query("groups")
+    .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
+    .collect();
+  
+  let groupsDeleted = 0;
+  let expensesDeleted = 0;
+  for (const group of groupsByEmail) {
+    const expenses = await ctx.db
+      .query("expenses")
+      .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
+      .collect();
+    
+    for (const expense of expenses) {
+      await ctx.db.delete(expense._id);
+      expensesDeleted++;
+    }
+    
+    await ctx.db.delete(group._id);
+    groupsDeleted++;
+  }
+
+  const expensesByEmail = await ctx.db
+    .query("expenses")
+    .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
+    .collect();
+  
+  for (const expense of expensesByEmail) {
+    await ctx.db.delete(expense._id);
+    expensesDeleted++;
+  }
+
+  const linkRequests = await ctx.db
+    .query("link_requests")
+    .withIndex("by_recipient_email", (q: any) => q.eq("recipient_email", email))
+    .collect();
+  
+  let requestsDeleted = 0;
+  for (const req of linkRequests) {
+    await ctx.db.delete(req._id);
+    requestsDeleted++;
+  }
+
+  const outgoingRequests = await ctx.db
+    .query("link_requests")
+    .withIndex("by_requester_email", (q: any) => q.eq("requester_email", email))
+    .collect();
+  
+  for (const req of outgoingRequests) {
+    await ctx.db.delete(req._id);
+    requestsDeleted++;
+  }
+
+  const invites = await ctx.db
+    .query("invite_tokens")
+    .withIndex("by_creator_email", (q: any) => q.eq("creator_email", email))
+    .collect();
+  
+  let invitesDeleted = 0;
+  for (const invite of invites) {
+    await ctx.db.delete(invite._id);
+    invitesDeleted++;
+  }
+
+  console.log(JSON.stringify({
+    scope: "users.hardCleanupOrphanedAccount",
+    operationId,
+    email,
+    friendsDeleted,
+    linkedFriendsDeleted,
+    groupsDeleted,
+    expensesDeleted,
+    requestsDeleted,
+    invitesDeleted,
+  }));
+
+  return {
+    operationId,
+    friendsDeleted,
+    linkedFriendsDeleted,
+    groupsDeleted,
+    expensesDeleted,
+    requestsDeleted,
+    invitesDeleted,
+  };
+}
+
 /**
  * Stores or updates the current user in the `accounts` table.
  * Should be called after authentication to ensure the user exists in our DB.
