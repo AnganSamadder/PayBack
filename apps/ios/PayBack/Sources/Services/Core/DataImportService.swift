@@ -75,7 +75,7 @@ struct ParsedExportData: Sendable {
 }
 
 struct ParsedFriend: Sendable {
-    let memberId: UUID
+    var memberId: UUID
     let name: String
     let nickname: String?
     let hasLinkedAccount: Bool
@@ -109,7 +109,7 @@ struct ParsedFriend: Sendable {
 }
 
 struct ParsedGroup: Sendable {
-    let id: UUID
+    var id: UUID
     let name: String
     let isDirect: Bool
     let isDebug: Bool
@@ -118,8 +118,8 @@ struct ParsedGroup: Sendable {
 }
 
 struct ParsedGroupMember: Sendable {
-    let groupId: UUID
-    let memberId: UUID
+    var groupId: UUID
+    var memberId: UUID
     let memberName: String
     let profileImageUrl: String?
     let profileColorHex: String?
@@ -127,11 +127,11 @@ struct ParsedGroupMember: Sendable {
 
 struct ParsedExpense: Sendable {
     let id: UUID
-    let groupId: UUID
+    var groupId: UUID
     let description: String
     let date: Date
     let totalAmount: Double
-    let paidByMemberId: UUID
+    var paidByMemberId: UUID
     let isSettled: Bool
     let isDebug: Bool
 }
@@ -139,7 +139,7 @@ struct ParsedExpense: Sendable {
 struct ParsedExpenseSplit: Sendable {
     let expenseId: UUID
     let splitId: UUID
-    let memberId: UUID
+    var memberId: UUID
     let amount: Double
     let isSettled: Bool
 }
@@ -722,7 +722,12 @@ struct DataImportService {
         }
         
         #if !PAYBACK_CI_NO_CONVEX
-        let bulkResult = await performBulkImport(from: parsedData, accountService: Dependencies.current.accountService)
+        let bulkResult = await performBulkImport(
+            from: parsedData,
+            memberIdMapping: memberIdMapping,
+            groupIdMapping: groupIdMapping,
+            accountService: Dependencies.current.accountService
+        )
         switch bulkResult {
         case .partialSuccess(_, let bulkErrors):
             errors.append(contentsOf: bulkErrors)
@@ -1101,11 +1106,86 @@ extension DataImportService {
         }
     }
     
+    /// Applies ID remappings to ParsedExportData so that Convex receives the same UUIDs as local state.
+    /// This ensures iOS local groups/expenses have matching IDs with their Convex counterparts.
+    static func applyRemappings(
+        to parsed: ParsedExportData,
+        memberIdMapping: [UUID: UUID],
+        groupIdMapping: [UUID: UUID]
+    ) -> ParsedExportData {
+        var result = parsed
+        
+        result.friends = parsed.friends.map { friend in
+            var remapped = friend
+            if let newId = memberIdMapping[friend.memberId] {
+                remapped.memberId = newId
+            }
+            return remapped
+        }
+        
+        result.groups = parsed.groups.map { group in
+            var remapped = group
+            if let newId = groupIdMapping[group.id] {
+                remapped.id = newId
+            }
+            return remapped
+        }
+        
+        result.groupMembers = parsed.groupMembers.map { member in
+            var remapped = member
+            if let newGroupId = groupIdMapping[member.groupId] {
+                remapped.groupId = newGroupId
+            }
+            if let newMemberId = memberIdMapping[member.memberId] {
+                remapped.memberId = newMemberId
+            }
+            return remapped
+        }
+        
+        result.expenses = parsed.expenses.map { expense in
+            var remapped = expense
+            if let newGroupId = groupIdMapping[expense.groupId] {
+                remapped.groupId = newGroupId
+            }
+            if let newPaidById = memberIdMapping[expense.paidByMemberId] {
+                remapped.paidByMemberId = newPaidById
+            }
+            return remapped
+        }
+        
+        result.expenseInvolvedMembers = parsed.expenseInvolvedMembers.map { entry in
+            let newMemberId = memberIdMapping[entry.memberId] ?? entry.memberId
+            return (expenseId: entry.expenseId, memberId: newMemberId)
+        }
+        
+        result.expenseSplits = parsed.expenseSplits.map { split in
+            var remapped = split
+            if let newMemberId = memberIdMapping[split.memberId] {
+                remapped.memberId = newMemberId
+            }
+            return remapped
+        }
+        
+        result.participantNames = parsed.participantNames.map { entry in
+            let newMemberId = memberIdMapping[entry.memberId] ?? entry.memberId
+            return (expenseId: entry.expenseId, memberId: newMemberId, name: entry.name)
+        }
+        
+        return result
+    }
+    
     static func performBulkImport(
         from parsed: ParsedExportData,
+        memberIdMapping: [UUID: UUID] = [:],
+        groupIdMapping: [UUID: UUID] = [:],
         accountService: AccountService
     ) async -> ImportResult {
-        let chunks = chunkExpenses(from: parsed, maxPerChunk: 100)
+        let remappedParsed = applyRemappings(
+            to: parsed,
+            memberIdMapping: memberIdMapping,
+            groupIdMapping: groupIdMapping
+        )
+        let chunks = chunkExpenses(from: remappedParsed, maxPerChunk: 100)
         
         var totalFriendsAdded = 0
         var totalGroupsAdded = 0
@@ -1113,7 +1193,7 @@ extension DataImportService {
         var allErrors: [String] = []
         
         if chunks.isEmpty {
-            let request = convertToBulkImportRequest(from: parsed)
+            let request = convertToBulkImportRequest(from: remappedParsed)
             do {
                 let result = try await accountService.bulkImport(request: request)
                 totalFriendsAdded = result.created.friends
@@ -1125,7 +1205,7 @@ extension DataImportService {
             }
         } else {
             for (index, chunk) in chunks.enumerated() {
-                var chunkParsed = parsed
+                var chunkParsed = remappedParsed
                 chunkParsed.expenses = chunk
                 
                 if index > 0 {
