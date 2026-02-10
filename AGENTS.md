@@ -10,6 +10,11 @@ This file guides agentic coding assistants working in this repo.
 - Always use the local CI simulation script for full test runs: `./scripts/test-ci-locally.sh`.
 - This script must remain in lockstep with GitHub Actions. If `.github/workflows/ci.yml` changes, update `scripts/test-ci-locally.sh` to replicate CI behavior exactly (steps, flags, simulator selection, coverage settings).
 
+## Monorepo Tooling
+- Package manager is Bun (`bun`, `bunx`), with Turbo for task orchestration.
+- Workspace checks are run from root with `bun run ci`.
+- Workspaces are under `apps/*` and `packages/*`.
+
 ## Git Commits
 - Match the repo’s current commit style: conventional-commit prefix like `fix:` or `fix(tests):`, followed by a short, lowercase summary.
 - Commit messages must be a single line (no body).
@@ -117,6 +122,8 @@ This file guides agentic coding assistants working in this repo.
 
 ## Repo-Specific Notes
 - iOS app lives in `apps/ios/PayBack`.
+- Backend functions live in `apps/backend/convex` (configured by root `convex.json`).
+- Web landing app lives in `apps/web`.
 - Design system components are in `apps/ios/PayBack/Sources/DesignSystem`.
 - Tests are in `apps/ios/PayBack/Tests`.
 

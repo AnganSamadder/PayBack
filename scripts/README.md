@@ -1,40 +1,41 @@
 # PayBack Scripts
 
-Helper scripts for local development and CI.
+Helper scripts for local development and CI parity.
 
 ## Scripts
 
-- `setup-git-hooks.sh`: Installs git hooks for local workflows (optional).
-- `test-ci-locally.sh`: Runs tests with CI parity. Supports multiple modes:
-  - Default: GitHub Actions-style test run
-  - `CI_FLAVOR=xcodecloud`: XcodeCloud parity mode with build-for-testing flow
-- `test-with-coverage.sh`: Runs tests with code coverage and writes `coverage.json` + `coverage-report.txt`.
+- `setup-git-hooks.sh`: installs git hooks for local workflows
+- `test-ci-locally.sh`: full local CI parity (JS/TS + iOS)
+- `test-with-coverage.sh`: iOS coverage helper output
 
 ## Running Tests Locally
 
 ```bash
-# Generate/regenerate Xcode project
-xcodegen generate
+# Install JS dependencies
+bun install
 
-# Run tests (simple)
-xcodebuild -scheme PayBack -destination "platform=iOS Simulator,name=iPhone 16" test
+# Run monorepo checks (web/backend/config)
+bun run ci
 
-# Run tests with CI parity
+# Run local CI parity script (includes JS + iOS)
 ./scripts/test-ci-locally.sh
 
-# Run with XcodeCloud parity mode
+# Skip web e2e smoke tests when needed
+RUN_WEB_E2E=0 ./scripts/test-ci-locally.sh
+
+# Run XcodeCloud-like flow
 CI_FLAVOR=xcodecloud ./scripts/test-ci-locally.sh
 ```
 
 ## Convex Backend
 
-The app uses Convex as its backend. Backend functions are in the `convex/` directory.
+Backend functions are in `apps/backend/convex` and routed via root `convex.json`.
 
-To deploy backend changes locally:
 ```bash
-npx convex deploy
+bun run --filter @payback/backend dev
+bun run --filter @payback/backend deploy
 ```
 
-For CI/XcodeCloud deployment, set these environment variables:
+For CI/XcodeCloud deployment, set:
 - `CONVEX_DEPLOY_KEY`: Convex deploy key (secret)
-- `CONVEX_DEPLOY_ON_CI=1`: Safety switch to enable deploy from CI
+- `CONVEX_DEPLOY_ON_CI=1`: safety switch enabling deploy from CI
