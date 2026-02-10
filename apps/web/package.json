@@ -13,14 +13,12 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@payback/design-tokens": "workspace:*",
     "@tanstack/react-router": "^1.111.9",
     "@vercel/analytics": "^1.5.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@payback/config-eslint": "workspace:*",
     "@playwright/test": "^1.50.1",
     "@tailwindcss/vite": "^4.0.8",
     "@types/react": "^19.0.10",
