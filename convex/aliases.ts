@@ -1,5 +1,11 @@
 import { query, internalQuery, mutation, DatabaseReader } from "./_generated/server";
 import { v } from "convex/values";
+import {
+  deterministicLinkingError,
+  findAliasByAliasMemberId,
+  LINKING_ERROR_CODES,
+  normalizeMemberId,
+} from "./identity";
 
 /**
  * Internal helper for transitive alias resolution.
@@ -14,21 +20,20 @@ export async function resolveCanonicalMemberIdInternal(
   memberId: string,
   visited: Set<string> = new Set()
 ): Promise<string> {
+  const normalizedMemberId = normalizeMemberId(memberId);
+
   // Cycle protection: if we've seen this ID, return it to break the cycle
-  if (visited.has(memberId)) {
-    return memberId;
+  if (visited.has(normalizedMemberId)) {
+    return normalizedMemberId;
   }
-  visited.add(memberId);
+  visited.add(normalizedMemberId);
 
   // Look up if this memberId is an alias pointing to something else
-  const alias = await db
-    .query("member_aliases")
-    .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", memberId))
-    .first();
+  const alias = await findAliasByAliasMemberId(db, normalizedMemberId);
 
   if (!alias) {
     // No alias exists - this is either the canonical ID or an unlinked member
-    return memberId;
+    return normalizedMemberId;
   }
 
   // Recursively resolve the canonical_member_id (for transitive resolution)
@@ -47,7 +52,7 @@ export async function resolveCanonicalMemberIdInternal(
 export const resolveCanonicalMemberId = query({
   args: { memberId: v.string() },
   handler: async (ctx, args) => {
-    return await resolveCanonicalMemberIdInternal(ctx.db, args.memberId);
+    return await resolveCanonicalMemberIdInternal(ctx.db, normalizeMemberId(args.memberId));
   },
 });
 
@@ -58,7 +63,7 @@ export const resolveCanonicalMemberId = query({
 export const resolveCanonicalMemberIdInternalQuery = internalQuery({
   args: { memberId: v.string() },
   handler: async (ctx, args) => {
-    return await resolveCanonicalMemberIdInternal(ctx.db, args.memberId);
+    return await resolveCanonicalMemberIdInternal(ctx.db, normalizeMemberId(args.memberId));
   },
 });
 
@@ -74,14 +79,23 @@ export const resolveCanonicalMemberIdInternalQuery = internalQuery({
 export const getAliasesForMember = query({
   args: { canonicalMemberId: v.string() },
   handler: async (ctx, args) => {
+    const normalizedCanonical = normalizeMemberId(args.canonicalMemberId);
     const aliases = await ctx.db
       .query("member_aliases")
       .withIndex("by_canonical_member_id", (q) =>
-        q.eq("canonical_member_id", args.canonicalMemberId)
+        q.eq("canonical_member_id", normalizedCanonical)
       )
       .collect();
 
-    return aliases.map((a) => a.alias_member_id);
+    if (aliases.length > 0) {
+      return aliases.map((a) => normalizeMemberId(a.alias_member_id));
+    }
+
+    // Legacy fallback during case-normalization rollout.
+    const allAliases = await ctx.db.query("member_aliases").collect();
+    return allAliases
+      .filter((a) => normalizeMemberId(a.canonical_member_id) === normalizedCanonical)
+      .map((a) => normalizeMemberId(a.alias_member_id));
   },
 });
 
@@ -97,23 +111,30 @@ export async function getAllEquivalentMemberIds(
   memberId: string
 ): Promise<string[]> {
   // First resolve to canonical
-  const canonicalId = await resolveCanonicalMemberIdInternal(db, memberId);
+  const normalizedMemberId = normalizeMemberId(memberId);
+  const canonicalId = await resolveCanonicalMemberIdInternal(db, normalizedMemberId);
 
   // Get all aliases pointing to this canonical
-  const aliases = await db
+  let aliases = await db
     .query("member_aliases")
     .withIndex("by_canonical_member_id", (q) =>
       q.eq("canonical_member_id", canonicalId)
     )
     .collect();
 
-  const aliasIds = aliases.map((a) => a.alias_member_id);
+  if (aliases.length === 0) {
+    // Legacy fallback during case-normalization rollout.
+    const allAliases = await db.query("member_aliases").collect();
+    aliases = allAliases.filter((a) => normalizeMemberId(a.canonical_member_id) === canonicalId);
+  }
+
+  const aliasIds = aliases.map((a) => normalizeMemberId(a.alias_member_id));
 
   // Return canonical + all aliases (deduplicated)
   const allIds = new Set([canonicalId, ...aliasIds]);
   
   // Also include the original input in case it's neither canonical nor alias yet
-  allIds.add(memberId);
+  allIds.add(normalizedMemberId);
 
   return Array.from(allIds);
 }
@@ -127,9 +148,11 @@ async function wouldCreateCycle(
   sourceId: string,
   targetId: string
 ): Promise<boolean> {
+  const normalizedSource = normalizeMemberId(sourceId);
+  const normalizedTarget = normalizeMemberId(targetId);
   // If target eventually resolves to source, creating source→target would create a cycle
-  const targetCanonical = await resolveCanonicalMemberIdInternal(db, targetId);
-  return targetCanonical === sourceId;
+  const targetCanonical = await resolveCanonicalMemberIdInternal(db, normalizedTarget);
+  return targetCanonical === normalizedSource;
 }
 
 /**
@@ -153,7 +176,9 @@ export const mergeMemberIds = mutation({
     accountEmail: v.string(),
   },
   handler: async (ctx, args) => {
-    const { sourceId, targetCanonicalId, accountEmail } = args;
+    const sourceId = normalizeMemberId(args.sourceId);
+    const targetCanonicalId = normalizeMemberId(args.targetCanonicalId);
+    const accountEmail = args.accountEmail.toLowerCase().trim();
 
     // Self-merge is a no-op
     if (sourceId === targetCanonicalId) {
@@ -166,10 +191,7 @@ export const mergeMemberIds = mutation({
     }
 
     // Check if this exact alias already exists (idempotent)
-    const existingAlias = await ctx.db
-      .query("member_aliases")
-      .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", sourceId))
-      .first();
+    const existingAlias = await findAliasByAliasMemberId(ctx.db, sourceId);
 
     if (existingAlias) {
       // Resolve target to see if they match
@@ -197,15 +219,17 @@ export const mergeMemberIds = mutation({
       }
 
       // Source already points somewhere else - conflict
-      throw new Error(
-        `Cannot merge: sourceId ${sourceId} already aliases to ${existingAlias.canonical_member_id}`
+      throw deterministicLinkingError(
+        LINKING_ERROR_CODES.aliasConflict,
+        `source_id=${sourceId},existing_canonical=${existingAlias.canonical_member_id},requested_target=${targetCanonicalId}`
       );
     }
 
     // Check for cycle: would creating source→target create a cycle?
     if (await wouldCreateCycle(ctx.db, sourceId, targetCanonicalId)) {
-      throw new Error(
-        `Cannot merge: would create cycle (${targetCanonicalId} already resolves to ${sourceId})`
+      throw deterministicLinkingError(
+        LINKING_ERROR_CODES.aliasCycle,
+        `source_id=${sourceId},target_id=${targetCanonicalId}`
       );
     }
 
@@ -257,7 +281,9 @@ export const mergeUnlinkedFriends = mutation({
     accountEmail: v.string(),
   },
   handler: async (ctx, args) => {
-    const { friendId1, friendId2, accountEmail } = args;
+    const friendId1 = normalizeMemberId(args.friendId1);
+    const friendId2 = normalizeMemberId(args.friendId2);
+    const accountEmail = args.accountEmail.toLowerCase().trim();
 
     if (friendId1 === friendId2) {
       return {
@@ -300,10 +326,7 @@ export const mergeUnlinkedFriends = mutation({
       );
     }
 
-    const existingAlias = await ctx.db
-      .query("member_aliases")
-      .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", friendId2))
-      .first();
+    const existingAlias = await findAliasByAliasMemberId(ctx.db, friendId2);
 
     if (existingAlias) {
       const existingCanonical = await resolveCanonicalMemberIdInternal(
@@ -326,8 +349,9 @@ export const mergeUnlinkedFriends = mutation({
     }
 
     if (await wouldCreateCycle(ctx.db, friendId2, friendId1)) {
-      throw new Error(
-        `Cannot merge: would create cycle (${friendId1} already resolves to ${friendId2})`
+      throw deterministicLinkingError(
+        LINKING_ERROR_CODES.aliasCycle,
+        `source_id=${friendId2},target_id=${friendId1}`
       );
     }
 
