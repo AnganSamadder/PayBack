@@ -92,8 +92,9 @@ export default function Home() {
                         animation: "pulse-dot 2s ease-in-out infinite",
                     }} />
                     <p style={{ fontSize: "0.88rem", fontFamily: "'Outfit', sans-serif", margin: 0, flex: 1 }}>
-                        <span style={{ color: accent, fontWeight: 600 }}>Coming soon on TestFlight!</span>{" "}
-                        <span style={{ color: muted }}>Check back shortly — we're almost ready.</span>
+                        <span style={{ color: accent, fontWeight: 600 }}>Coming soon on TestFlight!</span>
+                        <br />
+                        <span style={{ color: muted }}>Check back shortly, we're almost ready.</span>
                     </p>
                     <button
                         onClick={handleDismiss}
