@@ -43,23 +43,38 @@ struct FriendDetailView: View {
         return false
     }
 
+    private func isFriend(_ memberId: UUID) -> Bool {
+        // Use AppStore's centralized alias resolution
+        if store.areSamePerson(memberId, friend.id) {
+            return true
+        }
+        
+        // Legacy fallback (in case alias map isn't populated or friend is just a group member)
+        if memberId == friend.id { return true }
+        if let linkedId = friend.accountFriendMemberId, memberId == linkedId { return true }
+        
+        return false
+    }
+
     private var netBalance: Double {
         var balance: Double = 0
+        
+        // Debug logging for troubleshooting
 
         // TODO: DATABASE_INTEGRATION - Replace store.groups with database query
         // Example: SELECT * FROM groups WHERE member_ids CONTAINS friend.id
         for group in store.groups {
-            if group.members.contains(where: { $0.id == friend.id }) {
+            if group.members.contains(where: { isFriend($0.id) }) {
                 // TODO: DATABASE_INTEGRATION - Replace store.expenses(in:) with database query
                 // Example: SELECT * FROM expenses WHERE group_id = group.id AND settled = false
                 let groupExpenses = store.expenses(in: group.id)
                 for expense in groupExpenses {
                     if isMe(expense.paidByMemberId) {
                         // Current user paid, check if friend owes anything (only unsettled)
-                        if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }), !friendSplit.isSettled {
+                        if let friendSplit = expense.splits.first(where: { isFriend($0.memberId) }), !friendSplit.isSettled {
                             balance += friendSplit.amount
                         }
-                    } else if expense.paidByMemberId == friend.id {
+                    } else if isFriend(expense.paidByMemberId) {
                         // Friend paid, check if current user owes anything (only unsettled)
                         if let userSplit = expense.splits.first(where: { isMe($0.memberId) }), !userSplit.isSettled {
                             balance -= userSplit.amount
@@ -68,7 +83,6 @@ struct FriendDetailView: View {
                 }
             }
         }
-
         return balance
     }
     
@@ -132,20 +146,24 @@ struct FriendDetailView: View {
     
     private var hasPendingOutgoingRequest: Bool {
         store.outgoingLinkRequests.contains { request in
-            request.targetMemberId == friend.id && request.status == .pending
+            store.areSamePerson(request.targetMemberId, friend.id) && request.status == .pending
         }
     }
     
     // MARK: - Nickname Properties
     
     private var accountFriend: AccountFriend? {
-        let lookupId = friend.accountFriendMemberId ?? friend.id
-        return store.friends.first { $0.memberId == lookupId }
+        return store.friends.first { candidate in
+            if store.areSamePerson(candidate.memberId, friend.id) { return true }
+            if let accountFriendMemberId = friend.accountFriendMemberId {
+                return store.areSamePerson(candidate.memberId, accountFriendMemberId)
+            }
+            return false
+        }
     }
     
     private var isFriend: Bool {
-        let lookupId = friend.accountFriendMemberId ?? friend.id
-        return store.friends.contains { $0.memberId == lookupId }
+        accountFriend != nil
     }
     
     private var unlinkedFriends: [AccountFriend] {
@@ -153,7 +171,40 @@ struct FriendDetailView: View {
     }
     
     private var currentNickname: String? {
-        accountFriend?.nickname
+        sanitizedNickname(accountFriend?.nickname)
+    }
+
+    private func sanitizedNickname(_ raw: String?) -> String? {
+        guard var cleaned = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !cleaned.isEmpty else {
+            return nil
+        }
+
+        // Reject common placeholder quote-only values.
+        if cleaned == "\"\"" || cleaned == "''" || cleaned == "“”" || cleaned == "’’" {
+            return nil
+        }
+
+        if cleaned.count >= 2 {
+            let first = cleaned.first
+            let last = cleaned.last
+            let isWrappedInQuotes =
+                (first == "\"" && last == "\"") ||
+                (first == "'" && last == "'") ||
+                (first == "“" && last == "”") ||
+                (first == "‘" && last == "’")
+            if isWrappedInQuotes {
+                cleaned.removeFirst()
+                cleaned.removeLast()
+                cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        guard !cleaned.isEmpty else { return nil }
+        if cleaned.caseInsensitiveCompare(friend.name.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame {
+            return nil
+        }
+
+        return cleaned
     }
     
     private var displayName: String {
@@ -546,9 +597,32 @@ struct FriendDetailView: View {
     
     private func saveNickname(_ nickname: String?, preferNickname: Bool) async {
         isSavingNickname = true
+
+        let normalizedNickname: String? = {
+            guard var cleaned = nickname?.trimmingCharacters(in: .whitespacesAndNewlines), !cleaned.isEmpty else {
+                return nil
+            }
+            if cleaned == "\"\"" || cleaned == "''" {
+                return nil
+            }
+            if cleaned.count >= 2 {
+                let first = cleaned.first
+                let last = cleaned.last
+                if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                    cleaned.removeFirst()
+                    cleaned.removeLast()
+                    cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+            guard !cleaned.isEmpty else { return nil }
+            if cleaned.caseInsensitiveCompare(friend.name.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame {
+                return nil
+            }
+            return cleaned
+        }()
         
         do {
-            try await store.updateFriendNickname(memberId: friend.id, nickname: nickname)
+            try await store.updateFriendNickname(memberId: friend.id, nickname: normalizedNickname)
             try await store.updateFriendPreferNickname(memberId: friend.id, prefer: preferNickname)
             
             await MainActor.run {
@@ -638,8 +712,6 @@ struct FriendDetailView: View {
         }
         .onAppear {
             selectedTab = .direct
-            print("DEBUG: CurrentUser ID: \(store.currentUser.id)")
-            print("DEBUG: LinkedMemberID: \(String(describing: store.session?.account.linkedMemberId))")
         }
         .onChange(of: friend.id) { oldValue, newValue in
             selectedTab = .direct
@@ -746,7 +818,7 @@ struct FriendDetailView: View {
     private func cancelLinkRequest() async {
         // Find the pending request for this friend
         guard let request = store.outgoingLinkRequests.first(where: {
-            $0.targetMemberId == friend.id && $0.status == .pending
+            store.areSamePerson($0.targetMemberId, friend.id) && $0.status == .pending
         }) else {
             return
         }
@@ -1024,7 +1096,7 @@ struct FriendDetailView: View {
             (group.isDirect ?? false) && 
             group.members.count == 2 &&
             group.members.contains(where: { isMe($0.id) }) &&
-            group.members.contains(where: { $0.id == friend.id })
+            group.members.contains(where: { isFriend($0.id) })
         }
     }
 
@@ -1051,6 +1123,14 @@ struct DirectExpensesView: View {
         return false
     }
 
+    private func isFriend(_ memberId: UUID) -> Bool {
+        if store.areSamePerson(memberId, friend.id) { return true }
+        if let accountFriendMemberId = friend.accountFriendMemberId {
+            return store.areSamePerson(memberId, accountFriendMemberId)
+        }
+        return false
+    }
+
     fileprivate var directExpenses: [Expense] {
         // TODO: DATABASE_INTEGRATION - Replace with database query
         // Example: SELECT * FROM groups WHERE is_direct = true AND member_ids = [currentUser.id, friend.id]
@@ -1058,7 +1138,7 @@ struct DirectExpensesView: View {
             (group.isDirect ?? false) &&
             group.members.count == 2 &&
             group.members.contains(where: { isMe($0.id) }) &&
-            group.members.contains(where: { $0.id == friend.id })
+            group.members.contains(where: { isFriend($0.id) })
         }
 
         guard let directGroup = directGroup else { return [] }
@@ -1090,7 +1170,7 @@ struct DirectExpensesView: View {
             (group.isDirect ?? false) && 
             group.members.count == 2 &&
             group.members.contains(where: { isMe($0.id) }) &&
-            group.members.contains(where: { $0.id == friend.id })
+            group.members.contains(where: { isFriend($0.id) })
         }
     }
 }
@@ -1110,36 +1190,38 @@ struct GroupExpensesView: View {
     private var groupExpenses: [SpendingGroup: [Expense]] {
         var result: [SpendingGroup: [Expense]] = [:]
 
+        func isFriend(_ memberId: UUID) -> Bool {
+            if store.areSamePerson(memberId, friend.id) { return true }
+            if let accountFriendMemberId = friend.accountFriendMemberId {
+                return store.areSamePerson(memberId, accountFriendMemberId)
+            }
+            return false
+        }
+
         // TODO: DATABASE_INTEGRATION - Replace store.groups with database query
         // Example: SELECT * FROM groups WHERE member_ids CONTAINS friend.id AND is_direct = false
         for group in store.groups {
-            print("DEBUG: Checking group \(group.name) (\(group.id))")
             // Skip direct groups - those are handled separately
             guard !(group.isDirect ?? false) else { 
-                print("DEBUG: Group \(group.name) is direct, skipping")
                 continue 
             }
 
-            if group.members.contains(where: { $0.id == friend.id }) {
-                 print("DEBUG: Friend \(friend.name) (\(friend.id)) found in group \(group.name)")
+            if group.members.contains(where: { isFriend($0.id) }) {
             } else {
-                 print("DEBUG: Friend \(friend.name) (\(friend.id)) NOT found in group \(group.name). Members: \(group.members.map { "\($0.name) (\($0.id))" })")
             }
 
-            guard group.members.contains(where: { $0.id == friend.id }) else { continue }
+            guard group.members.contains(where: { isFriend($0.id) }) else { continue }
 
             // TODO: DATABASE_INTEGRATION - Replace store.expenses(in:) with database query
             // Example: SELECT * FROM expenses WHERE group_id = group.id AND involved_member_ids CONTAINS friend.id
             let expenses = store.expenses(in: group.id)
                 .filter { expense in
-                    let involved = expense.involvedMemberIds.contains(friend.id)
+                    let involved = expense.involvedMemberIds.contains { isFriend($0) }
                     if !involved {
-                        print("DEBUG: Expense '\(expense.description)' in group \(group.name) does NOT involve friend \(friend.id). Involved: \(expense.involvedMemberIds)")
                     }
                     return involved
                 }
 
-            print("DEBUG: Group \(group.name) has \(expenses.count) involved expenses for friend")
             if !expenses.isEmpty {
                 result[group] = expenses
             }
@@ -1188,6 +1270,14 @@ struct DirectExpenseCard: View {
         return false
     }
 
+    private func isFriend(_ memberId: UUID) -> Bool {
+        if store.areSamePerson(memberId, friend.id) { return true }
+        if let accountFriendMemberId = friend.accountFriendMemberId {
+            return store.areSamePerson(memberId, accountFriendMemberId)
+        }
+        return false
+    }
+
     var body: some View {
         let content = VStack(spacing: AppMetrics.FriendDetail.expenseCardInternalSpacing) {
             HStack {
@@ -1212,7 +1302,7 @@ struct DirectExpenseCard: View {
                         .foregroundStyle(.primary)
 
                     if isMe(expense.paidByMemberId) {
-                        if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
+                        if let friendSplit = expense.splits.first(where: { isFriend($0.memberId) }) {
                             if friendSplit.isSettled {
                                 HStack(spacing: 4) {
                                     Text("You paid \(currency(friendSplit.amount))")
@@ -1348,6 +1438,14 @@ struct GroupExpenseRow: View {
         return false
     }
 
+    private func isFriend(_ memberId: UUID) -> Bool {
+        if store.areSamePerson(memberId, friend.id) { return true }
+        if let accountFriendMemberId = friend.accountFriendMemberId {
+            return store.areSamePerson(memberId, accountFriendMemberId)
+        }
+        return false
+    }
+
     var body: some View {
         HStack(spacing: AppMetrics.FriendDetail.groupExpenseRowSpacing) {
             GroupIcon(name: expense.description)
@@ -1373,7 +1471,7 @@ struct GroupExpenseRow: View {
                 // Show the relationship between current user and friend
                 if isMe(expense.paidByMemberId) {
                     // Current user paid - friend owes current user
-                    if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
+                    if let friendSplit = expense.splits.first(where: { isFriend($0.memberId) }) {
                         HStack(spacing: 4) {
                             Text("\(friend.name) owes \(currency(friendSplit.amount))")
                                 .font(.system(.caption, design: .rounded, weight: .medium))
@@ -1386,7 +1484,7 @@ struct GroupExpenseRow: View {
                             }
                         }
                     }
-                } else {
+                } else if isFriend(expense.paidByMemberId) {
                     // Friend paid - current user owes friend
                     if let userSplit = expense.splits.first(where: { isMe($0.memberId) }) {
                         HStack(spacing: 4) {

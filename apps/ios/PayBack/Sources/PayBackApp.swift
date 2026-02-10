@@ -16,23 +16,11 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 }
 
 struct RootViewWithStore: View {
-    @StateObject private var store: AppStore
+    @StateObject private var store = AppStore()
     @Environment(\.clerk) private var clerk
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var networkMonitor = NetworkMonitor()
     @State private var pendingInviteToken: UUID?
-
-    init() {
-        AppConfig.markTiming("RootViewWithStore init started")
-        // Initialize StateObject manually to track timing
-        let storeInstance = AppStore()
-        _store = StateObject(wrappedValue: storeInstance)
-        AppConfig.markTiming("RootViewWithStore init completed")
-        
-        AppConfig.markTiming("NetworkMonitor init started")
-        _networkMonitor = StateObject(wrappedValue: NetworkMonitor())
-        AppConfig.markTiming("NetworkMonitor init completed")
-    }
 
     var body: some View {
         Group {
