@@ -254,4 +254,51 @@ final class AppStoreBalanceTests: XCTestCase {
         // +50 (Normal) - 30 (Direct) = +20
         XCTAssertEqual(overall, 20, "Direct groups should count towards overall balance.")
     }
+    
+    func testNetBalance_WithEquivalentMemberIds_ReturnsCorrectBalance() {
+        let primaryId = sut.currentUser.id
+        let equivalentId = UUID()
+        let friendId = UUID()
+        
+        // Mock a session with equivalent IDs
+        let account = UserAccount(
+            id: primaryId.uuidString, // UserAccount.id is String (Auth ID)
+            email: "test@example.com",
+            displayName: "Test User",
+            linkedMemberId: nil,
+            equivalentMemberIds: [equivalentId]
+        )
+        sut.session = UserSession(account: account)
+        
+        let friend = GroupMember(id: friendId, name: "Friend")
+        let userAsEquivalent = GroupMember(id: equivalentId, name: "Me (Imported)", isCurrentUser: false)
+        
+        let group = SpendingGroup(
+            id: UUID(),
+            name: "Imported Group",
+            members: [userAsEquivalent, friend],
+            isDirect: false
+        )
+        sut.groups = [group]
+        
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 100,
+            paidByMemberId: friendId,
+            involvedMemberIds: [equivalentId, friendId],
+            splits: [
+                ExpenseSplit(memberId: equivalentId, amount: 50, isSettled: false),
+                ExpenseSplit(memberId: friendId, amount: 50, isSettled: false)
+            ]
+        )
+        sut.addExpense(expense)
+        
+        let balance = sut.netBalance(for: group)
+        
+        XCTAssertEqual(balance, -50, "Should aggregate debt even when user is identified by equivalentId")
+        
+        let overall = sut.overallNetBalance()
+        XCTAssertEqual(overall, -50, "Overall balance should also reflect equivalentId debts")
+    }
 }

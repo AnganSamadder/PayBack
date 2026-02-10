@@ -32,7 +32,7 @@ final class EmailAuthServiceTests: XCTestCase {
     func testSignInSuccess() async throws {
         let email = "test@example.com"
         let password = "password123"
-        let displayName = "Example User"
+        let displayName = "Test User"
         
         // First sign up to create the user
         _ = try await sut.signUp(email: email, password: password, firstName: "Test", lastName: "User")

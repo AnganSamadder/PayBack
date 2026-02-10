@@ -112,7 +112,14 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         guard var token = tokens[tokenId] else {
             throw PayBackError.linkInvalid
         }
-        
+
+        // Prevent claiming your own invite in tests that model creator/claimer identity.
+        let normalizedCreatorEmail = mockCreatorEmail.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedClaimerEmail = mockClaimerEmail.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if mockCreatorId == mockClaimerId || normalizedCreatorEmail == normalizedClaimerEmail {
+            throw PayBackError.linkSelfNotAllowed
+        }
+
         // Check if expired first
         if token.expiresAt < Date() {
             throw PayBackError.linkExpired
@@ -212,4 +219,3 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         tokens[tokenId] = token
     }
 }
-

@@ -55,6 +55,142 @@ final class ConvexDTOExtendedTests: XCTestCase {
         XCTAssertEqual(expense.date.timeIntervalSince1970, 1704067200, accuracy: 1)
     }
     
+    func testConvexExpenseDTO_toExpense_MapsParticipantNames() {
+        let memberId1 = "550e8400-e29b-41d4-a716-446655440001"
+        let memberId2 = "550e8400-e29b-41d4-a716-446655440002"
+        
+        let dto = ConvexExpenseDTO(
+            id: "550e8400-e29b-41d4-a716-446655440000",
+            group_id: "661e8400-e29b-41d4-a716-446655440001",
+            description: "Dinner",
+            date: 1704067200000,
+            total_amount: 100.0,
+            paid_by_member_id: memberId1,
+            involved_member_ids: [memberId1, memberId2],
+            splits: [],
+            is_settled: false,
+            owner_email: nil,
+            owner_account_id: nil,
+            participant_member_ids: [memberId1, memberId2],
+            participants: [
+                ConvexParticipantDTO(member_id: memberId1, name: "Alice", linked_account_id: nil, linked_account_email: nil),
+                ConvexParticipantDTO(member_id: memberId2, name: "Bob", linked_account_id: nil, linked_account_email: nil)
+            ],
+            subexpenses: nil
+        )
+        
+        let expense = dto.toExpense()
+        
+        XCTAssertNotNil(expense.participantNames)
+        XCTAssertEqual(expense.participantNames?.count, 2)
+        XCTAssertEqual(expense.participantNames?[UUID(uuidString: memberId1)!], "Alice")
+        XCTAssertEqual(expense.participantNames?[UUID(uuidString: memberId2)!], "Bob")
+    }
+    
+    func testConvexExpenseDTO_toExpense_NilParticipants_NilParticipantNames() {
+        let dto = ConvexExpenseDTO(
+            id: "550e8400-e29b-41d4-a716-446655440000",
+            group_id: "661e8400-e29b-41d4-a716-446655440001",
+            description: "Test",
+            date: 1704067200000,
+            total_amount: 50.0,
+            paid_by_member_id: "772e8400-e29b-41d4-a716-446655440002",
+            involved_member_ids: [],
+            splits: [],
+            is_settled: false,
+            owner_email: nil,
+            owner_account_id: nil,
+            participant_member_ids: nil,
+            participants: nil,
+            subexpenses: nil
+        )
+        
+        let expense = dto.toExpense()
+        
+        XCTAssertNil(expense.participantNames)
+    }
+    
+    func testConvexExpenseDTO_toExpense_EmptyParticipants_NilParticipantNames() {
+        let dto = ConvexExpenseDTO(
+            id: "550e8400-e29b-41d4-a716-446655440000",
+            group_id: "661e8400-e29b-41d4-a716-446655440001",
+            description: "Test",
+            date: 1704067200000,
+            total_amount: 50.0,
+            paid_by_member_id: "772e8400-e29b-41d4-a716-446655440002",
+            involved_member_ids: [],
+            splits: [],
+            is_settled: false,
+            owner_email: nil,
+            owner_account_id: nil,
+            participant_member_ids: [],
+            participants: [],
+            subexpenses: nil
+        )
+        
+        let expense = dto.toExpense()
+        
+        XCTAssertNil(expense.participantNames)
+    }
+    
+    func testConvexExpenseDTO_toExpense_TrimsWhitespaceFromNames() {
+        let memberId = "550e8400-e29b-41d4-a716-446655440001"
+        
+        let dto = ConvexExpenseDTO(
+            id: "550e8400-e29b-41d4-a716-446655440000",
+            group_id: "661e8400-e29b-41d4-a716-446655440001",
+            description: "Test",
+            date: 1704067200000,
+            total_amount: 50.0,
+            paid_by_member_id: memberId,
+            involved_member_ids: [memberId],
+            splits: [],
+            is_settled: false,
+            owner_email: nil,
+            owner_account_id: nil,
+            participant_member_ids: [memberId],
+            participants: [
+                ConvexParticipantDTO(member_id: memberId, name: "  Test User  ", linked_account_id: nil, linked_account_email: nil)
+            ],
+            subexpenses: nil
+        )
+        
+        let expense = dto.toExpense()
+        
+        XCTAssertEqual(expense.participantNames?[UUID(uuidString: memberId)!], "Test User")
+    }
+    
+    func testConvexExpenseDTO_toExpense_SkipsEmptyNames() {
+        let memberId1 = "550e8400-e29b-41d4-a716-446655440001"
+        let memberId2 = "550e8400-e29b-41d4-a716-446655440002"
+        
+        let dto = ConvexExpenseDTO(
+            id: "550e8400-e29b-41d4-a716-446655440000",
+            group_id: "661e8400-e29b-41d4-a716-446655440001",
+            description: "Test",
+            date: 1704067200000,
+            total_amount: 50.0,
+            paid_by_member_id: memberId1,
+            involved_member_ids: [memberId1, memberId2],
+            splits: [],
+            is_settled: false,
+            owner_email: nil,
+            owner_account_id: nil,
+            participant_member_ids: [memberId1, memberId2],
+            participants: [
+                ConvexParticipantDTO(member_id: memberId1, name: "Valid Name", linked_account_id: nil, linked_account_email: nil),
+                ConvexParticipantDTO(member_id: memberId2, name: "   ", linked_account_id: nil, linked_account_email: nil)
+            ],
+            subexpenses: nil
+        )
+        
+        let expense = dto.toExpense()
+        
+        XCTAssertEqual(expense.participantNames?.count, 1)
+        XCTAssertEqual(expense.participantNames?[UUID(uuidString: memberId1)!], "Valid Name")
+        XCTAssertNil(expense.participantNames?[UUID(uuidString: memberId2)!])
+    }
+    
     // MARK: - ConvexSplitDTO toExpenseSplit Tests
     
     func testConvexSplitDTO_toExpenseSplit_MapsAllFields() {
@@ -404,5 +540,46 @@ final class ConvexDTOExtendedTests: XCTestCase {
         XCTAssertNotNil(token)
         XCTAssertEqual(token?.claimedBy, "claimer-456")
         XCTAssertNotNil(token?.claimedAt)
+    }
+    
+    // MARK: - Link Accept DTO Contract V2 Tests
+    
+    func testConvexLinkAcceptResultDTO_DecodesContractV2() throws {
+        let json = """
+        {
+          "contract_version": 2,
+          "target_member_id": "661e8400-e29b-41d4-a716-446655440001",
+          "canonical_member_id": "550e8400-e29b-41d4-a716-446655440000",
+          "alias_member_ids": ["3e7e8400-e29b-41d4-a716-446655440002"],
+          "linked_member_id": "550e8400-e29b-41d4-a716-446655440000",
+          "linked_account_id": "user_123",
+          "linked_account_email": "test@example.com"
+        }
+        """
+        
+        let data = Data(json.utf8)
+        let decoded = try JSONDecoder().decode(ConvexLinkAcceptResultDTO.self, from: data)
+        
+        XCTAssertEqual(decoded.resolved_contract_version, 2)
+        XCTAssertEqual(decoded.resolved_target_member_id, "661e8400-e29b-41d4-a716-446655440001")
+        XCTAssertEqual(decoded.linked_member_id, "550e8400-e29b-41d4-a716-446655440000")
+        XCTAssertEqual(decoded.alias_member_ids ?? [], ["3e7e8400-e29b-41d4-a716-446655440002"])
+    }
+    
+    func testConvexLinkAcceptResultDTO_DecodesLegacyFallback() throws {
+        let json = """
+        {
+          "member_id": "550e8400-e29b-41d4-a716-446655440000",
+          "linked_account_id": "user_123",
+          "linked_account_email": "test@example.com"
+        }
+        """
+        
+        let data = Data(json.utf8)
+        let decoded = try JSONDecoder().decode(ConvexLinkAcceptResultDTO.self, from: data)
+        
+        XCTAssertEqual(decoded.resolved_contract_version, 1)
+        XCTAssertEqual(decoded.linked_member_id, "550e8400-e29b-41d4-a716-446655440000")
+        XCTAssertEqual(decoded.resolved_target_member_id, "550e8400-e29b-41d4-a716-446655440000")
     }
 }

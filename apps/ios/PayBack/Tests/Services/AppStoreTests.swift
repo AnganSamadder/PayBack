@@ -1401,23 +1401,86 @@ final class AppStoreTests: XCTestCase {
             linkedAccountId: "account-123",
             linkedAccountEmail: email
         )
+
+        // Seed local friend state directly so this test only validates email normalization.
+        sut.addImportedFriend(linkedFriend)
         
+        // When - check with different casing and whitespace
+        let isLinked = sut.isAccountEmailAlreadyLinked(email: " Alice@Example.com ")
+        
+        // Then
+        XCTAssertTrue(isLinked)
+    }
+    
+    // MARK: - Identity Resolution Tests
+    
+    func testAreSamePerson_ReturnsTrueForSameID() {
+        let id = UUID()
+        XCTAssertTrue(sut.areSamePerson(id, id))
+    }
+    
+    func testAreSamePerson_ReturnsTrueForAliasedIDs() async throws {
+        // Given
+        let masterId = UUID()
+        let aliasId = UUID()
+        
+        let friend = AccountFriend(
+            memberId: masterId,
+            name: "Master",
+            hasLinkedAccount: true,
+            aliasMemberIds: [masterId, aliasId]
+        )
+        
+        // Setup AppStore with this friend
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
         
-        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
-        sut.addGroup(name: "Test", memberNames: ["Alice"])
+        // Mock sync
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [friend])
+        
+        // Wait for sync to process
         try await Task.sleep(nanoseconds: 200_000_000)
         
-        // When - check with different casing and whitespace
-        let isLinked1 = sut.isAccountEmailAlreadyLinked(email: "  ALICE@EXAMPLE.COM  ")
-        let isLinked2 = sut.isAccountEmailAlreadyLinked(email: "alice@example.com")
+        // When/Then
+        XCTAssertTrue(sut.areSamePerson(masterId, aliasId), "Master and Alias should be same person")
+        XCTAssertTrue(sut.areSamePerson(aliasId, masterId), "Alias and Master should be same person")
+        XCTAssertTrue(sut.areSamePerson(aliasId, aliasId), "Alias and Alias should be same person")
+    }
+    
+    func testDeduplication_HidesAliasedFriends() async throws {
+        // Given
+        let masterId = UUID()
+        let aliasId = UUID()
         
-        // Then - both should return false since not yet synced to local state
-        XCTAssertFalse(isLinked1)
-        XCTAssertFalse(isLinked2)
+        let masterFriend = AccountFriend(
+            memberId: masterId,
+            name: "Master",
+            hasLinkedAccount: true,
+            aliasMemberIds: [masterId, aliasId]
+        )
+        
+        let aliasFriend = AccountFriend(
+            memberId: aliasId,
+            name: "Alias",
+            hasLinkedAccount: false,
+            aliasMemberIds: []
+        )
+        
+        // Setup AppStore
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        _ = UserSession(account: account)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        
+        // Mock sync with BOTH friends
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [masterFriend, aliasFriend])
+        
+        // Wait for sync to process
+        try await Task.sleep(nanoseconds: 200_000_000)
+        
+        // Then
+        XCTAssertEqual(sut.friends.count, 1, "Should deduplicate to 1 friend")
+        XCTAssertEqual(sut.friends.first?.memberId, masterId, "Should keep master friend")
     }
     
     // MARK: - Direct Group Edge Cases
