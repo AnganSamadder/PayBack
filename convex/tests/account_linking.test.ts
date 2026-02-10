@@ -180,3 +180,69 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
   });
   expect(expenseRefetch.is_settled).toBe(true);
 });
+
+test("friends:list enriches linked friend aliases to absorb stale duplicate rows", async () => {
+  const t = convexTest(schema);
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner",
+      email: "owner@example.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "owner_member",
+    });
+    await ctx.db.insert("accounts", {
+      id: "linked_user",
+      email: "linked@example.com",
+      display_name: "Linked User",
+      created_at: Date.now(),
+      member_id: "canonical_member",
+      alias_member_ids: ["legacy_alias_member"],
+    });
+
+    // Stale linked row (old/manual ID).
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "stale_member_id",
+      name: "Linked User",
+      profile_avatar_color: "#000000",
+      has_linked_account: true,
+      linked_account_id: "linked_user",
+      linked_account_email: "linked@example.com",
+      linked_member_id: "stale_member_id",
+      updated_at: Date.now(),
+    });
+
+    // Duplicate unlinked row using canonical member id.
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "canonical_member",
+      name: "Linked User",
+      profile_avatar_color: "#111111",
+      has_linked_account: false,
+      updated_at: Date.now(),
+    });
+  });
+
+  const ownerCtx = t.withIdentity({
+    subject: "owner",
+    email: "owner@example.com",
+    name: "Owner",
+    pictureUrl: "http://placeholder.com",
+    tokenIdentifier: "owner",
+    issuer: "http://placeholder.com",
+    emailVerified: true,
+    updatedAt: "2023-01-01",
+  });
+
+  const friends = await ownerCtx.query(api.friends.list, {});
+  expect(friends.length).toBe(2);
+
+  const linkedFriend = friends.find((f) => f.has_linked_account);
+  expect(linkedFriend).toBeDefined();
+  expect(linkedFriend?.alias_member_ids).toContain("canonical_member");
+  expect(linkedFriend?.alias_member_ids).toContain("stale_member_id");
+  expect(linkedFriend?.alias_member_ids).toContain("legacy_alias_member");
+  expect(linkedFriend?.linked_member_id).toBe("canonical_member");
+});

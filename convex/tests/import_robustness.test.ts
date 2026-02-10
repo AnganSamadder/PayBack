@@ -100,11 +100,11 @@ test("import_robustness: handles aliases and id mismatches", async () => {
   
   // The member ID in the group should have been remapped from ALIAS -> CANONICAL
   const memberIds = group.members.map(m => m.id);
-  expect(memberIds).toContain(canonicalFriendId);
-  expect(memberIds).not.toContain(aliasFriendId);
+  expect(memberIds).toContain(canonicalFriendId.toLowerCase());
+  expect(memberIds).not.toContain(aliasFriendId.toLowerCase());
 });
 
-test("import_robustness: dedupes by name if id mismatches", async () => {
+test("import_robustness: does not dedupe by name-only when id mismatches", async () => {
   const t = convexTest(schema);
   const ownerEmail = "rio.angan@example.com";
   const existingId = "EXISTING_ID";
@@ -170,16 +170,16 @@ test("import_robustness: dedupes by name if id mismatches", async () => {
     return await ctx.db.query("account_friends").collect();
   });
   
-  // Should NOT create new friend
-  expect(friends.length).toBe(1);
-  expect(friends[0].member_id).toBe(existingId);
+  // Name-only matching is disabled by default (explicit-review policy).
+  expect(friends.length).toBe(2);
+  expect(friends.some(f => f.member_id === existingId)).toBe(true);
+  expect(friends.some(f => f.member_id === importId.toLowerCase())).toBe(true);
   
-  // Group should use EXISTING ID
+  // Group keeps the imported ID (normalized), no implicit identity merge.
   const groups = await t.run(async (ctx) => {
     return await ctx.db.query("groups").collect();
   });
   const group = groups[0];
   const memberIds = group.members.map(m => m.id);
-  expect(memberIds).toContain(existingId);
-  expect(memberIds).not.toContain(importId);
+  expect(memberIds).toContain(importId.toLowerCase());
 });
