@@ -19,6 +19,9 @@ final class AppStore: ObservableObject {
     @Published var friends: [AccountFriend]
     @Published private(set) var incomingLinkRequests: [LinkRequest] = []
     @Published private(set) var outgoingLinkRequests: [LinkRequest] = []
+    
+    /// Map of alias member IDs to their master member ID (from AccountFriend)
+    private var memberAliasMap: [UUID: UUID] = [:]
     @Published private(set) var previousLinkRequests: [LinkRequest] = []
 
     private let persistence: PersistenceServiceProtocol
@@ -137,7 +140,7 @@ final class AppStore: ObservableObject {
             return (email, displayName)
         }
         
-        if let (email, displayName) = userInfo {
+        if let (email, _) = userInfo {
             #if !PAYBACK_CI_NO_CONVEX
             // Concurrent execution: Authenticate Convex AND prepare logic
             async let convexAuth: Void = Dependencies.authenticateConvex()
@@ -154,7 +157,6 @@ final class AppStore: ObservableObject {
                 print("[AuthDebug] Server auth confirmation timed out: \(error)")
                 #endif
             }
-            #endif
             
             // 3. Convex Account Lookup
             let accountService = self.accountService // Capture service
@@ -184,6 +186,7 @@ final class AppStore: ObservableObject {
             } catch {
                 AppConfig.markTiming("Session restore failed: \(error.localizedDescription)")
             }
+            #endif
         } else {
             AppConfig.markTiming("No Clerk user found")
         }
@@ -287,18 +290,8 @@ final class AppStore: ObservableObject {
             .sink { [weak self] remoteFriends in
                 guard let self = self else { return }
                 guard !self.isImporting else { return }
-                // Deduplicate by memberId
-                var seenMemberIds = Set<UUID>()
-                let uniqueFriends = remoteFriends.filter { seenMemberIds.insert($0.memberId).inserted }
                 
-                let previousCount = self.friends.count
-                self.friends = uniqueFriends
-                
-                #if DEBUG
-                if previousCount != uniqueFriends.count {
-                    print("[AppStore] Synced \(uniqueFriends.count) friends from Convex (deduped from \(remoteFriends.count))")
-                }
-                #endif
+                self.processFriendsUpdate(remoteFriends)
             }
             .store(in: &cancellables)
             
@@ -315,8 +308,63 @@ final class AppStore: ObservableObject {
         #endif
     }
     
-
-
+    /// Dedupes friends using alias logic and updates state
+    private func processFriendsUpdate(_ remoteFriends: [AccountFriend]) {
+        // Advanced Deduplication & Alias Mapping
+        var masterFriends: [AccountFriend] = []
+        var aliasMap: [UUID: UUID] = [:] // Alias -> Master
+        var coveredIds: Set<UUID> = [] // IDs that are either masters or aliases of masters
+        
+        // First pass: Identify masters (friends with linked accounts or aliases)
+        // Prefer linked accounts as masters.
+        let sortedFriends = remoteFriends.sorted(by: { f1, f2 in
+            if f1.hasLinkedAccount != f2.hasLinkedAccount {
+                return f1.hasLinkedAccount // Prefer linked
+            }
+            // Then prefer ones with aliases populated
+            let a1 = f1.aliasMemberIds?.count ?? 0
+            let a2 = f2.aliasMemberIds?.count ?? 0
+            if a1 != a2 {
+                return a1 > a2
+            }
+            // Stable tie-breaker to avoid churn across realtime updates.
+            return f1.memberId.uuidString < f2.memberId.uuidString
+        })
+        
+        for friend in sortedFriends {
+            // Check if this friend is already covered by a previous master
+            if coveredIds.contains(friend.memberId) {
+                continue // Skip duplicate/alias
+            }
+            
+            masterFriends.append(friend)
+            coveredIds.insert(friend.memberId)
+            
+            // Register aliases
+            if let aliases = friend.aliasMemberIds {
+                for alias in aliases {
+                    aliasMap[alias] = friend.memberId
+                    coveredIds.insert(alias)
+                }
+            }
+            // Also register self as alias of self
+            aliasMap[friend.memberId] = friend.memberId
+        }
+        
+        self.memberAliasMap = aliasMap
+        
+        let previousCount = self.friends.count
+        self.friends = masterFriends
+        
+        
+        #if DEBUG
+        if previousCount != masterFriends.count {
+            print("[AppStore] Synced \(masterFriends.count) friends from Convex (deduped from \(remoteFriends.count))")
+        }
+        #endif
+    }
+    
+    
     // MARK: - Session management
 
     private var sessionMonitorTask: Task<Void, Never>?
@@ -1284,11 +1332,26 @@ final class AppStore: ObservableObject {
     
     // MARK: - Balance Calculations
     
+    /// Checks if two member IDs represent the same person (via aliasing or direct match)
+    func areSamePerson(_ id1: UUID, _ id2: UUID) -> Bool {
+        if id1 == id2 { return true }
+        
+        // Resolve both to master ID if possible
+        let master1 = memberAliasMap[id1] ?? id1
+        let master2 = memberAliasMap[id2] ?? id2
+        
+        return master1 == master2
+    }
+
     /// Returns all member IDs that represent the current user (their own ID + linked member ID if any)
     private var currentUserMemberIds: Set<UUID> {
         var ids: Set<UUID> = [currentUser.id]
-        if let linkedId = session?.account.linkedMemberId {
-            ids.insert(linkedId)
+        if let account = session?.account {
+            if let linkedId = account.linkedMemberId {
+                ids.insert(linkedId)
+            }
+            // Also include any equivalent member IDs (e.g. from local imports/remapping)
+            ids.formUnion(account.equivalentMemberIds)
         }
         return ids
     }
@@ -1335,7 +1398,7 @@ final class AppStore: ObservableObject {
     private func scheduleFriendSync() {
         guard let session, !isImporting else { return }
         let mergedFriends = mergeFriends(remote: friends, derived: derivedFriendsFromGroups())
-        friends = mergedFriends
+        processFriendsUpdate(mergedFriends)
         purgeCurrentUserFriendRecords()
         pruneSelfOnlyDirectGroups()
         normalizeDirectGroupFlags()
@@ -1386,11 +1449,11 @@ final class AppStore: ObservableObject {
                 self.persistCurrentState()
                 self.logFetchedData(groups: normalization.groups, expenses: normalization.expenses)
                 let merged = self.mergeFriends(remote: remoteFriends, derived: self.derivedFriendsFromGroups())
-                self.friends = merged
+                self.processFriendsUpdate(merged)
                 self.normalizeDirectGroupFlags()
                 self.purgeCurrentUserFriendRecords()
                 self.pruneSelfOnlyDirectGroups()
-                return merged
+                return self.friends
             }
             
             // Perform state reconciliation to verify link status
@@ -2177,11 +2240,20 @@ final class AppStore: ObservableObject {
 
         for friend in remote {
             guard !isCurrentUserFriend(friend) else { continue }
-            if var existing = combined[friend.memberId] {
-                existing.hasLinkedAccount = friend.hasLinkedAccount
-                existing.linkedAccountEmail = friend.linkedAccountEmail
-                existing.linkedAccountId = friend.linkedAccountId
-                combined[friend.memberId] = existing
+            if let existing = combined[friend.memberId] {
+                // Remote friend should be authoritative for identity/linking metadata.
+                // Keep a few derived fallbacks only when remote fields are missing.
+                var merged = friend
+                if merged.profileColorHex == nil {
+                    merged.profileColorHex = existing.profileColorHex
+                }
+                if merged.profileImageUrl == nil {
+                    merged.profileImageUrl = existing.profileImageUrl
+                }
+                if merged.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    merged.name = existing.name
+                }
+                combined[friend.memberId] = merged
             } else {
                 combined[friend.memberId] = friend
             }
@@ -2413,7 +2485,7 @@ final class AppStore: ObservableObject {
         }
         
         // Also check if the target member is the current user's linked member ID
-        if let linkedMemberId = session.account.linkedMemberId, friend.id == linkedMemberId {
+        if let linkedMemberId = session.account.linkedMemberId, areSamePerson(friend.id, linkedMemberId) {
             throw PayBackError.linkSelfNotAllowed
         }
         
@@ -2443,7 +2515,7 @@ final class AppStore: ObservableObject {
         // Check for existing pending request for this member
         let hasPendingRequest = await MainActor.run {
             outgoingLinkRequests.contains { request in
-                request.targetMemberId == friend.id && request.status == .pending
+                areSamePerson(request.targetMemberId, friend.id) && request.status == .pending
             }
         }
         
@@ -2529,13 +2601,10 @@ final class AppStore: ObservableObject {
         let result = try await retryPolicy.execute {
             try await self.linkRequestService.acceptLinkRequest(request.id)
         }
-        
-        // Link the account (includes its own retry logic)
-        try await linkAccount(
-            memberId: result.linkedMemberId,
-            accountId: result.linkedAccountId,
-            accountEmail: result.linkedAccountEmail
-        )
+
+        await applyLinkAcceptResult(result)
+        await reconcileAfterNetworkRecovery()
+        await loadRemoteData()
         
         // Remove from incoming requests
         await MainActor.run {
@@ -2645,25 +2714,34 @@ final class AppStore: ObservableObject {
         let result = try await retryPolicy.execute {
             try await self.inviteLinkService.claimInviteToken(tokenId)
         }
-        
-        // Link the account (includes its own retry logic)
-        try await linkAccount(
-            memberId: result.linkedMemberId,
-            accountId: result.linkedAccountId,
-            accountEmail: result.linkedAccountEmail
-        )
+
+        await applyLinkAcceptResult(result)
+        await reconcileAfterNetworkRecovery()
         
         // 🚀 CRITICAL FIX: Fetch new data (groups/expenses) that we now have access to!
         // The cloud services have been updated to rely on RLS, so fetching now will return
         // the shared groups/expenses associated with this new link.
         await loadRemoteData()
     }
+
+    @MainActor
+    private func applyLinkAcceptResult(_ result: LinkAcceptResult) {
+        guard let currentSession = self.session else { return }
+        var updatedAccount = currentSession.account
+        updatedAccount.linkedMemberId = result.canonicalMemberId
+
+        let mergedAliases = Set(updatedAccount.equivalentMemberIds + result.aliasMemberIds)
+        updatedAccount.equivalentMemberIds = Array(mergedAliases)
+        self.session = UserSession(account: updatedAccount)
+    }
     
     /// Generates an expense preview for a member
     func generateExpensePreview(forMemberId memberId: UUID) -> ExpensePreview {
         // Find all unsettled expenses involving this member
         let memberExpenses = expenses.filter { expense in
-            !expense.isSettled && (expense.involvedMemberIds.contains(memberId) || expense.paidByMemberId == memberId)
+            !expense.isSettled &&
+            (expense.involvedMemberIds.contains(where: { areSamePerson($0, memberId) }) ||
+             areSamePerson(expense.paidByMemberId, memberId))
         }
         
         // Separate personal (direct) and group expenses
@@ -2684,13 +2762,13 @@ final class AppStore: ObservableObject {
         // Calculate total balance for this member
         var totalBalance: Double = 0.0
         for expense in memberExpenses {
-            if expense.paidByMemberId == memberId {
+            if areSamePerson(expense.paidByMemberId, memberId) {
                 // They paid, so others owe them
                 let othersOwe = expense.splits
-                    .filter { $0.memberId != memberId }
+                    .filter { !areSamePerson($0.memberId, memberId) }
                     .reduce(0.0) { $0 + $1.amount }
                 totalBalance += othersOwe
-            } else if let split = expense.split(for: memberId) {
+            } else if let split = expense.splits.first(where: { areSamePerson($0.memberId, memberId) }) {
                 // They owe someone
                 totalBalance -= split.amount
             }
@@ -2718,12 +2796,39 @@ final class AppStore: ObservableObject {
         guard session != nil else {
             throw PayBackError.authSessionMissing
         }
+
+        let normalizedNickname: String? = await MainActor.run {
+            let cleaned = nickname?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard var cleaned, !cleaned.isEmpty else { return nil }
+
+            if cleaned == "\"\"" || cleaned == "''" {
+                return nil
+            }
+
+            if cleaned.count >= 2 {
+                let first = cleaned.first
+                let last = cleaned.last
+                if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                    cleaned.removeFirst()
+                    cleaned.removeLast()
+                    cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+
+            guard !cleaned.isEmpty else { return nil }
+            if let friend = friends.first(where: { $0.memberId == memberId }) {
+                if cleaned.caseInsensitiveCompare(friend.name.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame {
+                    return nil
+                }
+            }
+            return cleaned
+        }
         
         // Update nickname in local state
         await MainActor.run {
             if let index = friends.firstIndex(where: { $0.memberId == memberId }) {
                 var updatedFriend = friends[index]
-                updatedFriend.nickname = nickname
+                updatedFriend.nickname = normalizedNickname
                 friends[index] = updatedFriend
             }
         }
@@ -3012,9 +3117,9 @@ final class AppStore: ObservableObject {
             await MainActor.run {
                 if self.friends != reconciledFriends {
                     #if DEBUG
-                    print("[AppStore] Reconciliation updated \(reconciledFriends.count) friends")
+                    print("[AppStore] Reconciliation updated \(reconciledFriends.count) friends (before dedupe)")
                     #endif
-                    self.friends = reconciledFriends
+                    self.processFriendsUpdate(reconciledFriends)
                 }
             }
             
@@ -3101,7 +3206,7 @@ final class AppStore: ObservableObject {
     
     /// Checks if a friend has a linked account
     func friendHasLinkedAccount(_ friend: GroupMember) -> Bool {
-        guard let accountFriend = friends.first(where: { $0.memberId == friend.id }) else {
+        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
             return false
         }
         return accountFriend.hasLinkedAccount
@@ -3109,7 +3214,7 @@ final class AppStore: ObservableObject {
     
     /// Gets the linked account email for a friend
     func linkedAccountEmail(for friend: GroupMember) -> String? {
-        guard let accountFriend = friends.first(where: { $0.memberId == friend.id }) else {
+        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
             return nil
         }
         return accountFriend.linkedAccountEmail
@@ -3117,7 +3222,7 @@ final class AppStore: ObservableObject {
     
     /// Gets the linked account ID for a friend
     func linkedAccountId(for friend: GroupMember) -> String? {
-        guard let accountFriend = friends.first(where: { $0.memberId == friend.id }) else {
+        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
             return nil
         }
         return accountFriend.linkedAccountId
@@ -3128,7 +3233,7 @@ final class AppStore: ObservableObject {
     /// Checks if a member ID is already linked to an account
     /// This prevents linking the same person (member ID) to multiple accounts
     func isMemberAlreadyLinked(_ memberId: UUID) -> Bool {
-        guard let friend = friends.first(where: { $0.memberId == memberId }) else {
+        guard let friend = friends.first(where: { areSamePerson($0.memberId, memberId) }) else {
             return false
         }
         return friend.hasLinkedAccount

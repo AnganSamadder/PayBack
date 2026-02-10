@@ -81,6 +81,7 @@ actor ConvexAccountService: AccountService {
         let has_linked_account: Bool
         let linked_account_id: String?
         let linked_account_email: String?
+        let alias_member_ids: [String]?
         let profile_image_url: String?
         let profile_avatar_color: String?
         
@@ -95,7 +96,8 @@ actor ConvexAccountService: AccountService {
                 linkedAccountEmail: linked_account_email,
                 profileImageUrl: profile_image_url,
                 profileColorHex: profile_avatar_color,
-                status: nil
+                status: nil,
+                aliasMemberIds: alias_member_ids?.compactMap { UUID(uuidString: $0) }
             )
         }
     }

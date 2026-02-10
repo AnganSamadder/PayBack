@@ -77,7 +77,22 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         }
         
         func toExpense() -> Expense {
-            Expense(
+            func buildParticipantNamesMap() -> [UUID: String]? {
+                guard !participants.isEmpty else { return nil }
+                var map: [UUID: String] = [:]
+                for p in participants {
+                    guard let memberId = UUID(uuidString: p.member_id) else { continue }
+                    let trimmedName = p.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmedName.isEmpty {
+                        map[memberId] = trimmedName
+                    }
+                }
+                return map.isEmpty ? nil : map
+            }
+            
+            let participantNames = buildParticipantNamesMap()
+            
+            return Expense(
                 id: UUID(uuidString: id) ?? UUID(),
                 groupId: UUID(uuidString: group_id) ?? UUID(),
                 description: description,
@@ -94,6 +109,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
                     )
                 },
                 isSettled: is_settled,
+                participantNames: participantNames,
                 subexpenses: subexpenses?.map { $0.toSubexpense() }
             )
         }

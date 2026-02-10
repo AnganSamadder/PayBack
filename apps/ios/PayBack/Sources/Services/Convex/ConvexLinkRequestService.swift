@@ -82,12 +82,18 @@ actor ConvexLinkRequestService: LinkRequestService {
         // Use mutation for one-shot operation
         let result: ConvexLinkAcceptResultDTO = try await client.mutation("linkRequests:accept", with: args)
         
-        guard let linkedMemberId = UUID(uuidString: result.linked_member_id) else {
+        guard let canonicalMemberId = UUID(uuidString: result.linked_member_id) else {
+            throw PayBackError.linkInvalid
+        }
+        guard let targetMemberId = UUID(uuidString: result.resolved_target_member_id) else {
             throw PayBackError.linkInvalid
         }
         
         return LinkAcceptResult(
-            linkedMemberId: linkedMemberId,
+            targetMemberId: targetMemberId,
+            canonicalMemberId: canonicalMemberId,
+            aliasMemberIds: (result.alias_member_ids ?? []).compactMap { UUID(uuidString: $0) },
+            contractVersion: result.resolved_contract_version,
             linkedAccountId: result.linked_account_id,
             linkedAccountEmail: result.linked_account_email
         )
