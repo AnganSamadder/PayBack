@@ -11,7 +11,12 @@ export default function Home() {
     const muted = "#555a70";
 
     const [showToast, setShowToast] = useState(false);
-    const handleCtaClick = () => setShowToast(true);
+    const [dismissing, setDismissing] = useState(false);
+    const handleCtaClick = () => { setDismissing(false); setShowToast(true); };
+    const handleDismiss = () => {
+        setDismissing(true);
+        setTimeout(() => { setShowToast(false); setDismissing(false); }, 300);
+    };
 
     return (
         <div className="min-h-screen home-page" style={{ fontFamily: "'Karla', sans-serif", background: bg, color: "#c0c8e0" }}>
@@ -57,6 +62,10 @@ export default function Home() {
                 from { transform: translate(-50%, -120%); opacity: 0; }
                 to { transform: translate(-50%, 0); opacity: 1; }
               }
+              @keyframes slide-up {
+                from { transform: translate(-50%, 0); opacity: 1; }
+                to { transform: translate(-50%, -120%); opacity: 0; }
+              }
             `}</style>
 
             {showToast && (
@@ -75,7 +84,7 @@ export default function Home() {
                     gap: "0.85rem",
                     maxWidth: "28rem",
                     width: "calc(100% - 2rem)",
-                    animation: "slide-down 0.35s ease-out",
+                    animation: dismissing ? "slide-up 0.3s ease-in forwards" : "slide-down 0.35s ease-out",
                 }}>
                     <span style={{
                         width: 10, height: 10, borderRadius: "50%", background: accent,
@@ -87,11 +96,24 @@ export default function Home() {
                         <span style={{ color: muted }}>Check back shortly — we're almost ready.</span>
                     </p>
                     <button
-                        onClick={() => setShowToast(false)}
+                        onClick={handleDismiss}
                         aria-label="Dismiss"
                         style={{
-                            background: "none", border: "none", color: muted, cursor: "pointer",
-                            fontSize: "1.2rem", lineHeight: 1, padding: "0.25rem", flexShrink: 0,
+                            background: bg, border: "none", color: accent, cursor: "pointer",
+                            fontSize: "0.85rem", lineHeight: 1, padding: 0, flexShrink: 0,
+                            width: 32, height: 32, borderRadius: "50%",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            boxShadow: "inset 3px 3px 8px rgba(8,10,16,0.6), inset -3px -3px 8px rgba(50,54,66,0.2)",
+                            fontFamily: "'Outfit', sans-serif", fontWeight: 600,
+                            transition: "box-shadow 0.15s ease, transform 0.15s ease",
+                        }}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.transform = "translateY(-1px)";
+                            e.currentTarget.style.boxShadow = "4px 4px 10px rgba(8,10,16,0.6), -4px -4px 10px rgba(50,54,66,0.2)";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.transform = "translateY(0)";
+                            e.currentTarget.style.boxShadow = "inset 3px 3px 8px rgba(8,10,16,0.6), inset -3px -3px 8px rgba(50,54,66,0.2)";
                         }}
                     >✕</button>
                 </div>
