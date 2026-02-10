@@ -134,8 +134,21 @@ coverage-report.txt
 # Helper Scripts
 node_modules/
 scripts/node_modules/
+.turbo/
+apps/web/playwright-report/
+apps/web/test-results/
 
 # XcodeGen
 *.xcodeproj
 *.xcworkspace
 wm
+
+# Sisyphus
+.sis
+.sisyphus
+.sisyphus/
+
+# Local Development
+LocalPackages/
+Packages/
+roadmap/
