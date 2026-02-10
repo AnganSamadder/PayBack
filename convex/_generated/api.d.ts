@@ -20,6 +20,7 @@ import type * as friend_requests from "../friend_requests.js";
 import type * as friends from "../friends.js";
 import type * as groups from "../groups.js";
 import type * as helpers from "../helpers.js";
+import type * as identity from "../identity.js";
 import type * as inviteTokens from "../inviteTokens.js";
 import type * as janitor from "../janitor.js";
 import type * as linkRequests from "../linkRequests.js";
@@ -50,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   friends: typeof friends;
   groups: typeof groups;
   helpers: typeof helpers;
+  identity: typeof identity;
   inviteTokens: typeof inviteTokens;
   janitor: typeof janitor;
   linkRequests: typeof linkRequests;
