@@ -92,3 +92,83 @@ return store.friends.contains { $0.memberId == lookupId }
 1. `memberIdMapping` is checked before generating new UUIDs
 2. `nameToExistingId` provides name-based deduplication
 3. Same person = same UUID across friends and group members
+
+## CSV IMPORT LOGIC (iOS ↔ Convex)
+
+### The Remapping Mismatch (Fixed 2026-02-07)
+**Problem**: iOS imports generate **new local UUIDs** to avoid collisions, but `performBulkImport` originally sent the **original CSV UUIDs** to Convex.
+**Result**: iOS stores Group `ABC` (remapped), Convex stores Group `XYZ` (original). Syncing breaks because iOS doesn't know `XYZ`.
+
+### The Protocol
+1. **Local Import**: `importData` generates `memberIdMapping` and `groupIdMapping` (Original → New).
+2. **Transform**: `applyRemappings()` mutates the parsed data using these mappings.
+3. **Bulk Import**: Sends the **remapped UUIDs** to Convex.
+4. **Consistency**: Local iOS state and Convex backend now share the exact same UUIDs.
+
+**Rule**: Always pass `memberIdMapping` and `groupIdMapping` to `performBulkImport` to ensure ID consistency.
+
+## BALANCE CALCULATION LOGIC (iOS)
+
+### The Zero Balance Bug (Fixed 2026-02-07)
+**Problem**: Users saw "Settled ($0.00)" even with unsettled transactions because `netBalance` calculations only checked the primary `friend.id` or `currentUser.id`. Linked accounts (via invites or CSV remapping) often have different IDs in the expense splits.
+
+### The Fix
+1. **Friend Detail**: `FriendDetailView.netBalance` must check BOTH `friend.id` AND `friend.accountFriendMemberId`.
+2. **Dashboard**: `AppStore.netBalance(for: Group)` must use `currentUser.equivalentMemberIds` (from `UserAccount`) to catch all splits belonging to the user, including those under remapped IDs.
+
+**Rule**: When calculating balances or filtering expenses, ALWAYS check for ID equivalence (`accountFriendMemberId` for friends, `equivalentMemberIds` for current user).
+
+## USER LINKING PROCESS
+
+### Overview
+Linking connects a local "Unlinked" friend (often created manually or via CSV import) to a real registered User Account. This allows two users to share the same friend/member identity in groups and expenses.
+
+### The Flow
+1.  **Invite Creation**: User A creates a link for a specific group member (e.g., "Test User" with ID `X`).
+2.  **Claiming**: User B ("Test User") clicks the link.
+    -   Backend (`inviteTokens:claim`) verifies the token.
+    -   It updates User B's `alias_member_ids` to include `X`. This is CRITICAL for User B to see expenses assigned to `X` as their own.
+    -   It updates User A's `account_friends` record for `X` to set `linked_account_id` to User B's account ID.
+3.  **Syncing**:
+    -   User B receives updated `UserAccount` containing `alias_member_ids`.
+    -   User A receives updated `account_friends` list.
+
+### ID Resolution Logic (The "0 Balance" Fix)
+**Problem**: Before linking, User B is participating in expenses as ID `X`. After linking, User B logs in with ID `Y`.
+**Solution**:
+-   Backend sends `alias_member_ids` (including `X`) in the User object.
+-   iOS `UserAccount` model MUST map `alias_member_ids` (JSON key) to `equivalentMemberIds` (Swift property) via `CodingKeys`.
+-   `AppStore` checks `equivalentMemberIds` when calculating "My" balance. `isMe(memberId)` checks `currentUser.id` OR `linkedMemberId` OR `equivalentMemberIds`.
+
+### Friend Identity Resolution & Deduplication (Fixed 2026-02-07)
+**Symptom**: User A sees two entries for "Test User" - one unlinked (original) and one linked (new account).
+**Root Cause**: When a friend link is claimed, the backend might return both the original friend record and the new linked friend record if they exist separately in `account_friends` or `groups`.
+
+**The Solution**:
+1.  **Backend Enrichment**: `convex/friends.ts` now includes `alias_member_ids` in the `AccountFriend` object (fetched from the linked user's account).
+2.  **Client-Side Identity Map**:
+    -   `AppStore` builds a `memberAliasMap` during friend updates.
+    -   If Friend B lists Friend A's ID in its `aliasMemberIds`, Friend B is considered the "Master" and Friend A is the "Alias".
+3.  **Deduplication**:
+    -   `AppStore.processFriendsUpdate` filters out any friend that is found to be an alias of another present friend.
+    -   Only the "Master" (linked) friend remains in the `store.friends` list.
+4.  **Identity Checks**:
+    -   `store.areSamePerson(id1, id2)` checks the `memberAliasMap` to resolve identity, ensuring expenses assigned to the alias ID are correctly attributed to the master friend in the UI.
+
+### Key Data Structures
+-   **UserAccount**: `equivalentMemberIds` stores all alias UUIDs (e.g., from invites/imports).
+-   **GroupMember**: `accountFriendMemberId` stores the UUID of the linked `AccountFriend` (if any).
+-   **AccountFriend**: Represents a direct friendship. Linked via `linkedAccountId` (String).
+
+## LINKING RUNBOOK (READ FIRST)
+
+For end-to-end linking/identity debugging and implementation rules, use:
+
+- `docs/linking/ACCOUNT_LINKING_PIPELINE_RUNBOOK.md`
+
+This runbook is the canonical operational guide for:
+- invite claim + link-request acceptance pipeline
+- canonical/alias invariants
+- iOS selector correctness
+- bulk import identity rules
+- troubleshooting commands and test gates

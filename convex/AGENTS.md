@@ -22,6 +22,8 @@ convex/
 ```
 
 ## DATA PATTERNS
+- **Group Visibility**: `groups:list` includes groups found via `user_expenses` to ensure consistency. If a user sees an expense, they MUST see the group, even if membership links are broken.
+
 - **Fan-out**: `user_expenses` table denormalizes data for fast queries (`reconcileUserExpenses`).
 - **Ghost Data**: Soft deletes preserve history. `bulkImport` handles ID remapping.
 - **IDs**: Client-generated UUIDs used for expenses to support offline creation.
@@ -78,3 +80,14 @@ When modifying cleanup logic, ensure:
 2. Use indexed queries, not full table scans
 3. Hard delete = DELETE records. Soft delete = PATCH to unlink.
 4. Query-time validation in `friends.list` provides instant UI updates
+
+## LINKING PIPELINE RUNBOOK
+
+Primary reference for account-linking identity logic:
+- `docs/linking/ACCOUNT_LINKING_PIPELINE_RUNBOOK.md`
+
+When changing any of the following, update tests and the runbook:
+- `inviteTokens:claim` / `linkRequests:accept`
+- alias resolution (`member_aliases`, `accounts.alias_member_ids`)
+- friend dedupe/enrichment payload contracts
+- member ID normalization behavior
