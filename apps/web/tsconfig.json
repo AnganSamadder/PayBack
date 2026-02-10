@@ -1,13 +1,23 @@
 {
-  "extends": "../../packages/config-typescript/base.json",
   "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
     "types": [
-      "vite/client",
-      "vitest/globals",
-      "node",
-      "react",
-      "react-dom"
+      "vite/client"
     ],
     "baseUrl": ".",
     "paths": {
@@ -19,9 +29,6 @@
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx",
-    "tests/**/*.ts",
-    "tests/**/*.tsx",
-    "vite.config.ts",
-    "playwright.config.ts"
+    "vite.config.ts"
   ]
 }
