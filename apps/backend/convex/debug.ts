@@ -6,7 +6,7 @@ export const debugUserData = query({
     // Get all accounts to inspect data (no auth required for debugging)
     const accounts = await ctx.db.query("accounts").collect();
     
-    const result = [];
+    const result: Array<Record<string, unknown>> = [];
     
     for (const account of accounts) {
       // Get groups

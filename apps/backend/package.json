@@ -1,0 +1,21 @@
+{
+  "name": "@payback/backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bunx convex dev",
+    "deploy": "bunx convex deploy",
+    "codegen": "bunx convex dev --once",
+    "lint": "eslint \"convex/**/*.ts\" \"tests/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "build": "echo \"Backend build handled by Convex CLI\""
+  },
+  "devDependencies": {
+    "@payback/config-eslint": "workspace:*"
+  },
+  "dependencies": {
+    "convex": "^1.31.3"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "extends": "../../packages/config-typescript/base.json",
+  "compilerOptions": {
+    "noImplicitAny": false,
+    "types": [
+      "node",
+      "vitest/globals"
+    ]
+  },
+  "include": [
+    "convex/**/*.ts",
+    "tests/**/*.ts"
+  ]
+}
