@@ -29,6 +29,18 @@ struct UserAccount: Identifiable, Codable, Hashable, Sendable {
         self.profileImageUrl = profileImageUrl
         self.profileColorHex = profileColorHex
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case email
+        case displayName
+        case linkedMemberId
+        // Map backend's 'alias_member_ids' to our 'equivalentMemberIds'
+        case equivalentMemberIds = "alias_member_ids"
+        case createdAt
+        case profileImageUrl
+        case profileColorHex
+    }
 }
 
 struct UserSession: Equatable, Sendable {
@@ -48,16 +60,49 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     var profileImageUrl: String?
     var profileColorHex: String?
     var status: String?
+    var aliasMemberIds: [UUID]?
     
     var id: UUID { memberId }
+
+    private var sanitizedNickname: String? {
+        guard var nick = nickname?.trimmingCharacters(in: .whitespacesAndNewlines), !nick.isEmpty else {
+            return nil
+        }
+
+        // Treat placeholder quote-only nicknames as empty values.
+        if nick == "\"\"" || nick == "''" {
+            return nil
+        }
+
+        // Strip one pair of wrapping quotes from accidental paste/serialization artifacts.
+        if nick.count >= 2 {
+            let first = nick.first
+            let last = nick.last
+            if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                nick.removeFirst()
+                nick.removeLast()
+                nick = nick.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        guard !nick.isEmpty else { return nil }
+        return nick
+    }
+
+    var displayNickname: String? {
+        guard let nick = sanitizedNickname else { return nil }
+        if nick.caseInsensitiveCompare(name.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame {
+            return nil
+        }
+        return nick
+    }
     
     var hasValidNickname: Bool {
-        guard let nick = nickname else { return false }
-        return !nick.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        displayNickname != nil
     }
     
     func displayName(showRealNames: Bool) -> String {
-        if preferNickname, hasValidNickname, let nick = nickname {
+        if preferNickname, let nick = displayNickname {
             return nick
         }
         
@@ -65,7 +110,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
             return name
         }
         
-        guard hasValidNickname, let nickname = nickname else {
+        guard let nickname = displayNickname else {
             return name
         }
         
@@ -73,7 +118,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     }
     
     func secondaryDisplayName(showRealNames: Bool) -> String? {
-        if preferNickname, hasValidNickname {
+        if preferNickname, displayNickname != nil {
             return name
         }
         
@@ -81,7 +126,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
             return nil
         }
         
-        guard hasValidNickname, let nickname = nickname else {
+        guard let nickname = displayNickname else {
             return nil
         }
         
@@ -100,7 +145,8 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         linkedAccountEmail: String? = nil,
         profileImageUrl: String? = nil,
         profileColorHex: String? = nil,
-        status: String? = nil
+        status: String? = nil,
+        aliasMemberIds: [UUID]? = nil
     ) {
         self.memberId = memberId
         self.name = name
@@ -114,6 +160,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         self.profileImageUrl = profileImageUrl
         self.profileColorHex = profileColorHex
         self.status = status
+        self.aliasMemberIds = aliasMemberIds
     }
     
     enum CodingKeys: String, CodingKey {
@@ -129,6 +176,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         case profileImageUrl
         case profileColorHex
         case status
+        case aliasMemberIds = "alias_member_ids"
     }
     
     init(from decoder: Decoder) throws {
@@ -145,6 +193,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         profileImageUrl = try container.decodeIfPresent(String.self, forKey: .profileImageUrl)
         profileColorHex = try container.decodeIfPresent(String.self, forKey: .profileColorHex)
         status = try container.decodeIfPresent(String.self, forKey: .status)
+        aliasMemberIds = try container.decodeIfPresent([UUID].self, forKey: .aliasMemberIds)
     }
     
     func encode(to encoder: Encoder) throws {
@@ -161,5 +210,6 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         try container.encodeIfPresent(profileImageUrl, forKey: .profileImageUrl)
         try container.encodeIfPresent(profileColorHex, forKey: .profileColorHex)
         try container.encodeIfPresent(status, forKey: .status)
+        try container.encodeIfPresent(aliasMemberIds, forKey: .aliasMemberIds)
     }
 }

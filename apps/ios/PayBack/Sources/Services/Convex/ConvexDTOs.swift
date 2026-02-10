@@ -230,8 +230,62 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
     let has_linked_account: Bool?
     let linked_account_id: String?
     let linked_account_email: String?
+    let linked_member_id: String?
+    let alias_member_ids: [String]?
     let profile_image_url: String?
     let profile_avatar_color: String?
+    
+    init(
+        member_id: String,
+        name: String,
+        nickname: String?,
+        original_name: String?,
+        has_linked_account: Bool?,
+        linked_account_id: String?,
+        linked_account_email: String?,
+        linked_member_id: String? = nil,
+        alias_member_ids: [String]? = nil,
+        profile_image_url: String?,
+        profile_avatar_color: String?
+    ) {
+        self.member_id = member_id
+        self.name = name
+        self.nickname = nickname
+        self.original_name = original_name
+        self.has_linked_account = has_linked_account
+        self.linked_account_id = linked_account_id
+        self.linked_account_email = linked_account_email
+        self.linked_member_id = linked_member_id
+        self.alias_member_ids = alias_member_ids
+        self.profile_image_url = profile_image_url
+        self.profile_avatar_color = profile_avatar_color
+    }
+
+    init(
+        member_id: String,
+        name: String,
+        nickname: String?,
+        original_name: String?,
+        has_linked_account: Bool?,
+        linked_account_id: String?,
+        linked_account_email: String?,
+        profile_image_url: String?,
+        profile_avatar_color: String?
+    ) {
+        self.init(
+            member_id: member_id,
+            name: name,
+            nickname: nickname,
+            original_name: original_name,
+            has_linked_account: has_linked_account,
+            linked_account_id: linked_account_id,
+            linked_account_email: linked_account_email,
+            linked_member_id: nil,
+            alias_member_ids: nil,
+            profile_image_url: profile_image_url,
+            profile_avatar_color: profile_avatar_color
+        )
+    }
     
     /// Maps to domain AccountFriend
     func toAccountFriend() -> AccountFriend? {
@@ -247,7 +301,8 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
             linkedAccountEmail: linked_account_email,
             profileImageUrl: profile_image_url,
             profileColorHex: profile_avatar_color,
-            status: nil
+            status: nil,
+            aliasMemberIds: alias_member_ids?.compactMap { UUID(uuidString: $0) }
         )
     }
 }
@@ -368,21 +423,35 @@ struct ConvexExpensePreviewDTO: Decodable, Sendable {
 
 /// Internal DTO for link accept result
 struct ConvexLinkAcceptResultDTO: Decodable, Sendable {
+    let contract_version: Int?
+    let target_member_id: String?
+    let canonical_member_id: String?
+    let alias_member_ids: [String]?
     let linked_account_id: String
     let linked_account_email: String
     private let _linked_member_id: String?
-    private let canonical_member_id: String?
     private let member_id: String?
     
     enum CodingKeys: String, CodingKey {
+        case contract_version
+        case target_member_id
+        case canonical_member_id
+        case alias_member_ids
         case linked_account_id
         case linked_account_email
         case _linked_member_id = "linked_member_id"
-        case canonical_member_id
         case member_id
     }
     
     var linked_member_id: String {
         return canonical_member_id ?? member_id ?? _linked_member_id ?? ""
+    }
+    
+    var resolved_target_member_id: String {
+        return target_member_id ?? linked_member_id
+    }
+    
+    var resolved_contract_version: Int {
+        return contract_version ?? 1
     }
 }
