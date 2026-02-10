@@ -1,8 +1,8 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { checkRateLimit } from "./rateLimit";
+import { normalizeMemberId } from "./identity";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -37,6 +37,11 @@ export const create = mutation({
 
     await checkRateLimit(ctx, identity.subject, "groups:create", 10);
 
+    const normalizedMembers = args.members.map((member) => ({
+      ...member,
+      id: normalizeMemberId(member.id),
+    }));
+
     // Deduplication check: Check if group with this ID already exists
     if (args.id) {
       const existing = await ctx.db
@@ -48,7 +53,7 @@ export const create = mutation({
         // If it exists, update it instead of creating a duplicate
         await ctx.db.patch(existing._id, {
           name: args.name,
-          members: args.members,
+          members: normalizedMembers,
           owner_id: user._id,
           is_direct: args.is_direct ?? existing.is_direct,
           updated_at: Date.now(),
@@ -61,7 +66,7 @@ export const create = mutation({
     const groupId = await ctx.db.insert("groups", {
       id: args.id || crypto.randomUUID(), // Use provided UUID if available
       name: args.name,
-      members: args.members,
+      members: normalizedMembers,
       owner_email: user.email,
       owner_account_id: user.id, // Auth provider ID
       owner_id: user._id,
@@ -101,9 +106,11 @@ export const list = query({
     const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
     const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
 
+    // Note: This full scan is inefficient and should be optimized in future versions
+    // For now, we rely on the fact that group count per user is manageable
     const allGroups = await ctx.db.query("groups").collect();
     groupsByMembership = allGroups.filter((g) =>
-      g.members.some((m) => membershipIds.has(m.id))
+      g.members.some((m) => membershipIds.has(normalizeMemberId(m.id)))
     );
     
     // Merge results
@@ -111,6 +118,40 @@ export const list = query({
     groupsByOwnerId.forEach(g => { groupMap.set(g._id, g); });
     groupsByEmail.forEach(g => { groupMap.set(g._id, g); });
     groupsByMembership.forEach(g => { groupMap.set(g._id, g); });
+    
+    // Check by expense involvement (via user_expenses)
+    // This ensures that if a user sees an expense in a group, they also see the group itself
+    // even if the group membership record is slightly out of sync or uses an unlinked ID.
+    const userExpenses = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_user_id", (q) => q.eq("user_id", user.id))
+      .collect();
+
+    const expenseIds = new Set(userExpenses.map(ue => ue.expense_id));
+    const groupsFromExpenses = new Set<string>(); // Client UUIDs
+
+    // Fetch relevant expenses to find their group IDs
+    const relevantExpenses = await Promise.all(
+        Array.from(expenseIds).map(id => 
+            ctx.db.query("expenses").withIndex("by_client_id", q => q.eq("id", id)).unique()
+        )
+    );
+
+    relevantExpenses.forEach(e => {
+        if (e && e.group_id) {
+            groupsFromExpenses.add(e.group_id);
+        }
+    });
+
+    // Fetch groups found via expenses
+    const groupsByExpense = await Promise.all(
+        Array.from(groupsFromExpenses).map(id => 
+            ctx.db.query("groups").withIndex("by_client_id", q => q.eq("id", id)).unique()
+        )
+    );
+
+    groupsByExpense.forEach(g => { if (g) groupMap.set(g._id, g); });
+
     
     return Array.from(groupMap.values());
   },
@@ -163,7 +204,7 @@ export const get = query({
             const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
             const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
 
-            if (!group.members.some((m) => membershipIds.has(m.id))) {
+            if (!group.members.some((m) => membershipIds.has(normalizeMemberId(m.id)))) {
               return null;
             }
 
@@ -274,13 +315,18 @@ export const leaveGroup = mutation({
     const aliases = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
     const membershipIds = new Set([canonicalMemberId, ...aliases]);
 
-    const newMembers = group.members.filter((m) => !membershipIds.has(m.id));
+    const normalizedNewMembers = group.members.filter(
+      (m) => !membershipIds.has(normalizeMemberId(m.id))
+    );
     
-    if (newMembers.length === 0) {
+    if (normalizedNewMembers.length === 0) {
         await ctx.db.delete(group._id);
     } else {
         await ctx.db.patch(group._id, { 
-            members: newMembers,
+            members: normalizedNewMembers.map((member) => ({
+              ...member,
+              id: normalizeMemberId(member.id),
+            })),
             updated_at: Date.now()
         });
     }

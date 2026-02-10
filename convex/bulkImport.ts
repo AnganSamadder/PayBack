@@ -1,7 +1,8 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUserOrThrow, reconcileUserExpenses, reconcileExpensesForMember } from "./helpers";
-import { internal } from "./_generated/api";
+import { resolveCanonicalMemberIdInternal } from "./aliases";
+import { normalizeMemberId, normalizeMemberIds } from "./identity";
 
 const friendValidator = v.object({
   member_id: v.string(),
@@ -67,30 +68,6 @@ const expenseValidator = v.object({
   subexpenses: v.optional(v.array(subexpenseValidator)),
 });
 
-// Helper to resolve canonical IDs (copied from internal logic or imported if available)
-// Since this is inside the file, I'll inline a simple version or use the DB directly.
-// The original code called `resolveCanonicalMemberIdInternal`. I need to ensure that exists or replace it.
-// I'll assume it was a helper in this file or imported. 
-// Checking imports... it wasn't imported in my previous read. 
-// It must have been defined in this file. I'll recreate it.
-
-async function resolveCanonicalMemberIdInternal(db: any, memberId: string): Promise<string> {
-  // Check if this member ID is an alias
-  const alias = await db
-    .query("member_aliases")
-    .withIndex("by_alias_member_id", (q: any) => q.eq("alias_member_id", memberId))
-    .unique();
-
-  if (alias) {
-    // If it points to another ID, recurse (transitive)
-    // But to be safe and avoid infinite loops, let's just do one hop or check schema.
-    // Schema says "All alias lookups are transitive".
-    // For now, let's return the canonical one.
-    return alias.canonical_member_id;
-  }
-  return memberId;
-}
-
 export const bulkImport = mutation({
   args: {
     friends: v.array(friendValidator),
@@ -102,29 +79,46 @@ export const bulkImport = mutation({
 
     // Resolve canonical IDs in input
     for (const friend of args.friends) {
-      const originalId = friend.member_id;
+      const originalId = normalizeMemberId(friend.member_id);
       friend.member_id = await resolveCanonicalMemberIdInternal(ctx.db, originalId);
     }
 
     for (const group of args.groups) {
       for (const member of group.members) {
-        member.id = await resolveCanonicalMemberIdInternal(ctx.db, member.id);
+        member.id = await resolveCanonicalMemberIdInternal(ctx.db, normalizeMemberId(member.id));
       }
     }
 
     for (const expense of args.expenses) {
-      expense.paid_by_member_id = await resolveCanonicalMemberIdInternal(ctx.db, expense.paid_by_member_id);
+      expense.paid_by_member_id = await resolveCanonicalMemberIdInternal(
+        ctx.db,
+        normalizeMemberId(expense.paid_by_member_id)
+      );
       for (let i = 0; i < expense.involved_member_ids.length; i++) {
-        expense.involved_member_ids[i] = await resolveCanonicalMemberIdInternal(ctx.db, expense.involved_member_ids[i]);
+        expense.involved_member_ids[i] = await resolveCanonicalMemberIdInternal(
+          ctx.db,
+          normalizeMemberId(expense.involved_member_ids[i])
+        );
       }
+      expense.involved_member_ids = normalizeMemberIds(expense.involved_member_ids);
       for (const split of expense.splits) {
-        split.member_id = await resolveCanonicalMemberIdInternal(ctx.db, split.member_id);
+        split.member_id = await resolveCanonicalMemberIdInternal(
+          ctx.db,
+          normalizeMemberId(split.member_id)
+        );
       }
       for (let i = 0; i < expense.participant_member_ids.length; i++) {
-        expense.participant_member_ids[i] = await resolveCanonicalMemberIdInternal(ctx.db, expense.participant_member_ids[i]);
+        expense.participant_member_ids[i] = await resolveCanonicalMemberIdInternal(
+          ctx.db,
+          normalizeMemberId(expense.participant_member_ids[i])
+        );
       }
+      expense.participant_member_ids = normalizeMemberIds(expense.participant_member_ids);
       for (const participant of expense.participants) {
-        participant.member_id = await resolveCanonicalMemberIdInternal(ctx.db, participant.member_id);
+        participant.member_id = await resolveCanonicalMemberIdInternal(
+          ctx.db,
+          normalizeMemberId(participant.member_id)
+        );
       }
     }
 
@@ -143,27 +137,28 @@ export const bulkImport = mutation({
 
     // Process Friends
     for (const friend of args.friends) {
-      const existing = await ctx.db
+      const existingExact = await ctx.db
         .query("account_friends")
         .withIndex("by_account_email_and_member_id", (q) =>
           q.eq("account_email", user.email).eq("member_id", friend.member_id)
         )
         .unique();
+      const existing =
+        existingExact ??
+        (await ctx.db
+          .query("account_friends")
+          .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+          .collect())
+          .find(
+            (candidate) =>
+              normalizeMemberId(candidate.member_id) === normalizeMemberId(friend.member_id)
+          );
 
-      // Check for existing by name if ID didn't match (Soft Match)
-      let existingByName = null;
-      if (!existing) {
-         const allFriends = await ctx.db
-            .query("account_friends")
-            .withIndex("by_account_email", q => q.eq("account_email", user.email))
-            .collect();
-         existingByName = allFriends.find(f => f.name === friend.name);
-      }
-
-      const match = existing || existingByName;
+      // Explicit-review policy: never canonicalize identity by name-only matching.
+      const match = existing;
 
       // Check if linked account still exists. If not, strip the link.
-      let finalLinkedEmail = friend.linked_account_email;
+      let finalLinkedEmail = friend.linked_account_email?.toLowerCase();
       let finalLinkedAccountId = friend.linked_account_id;
       let finalStatus = friend.status;
       let finalHasLinked = friend.has_linked_account ?? false;
@@ -183,13 +178,13 @@ export const bulkImport = mutation({
           finalStatus = "manual";
           finalHasLinked = false;
         } else {
-          linkedMemberId = linkedAccount.member_id;
+          linkedMemberId = linkedAccount.member_id ? normalizeMemberId(linkedAccount.member_id) : undefined;
         }
       }
 
       if (match) {
         // Map the IMPORT ID to the EXISTING ID
-        memberIdMap.set(friend.member_id, match.member_id);
+        memberIdMap.set(friend.member_id, normalizeMemberId(match.member_id));
 
         // Update existing friend if new link info is available
         if (finalLinkedEmail && !match.linked_account_email) {
@@ -220,13 +215,15 @@ export const bulkImport = mutation({
         if (linkedMemberId && match.member_id !== linkedMemberId) {
              const existingAlias = await ctx.db
                 .query("member_aliases")
-                .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", match.member_id))
+                .withIndex("by_alias_member_id", (q) =>
+                  q.eq("alias_member_id", normalizeMemberId(match.member_id))
+                )
                 .unique();
                 
              if (!existingAlias) {
                  await ctx.db.insert("member_aliases", {
                      account_email: user.email,
-                     alias_member_id: match.member_id,
+                     alias_member_id: normalizeMemberId(match.member_id),
                      canonical_member_id: linkedMemberId,
                      created_at: Date.now(),
                  });
@@ -239,24 +236,24 @@ export const bulkImport = mutation({
       // This handles cases where the CSV has an old/garbage ID that we *know*
       const knownAlias = await ctx.db
         .query("member_aliases")
-        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", friend.member_id))
+        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", normalizeMemberId(friend.member_id)))
         .unique();
 
       if (knownAlias) {
          const canonicalFriend = await ctx.db
             .query("account_friends")
             .withIndex("by_account_email_and_member_id", (q) =>
-              q.eq("account_email", user.email).eq("member_id", knownAlias.canonical_member_id)
+              q.eq("account_email", user.email).eq("member_id", normalizeMemberId(knownAlias.canonical_member_id))
             )
             .unique();
 
          if (canonicalFriend) {
-             memberIdMap.set(friend.member_id, knownAlias.canonical_member_id);
+             memberIdMap.set(friend.member_id, normalizeMemberId(knownAlias.canonical_member_id));
              continue; 
          }
          
-         memberIdMap.set(friend.member_id, knownAlias.canonical_member_id);
-         friend.member_id = knownAlias.canonical_member_id;
+         memberIdMap.set(friend.member_id, normalizeMemberId(knownAlias.canonical_member_id));
+         friend.member_id = normalizeMemberId(knownAlias.canonical_member_id);
       }
 
       // NO MATCH FOUND - Create New Friend
@@ -281,13 +278,13 @@ export const bulkImport = mutation({
       if (linkedMemberId && friend.member_id !== linkedMemberId) {
            const existingAlias = await ctx.db
               .query("member_aliases")
-              .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", friend.member_id))
+              .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", normalizeMemberId(friend.member_id)))
               .unique();
               
            if (!existingAlias) {
                await ctx.db.insert("member_aliases", {
                    account_email: user.email,
-                   alias_member_id: friend.member_id,
+                   alias_member_id: normalizeMemberId(friend.member_id),
                    canonical_member_id: linkedMemberId,
                    created_at: Date.now(),
                });
@@ -328,7 +325,7 @@ export const bulkImport = mutation({
       // Remap members
       const remappedMembers = group.members.map(m => ({
           ...m,
-          id: memberIdMap.get(m.id) || m.id
+          id: normalizeMemberId(memberIdMap.get(normalizeMemberId(m.id)) || m.id)
       }));
 
       const groupDocId = await ctx.db.insert("groups", {
@@ -357,19 +354,31 @@ export const bulkImport = mutation({
         continue;
       }
 
-      const participantEmails: string[] = [user.email];
+      const participantEmails: string[] = [user.email.toLowerCase()];
       for (const p of expense.participants) {
         if (p.linked_account_email && !participantEmails.includes(p.linked_account_email)) {
-          participantEmails.push(p.linked_account_email);
+          participantEmails.push(p.linked_account_email.toLowerCase());
         }
       }
       
       // Remap IDs in Expense
-      const remappedPaidBy = memberIdMap.get(expense.paid_by_member_id) || expense.paid_by_member_id;
-      const remappedInvolved = expense.involved_member_ids.map(id => memberIdMap.get(id) || id);
-      const remappedSplits = expense.splits.map(s => ({ ...s, member_id: memberIdMap.get(s.member_id) || s.member_id }));
-      const remappedParticipantIds = expense.participant_member_ids.map(id => memberIdMap.get(id) || id);
-      const remappedParticipants = expense.participants.map(p => ({ ...p, member_id: memberIdMap.get(p.member_id) || p.member_id }));
+      const remappedPaidBy = normalizeMemberId(
+        memberIdMap.get(normalizeMemberId(expense.paid_by_member_id)) || expense.paid_by_member_id
+      );
+      const remappedInvolved = normalizeMemberIds(
+        expense.involved_member_ids.map((id) => memberIdMap.get(normalizeMemberId(id)) || id)
+      );
+      const remappedSplits = expense.splits.map((s) => ({
+        ...s,
+        member_id: normalizeMemberId(memberIdMap.get(normalizeMemberId(s.member_id)) || s.member_id),
+      }));
+      const remappedParticipantIds = normalizeMemberIds(
+        expense.participant_member_ids.map((id) => memberIdMap.get(normalizeMemberId(id)) || id)
+      );
+      const remappedParticipants = expense.participants.map((p) => ({
+        ...p,
+        member_id: normalizeMemberId(memberIdMap.get(normalizeMemberId(p.member_id)) || p.member_id),
+      }));
 
       await ctx.db.insert("expenses", {
         id: expense.id,

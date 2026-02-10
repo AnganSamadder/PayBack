@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { reconcileUserExpenses } from "./helpers";
 import { checkRateLimit } from "./rateLimit";
+import { normalizeMemberId, normalizeMemberIds } from "./identity";
 
 async function getCurrentUser(ctx: any) {
   const identity = await ctx.auth.getUserIdentity();
@@ -59,11 +60,23 @@ export const create = mutation({
 
     await checkRateLimit(ctx, identity.subject, "expenses:create", 10);
 
+    const normalizedPaidBy = normalizeMemberId(args.paid_by_member_id);
+    const normalizedInvolved = normalizeMemberIds(args.involved_member_ids);
+    const normalizedSplits = args.splits.map((split) => ({
+      ...split,
+      member_id: normalizeMemberId(split.member_id),
+    }));
+    const normalizedParticipantMemberIds = normalizeMemberIds(args.participant_member_ids);
+    const normalizedParticipants = args.participants.map((participant) => ({
+      ...participant,
+      member_id: normalizeMemberId(participant.member_id),
+    }));
+
     // Build participant_emails from linked participants
-    const participantEmails: string[] = [user.email]; // Always include owner
-    for (const p of args.participants) {
+    const participantEmails: string[] = [user.email.toLowerCase()]; // Always include owner
+    for (const p of normalizedParticipants) {
       if (p.linked_account_email && !participantEmails.includes(p.linked_account_email)) {
-        participantEmails.push(p.linked_account_email);
+        participantEmails.push(p.linked_account_email.toLowerCase());
       }
     }
 
@@ -76,9 +89,9 @@ export const create = mutation({
     if (!group) throw new Error("Group not found");
 
     if (group.is_direct) {
-        for (const memberId of args.involved_member_ids) {
+        for (const memberId of normalizedInvolved) {
             // Check if this member is the current user (based on group definition)
-            const groupMember = group.members.find(m => m.id === memberId);
+            const groupMember = group.members.find(m => normalizeMemberId(m.id) === memberId);
             if (groupMember?.is_current_user) {
                 continue; // It's me, skip
             }
@@ -109,14 +122,14 @@ export const create = mutation({
         description: args.description,
         date: args.date,
         total_amount: args.total_amount,
-        paid_by_member_id: args.paid_by_member_id,
-        involved_member_ids: args.involved_member_ids,
-        splits: args.splits,
+        paid_by_member_id: normalizedPaidBy,
+        involved_member_ids: normalizedInvolved,
+        splits: normalizedSplits,
         is_settled: args.is_settled,
         owner_id: user._id,
         group_ref: group._id,
-        participants: args.participants,
-        participant_member_ids: args.participant_member_ids,
+        participants: normalizedParticipants,
+        participant_member_ids: normalizedParticipantMemberIds,
         participant_emails: participantEmails,
         subexpenses: args.subexpenses,
         updated_at: Date.now(),
@@ -138,15 +151,15 @@ export const create = mutation({
       description: args.description,
       date: args.date,
       total_amount: args.total_amount,
-      paid_by_member_id: args.paid_by_member_id,
-      involved_member_ids: args.involved_member_ids,
-      splits: args.splits,
+      paid_by_member_id: normalizedPaidBy,
+      involved_member_ids: normalizedInvolved,
+      splits: normalizedSplits,
       is_settled: args.is_settled,
       owner_email: user.email,
       owner_account_id: user.id,
       owner_id: user._id,
-      participant_member_ids: args.participant_member_ids,
-      participants: args.participants,
+      participant_member_ids: normalizedParticipantMemberIds,
+      participants: normalizedParticipants,
       participant_emails: participantEmails,
       linked_participants: args.linked_participants,
       subexpenses: args.subexpenses,
