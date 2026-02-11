@@ -2216,6 +2216,67 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(myExpenses.count, 1)
         XCTAssertEqual(myExpenses[0].description, "With Me")
     }
+
+    func testSelectableDirectExpenseFriends_excludesStatuslessGroupOnlyFriend() async throws {
+        let bobId = UUID()
+        let bob = GroupMember(id: bobId, name: "Bob")
+        let sharedGroup = SpendingGroup(
+            name: "Shared Group",
+            members: [sut.currentUser, bob],
+            isDirect: false
+        )
+        sut.addExistingGroup(sharedGroup)
+
+        sut.addImportedFriend(
+            AccountFriend(
+                memberId: bobId,
+                name: "Bob",
+                hasLinkedAccount: false,
+                status: nil
+            )
+        )
+
+        XCTAssertFalse(
+            sut.selectableDirectExpenseFriends.contains(where: { $0.memberId == bobId }),
+            "Group-only statusless members should not appear in the + direct-expense picker."
+        )
+    }
+
+    func testSelectableDirectExpenseFriends_includesStatuslessStandaloneFriend() async throws {
+        let aliceId = UUID()
+        sut.addImportedFriend(
+            AccountFriend(
+                memberId: aliceId,
+                name: "Alice",
+                hasLinkedAccount: false,
+                status: nil
+            )
+        )
+
+        XCTAssertTrue(
+            sut.selectableDirectExpenseFriends.contains(where: { $0.memberId == aliceId }),
+            "Statusless standalone friends should remain selectable for direct expenses."
+        )
+    }
+
+    func testSelectableDirectExpenseFriends_excludesPendingLinkedFriend() async throws {
+        let pendingId = UUID()
+        sut.addImportedFriend(
+            AccountFriend(
+                memberId: pendingId,
+                name: "Pending",
+                hasLinkedAccount: true,
+                linkedAccountId: "user_pending",
+                linkedAccountEmail: "pending@example.com",
+                status: "request_sent"
+            )
+        )
+
+        XCTAssertFalse(
+            sut.selectableDirectExpenseFriends.contains(where: { $0.memberId == pendingId }),
+            "Pending friend-request rows must not appear in the + direct-expense picker."
+        )
+    }
     
 
 }

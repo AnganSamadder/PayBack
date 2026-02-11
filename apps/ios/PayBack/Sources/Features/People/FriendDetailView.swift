@@ -650,7 +650,7 @@ struct FriendDetailView: View {
             name: friend.name,
             profileImageUrl: friend.profileImageUrl,
             profileColorHex: friend.profileColorHex,
-            status: nil
+            status: "friend"
         )
         store.addImportedFriend(newFriend)
         await MainActor.run {

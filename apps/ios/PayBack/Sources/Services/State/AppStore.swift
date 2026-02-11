@@ -3038,7 +3038,7 @@ final class AppStore: ObservableObject {
                 hasLinkedAccount: true,
                 linkedAccountId: linkedAccountId,
                 linkedAccountEmail: linkedAccountEmail,
-                status: nil
+                status: "friend"
             )
             friends.append(newFriend)
         }
@@ -3251,8 +3251,95 @@ final class AppStore: ObservableObject {
         await reconcileLinkState()
         await startSessionMonitoring()
     }
-    
+
+    // MARK: - Direct Expense Target Resolution
+
+    /// Canonical explicit friends that can be selected in the "+" add-expense picker.
+    ///
+    /// This intentionally excludes group-only identities that leaked into `friends`
+    /// from legacy/state drift paths, while preserving explicit friend rows.
+    var selectableDirectExpenseFriends: [AccountFriend] {
+        var seenIdentityIds: [UUID] = []
+        var selectable: [AccountFriend] = []
+
+        func hasSeenIdentity(_ memberId: UUID) -> Bool {
+            seenIdentityIds.contains { areSamePerson($0, memberId) }
+        }
+
+        for friend in friends where !isCurrentUserFriend(friend) {
+            guard isSelectableDirectExpenseFriend(friend) else { continue }
+            guard !hasSeenIdentity(friend.memberId) else { continue }
+            seenIdentityIds.append(friend.memberId)
+            selectable.append(friend)
+        }
+
+        return selectable.sorted {
+            $0.displayName(showRealNames: true)
+                .localizedCaseInsensitiveCompare($1.displayName(showRealNames: true)) == .orderedAscending
+        }
+    }
+
+    /// Whether a friend row should be selectable as a direct-expense counterparty.
+    ///
+    /// Rules:
+    /// - confirmed/accepted friendships are selectable
+    /// - linked-account friendships are selectable unless explicitly pending/rejected
+    /// - legacy unlinked rows with no status are selectable only when they are not
+    ///   group-only members (or already have an established direct group)
+    func isSelectableDirectExpenseFriend(_ friend: AccountFriend) -> Bool {
+        let status = normalizedFriendStatus(friend.status)
+        let blockedStatuses = Set(["rejected", "pending", "request_sent", "request_received"])
+        if let status, blockedStatuses.contains(status) {
+            return false
+        }
+
+        if let status, status == "friend" || status == "accepted" {
+            return true
+        }
+
+        if friend.hasLinkedAccount {
+            return true
+        }
+
+        // Unknown non-empty statuses should not be selectable.
+        guard status == nil else { return false }
+
+        // Legacy status-less rows should not surface if they only exist due to
+        // non-direct group participation (e.g. shared-group participants).
+        if hasDirectGroupWithFriend(memberId: friend.memberId) {
+            return true
+        }
+        return !appearsInAnyNonDirectGroup(memberId: friend.memberId)
+    }
+
     // MARK: - Friend Status Visibility Helpers
+
+    private func normalizedFriendStatus(_ status: String?) -> String? {
+        guard let raw = status?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+              !raw.isEmpty
+        else {
+            return nil
+        }
+        return raw
+    }
+
+    private func hasDirectGroupWithFriend(memberId: UUID) -> Bool {
+        groups.contains { group in
+            guard isDirectGroup(group) else { return false }
+            let hasCurrentUser = group.members.contains { isCurrentUser($0) }
+            let hasFriend = group.members.contains { areSamePerson($0.id, memberId) }
+            return hasCurrentUser && hasFriend
+        }
+    }
+
+    private func appearsInAnyNonDirectGroup(memberId: UUID) -> Bool {
+        groups.contains { group in
+            guard !isDirectGroup(group) else { return false }
+            return group.members.contains { areSamePerson($0.id, memberId) }
+        }
+    }
     
     /// Checks if a friend has a linked account
     func friendHasLinkedAccount(_ friend: GroupMember) -> Bool {

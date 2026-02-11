@@ -52,6 +52,7 @@ struct AddHomeView: View {
 struct ChooseTargetView: View {
     @EnvironmentObject var store: AppStore
     @Binding var selectedGroup: SpendingGroup?
+    @AppStorage("showRealNames") private var showRealNames: Bool = true
 
     var body: some View {
         NavigationStack {
@@ -89,10 +90,29 @@ struct ChooseTargetView: View {
     }
 
     private var friendMembers: [GroupMember] {
-        // Double filter to ensure current user is never shown
-        return store.friendMembers
-            .filter { !store.isCurrentUser($0) }
-            .filter { $0.id != store.currentUser.id }
+        // Direct-expense target selection should only show explicitly selectable
+        // friend records from the central store.
+        var directExpenseTargets: [GroupMember] = []
+
+        for friend in store.selectableDirectExpenseFriends {
+            var member = GroupMember(
+                id: friend.memberId,
+                name: friend.displayName(showRealNames: showRealNames),
+                accountFriendMemberId: friend.memberId
+            )
+            member.profileColorHex = friend.profileColorHex
+
+            if store.isCurrentUser(member) || member.id == store.currentUser.id {
+                continue
+            }
+            if directExpenseTargets.contains(where: { store.areSamePerson($0.id, member.id) }) {
+                continue
+            }
+            directExpenseTargets.append(member)
+        }
+
+        return directExpenseTargets
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     private var availableGroups: [SpendingGroup] {
@@ -104,5 +124,3 @@ struct ChooseTargetView: View {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 }
-
-
