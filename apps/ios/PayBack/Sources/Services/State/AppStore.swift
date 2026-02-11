@@ -1402,10 +1402,16 @@ final class AppStore: ObservableObject {
         purgeCurrentUserFriendRecords()
         pruneSelfOnlyDirectGroups()
         normalizeDirectGroupFlags()
+        let friendsToSync = self.friends
         friendSyncTask?.cancel()
         friendSyncTask = Task {
             do {
-                try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: mergedFriends)
+                // Sync only the canonical, deduped friend set. Writing merged pre-dedupe
+                // friends can reintroduce duplicate rows in Convex.
+                try await accountService.syncFriends(
+                    accountEmail: session.account.email.lowercased(),
+                    friends: friendsToSync
+                )
             } catch {
                 #if DEBUG
                 print("⚠️ Failed to sync friends: \(error.localizedDescription)")
@@ -1787,9 +1793,18 @@ final class AppStore: ObservableObject {
 
     var friendMembers: [GroupMember] {
         let overrides = friendNameOverrides()
-        var seen: Set<UUID> = []
+        var seenIdentities: [UUID] = []
         var seenGroupMemberNames: Set<String> = []
         var results: [GroupMember] = []
+
+        func hasSeenIdentity(_ memberId: UUID) -> Bool {
+            seenIdentities.contains { areSamePerson($0, memberId) }
+        }
+
+        func markSeenIdentity(_ memberId: UUID) {
+            guard !hasSeenIdentity(memberId) else { return }
+            seenIdentities.append(memberId)
+        }
         
         // Build lookups from the Convex-synced friends array for metadata
         // Primary key: memberId (most reliable for linked friends)
@@ -1809,7 +1824,8 @@ final class AppStore: ObservableObject {
         // First, derive friends from actual group members (which have correct UUIDs matching expenses)
         for group in groups {
             for member in group.members where !isCurrentUser(member) {
-                guard seen.insert(member.id).inserted else { continue }
+                guard !hasSeenIdentity(member.id) else { continue }
+                markSeenIdentity(member.id)
                 
                 // Look up AccountFriend metadata - prioritize memberId, fall back to name or nickname
                 let memberNameKey = member.name.lowercased().trimmingCharacters(in: .whitespaces)
@@ -1853,7 +1869,8 @@ final class AppStore: ObservableObject {
         // Second, include friends from the friends array that don't exist in any group
         // (e.g., friends synced from Convex that haven't been added to a group yet)
         for friend in friends where !isCurrentUserFriend(friend) {
-            guard seen.insert(friend.memberId).inserted else { continue }
+            guard !hasSeenIdentity(friend.memberId) else { continue }
+            markSeenIdentity(friend.memberId)
 
             // If a friend record has the same name as a group member but a different memberId,
             // prefer the group member ID (it matches groups/expenses) to avoid duplicate entries.

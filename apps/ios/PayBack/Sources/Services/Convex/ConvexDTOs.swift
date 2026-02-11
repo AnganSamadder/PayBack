@@ -291,10 +291,16 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
     func toAccountFriend() -> AccountFriend? {
         guard let memberId = UUID(uuidString: member_id) else { return nil }
         let safeName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown" : name
+        let safeNickname = nickname?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        var identityAliases = alias_member_ids?.compactMap { UUID(uuidString: $0) } ?? []
+        if let linkedMemberId = linked_member_id.flatMap({ UUID(uuidString: $0) }) {
+            identityAliases.append(linkedMemberId)
+        }
+        let dedupedAliases = Array(Set(identityAliases))
         return AccountFriend(
             memberId: memberId,
             name: safeName,
-            nickname: nickname,
+            nickname: safeNickname,
             originalName: original_name,
             hasLinkedAccount: has_linked_account ?? false,
             linkedAccountId: linked_account_id,
@@ -302,8 +308,14 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
             profileImageUrl: profile_image_url,
             profileColorHex: profile_avatar_color,
             status: nil,
-            aliasMemberIds: alias_member_ids?.compactMap { UUID(uuidString: $0) }
+            aliasMemberIds: dedupedAliases.isEmpty ? nil : dedupedAliases
         )
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 

@@ -74,34 +74,6 @@ actor ConvexAccountService: AccountService {
 
     // MARK: - Friend Sync
     
-    private struct FriendDTO: Decodable {
-        let member_id: String
-        let name: String
-        let nickname: String?
-        let has_linked_account: Bool
-        let linked_account_id: String?
-        let linked_account_email: String?
-        let alias_member_ids: [String]?
-        let profile_image_url: String?
-        let profile_avatar_color: String?
-        
-        func toAccountFriend() -> AccountFriend? {
-            guard let memberId = UUID(uuidString: member_id) else { return nil }
-            return AccountFriend(
-                memberId: memberId,
-                name: name,
-                nickname: nickname,
-                hasLinkedAccount: has_linked_account,
-                linkedAccountId: linked_account_id,
-                linkedAccountEmail: linked_account_email,
-                profileImageUrl: profile_image_url,
-                profileColorHex: profile_avatar_color,
-                status: nil,
-                aliasMemberIds: alias_member_ids?.compactMap { UUID(uuidString: $0) }
-            )
-        }
-    }
-    
     private struct FriendArg: Codable, ConvexEncodable {
         let member_id: String
         let name: String
@@ -140,7 +112,7 @@ actor ConvexAccountService: AccountService {
         }
 
     func fetchFriends(accountEmail: String) async throws -> [AccountFriend] {
-        for try await dtos in client.subscribe(to: "friends:list", yielding: [FriendDTO].self).values {
+        for try await dtos in client.subscribe(to: "friends:list", yielding: [ConvexAccountFriendDTO].self).values {
             let friends = dtos.compactMap { $0.toAccountFriend() }
             self.cachedFriends = friends
             return friends
