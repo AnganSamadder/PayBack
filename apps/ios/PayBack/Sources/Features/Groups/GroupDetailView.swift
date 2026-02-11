@@ -249,20 +249,24 @@ struct GroupDetailView: View {
         return v.formatted(.currency(code: id))
     }
 
+    private func isMemberMatch(_ expenseMemberId: UUID, _ member: GroupMember) -> Bool {
+        store.isFriendMember(expenseMemberId, friendId: member.id, accountFriendMemberId: member.accountFriendMemberId)
+    }
+
     private func calculateNetBalance(for member: GroupMember) -> Double {
         // Positive means member should receive; negative means owes
         let items = store.expenses(in: groupId)
         var paidByMember: Double = 0
         var owes: Double = 0
-        
+
         for exp in items {
             // Skip fully settled expenses entirely
             if exp.isSettled { continue }
-            
-            if exp.paidByMemberId == member.id {
+
+            if isMemberMatch(exp.paidByMemberId, member) {
                 // If member paid, they are credited with the total amount...
                 var credit = exp.totalAmount
-                
+
                 // ...MINUS any splits that are already settled (reimbursed)
                 // This handles partial settlements correctly
                 for split in exp.splits {
@@ -272,27 +276,29 @@ struct GroupDetailView: View {
                 }
                 paidByMember += credit
             }
-            
+
             // If member owes money (their split is not settled), debit them
-            if let split = exp.splits.first(where: { $0.memberId == member.id }), !split.isSettled {
+            if let split = exp.splits.first(where: { isMemberMatch($0.memberId, member) }), !split.isSettled {
                 owes += split.amount
             }
         }
         return paidByMember - owes
     }
-    
+
     private func calculateGroupTotalBalance() -> Double {
         let items = store.expenses(in: groupId)
         return items.reduce(0) { $0 + $1.totalAmount }
     }
 
+    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
+
     private var hasUnsettledExpenses: Bool {
         let expenses = store.expenses(in: groupId)
         return expenses.contains { exp in
-            if let split = exp.splits.first(where: { $0.memberId == store.currentUser.id }), !split.isSettled {
+            if let split = exp.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
                 return true
             }
-            if exp.paidByMemberId == store.currentUser.id && !exp.isSettled {
+            if isMe(exp.paidByMemberId) && !exp.isSettled {
                 return true
             }
             return false
@@ -324,22 +330,22 @@ struct GroupDetailView: View {
         if store.isCurrentUser(member) {
             return member.name
         }
-        
-        // Find the AccountFriend for this member
-        if let accountFriend = store.friends.first(where: { $0.memberId == member.id }) {
+
+        // Find the AccountFriend for this member (check both primary and remapped IDs)
+        if let accountFriend = store.friends.first(where: { isMemberMatch($0.memberId, member) }) {
             return accountFriend.displayName(showRealNames: showRealNames)
         }
         return member.name
     }
-    
+
     private func memberSecondaryName(_ member: GroupMember) -> String? {
         // Current user has no secondary name
         if store.isCurrentUser(member) {
             return nil
         }
-        
-        // Find the AccountFriend for this member
-        if let accountFriend = store.friends.first(where: { $0.memberId == member.id }) {
+
+        // Find the AccountFriend for this member (check both primary and remapped IDs)
+        if let accountFriend = store.friends.first(where: { isMemberMatch($0.memberId, member) }) {
             return accountFriend.secondaryDisplayName(showRealNames: showRealNames)
         }
         return nil

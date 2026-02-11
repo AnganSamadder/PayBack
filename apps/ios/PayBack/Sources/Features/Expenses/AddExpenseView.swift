@@ -907,7 +907,6 @@ private struct PaidSplitBubble: View {
         }
     }
 
-    private var currentPayer: GroupMember? { group.members.first(where: { $0.id == payerId }) }
     private var modeTitle: String {
         switch mode {
         case .equal: return "Equally"
@@ -947,7 +946,7 @@ enum AddExpensePayerLogic {
             }
             return payer.name
         }
-        return "Me"
+        return "Unknown"
     }
 }
 

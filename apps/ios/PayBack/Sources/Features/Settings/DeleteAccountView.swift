@@ -48,5 +48,9 @@ struct DeleteAccountView: View {
     private func deleteAccount() async {
         isDeleting = true
         await store.selfDeleteAccount()
+        // Reset if still on screen (e.g. backend error didn't trigger sign-out)
+        await MainActor.run {
+            isDeleting = false
+        }
     }
 }

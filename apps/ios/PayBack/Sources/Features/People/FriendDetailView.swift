@@ -34,26 +34,10 @@ struct FriendDetailView: View {
         var id: String { rawValue }
     }
     
-    private func isMe(_ memberId: UUID) -> Bool {
-        if memberId == store.currentUser.id { return true }
-        if let account = store.session?.account {
-            if let linkedId = account.linkedMemberId, memberId == linkedId { return true }
-            if account.equivalentMemberIds.contains(memberId) { return true }
-        }
-        return false
-    }
+    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
     private func isFriend(_ memberId: UUID) -> Bool {
-        // Use AppStore's centralized alias resolution
-        if store.areSamePerson(memberId, friend.id) {
-            return true
-        }
-        
-        // Legacy fallback (in case alias map isn't populated or friend is just a group member)
-        if memberId == friend.id { return true }
-        if let linkedId = friend.accountFriendMemberId, memberId == linkedId { return true }
-        
-        return false
+        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
     private var netBalance: Double {
@@ -602,13 +586,16 @@ struct FriendDetailView: View {
             guard var cleaned = nickname?.trimmingCharacters(in: .whitespacesAndNewlines), !cleaned.isEmpty else {
                 return nil
             }
-            if cleaned == "\"\"" || cleaned == "''" {
+            if cleaned == "\"\"" || cleaned == "''" || cleaned == "\u{201C}\u{201D}" || cleaned == "\u{2018}\u{2019}" {
                 return nil
             }
             if cleaned.count >= 2 {
                 let first = cleaned.first
                 let last = cleaned.last
-                if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                if (first == "\"" && last == "\"") ||
+                   (first == "'" && last == "'") ||
+                   (first == "\u{201C}" && last == "\u{201D}") ||
+                   (first == "\u{2018}" && last == "\u{2019}") {
                     cleaned.removeFirst()
                     cleaned.removeLast()
                     cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1113,22 +1100,11 @@ struct DirectExpensesView: View {
         self.friend = friend
         self.onExpenseTap = onExpenseTap
     }
-    
-    private func isMe(_ memberId: UUID) -> Bool {
-        if memberId == store.currentUser.id { return true }
-        if let account = store.session?.account {
-            if let linkedId = account.linkedMemberId, memberId == linkedId { return true }
-            if account.equivalentMemberIds.contains(memberId) { return true }
-        }
-        return false
-    }
+
+    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
     private func isFriend(_ memberId: UUID) -> Bool {
-        if store.areSamePerson(memberId, friend.id) { return true }
-        if let accountFriendMemberId = friend.accountFriendMemberId {
-            return store.areSamePerson(memberId, accountFriendMemberId)
-        }
-        return false
+        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
     fileprivate var directExpenses: [Expense] {
@@ -1206,20 +1182,13 @@ struct GroupExpensesView: View {
                 continue 
             }
 
-            if group.members.contains(where: { isFriend($0.id) }) {
-            } else {
-            }
-
             guard group.members.contains(where: { isFriend($0.id) }) else { continue }
 
             // TODO: DATABASE_INTEGRATION - Replace store.expenses(in:) with database query
             // Example: SELECT * FROM expenses WHERE group_id = group.id AND involved_member_ids CONTAINS friend.id
             let expenses = store.expenses(in: group.id)
                 .filter { expense in
-                    let involved = expense.involvedMemberIds.contains { isFriend($0) }
-                    if !involved {
-                    }
-                    return involved
+                    expense.involvedMemberIds.contains { isFriend($0) }
                 }
 
             if !expenses.isEmpty {
@@ -1261,21 +1230,10 @@ struct DirectExpenseCard: View {
     let friend: GroupMember
     let onTap: ((Expense) -> Void)?
 
-    private func isMe(_ memberId: UUID) -> Bool {
-        if memberId == store.currentUser.id { return true }
-        if let account = store.session?.account {
-            if let linkedId = account.linkedMemberId, memberId == linkedId { return true }
-            if account.equivalentMemberIds.contains(memberId) { return true }
-        }
-        return false
-    }
+    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
     private func isFriend(_ memberId: UUID) -> Bool {
-        if store.areSamePerson(memberId, friend.id) { return true }
-        if let accountFriendMemberId = friend.accountFriendMemberId {
-            return store.areSamePerson(memberId, accountFriendMemberId)
-        }
-        return false
+        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
     var body: some View {
@@ -1429,21 +1387,10 @@ struct GroupExpenseRow: View {
     let expense: Expense
     let friend: GroupMember
 
-    private func isMe(_ memberId: UUID) -> Bool {
-        if memberId == store.currentUser.id { return true }
-        if let account = store.session?.account {
-            if let linkedId = account.linkedMemberId, memberId == linkedId { return true }
-            if account.equivalentMemberIds.contains(memberId) { return true }
-        }
-        return false
-    }
+    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
     private func isFriend(_ memberId: UUID) -> Bool {
-        if store.areSamePerson(memberId, friend.id) { return true }
-        if let accountFriendMemberId = friend.accountFriendMemberId {
-            return store.areSamePerson(memberId, accountFriendMemberId)
-        }
-        return false
+        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
     var body: some View {

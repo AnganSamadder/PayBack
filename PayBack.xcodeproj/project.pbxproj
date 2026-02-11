@@ -23,7 +23,6 @@
 		05FC7341930C6BEA09DBED7E /* InviteLinkService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230D91E194DB7716254085D4 /* InviteLinkService.swift */; };
 		06504D6552D9996303DFB7DE /* ClerkAuthProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EFE8F2047EEAF11D31E4F1B /* ClerkAuthProviderTests.swift */; };
 		06FDA5FAB7F7A66F89196E96 /* DetailContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49D7C53DAB1E7F54FE02BDCC /* DetailContainer.swift */; };
-		0862C8717F1D60B24B7C533F /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = B3CB16DCDDEC82F38E1BD4BC /* AGENTS.md */; };
 		08B6124CF7B24C12E829973E /* LinkStateReconciliation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77507FA5CDA078A4C28D6662 /* LinkStateReconciliation.swift */; };
 		08E75B7EA653D2318E102100 /* LinkStateReconciliation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77507FA5CDA078A4C28D6662 /* LinkStateReconciliation.swift */; };
 		092ECBB74BA30E73ADCF65FB /* ReconciliationPerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CC45A098C92F0A8A972BC76 /* ReconciliationPerformanceTests.swift */; };
@@ -446,7 +445,6 @@
 		FC871AD9DC74AB8F9FD404A5 /* DetailContainerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55512C199A3314C244C0B764 /* DetailContainerTests.swift */; };
 		FC8A6FA1183C1103F5921B61 /* LoginViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3121780D688F8F76B749362 /* LoginViewTests.swift */; };
 		FCD5B9994C5004A7B1C6745F /* metrics_template.csv in Resources */ = {isa = PBXBuildFile; fileRef = AFAED94382E80DC702F256BE /* metrics_template.csv */; };
-		FD8FDBD2729680E5B7BAF0BD /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = B3CB16DCDDEC82F38E1BD4BC /* AGENTS.md */; };
 		FDBFD5E402895544622A0466 /* variant-c-sanitized.csv in Resources */ = {isa = PBXBuildFile; fileRef = 4C2BABFEFDD4208B43319CC3 /* variant-c-sanitized.csv */; };
 		FE816E78B4034314531CA64E /* DeleteAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96ED2CA5C94A388ACF29A228 /* DeleteAccountView.swift */; };
 		FEE6B11F15CEF527A79E634B /* ExpenseCalculationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A39075A7551AA7A2A6CA8F5F /* ExpenseCalculationTests.swift */; };
@@ -1522,7 +1520,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0862C8717F1D60B24B7C533F /* AGENTS.md in Resources */,
 				C66D284501244934B6E4EF10 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1551,7 +1548,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				FD8FDBD2729680E5B7BAF0BD /* AGENTS.md in Resources */,
 				E90F9ADFBFEB198A26967189 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

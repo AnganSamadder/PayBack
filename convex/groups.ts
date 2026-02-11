@@ -361,10 +361,15 @@ export const leaveGroup = mutation({
     const aliases = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
     const membershipIds = new Set([canonicalMemberId, ...aliases]);
 
+    const isMember = group.members.some(
+      (m) => membershipIds.has(normalizeMemberId(m.id))
+    );
+    if (!isMember) throw new Error("You are not a member of this group");
+
     const normalizedNewMembers = group.members.filter(
       (m) => !membershipIds.has(normalizeMemberId(m.id))
     );
-    
+
     if (normalizedNewMembers.length === 0) {
         await ctx.db.delete(group._id);
     } else {
