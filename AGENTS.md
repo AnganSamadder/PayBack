@@ -186,3 +186,43 @@ This runbook is the canonical operational guide for:
 - iOS selector correctness
 - bulk import identity rules
 - troubleshooting commands and test gates
+
+## RELEASE BLOCKERS FIXED (2026-02-11)
+
+### Convex Authorization Rule (Critical)
+Never trust client-supplied `accountEmail` (or any ownership identifier) for destructive/identity mutations.
+
+**Required pattern**:
+1. Derive caller identity from auth (`getCurrentUser` / `getCurrentUserOrThrow`).
+2. Resolve account email/id server-side from auth context.
+3. Treat client `accountEmail` as optional legacy input at most, and reject mismatches where needed.
+
+Applied to:
+- `aliases:mergeMemberIds`
+- `aliases:mergeUnlinkedFriends`
+- `cleanup:deleteLinkedFriend`
+- `cleanup:deleteUnlinkedFriend`
+- `cleanup:selfDeleteAccount`
+
+### Admin Mutation Guard
+`admin:hardDeleteUser` must be admin-only. Use explicit admin allowlist checks from auth identity before deleting by email.
+
+### Friend Linking Identity Type Rule
+`account_friends.linked_account_id` must store auth/account `id` (string identity), not Convex document `_id`.
+Using `_id` breaks comparisons/dedup paths that check against auth IDs.
+
+### iOS Payload Compatibility Rule
+When backend arg contracts change, keep iOS mutation payload keys aligned.
+
+Current required keys:
+- `aliases:mergeMemberIds`: `sourceId`, `targetCanonicalId`
+- `cleanup:deleteLinkedFriend`: `friendMemberId`
+- `cleanup:deleteUnlinkedFriend`: `friendMemberId`
+- `aliases:mergeUnlinkedFriends`: no `accountEmail` from client
+
+### iOS Realtime Sync Guard (Test/Startup Stability)
+`AppStore.subscribeToSyncManager` must ignore realtime payloads until a session exists.
+Otherwise empty remote snapshots can clobber local state before auth and break persistence expectations.
+
+### Dependencies Thread-Safety Guard
+`Dependencies.reset()` is called concurrently in tests; serialize it with a lock to avoid crashes in `DependenciesTests.testConcurrentReset_DoesNotCrash`.
