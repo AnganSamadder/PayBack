@@ -91,3 +91,23 @@ When changing any of the following, update tests and the runbook:
 - alias resolution (`member_aliases`, `accounts.alias_member_ids`)
 - friend dedupe/enrichment payload contracts
 - member ID normalization behavior
+
+## FRIEND LIST DEDUPE CONTRACT (CRITICAL)
+
+`friends:list` must return one logical row per person identity for each owner, even if `account_friends` contains legacy/stale duplicates.
+
+### Required behavior
+1. Enrich linked rows with canonical identity aliases (`alias_member_ids`) and `linked_member_id`.
+2. Build identity keys using linked account identifiers (`linked_account_email`, `linked_account_id`, `linked_member_id`) and alias membership.
+3. Deduplicate response rows by identity key with deterministic precedence:
+   - linked row over unlinked
+   - richer alias set over sparse alias set
+   - newer `updated_at` over older
+4. Preserve merged alias visibility in the winning row so clients can resolve `areSamePerson(...)`.
+
+### Why this exists
+During invite-link transitions, owners can temporarily have both:
+- stale linked row (`member_id = old/manual id`)
+- unlinked canonical row (`member_id = canonical id`)
+
+Without response-level dedupe, iOS/Android clients can show duplicate friend cards if alias metadata is delayed/sparse in a sync cycle.

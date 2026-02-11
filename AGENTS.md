@@ -155,6 +155,20 @@ Linking connects a local "Unlinked" friend (often created manually or via CSV im
 4.  **Identity Checks**:
     -   `store.areSamePerson(id1, id2)` checks the `memberAliasMap` to resolve identity, ensuring expenses assigned to the alias ID are correctly attributed to the master friend in the UI.
 
+### Duplicate Friend Reappearance Guard (Fixed 2026-02-10)
+**Symptom**: After account switch/login, owner still sees duplicate friend cards (linked + unlinked) for the same person.
+
+**Root Causes**:
+1. `scheduleFriendSync` previously synced a **pre-dedupe** friend list back to Convex, which could reintroduce duplicate rows.
+2. DTO mapping could miss identity equivalence when `alias_member_ids` was sparse in some updates.
+
+**Required Guards**:
+1. In `AppStore.scheduleFriendSync`, only sync `self.friends` **after** `processFriendsUpdate(...)` dedupe.
+2. In Convex friend DTO mapping, treat `linked_member_id` as an identity alias fallback (not only `alias_member_ids`).
+3. In `friendMembers`, dedupe by `areSamePerson(...)` identity equivalence, not raw UUID equality.
+
+**Rule**: Never write pre-dedupe friend arrays to cloud. Any friend identity check in UI lists must use equivalence (`areSamePerson`), not strict UUID match.
+
 ### Key Data Structures
 -   **UserAccount**: `equivalentMemberIds` stores all alias UUIDs (e.g., from invites/imports).
 -   **GroupMember**: `accountFriendMemberId` stores the UUID of the linked `AccountFriend` (if any).
