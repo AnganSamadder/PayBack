@@ -31,6 +31,25 @@ for pattern in "${SECRET_PATTERNS[@]}"; do
     fi
 done
 
+# Check newly added lines in staged diff for high-risk secret patterns.
+STAGED_ADDED_LINES=$(git diff --cached --no-color --unified=0 | grep '^+' | grep -v '^+++' || true)
+CONTENT_SECRET_PATTERNS=(
+    "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"   # JWT-like token
+    "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"                # Private key material
+    "sk_live_[A-Za-z0-9]{16,}"                                       # Stripe live key
+    "xox[baprs]-[A-Za-z0-9-]{10,}"                                   # Slack token
+)
+
+for pattern in "${CONTENT_SECRET_PATTERNS[@]}"; do
+    if echo "$STAGED_ADDED_LINES" | grep -Eq "$pattern"; then
+        echo "❌ ERROR: Potential secret detected in staged content (pattern: $pattern)"
+        echo ""
+        echo "Remove sensitive values from staged changes before committing."
+        echo ""
+        exit 1
+    fi
+done
+
 echo "✅ No secrets detected in staged files."
 echo ""
 
