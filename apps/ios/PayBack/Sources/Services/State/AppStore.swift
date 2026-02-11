@@ -1863,6 +1863,24 @@ final class AppStore: ObservableObject {
         return tokensMatchCurrentUser(tokens)
     }
 
+    var confirmedFriendMembers: [GroupMember] {
+        let overrides = friendNameOverrides()
+        return friends
+            .filter { !isCurrentUserFriend($0) }
+            .map { friend in
+                let name = sanitizedFriendName(friend, overrides: overrides)
+                var member = GroupMember(
+                    id: friend.memberId,
+                    name: name,
+                    accountFriendMemberId: friend.memberId
+                )
+                member.profileColorHex = friend.profileColorHex
+                member.profileImageUrl = friend.profileImageUrl
+                return member
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     var friendMembers: [GroupMember] {
         let overrides = friendNameOverrides()
         var seenIdentities: [UUID] = []

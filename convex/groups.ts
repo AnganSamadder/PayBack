@@ -269,29 +269,75 @@ export const clearAllForUser = mutation({
     handler: async (ctx) => {
         const { user } = await getCurrentUser(ctx);
         if (!user) throw new Error("User not found");
-        
-        // Get all groups owned by this user
-        const ownedGroups = await ctx.db
-            .query("groups")
-            .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-            .collect();
-            
-        const byEmail = await ctx.db
-            .query("groups")
-            .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
-            .collect();
-            
-        // Merge and dedupe
-        const allGroupIds = new Set<string>();
-        ownedGroups.forEach(g => { allGroupIds.add(g._id); });
-        byEmail.forEach(g => { allGroupIds.add(g._id); });
-        
-        // Delete all
-        for (const _id of allGroupIds) {
-            await ctx.db.delete(_id as any);
+
+        // Resolve all member IDs that represent this user so we can leave shared groups too.
+        const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+          ctx.db,
+          user.member_id ?? user.id
+        );
+        const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+        const membershipIds = new Set([
+          normalizeMemberId(canonicalMemberId),
+          ...equivalentIds.map((id) => normalizeMemberId(id)),
+          ...(user.alias_member_ids || []).map((id) => normalizeMemberId(id)),
+        ]);
+
+        // 1) Delete groups owned by the current user.
+        const ownedById = await ctx.db
+          .query("groups")
+          .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
+          .collect();
+        const ownedByEmail = await ctx.db
+          .query("groups")
+          .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
+          .collect();
+
+        const ownedGroupIdSet = new Set<string>();
+        ownedById.forEach((group) => ownedGroupIdSet.add(group._id as any));
+        ownedByEmail.forEach((group) => ownedGroupIdSet.add(group._id as any));
+
+        for (const groupId of ownedGroupIdSet) {
+          await ctx.db.delete(groupId as any);
         }
-        
-        return null;
+
+        // 2) Leave any remaining shared groups where this user is still a member.
+        const allGroups = await ctx.db.query("groups").collect();
+        let sharedGroupsUpdated = 0;
+        let emptySharedGroupsDeleted = 0;
+
+        for (const group of allGroups) {
+          if (ownedGroupIdSet.has(group._id as any)) continue;
+
+          const hasViewerMembership = group.members.some((member) =>
+            membershipIds.has(normalizeMemberId(member.id))
+          );
+          if (!hasViewerMembership) continue;
+
+          const remainingMembers = group.members.filter(
+            (member) => !membershipIds.has(normalizeMemberId(member.id))
+          );
+
+          if (remainingMembers.length === 0) {
+            await ctx.db.delete(group._id);
+            emptySharedGroupsDeleted += 1;
+            continue;
+          }
+
+          await ctx.db.patch(group._id, {
+            members: remainingMembers.map((member) => ({
+              ...member,
+              id: normalizeMemberId(member.id),
+            })),
+            updated_at: Date.now(),
+          });
+          sharedGroupsUpdated += 1;
+        }
+
+        return {
+          deleted_owned_groups: ownedGroupIdSet.size,
+          left_shared_groups: sharedGroupsUpdated,
+          deleted_empty_shared_groups: emptySharedGroupsDeleted,
+        };
     }
 });
 

@@ -270,3 +270,25 @@ Required behavior:
 2. Normalize empty values to `nil` and lowercase emails before sending.
 
 Missing participant linked-account metadata can prevent cross-account fan-out and cause expenses to appear missing after account switch.
+
+### Clear-All Semantics (iOS ↔ Convex)
+`clearAllUserData` is expected to remove user-owned data **and** detach the user from shared visibility.
+
+Required backend behavior:
+1. `groups:clearAllForUser` must:
+   - delete owned groups
+   - remove the current user's canonical/alias member IDs from shared groups (leave group)
+2. `expenses:clearAllForUser` must:
+   - reconcile + delete owned expenses (`reconcileUserExpenses(..., [])` before delete)
+   - delete `user_expenses` rows for the current user (shared expense visibility cleanup)
+
+If this is not enforced, users can clear data and still see leftover shared groups/people or stale expense visibility.
+
+### Friend UI Boundary Rule
+Group participants are not equivalent to direct friends.
+
+Required behavior:
+1. Friends tab should render only true `AccountFriend` entries (confirmed friend list).
+2. Group-derived people (`friendMembers`) can be used for identity resolution and group workflows, but not as canonical friend list UI.
+
+If this boundary blurs, friend-of-friend participants (e.g., Bob in a shared group) appear as unintended friends.

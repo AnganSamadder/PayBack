@@ -536,6 +536,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
                 .id
         )
         XCTAssertFalse(syncedFriends.contains(where: { $0.memberId == bobId }))
+        XCTAssertTrue(sut.friendMembers.contains(where: { $0.id == bobId }))
     }
 
     func testMakeParticipants_IncludesLinkedAccountMetadataForLinkedFriends() async throws {

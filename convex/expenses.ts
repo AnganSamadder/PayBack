@@ -426,16 +426,29 @@ export const clearAllForUser = mutation({
             .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
             .collect();
             
-        // Merge and dedupe
-        const allExpenseIds = new Set<string>();
-        ownedExpenses.forEach(e => { allExpenseIds.add(e._id); });
-        byEmail.forEach(e => { allExpenseIds.add(e._id); });
-        
-        // Delete all
-        for (const _id of allExpenseIds) {
-            await ctx.db.delete(_id as any);
+        // Merge and dedupe by client UUID so we can reconcile user_expenses correctly.
+        const ownedExpenseByClientId = new Map<string, any>();
+        ownedExpenses.forEach((expense) => ownedExpenseByClientId.set(expense.id, expense));
+        byEmail.forEach((expense) => ownedExpenseByClientId.set(expense.id, expense));
+
+        // Delete all owned expenses and fully reconcile fan-out rows.
+        for (const expense of ownedExpenseByClientId.values()) {
+            await reconcileUserExpenses(ctx, expense.id, []);
+            await ctx.db.delete(expense._id);
         }
-        
-        return null;
+
+        // Also remove this user from user_expenses visibility rows for shared expenses.
+        const viewerExpenseRows = await ctx.db
+          .query("user_expenses")
+          .withIndex("by_user_id", (q) => q.eq("user_id", user.id))
+          .collect();
+        for (const row of viewerExpenseRows) {
+          await ctx.db.delete(row._id);
+        }
+
+        return {
+          deleted_owned_expenses: ownedExpenseByClientId.size,
+          removed_viewer_visibility_rows: viewerExpenseRows.length,
+        };
     }
 });
