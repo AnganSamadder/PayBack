@@ -52,13 +52,24 @@ export async function findAccountByMemberId(
   }
 
   const accounts = await db.query("accounts").collect();
-  return (
-    accounts.find(
-      (account) =>
-        typeof account.member_id === "string" &&
-        normalizeMemberId(account.member_id) === normalized
-    ) ?? null
-  );
+  for (const account of accounts) {
+    if (
+      typeof account.member_id === "string" &&
+      normalizeMemberId(account.member_id) === normalized
+    ) {
+      return account;
+    }
+    if (
+      Array.isArray(account.alias_member_ids) &&
+      account.alias_member_ids.some(
+        (alias: string) => typeof alias === "string" && normalizeMemberId(alias) === normalized
+      )
+    ) {
+      return account;
+    }
+  }
+
+  return null;
 }
 
 /**

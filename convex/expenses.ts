@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { reconcileUserExpenses } from "./helpers";
 import { checkRateLimit } from "./rateLimit";
-import { normalizeMemberId, normalizeMemberIds } from "./identity";
+import { findAccountByMemberId, normalizeMemberId, normalizeMemberIds } from "./identity";
 import { getAllEquivalentMemberIds } from "./aliases";
 
 async function getCurrentUser(ctx: any) {
@@ -19,13 +19,19 @@ async function getCurrentUser(ctx: any) {
 }
 
 function isEligibleDirectFriendRecord(friend: any): boolean {
-  const status = typeof friend.status === "string" ? friend.status.toLowerCase() : undefined;
-  if (status === "rejected") return false;
+  const normalizedStatus =
+    typeof friend.status === "string" ? friend.status.trim().toLowerCase() : undefined;
+  if (normalizedStatus === "rejected") return false;
   // Backward-compatible acceptance:
   // - explicit friend/accepted rows
   // - linked-account rows
-  // - legacy rows without status
-  return status === "friend" || status === "accepted" || friend.has_linked_account === true || !status;
+  // - legacy rows without status (including accidental empty-string status writes)
+  return (
+    normalizedStatus === "friend" ||
+    normalizedStatus === "accepted" ||
+    friend.has_linked_account === true ||
+    !normalizedStatus
+  );
 }
 
 function intersects(lhs: Set<string>, rhs: Set<string>): boolean {
@@ -132,9 +138,18 @@ export const create = mutation({
             ? friend.linked_account_id.trim()
             : undefined;
 
-        const cacheKey = emailKey ? `email:${emailKey}` : authKey ? `auth:${authKey}` : undefined;
-        if (!cacheKey) return null;
-        if (linkedAccountCache.has(cacheKey)) {
+        const memberSeedForCache = [friend.linked_member_id, friend.member_id].find(
+          (value): value is string => typeof value === "string" && value.trim().length > 0
+        );
+        const cacheKey = emailKey
+          ? `email:${emailKey}`
+          : authKey
+            ? `auth:${authKey}`
+            : memberSeedForCache
+              ? `member:${normalizeMemberId(memberSeedForCache)}`
+              : undefined;
+
+        if (cacheKey && linkedAccountCache.has(cacheKey)) {
           return linkedAccountCache.get(cacheKey) ?? null;
         }
 
@@ -151,8 +166,19 @@ export const create = mutation({
             .withIndex("by_auth_id", (q) => q.eq("id", authKey))
             .unique();
         }
+        if (!linkedAccount) {
+          const memberLookupSeeds = [friend.linked_member_id, friend.member_id].filter(
+            (value): value is string => typeof value === "string" && value.trim().length > 0
+          );
+          for (const seed of memberLookupSeeds) {
+            linkedAccount = await findAccountByMemberId(ctx.db, seed);
+            if (linkedAccount) break;
+          }
+        }
 
-        linkedAccountCache.set(cacheKey, linkedAccount ?? null);
+        if (cacheKey) {
+          linkedAccountCache.set(cacheKey, linkedAccount ?? null);
+        }
         return linkedAccount;
       };
 

@@ -84,32 +84,57 @@ actor ConvexAccountService: AccountService {
         let status: String?
     }
 
-        func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {
-            for friend in friends {
-                let args = FriendArg(
-                    member_id: friend.memberId.uuidString,
-                    name: friend.name,
-                    nickname: friend.nickname,
-                    has_linked_account: friend.hasLinkedAccount,
-                    linked_account_id: friend.linkedAccountId,
-                    linked_account_email: friend.linkedAccountEmail,
-                    status: friend.status
-                )
-                
-                let convexArgs: [String: ConvexEncodable?] = [
-                    "member_id": args.member_id,
-                    "name": args.name,
-                    "nickname": args.nickname ?? "",
-                    "has_linked_account": args.has_linked_account,
-                    "linked_account_id": args.linked_account_id ?? "",
-                    "linked_account_email": args.linked_account_email ?? "",
-                    "status": args.status ?? ""
-                ]
-                
-                _ = try await client.mutation("friends:upsert", with: convexArgs)
+    func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {
+        for friend in friends {
+            let args = FriendArg(
+                member_id: friend.memberId.uuidString,
+                name: friend.name,
+                nickname: friend.nickname,
+                has_linked_account: friend.hasLinkedAccount,
+                linked_account_id: friend.linkedAccountId,
+                linked_account_email: friend.linkedAccountEmail,
+                status: friend.status
+            )
+
+            var convexArgs: [String: ConvexEncodable?] = [
+                "member_id": args.member_id,
+                "name": args.name,
+                "has_linked_account": args.has_linked_account,
+            ]
+
+            if let nickname = args.nickname?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !nickname.isEmpty
+            {
+                convexArgs["nickname"] = nickname
             }
-            self.cachedFriends = friends
+
+            if let linkedAccountId = args.linked_account_id?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !linkedAccountId.isEmpty
+            {
+                convexArgs["linked_account_id"] = linkedAccountId
+            }
+
+            if let linkedAccountEmail = args.linked_account_email?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased(),
+               !linkedAccountEmail.isEmpty
+            {
+                convexArgs["linked_account_email"] = linkedAccountEmail
+            }
+
+            if let status = args.status?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !status.isEmpty
+            {
+                convexArgs["status"] = status
+            }
+
+            _ = try await client.mutation("friends:upsert", with: convexArgs)
         }
+        self.cachedFriends = friends
+    }
 
     func fetchFriends(accountEmail: String) async throws -> [AccountFriend] {
         for try await dtos in client.subscribe(to: "friends:list", yielding: [ConvexAccountFriendDTO].self).values {

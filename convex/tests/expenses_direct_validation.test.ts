@@ -316,6 +316,129 @@ test("expenses:create allows direct expense when linked account carries legacy a
   expect(expenses.length).toBe(1);
 });
 
+test("expenses:create allows direct expense when legacy friend row has no linked fields but member_id is in account alias_member_ids", async () => {
+  const t = convexTest(schema);
+  const now = Date.now();
+
+  const ownerDocId = await t.run(async (ctx) => {
+    return await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now,
+    });
+  });
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "friend_auth_id",
+      email: "friend@example.com",
+      display_name: "Friend",
+      member_id: "friend_canonical",
+      alias_member_ids: ["friend_legacy_member"],
+      created_at: now,
+    });
+    // Legacy row missing linked_account_email/linked_account_id/linked_member_id.
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_legacy_member",
+      name: "Friend",
+      profile_avatar_color: "#654321",
+      has_linked_account: true,
+      status: "accepted",
+      updated_at: now,
+    });
+    await ctx.db.insert("groups", {
+      id: "direct_group_legacy_alias_only",
+      name: "Owner + Friend",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "friend_canonical", name: "Friend" },
+      ],
+      owner_email: "owner@example.com",
+      owner_account_id: "owner_auth_id",
+      owner_id: ownerDocId,
+      is_direct: true,
+      created_at: now,
+      updated_at: now,
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+
+  const result = await ownerCtx.mutation(
+    api.expenses.create,
+    buildDirectExpenseArgs({
+      expenseId: "direct_expense_legacy_alias_only",
+      groupId: "direct_group_legacy_alias_only",
+      ownerMemberId: "owner_member",
+      otherMemberId: "friend_canonical",
+    })
+  );
+
+  expect(result).toBeDefined();
+  const expenses = await t.run(async (ctx) => await ctx.db.query("expenses").collect());
+  expect(expenses.length).toBe(1);
+});
+
+test("expenses:create allows direct expense when legacy friend status is an empty string", async () => {
+  const t = convexTest(schema);
+  const now = Date.now();
+
+  const ownerDocId = await t.run(async (ctx) => {
+    return await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now,
+    });
+  });
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#112233",
+      has_linked_account: false,
+      status: "",
+      updated_at: now,
+    });
+    await ctx.db.insert("groups", {
+      id: "direct_group_empty_status",
+      name: "Owner + Friend",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "friend_member", name: "Friend" },
+      ],
+      owner_email: "owner@example.com",
+      owner_account_id: "owner_auth_id",
+      owner_id: ownerDocId,
+      is_direct: true,
+      created_at: now,
+      updated_at: now,
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+
+  const result = await ownerCtx.mutation(
+    api.expenses.create,
+    buildDirectExpenseArgs({
+      expenseId: "direct_expense_empty_status",
+      groupId: "direct_group_empty_status",
+      ownerMemberId: "owner_member",
+      otherMemberId: "friend_member",
+    })
+  );
+
+  expect(result).toBeDefined();
+  const expenses = await t.run(async (ctx) => await ctx.db.query("expenses").collect());
+  expect(expenses.length).toBe(1);
+});
+
 test("expenses:create rejects direct expense when involved member is not a friend", async () => {
   const t = convexTest(schema);
   const now = Date.now();
