@@ -54,11 +54,10 @@ export const cleanupOrphans = internalMutation({
       if (f.linked_account_email) linkedEmails.add(f.linked_account_email);
     }
 
-    const groupsPage = await ctx.db.query("groups").paginate({
-      numItems: 50,
-      cursor: existingState?.groups_cursor ?? null,
-    });
-    const groupEmails = new Set(groupsPage.page.map((g) => g.owner_email));
+    // NOTE: Only one .paginate() is allowed per Convex mutation, so we
+    // collect groups (small table) instead of paginating both tables.
+    const allGroups = await ctx.db.query("groups").collect();
+    const groupEmails = new Set(allGroups.map((g) => g.owner_email));
 
     const ownerEmailsToCheck = new Set([...friendEmails, ...groupEmails]);
     const linkedEmailsToCheck = linkedEmails;
@@ -73,15 +72,14 @@ export const cleanupOrphans = internalMutation({
         linkedEmailCount: linkedEmails.size,
         totalOwnerEmails: ownerEmailsToCheck.size,
         friendPageSize: friendsPage.page.length,
-        groupsPageSize: groupsPage.page.length,
+        groupsTotalSize: allGroups.length,
         friendCursorWasNull: (existingState?.account_friends_cursor ?? null) === null,
-        groupsCursorWasNull: (existingState?.groups_cursor ?? null) === null,
       })
     );
 
     await ctx.db.patch(stateId, {
       account_friends_cursor: friendsPage.isDone ? undefined : friendsPage.continueCursor,
-      groups_cursor: groupsPage.isDone ? undefined : groupsPage.continueCursor,
+      groups_cursor: undefined, // groups are fully scanned each run
       updated_at: Date.now(),
     });
 
