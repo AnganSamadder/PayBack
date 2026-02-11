@@ -221,6 +221,26 @@ export const create = mutation({
         }
       }
 
+      const groupMemberIdentityRows = await Promise.all(
+        group.members.map(async (member) => ({
+          member,
+          identityIds: await getEquivalentIdSet(member.id),
+        }))
+      );
+
+      const currentUserGroupRows = groupMemberIdentityRows.filter(
+        ({ member, identityIds }) =>
+          member.is_current_user === true || intersects(identityIds, currentUserEquivalentIds)
+      );
+      if (currentUserGroupRows.length === 0) {
+        throw new Error("Not authorized for direct group");
+      }
+
+      const directCounterpartyRows = groupMemberIdentityRows.filter(
+        ({ member, identityIds }) =>
+          member.is_current_user !== true && !intersects(identityIds, currentUserEquivalentIds)
+      );
+
       const ownerFriendRows = await ctx.db
         .query("account_friends")
         .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
@@ -274,6 +294,16 @@ export const create = mutation({
         );
 
         if (!matchingFriend) {
+          // Legacy fallback:
+          // direct groups are 1:1, but stale friend rows can drift and fail identity match.
+          // If this member is the direct counterparty in a valid 1:1 direct group, allow creation.
+          if (
+            directCounterpartyRows.length === 1 &&
+            intersects(directCounterpartyRows[0].identityIds, memberEquivalentIds)
+          ) {
+            continue;
+          }
+
           const normalizedGroupMemberName = normalizePersonName(groupMember?.name);
           if (normalizedGroupMemberName) {
             const byNameMatches = ownerFriendIdentityRows.filter(

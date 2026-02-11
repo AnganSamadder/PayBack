@@ -576,6 +576,67 @@ test("expenses:create allows direct expense for legacy name-only friend rows and
   expect(expense?.participant_emails).toContain("friend@example.com");
 });
 
+test("expenses:create allows direct expense for valid 1:1 direct group even when friend rows are missing", async () => {
+  const t = convexTest(schema);
+  const now = Date.now();
+
+  const ownerDocId = await t.run(async (ctx) => {
+    return await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now,
+    });
+  });
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "friend_auth_id",
+      email: "friend@example.com",
+      display_name: "Friend",
+      member_id: "friend_member",
+      created_at: now,
+    });
+    await ctx.db.insert("groups", {
+      id: "direct_group_no_friend_row",
+      name: "Owner + Friend",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "friend_member", name: "Friend" },
+      ],
+      owner_email: "owner@example.com",
+      owner_account_id: "owner_auth_id",
+      owner_id: ownerDocId,
+      is_direct: true,
+      created_at: now,
+      updated_at: now,
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+
+  const result = await ownerCtx.mutation(
+    api.expenses.create,
+    buildDirectExpenseArgs({
+      expenseId: "direct_expense_no_friend_row",
+      groupId: "direct_group_no_friend_row",
+      ownerMemberId: "owner_member",
+      otherMemberId: "friend_member",
+    })
+  );
+
+  expect(result).toBeDefined();
+  const expense = await t.run(async (ctx) =>
+    ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "direct_expense_no_friend_row"))
+      .unique()
+  );
+  expect(expense).toBeDefined();
+  expect(expense?.participant_emails).toContain("friend@example.com");
+});
+
 test("expenses:create rejects direct expense when involved member is not a friend", async () => {
   const t = convexTest(schema);
   const now = Date.now();
@@ -596,7 +657,7 @@ test("expenses:create rejects direct expense when involved member is not a frien
       name: "Owner + Stranger",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "stranger_member", name: "Stranger" },
+        { id: "friend_member", name: "Friend" },
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
@@ -616,7 +677,7 @@ test("expenses:create rejects direct expense when involved member is not a frien
         expenseId: "direct_expense_unrelated",
         groupId: "direct_group_unrelated",
         ownerMemberId: "owner_member",
-        otherMemberId: "stranger_member",
+        otherMemberId: "stranger_member_not_in_group",
       })
     )
   ).rejects.toThrow("not a confirmed friend");
