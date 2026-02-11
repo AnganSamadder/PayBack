@@ -226,3 +226,21 @@ Otherwise empty remote snapshots can clobber local state before auth and break p
 
 ### Dependencies Thread-Safety Guard
 `Dependencies.reset()` is called concurrently in tests; serialize it with a lock to avoid crashes in `DependenciesTests.testConcurrentReset_DoesNotCrash`.
+
+### Add Expense Payer Identity Guard (iOS)
+Do not infer `"Me"` from `group.members.first`.
+
+Required behavior in `AddExpenseView`:
+1. Default payer to the actual current-user member (`isCurrentUser` marker first, then `store.isCurrentUser(...)` fallback).
+2. Render `"Me"` label using current-user identity, not array position.
+3. Keep direct-group payer toggles working with the resolved identity.
+
+If this rule is broken, users can save expenses with the wrong `paidByMemberId` while UI still shows `"Me"`.
+
+### Direct Expense Friend Validation Guard (Convex)
+In `expenses.create` for `group.is_direct`, friend matching must consider identity equivalence across:
+- `account_friends.member_id`
+- `account_friends.linked_member_id`
+- alias closure from `member_aliases`
+
+`member_id`-only matching causes false `"not a confirmed friend"` errors for valid linked friends with legacy IDs.

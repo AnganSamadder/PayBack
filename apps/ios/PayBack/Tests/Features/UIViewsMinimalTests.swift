@@ -217,6 +217,33 @@ final class UIViewsMinimalTests: XCTestCase {
         XCTAssertNotNil(view)
         XCTAssertFalse(closureCalled)
     }
+
+    func test_addExpensePayerLogic_defaultPayer_prefersCurrentUserMarker() {
+        let other = GroupMember(name: "Angan", isCurrentUser: false)
+        let me = GroupMember(name: "Test User", isCurrentUser: true)
+
+        let defaultPayer = AddExpensePayerLogic.defaultPayerId(
+            for: [other, me],
+            currentUserMemberId: nil
+        )
+
+        XCTAssertEqual(defaultPayer, me.id)
+    }
+
+    func test_addExpensePayerLogic_label_usesCurrentUserIdNotFirstMember() {
+        let other = GroupMember(name: "Angan", isCurrentUser: false)
+        let me = GroupMember(name: "Test User", isCurrentUser: false)
+        let members = [other, me]
+
+        XCTAssertEqual(
+            AddExpensePayerLogic.payerLabel(for: me.id, in: members, currentUserMemberId: me.id),
+            "Me"
+        )
+        XCTAssertEqual(
+            AddExpensePayerLogic.payerLabel(for: other.id, in: members, currentUserMemberId: me.id),
+            "Angan"
+        )
+    }
     
     // MARK: - ProfileView Tests
     

@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { reconcileUserExpenses } from "./helpers";
 import { checkRateLimit } from "./rateLimit";
 import { normalizeMemberId, normalizeMemberIds } from "./identity";
+import { getAllEquivalentMemberIds } from "./aliases";
 
 async function getCurrentUser(ctx: any) {
   const identity = await ctx.auth.getUserIdentity();
@@ -15,6 +16,23 @@ async function getCurrentUser(ctx: any) {
       .unique();
       
   return { identity, user };
+}
+
+function isEligibleDirectFriendRecord(friend: any): boolean {
+  const status = typeof friend.status === "string" ? friend.status.toLowerCase() : undefined;
+  if (status === "rejected") return false;
+  // Backward-compatible acceptance:
+  // - explicit friend/accepted rows
+  // - linked-account rows
+  // - legacy rows without status
+  return status === "friend" || status === "accepted" || friend.has_linked_account === true || !status;
+}
+
+function intersects(lhs: Set<string>, rhs: Set<string>): boolean {
+  for (const value of lhs) {
+    if (rhs.has(value)) return true;
+  }
+  return false;
 }
 
 export const create = mutation({
@@ -89,25 +107,75 @@ export const create = mutation({
     if (!group) throw new Error("Group not found");
 
     if (group.is_direct) {
-        for (const memberId of normalizedInvolved) {
-            // Check if this member is the current user (based on group definition)
-            const groupMember = group.members.find(m => normalizeMemberId(m.id) === memberId);
-            if (groupMember?.is_current_user) {
-                continue; // It's me, skip
-            }
+      const equivalentIdCache = new Map<string, Set<string>>();
+      const getEquivalentIdSet = async (memberId: string): Promise<Set<string>> => {
+        const normalized = normalizeMemberId(memberId);
+        const cached = equivalentIdCache.get(normalized);
+        if (cached) return cached;
 
-            // Must be a confirmed friend
-            const friend = await ctx.db
-                .query("account_friends")
-                .withIndex("by_account_email_and_member_id", (q) => 
-                    q.eq("account_email", user.email).eq("member_id", memberId)
-                )
-                .unique();
+        const ids = await getAllEquivalentMemberIds(ctx.db, normalized);
+        const set = new Set(ids.map((id) => normalizeMemberId(id)));
+        set.add(normalized);
+        equivalentIdCache.set(normalized, set);
+        return set;
+      };
 
-            if (!friend || friend.status !== "friend") {
-                throw new Error(`Cannot create direct expense: Member ${groupMember?.name ?? memberId} is not a confirmed friend.`);
-            }
+      const currentUserEquivalentIds = new Set<string>();
+      for (const selfId of [user.member_id, user.id]) {
+        if (!selfId) continue;
+        const selfEquivalentIds = await getEquivalentIdSet(selfId);
+        for (const id of selfEquivalentIds) {
+          currentUserEquivalentIds.add(id);
         }
+      }
+
+      const ownerFriendRows = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+        .collect();
+
+      const ownerFriendIdentityRows = [];
+      for (const friend of ownerFriendRows) {
+        const identityIds = new Set<string>();
+        const friendIdentitySeeds = [friend.member_id, friend.linked_member_id].filter(
+          (value): value is string => typeof value === "string" && value.length > 0
+        );
+
+        for (const seedId of friendIdentitySeeds) {
+          const equivalentIds = await getEquivalentIdSet(seedId);
+          for (const id of equivalentIds) {
+            identityIds.add(id);
+          }
+        }
+
+        ownerFriendIdentityRows.push({ friend, identityIds });
+      }
+
+      for (const memberId of normalizedInvolved) {
+        // Check if this member is the current user (group marker or equivalent ID).
+        const groupMember = group.members.find((m) => normalizeMemberId(m.id) === memberId);
+        if (groupMember?.is_current_user) {
+          continue;
+        }
+
+        const memberEquivalentIds = await getEquivalentIdSet(memberId);
+        if (intersects(memberEquivalentIds, currentUserEquivalentIds)) {
+          continue;
+        }
+
+        // Must resolve to an existing friend identity (member_id, linked_member_id, or aliases).
+        const matchingFriend = ownerFriendIdentityRows.find(
+          ({ friend, identityIds }) =>
+            isEligibleDirectFriendRecord(friend) &&
+            intersects(identityIds, memberEquivalentIds)
+        );
+
+        if (!matchingFriend) {
+          throw new Error(
+            `Cannot create direct expense: Member ${groupMember?.name ?? memberId} is not a confirmed friend.`
+          );
+        }
+      }
     }
 
     // Deduplication check: Check if expense with this ID already exists

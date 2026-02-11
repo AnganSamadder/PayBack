@@ -35,6 +35,10 @@ final class AppStore: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
+    /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
+    private var pendingExpenseUpsertIds: Set<UUID> = []
+    /// Local expense deletes that have been sent to cloud but not yet observed in realtime snapshots.
+    private var pendingExpenseDeleteIds: Set<UUID> = []
     private let retryPolicy: RetryPolicy = .linkingDefault
     private let stateReconciliation = LinkStateReconciliation()
     private let failureTracker = LinkFailureTracker()
@@ -278,11 +282,11 @@ final class AppStore: ObservableObject {
                 let uniqueExpenses = remoteExpenses.filter { seenExpenseIds.insert($0.id).inserted }
                 
                 let previousCount = self.expenses.count
-                self.expenses = uniqueExpenses
+                self.expenses = self.mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: uniqueExpenses)
                 
                 #if DEBUG
-                if previousCount != uniqueExpenses.count {
-                    print("[AppStore] Synced \(uniqueExpenses.count) expenses from Convex (deduped from \(remoteExpenses.count))")
+                if previousCount != self.expenses.count {
+                    print("[AppStore] Synced \(self.expenses.count) expenses from Convex (deduped from \(remoteExpenses.count))")
                 }
                 #endif
             }
@@ -662,6 +666,8 @@ final class AppStore: ObservableObject {
         groups = []
         expenses = []
         friends = []
+        pendingExpenseUpsertIds.removeAll()
+        pendingExpenseDeleteIds.removeAll()
         
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
         // Without this, the next user logging in could inherit this user's member ID
@@ -699,6 +705,8 @@ final class AppStore: ObservableObject {
         expenses = []
         groups = []
         friends = []
+        pendingExpenseUpsertIds.removeAll()
+        pendingExpenseDeleteIds.removeAll()
         
         // Persist locally
         persistCurrentState()
@@ -1228,15 +1236,86 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Merge Convex realtime expense snapshots with in-flight local writes.
+    /// This prevents stale snapshots from clobbering optimistic local saves.
+    private func mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: [Expense]) -> [Expense] {
+        var merged = remoteExpenses
+        var remoteIndexById: [UUID: Int] = [:]
+        for (index, expense) in remoteExpenses.enumerated() {
+            remoteIndexById[expense.id] = index
+        }
+
+        // Keep local optimistic writes until realtime snapshot reflects the same payload.
+        for localExpense in expenses where pendingExpenseUpsertIds.contains(localExpense.id) {
+            if let remoteIndex = remoteIndexById[localExpense.id] {
+                if merged[remoteIndex] == localExpense {
+                    pendingExpenseUpsertIds.remove(localExpense.id)
+                } else {
+                    merged[remoteIndex] = localExpense
+                }
+            } else {
+                merged.append(localExpense)
+            }
+        }
+
+        // Keep local deletes authoritative until realtime snapshot confirms deletion.
+        for deletedId in Array(pendingExpenseDeleteIds) {
+            if remoteIndexById[deletedId] == nil {
+                pendingExpenseDeleteIds.remove(deletedId)
+            }
+            merged.removeAll { $0.id == deletedId }
+        }
+
+        // Safety dedupe for mixed local/remote merges.
+        var seenIds = Set<UUID>()
+        return merged.filter { seenIds.insert($0.id).inserted }
+    }
+
+    /// Sends expense upsert to Convex and marks it pending for realtime reconciliation.
+    private func queueExpenseUpsert(_ expense: Expense, participants: [ExpenseParticipant]) {
+        guard session != nil, !isImporting else { return }
+        pendingExpenseDeleteIds.remove(expense.id)
+        pendingExpenseUpsertIds.insert(expense.id)
+
+        Task { [retryPolicy, expenseCloudService, expense, participants] in
+            do {
+                try await retryPolicy.execute {
+                    try await expenseCloudService.upsertExpense(expense, participants: participants)
+                }
+            } catch {
+                #if DEBUG
+                print("⚠️ Failed to sync expense upsert \(expense.id): \(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
+    /// Sends expense delete to Convex and marks it pending for realtime reconciliation.
+    private func queueExpenseDelete(_ expenseId: UUID) {
+        guard session != nil, !isImporting else { return }
+        pendingExpenseUpsertIds.remove(expenseId)
+        pendingExpenseDeleteIds.insert(expenseId)
+
+        Task { [retryPolicy, expenseCloudService, expenseId] in
+            do {
+                try await retryPolicy.execute {
+                    try await expenseCloudService.deleteExpense(expenseId)
+                }
+            } catch {
+                #if DEBUG
+                print("⚠️ Failed to sync expense delete \(expenseId): \(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
     // MARK: - Expenses
     func addExpense(_ expense: Expense) {
         expenses.append(expense)
         persistCurrentState()
         if !isImporting {
             let participants = makeParticipants(for: expense)
-            Task { [expense, participants] in
-                try? await expenseCloudService.upsertExpense(expense, participants: participants)
-            }
+            queueExpenseUpsert(expense, participants: participants)
         }
     }
 
@@ -1245,9 +1324,7 @@ final class AppStore: ObservableObject {
         expenses[idx] = expense
         persistCurrentState()
         let participants = makeParticipants(for: expense)
-        Task { [expense, participants] in
-            try? await expenseCloudService.upsertExpense(expense, participants: participants)
-        }
+        queueExpenseUpsert(expense, participants: participants)
     }
 
     func deleteExpenses(groupId: UUID, at offsets: IndexSet) {
@@ -1259,19 +1336,15 @@ final class AppStore: ObservableObject {
         let ids = validOffsets.map { groupExpenses[$0].id }
         expenses.removeAll { ids.contains($0.id) }
         persistCurrentState()
-        Task {
-            for id in ids {
-                try? await expenseCloudService.deleteExpense(id)
-            }
+        for id in ids {
+            queueExpenseDelete(id)
         }
     }
 
     func deleteExpense(_ expense: Expense) {
         expenses.removeAll { $0.id == expense.id }
         persistCurrentState()
-        Task {
-            try? await expenseCloudService.deleteExpense(expense.id)
-        }
+        queueExpenseDelete(expense.id)
     }
     
     // MARK: - Settlement Methods
@@ -1289,9 +1362,7 @@ final class AppStore: ObservableObject {
         expenses[idx] = updatedExpense
         persistCurrentState()
         let participants = makeParticipants(for: updatedExpense)
-        Task { [updatedExpense, participants] in
-            try? await expenseCloudService.upsertExpense(updatedExpense, participants: participants)
-        }
+        queueExpenseUpsert(updatedExpense, participants: participants)
     }
     
     func settleExpenseForMember(_ expense: Expense, memberId: UUID) {
@@ -1330,9 +1401,7 @@ final class AppStore: ObservableObject {
         // Force immediate persistence
         persistCurrentState()
         let participants = makeParticipants(for: updatedExpense)
-        Task { [updatedExpense, participants] in
-            try? await expenseCloudService.upsertExpense(updatedExpense, participants: participants)
-        }
+        queueExpenseUpsert(updatedExpense, participants: participants)
     }
     
     // MARK: - Balance Calculations
@@ -2432,6 +2501,8 @@ final class AppStore: ObservableObject {
         groups.removeAll()
         expenses.removeAll()
         friends.removeAll()
+        pendingExpenseUpsertIds.removeAll()
+        pendingExpenseDeleteIds.removeAll()
         persistCurrentState()
         Task {
             if !groupIds.isEmpty {

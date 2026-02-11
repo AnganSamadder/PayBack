@@ -64,11 +64,17 @@ struct AddExpenseView: View {
     @State private var showSaveConfirm: Bool = false
 
     @State private var dragOffset: CGFloat = 0
+    @State private var hasResolvedInitialPayer = false
 
     init(group: SpendingGroup, onClose: (() -> Void)? = nil) {
         self.group = group
         self.onClose = onClose
-        _payerId = State(initialValue: group.members.first?.id ?? UUID())
+        _payerId = State(
+            initialValue: AddExpensePayerLogic.defaultPayerId(
+                for: group.members,
+                currentUserMemberId: group.members.first(where: { $0.isCurrentUser == true })?.id
+            ) ?? UUID()
+        )
         _involvedIds = State(initialValue: Set(group.members.map(\.id)))
     }
 
@@ -92,16 +98,36 @@ struct AddExpenseView: View {
                     } message: {
                         Text("This looks like a duplicate of an existing expense in this group. Are you sure you want to save it?")
                     }
-                    .gesture(dragGesture)
-                    .offset(y: dragOffset)
+                .gesture(dragGesture)
+                .offset(y: dragOffset)
                 .ignoresSafeArea()
                 .compositingGroup()
                 .dismissKeyboardOnTap()
+                .onAppear {
+                    resolveInitialPayerIfNeeded()
+                }
         }
     }
 
     private var participants: [GroupMember] {
         group.members.filter { involvedIds.contains($0.id) }
+    }
+
+    private var resolvedCurrentUserMemberId: UUID? {
+        if let markedCurrent = group.members.first(where: { $0.isCurrentUser == true }) {
+            return markedCurrent.id
+        }
+        return group.members.first(where: { store.isCurrentUser($0) })?.id
+    }
+
+    private func resolveInitialPayerIfNeeded() {
+        guard !hasResolvedInitialPayer else { return }
+        hasResolvedInitialPayer = true
+
+        guard let currentUserMemberId = resolvedCurrentUserMemberId else { return }
+        if group.members.contains(where: { $0.id == currentUserMemberId }) {
+            payerId = currentUserMemberId
+        }
     }
 
     private func computedSplits() -> [ExpenseSplit] {
@@ -285,6 +311,7 @@ struct AddExpenseView: View {
                      PaidSplitBubble(
                          group: group,
                          payerId: $payerId,
+                         currentUserMemberId: resolvedCurrentUserMemberId,
                          involvedIds: $involvedIds,
                          mode: $mode,
                          percents: $percents,
@@ -773,6 +800,7 @@ private struct CurrencySymbolIcon: View {
 private struct PaidSplitBubble: View {
     let group: SpendingGroup
     @Binding var payerId: UUID
+    let currentUserMemberId: UUID?
     @Binding var involvedIds: Set<UUID>
     @Binding var mode: SplitMode
     @Binding var percents: [UUID: Double]
@@ -879,7 +907,7 @@ private struct PaidSplitBubble: View {
         }
     }
 
-    private var currentPayer: GroupMember { group.members.first(where: { $0.id == payerId }) ?? group.members.first! }
+    private var currentPayer: GroupMember? { group.members.first(where: { $0.id == payerId }) }
     private var modeTitle: String {
         switch mode {
         case .equal: return "Equally"
@@ -890,10 +918,36 @@ private struct PaidSplitBubble: View {
         }
     }
     private var payerLabel: String {
-        if let first = group.members.first, first.id == payerId {
+        AddExpensePayerLogic.payerLabel(
+            for: payerId,
+            in: group.members,
+            currentUserMemberId: currentUserMemberId
+        )
+    }
+}
+
+enum AddExpensePayerLogic {
+    static func defaultPayerId(for members: [GroupMember], currentUserMemberId: UUID?) -> UUID? {
+        if let currentUserMemberId, members.contains(where: { $0.id == currentUserMemberId }) {
+            return currentUserMemberId
+        }
+        if let markedCurrentUser = members.first(where: { $0.isCurrentUser == true }) {
+            return markedCurrentUser.id
+        }
+        return members.first?.id
+    }
+
+    static func payerLabel(for payerId: UUID, in members: [GroupMember], currentUserMemberId: UUID?) -> String {
+        if let currentUserMemberId, payerId == currentUserMemberId {
             return "Me"
         }
-        return currentPayer.name
+        if let payer = members.first(where: { $0.id == payerId }) {
+            if payer.isCurrentUser == true {
+                return "Me"
+            }
+            return payer.name
+        }
+        return "Me"
     }
 }
 
