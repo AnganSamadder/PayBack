@@ -1430,9 +1430,16 @@ final class AppStore: ObservableObject {
         return ids
     }
     
-    /// Checks if a member ID represents the current user (either their own ID or their linked member ID)
-    private func isCurrentUserMemberId(_ memberId: UUID) -> Bool {
+    /// Checks if a member ID represents the current user (via primary ID, linked ID, or equivalent IDs)
+    func isMe(_ memberId: UUID) -> Bool {
         currentUserMemberIds.contains(memberId)
+    }
+
+    /// Checks if a member ID resolves to the same person as a given friend
+    func isFriendMember(_ memberId: UUID, friendId: UUID, accountFriendMemberId: UUID? = nil) -> Bool {
+        if areSamePerson(memberId, friendId) { return true }
+        if let accountFriendMemberId, areSamePerson(memberId, accountFriendMemberId) { return true }
+        return false
     }
     
     public func overallNetBalance() -> Double {
@@ -1451,14 +1458,14 @@ final class AppStore: ObservableObject {
         
         for expense in groupExpenses {
             // Check if current user paid (using ANY of their member IDs)
-            if isCurrentUserMemberId(expense.paidByMemberId) {
+            if isMe(expense.paidByMemberId) {
                 // User paid, add up what others owe (unsettled)
-                for split in expense.splits where !isCurrentUserMemberId(split.memberId) && !split.isSettled {
+                for split in expense.splits where !isMe(split.memberId) && !split.isSettled {
                     paidByUser += split.amount
                 }
             } else {
                 // Someone else paid, check if user owes (using ANY of their member IDs)
-                if let split = expense.splits.first(where: { isCurrentUserMemberId($0.memberId) }), !split.isSettled {
+                if let split = expense.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
                     owes += split.amount
                 }
             }
@@ -1822,12 +1829,12 @@ final class AppStore: ObservableObject {
     }
 
     private func synthesizedGroupName(for members: [GroupMember], isDirect: Bool, expenses: [Expense]) -> String {
-        // Use isCurrentUserMemberId to correctly identify current user including linked member ID
-        if isDirect, let other = members.first(where: { !isCurrentUserMemberId($0.id) }) {
+        // Use isMe to correctly identify current user including linked member ID
+        if isDirect, let other = members.first(where: { !isMe($0.id) }) {
             return other.name
         }
 
-        let otherMembers = members.filter { !isCurrentUserMemberId($0.id) }
+        let otherMembers = members.filter { !isMe($0.id) }
         if !otherMembers.isEmpty {
             if otherMembers.count == 1 {
                 return otherMembers[0].name
@@ -2058,7 +2065,7 @@ final class AppStore: ObservableObject {
         // For direct groups, show the other person's name
         if isDirectGroup(group) {
             // Find the other member (not the current user)
-            if let otherMember = group.members.first(where: { !isCurrentUserMemberId($0.id) }) {
+            if let otherMember = group.members.first(where: { !isMe($0.id) }) {
                 // Check if we have a nickname preference for this friend
                 if let friend = friends.first(where: { $0.id == otherMember.id }) {
                     // If friend has nickname and user prefers nicknames, use nickname
@@ -2317,7 +2324,7 @@ final class AppStore: ObservableObject {
     }
 
     private func linkedAccountMetadata(for memberId: UUID) -> (id: String?, email: String?) {
-        if let account = session?.account, isCurrentUserMemberId(memberId) {
+        if let account = session?.account, isMe(memberId) {
             return (account.id, normalizedEmail(account.email))
         }
 

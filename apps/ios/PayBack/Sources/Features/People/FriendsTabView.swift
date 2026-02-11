@@ -417,21 +417,10 @@ private struct FriendsList: View {
         return nil
     }
 
-    private func isMe(_ memberId: UUID) -> Bool {
-        if memberId == store.currentUser.id { return true }
-        if let account = store.session?.account {
-            if let linkedId = account.linkedMemberId, memberId == linkedId { return true }
-            if account.equivalentMemberIds.contains(memberId) { return true }
-        }
-        return false
-    }
+    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
     private func isFriend(_ memberId: UUID, for friend: GroupMember) -> Bool {
-        if store.areSamePerson(memberId, friend.id) { return true }
-        if let accountFriendMemberId = friend.accountFriendMemberId {
-            return store.areSamePerson(memberId, accountFriendMemberId)
-        }
-        return false
+        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 }
 
@@ -487,21 +476,10 @@ private struct BalanceView: View {
         return balance >= 0 ? formatted : "-\(formatted)"
     }
 
-    private func isMe(_ memberId: UUID) -> Bool {
-        if memberId == store.currentUser.id { return true }
-        if let account = store.session?.account {
-            if let linkedId = account.linkedMemberId, memberId == linkedId { return true }
-            if account.equivalentMemberIds.contains(memberId) { return true }
-        }
-        return false
-    }
+    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
     private func isFriend(_ memberId: UUID, for friend: GroupMember) -> Bool {
-        if store.areSamePerson(memberId, friend.id) { return true }
-        if let accountFriendMemberId = friend.accountFriendMemberId {
-            return store.areSamePerson(memberId, accountFriendMemberId)
-        }
-        return false
+        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
     private func balanceColor(for balance: Double) -> Color {
