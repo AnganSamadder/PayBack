@@ -67,6 +67,8 @@ struct GroupDetailView: View {
     @State private var showAddMembers = false
     @State private var memberToMerge: GroupMember?
     @State private var showMergeSheet = false
+    @State private var showMergeErrorAlert = false
+    @State private var mergeErrorMessage = ""
     
     // Get the live group from store to ensure updates are reflected
     private var group: SpendingGroup? {
@@ -153,6 +155,9 @@ struct GroupDetailView: View {
                     .presentationDetents([.medium, .large])
             }
         }
+        .sheet(isPresented: $showMergeSheet) {
+            mergeSheet
+        }
         .confirmationDialog(
             "Remove Member",
             isPresented: $showMemberDeleteConfirmation,
@@ -183,6 +188,11 @@ struct GroupDetailView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Are you sure you want to leave this group?")
+        }
+        .alert("Unable to Merge", isPresented: $showMergeErrorAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(mergeErrorMessage)
         }
     }
 
@@ -452,12 +462,13 @@ struct GroupDetailView: View {
                         .contextMenu {
                             if !store.isCurrentUser(member) {
                                 Button(role: .destructive) {
-                                    store.removeMemberFromGroup(groupId: group.id, memberId: member.id)
+                                    memberToDelete = member
+                                    showMemberDeleteConfirmation = true
                                 } label: {
                                     Label("Remove from Group", systemImage: "person.badge.minus")
                                 }
                                 
-                                if !store.friends.contains(where: { $0.memberId == member.id }) {
+                                if !store.friends.contains(where: { store.areSamePerson($0.memberId, member.id) }) {
                                     Button {
                                         let newFriend = AccountFriend(
                                             memberId: member.id,
@@ -472,7 +483,9 @@ struct GroupDetailView: View {
                                         Label("Add Friend", systemImage: "person.badge.plus")
                                     }
                                     
-                                    if !store.friends.filter({ !$0.hasLinkedAccount }).isEmpty {
+                                    if !store.friends.filter({
+                                        !$0.hasLinkedAccount && !store.areSamePerson($0.memberId, member.id)
+                                    }).isEmpty {
                                         Button {
                                             memberToMerge = member
                                             showMergeSheet = true
@@ -489,6 +502,97 @@ struct GroupDetailView: View {
             }
         }
         .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
+    }
+
+    private var mergeCandidates: [AccountFriend] {
+        guard let memberToMerge else { return [] }
+        return store.friends
+            .filter { !$0.hasLinkedAccount && !store.areSamePerson($0.memberId, memberToMerge.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var mergeSheet: some View {
+        NavigationStack {
+            Group {
+                if mergeCandidates.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "person.2.slash")
+                            .font(.system(size: 24))
+                            .foregroundStyle(.secondary)
+                        Text("No Merge Candidates")
+                            .font(.system(.headline, design: .rounded, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text("Add an unlinked friend first, then try merging again.")
+                            .font(.system(.subheadline, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(24)
+                } else {
+                    List(mergeCandidates) { candidate in
+                        Button {
+                            Task {
+                                await mergeSelectedMember(into: candidate)
+                            }
+                        } label: {
+                            HStack(spacing: 12) {
+                                AvatarView(name: candidate.name, size: 40, colorHex: candidate.profileColorHex)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(candidate.name)
+                                        .font(.system(.body, design: .rounded, weight: .medium))
+                                        .foregroundStyle(.primary)
+
+                                    if let nickname = candidate.nickname {
+                                        Text(nickname)
+                                            .font(.system(.caption, design: .rounded))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "arrow.merge")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(AppTheme.brand)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Merge Member")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        memberToMerge = nil
+                        showMergeSheet = false
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func mergeSelectedMember(into target: AccountFriend) async {
+        guard let memberToMerge else { return }
+
+        showMergeSheet = false
+        do {
+            try await store.mergeFriend(unlinkedMemberId: memberToMerge.id, into: target.memberId)
+            await MainActor.run {
+                self.memberToMerge = nil
+                Haptics.notify(.success)
+            }
+        } catch {
+            await MainActor.run {
+                self.memberToMerge = nil
+                self.mergeErrorMessage = (error as? LocalizedError)?.errorDescription ?? "Could not merge this member right now."
+                self.showMergeErrorAlert = true
+                Haptics.notify(.error)
+            }
+        }
     }
     
     // MARK: - Expenses Section
