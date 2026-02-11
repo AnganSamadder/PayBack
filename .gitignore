@@ -115,6 +115,10 @@ Artifacts/
 # Sisyphus
 .sisyphus/
 
+# Local build/deploy caches
+.turbo/
+.vercel/
+
 # Editor directories and files
 .idea/
 .vscode/
@@ -124,18 +128,18 @@ Artifacts/
 **/Vendor/
 
 .github/prompts/
-*.log
-coverage-report.txt
-
 
 # Helper Scripts
 node_modules/
 scripts/node_modules/
+bun.lock
+
+# Local web sandbox artifacts
+apps/web/
 
 # XcodeGen
 *.xcodeproj
 *.xcworkspace
-wm
 
 # Xcode/SwiftPM local checkouts (Xcode-managed, generated locally)
 Packages/
