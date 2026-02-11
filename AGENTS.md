@@ -1,5 +1,15 @@
 # PROJECT KNOWLEDGE BASE
 
+## MANDATORY: Use td for Task Management
+
+Run td usage --new-session at conversation start (or after /clear). This tells you what to work on next.
+
+Sessions are automatic (based on terminal/agent context). Optional:
+- td session "name" to label the current session
+- td session --new to force a new session in the same context
+
+Use td usage -q after first read.
+
 **This is a LIVING DOCUMENT. Agents: Update this file after solving hard or recurring issues. Do not treat as a changelog.**
 
 **Generated:** 2026-02-07 02:59:11
@@ -168,6 +178,23 @@ Linking connects a local "Unlinked" friend (often created manually or via CSV im
 3. In `friendMembers`, dedupe by `areSamePerson(...)` identity equivalence, not raw UUID equality.
 
 **Rule**: Never write pre-dedupe friend arrays to cloud. Any friend identity check in UI lists must use equivalence (`areSamePerson`), not strict UUID match.
+
+### Direct Expense Friend Drift Guard (Fixed 2026-02-11)
+**Symptoms**:
+- Direct expense creation fails with: `Member <name> is not a confirmed friend`.
+- Direct expense appears for creator but not counterparty due missing `participant_emails`.
+
+**Root Causes**:
+1. Legacy friend/member-id drift: direct-group member ID can diverge from `account_friends.member_id` after remaps/link transitions.
+2. Stale client friend sync can accidentally overwrite linked friend rows (`has_linked_account=false`) and strip link metadata.
+3. Client may omit participant link metadata; backend previously relied too heavily on client-provided `linked_account_email`.
+
+**Required Guards**:
+1. In `convex/expenses.ts`, resolve participant accounts server-side (email/id/member_id) and populate `participant_emails` from resolved accounts, not only client payload.
+2. In direct-expense friend validation, keep identity-based match first, then allow a tight legacy fallback by unique normalized friend name when IDs have drifted.
+3. In `convex/friends.ts upsert`, preserve existing linked metadata/status when stale payloads attempt to downgrade a linked friend row.
+
+**Rule**: Treat linked friend metadata as server-owned state. Client sync must never silently unlink a friend, and direct-expense visibility must be derivable server-side.
 
 ### Key Data Structures
 -   **UserAccount**: `equivalentMemberIds` stores all alias UUIDs (e.g., from invites/imports).

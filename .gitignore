@@ -147,3 +147,5 @@ LocalPackages/
 
 # Local agent artifacts
 roadmap/
+.todos/
+.sidecar/
