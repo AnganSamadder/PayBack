@@ -5,6 +5,7 @@ import Foundation
 actor MockAccountServiceForAppStore: AccountService {
     private var accounts: [String: UserAccount] = [:] // email -> account
     private var friends: [String: [AccountFriend]] = [:] // email -> friends
+    private var friendSyncHistory: [String: [[AccountFriend]]] = [:] // email -> sync snapshots
     private var shouldFail: Bool = false
     
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
@@ -46,7 +47,9 @@ actor MockAccountServiceForAppStore: AccountService {
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
-        self.friends[accountEmail.lowercased()] = friends
+        let normalizedEmail = accountEmail.lowercased()
+        self.friends[normalizedEmail] = friends
+        friendSyncHistory[normalizedEmail, default: []].append(friends)
     }
     
     func fetchFriends(accountEmail: String) async throws -> [AccountFriend] {
@@ -89,7 +92,12 @@ actor MockAccountServiceForAppStore: AccountService {
     func reset() {
         accounts.removeAll()
         friends.removeAll()
+        friendSyncHistory.removeAll()
         shouldFail = false
+    }
+
+    func latestSyncedFriends(accountEmail: String) -> [AccountFriend]? {
+        friendSyncHistory[accountEmail.lowercased()]?.last
     }
     
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {

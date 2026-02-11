@@ -1482,6 +1482,85 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(sut.friends.count, 1, "Should deduplicate to 1 friend")
         XCTAssertEqual(sut.friends.first?.memberId, masterId, "Should keep master friend")
     }
+
+    func testScheduleFriendSync_SyncsDedupedFriendsOnly() async throws {
+        // Given
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let linkedMemberId = UUID()
+        let canonicalMemberId = UUID()
+        let linkedFriend = AccountFriend(
+            memberId: linkedMemberId,
+            name: "Test User",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account-id",
+            linkedAccountEmail: "linked@example.com",
+            aliasMemberIds: [linkedMemberId, canonicalMemberId]
+        )
+
+        let group = SpendingGroup(
+            name: "Alias Group",
+            members: [
+                GroupMember(id: sut.currentUser.id, name: sut.currentUser.name, isCurrentUser: true),
+                GroupMember(id: canonicalMemberId, name: "Test User")
+            ]
+        )
+
+        // Remote linked friend + local group member under canonical alias ID.
+        sut.friends = [linkedFriend]
+        sut.groups = [group]
+
+        // When
+        sut.updateGroup(group)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // Then - only the canonical deduped friend list should be written to cloud.
+        let synced = await mockAccountService.latestSyncedFriends(accountEmail: account.email)
+        XCTAssertEqual(synced?.count, 1)
+        XCTAssertEqual(synced?.first?.memberId, linkedMemberId)
+    }
+
+    func testFriendMembers_DedupesIdentityEquivalentLinkedFriendAndGroupMember() async throws {
+        // Given
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let linkedMemberId = UUID()
+        let canonicalMemberId = UUID()
+
+        let linkedFriend = AccountFriend(
+            memberId: linkedMemberId,
+            name: "Test User",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account-id",
+            linkedAccountEmail: "linked@example.com",
+            aliasMemberIds: [linkedMemberId, canonicalMemberId]
+        )
+
+        sut.friends = [linkedFriend]
+        sut.groups = [
+            SpendingGroup(
+                name: "Alias Group",
+                members: [
+                    GroupMember(id: sut.currentUser.id, name: sut.currentUser.name, isCurrentUser: true),
+                    GroupMember(id: canonicalMemberId, name: "Test User")
+                ]
+            )
+        ]
+
+        // Build alias map through normal dedupe pipeline.
+        sut.updateGroup(sut.groups[0])
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // When
+        let visibleTestUsers = sut.friendMembers.filter { $0.name == "Test User" }
+
+        // Then
+        XCTAssertEqual(visibleTestUsers.count, 1, "Identity-equivalent linked/group members should collapse to one visible friend")
+    }
     
     // MARK: - Direct Group Edge Cases
     
