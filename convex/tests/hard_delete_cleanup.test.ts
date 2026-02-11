@@ -3,6 +3,19 @@ import { expect, test, describe } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
 
+function adminIdentity() {
+  return {
+    subject: "admin_user",
+    email: "admin@test.com",
+    name: "Admin",
+    pictureUrl: "http://placeholder.com",
+    tokenIdentifier: "admin_user",
+    issuer: "http://placeholder.com",
+    emailVerified: true,
+    updatedAt: "2023-01-01",
+  };
+}
+
 describe("Hard Delete Cleanup", () => {
   test("friends.list returns unlinked state when linked account is manually deleted", async () => {
     const t = convexTest(schema);
@@ -185,7 +198,9 @@ describe("Hard Delete Cleanup", () => {
     });
     expect(friendsBefore.length).toBe(2);
 
-    await t.mutation(api.admin.hardDeleteUser, { email: "user_b@test.com" });
+    process.env.ADMIN_EMAILS = "admin@test.com";
+    const adminCtx = t.withIdentity(adminIdentity());
+    await adminCtx.mutation(api.admin.hardDeleteUser, { email: "user_b@test.com" });
 
     const friendsAfter = await t.run(async (ctx) => {
       return await ctx.db.query("account_friends").collect();
@@ -272,7 +287,9 @@ describe("Hard Delete Cleanup", () => {
       });
     });
 
-    await t.mutation(api.admin.hardDeleteUser, { email: "user_b@test.com" });
+    process.env.ADMIN_EMAILS = "admin@test.com";
+    const adminCtx = t.withIdentity(adminIdentity());
+    await adminCtx.mutation(api.admin.hardDeleteUser, { email: "user_b@test.com" });
 
     const allFriends = await t.run(async (ctx) => {
       return await ctx.db.query("account_friends").collect();

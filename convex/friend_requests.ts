@@ -70,7 +70,7 @@ export const send = mutation({
         name: recipient.display_name ?? recipient.email ?? "Unknown",
         status: "request_sent",
         has_linked_account: true,
-        linked_account_id: recipient._id,
+        linked_account_id: recipient.id,
         linked_account_email: recipient.email,
         profile_image_url: recipient.profile_image_url,
         profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
@@ -128,7 +128,7 @@ export const accept = mutation({
       await ctx.db.patch(existingFriendForRecipient._id, {
         status: "friend",
         has_linked_account: true,
-        linked_account_id: sender._id,
+        linked_account_id: sender.id,
         linked_account_email: sender.email,
         updated_at: Date.now(),
       });
@@ -139,7 +139,7 @@ export const accept = mutation({
         name: sender.display_name ?? sender.email ?? "Unknown",
         status: "friend",
         has_linked_account: true,
-        linked_account_id: sender._id,
+        linked_account_id: sender.id,
         linked_account_email: sender.email,
         profile_image_url: sender.profile_image_url,
         profile_avatar_color: sender.profile_avatar_color ?? getRandomAvatarColor(),
@@ -164,7 +164,7 @@ export const accept = mutation({
       await ctx.db.patch(existingFriendForSender._id, {
         status: "friend",
         has_linked_account: true,
-        linked_account_id: recipient._id,
+        linked_account_id: recipient.id,
         linked_account_email: recipient.email,
         updated_at: Date.now(),
       });
@@ -175,7 +175,7 @@ export const accept = mutation({
         name: recipient.display_name ?? recipient.email ?? "Unknown",
         status: "friend",
         has_linked_account: true,
-        linked_account_id: recipient._id,
+        linked_account_id: recipient.id,
         linked_account_email: recipient.email,
         profile_image_url: recipient.profile_image_url,
         profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),

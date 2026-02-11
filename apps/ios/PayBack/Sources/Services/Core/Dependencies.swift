@@ -6,6 +6,7 @@ import Foundation
 final class Dependencies: Sendable {
     /// Shared singleton instance for production use
     nonisolated(unsafe) static var current = Dependencies()
+    private static let stateLock = NSLock()
 
     /// Account service for user account operations
     let accountService: any AccountService
@@ -70,7 +71,9 @@ final class Dependencies: Sendable {
     /// Resets the shared instance to default production dependencies.
     /// Useful for cleaning up after tests.
     static func reset() {
+        stateLock.lock()
         current = Dependencies()
+        stateLock.unlock()
     }
 }
 
@@ -84,8 +87,8 @@ import ConvexMobile
 final class Dependencies: Sendable {
     /// Shared singleton instance for production use
     nonisolated(unsafe) static var current = Dependencies()
-
     private static var convexClient: ConvexClient?
+    private static let stateLock = NSLock()
 
     /// Account service for user account operations
     let accountService: any AccountService
@@ -124,26 +127,33 @@ final class Dependencies: Sendable {
     }
 
     static func configure(client: ConvexClient) {
-        self.convexClient = client
+        stateLock.lock()
+        convexClient = client
+        _syncManager = nil
+        stateLock.unlock()
         // Re-initialize current to use the new client
-        self.current = Dependencies()
+        current = Dependencies()
     }
 
     /// Returns the configured Convex client (if any)
     static func getConvexClient() -> ConvexClient? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         return convexClient
     }
 
     /// Shared sync manager for real-time Convex subscriptions (lazily created)
     private static var _syncManager: ConvexSyncManager?
-    private static let syncManagerLock = NSLock()
 
     @MainActor
     static var syncManager: ConvexSyncManager? {
+        stateLock.lock()
         if _syncManager == nil, let client = convexClient {
             _syncManager = ConvexSyncManager(client: client)
         }
-        return _syncManager
+        let manager = _syncManager
+        stateLock.unlock()
+        return manager
     }
 
     /// Trigger Convex authentication using the current Clerk session
@@ -167,7 +177,7 @@ final class Dependencies: Sendable {
 
     /// Creates the default expense service based on configuration
     private static func makeDefaultExpenseService() -> any ExpenseCloudService {
-        if let client = convexClient {
+        if let client = getConvexClient() {
             return ConvexExpenseService(client: client)
         }
         return NoopExpenseCloudService()
@@ -175,21 +185,21 @@ final class Dependencies: Sendable {
 
     /// Creates the default group service based on configuration
     private static func makeDefaultGroupService() -> any GroupCloudService {
-        if let client = convexClient {
+        if let client = getConvexClient() {
             return ConvexGroupService(client: client)
         }
         return NoopGroupCloudService()
     }
 
     private static func makeDefaultLinkRequestService() -> LinkRequestService {
-        if let client = convexClient {
+        if let client = getConvexClient() {
             return ConvexLinkRequestService(client: client)
         }
         return MockLinkRequestService()
     }
 
     private static func makeDefaultInviteLinkService() -> InviteLinkService {
-        if let client = convexClient {
+        if let client = getConvexClient() {
             return ConvexInviteLinkService(client: client)
         }
         return MockInviteLinkService()
@@ -197,7 +207,7 @@ final class Dependencies: Sendable {
 
     /// Creates the default account service based on configuration
     private static func makeDefaultAccountService() -> any AccountService {
-        if let client = convexClient {
+        if let client = getConvexClient() {
             return ConvexAccountService(client: client)
         }
         return MockAccountService()
@@ -225,8 +235,10 @@ final class Dependencies: Sendable {
     /// Resets the shared instance to default production dependencies.
     /// Useful for cleaning up after tests.
     static func reset() {
+        stateLock.lock()
         convexClient = nil
         _syncManager = nil
+        stateLock.unlock()
         current = Dependencies()
     }
 }

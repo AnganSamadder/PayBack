@@ -241,6 +241,9 @@ final class AppStore: ObservableObject {
             .sink { [weak self] remoteGroups in
                 guard let self = self else { return }
                 guard !self.isImporting else { return }
+                // Ignore realtime payloads before authentication to avoid
+                // clobbering local state with empty remote snapshots.
+                guard self.session != nil else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenGroupIds = Set<UUID>()
                 let uniqueGroups = remoteGroups.filter { seenGroupIds.insert($0.id).inserted }
@@ -269,6 +272,7 @@ final class AppStore: ObservableObject {
             .sink { [weak self] remoteExpenses in
                 guard let self = self else { return }
                 guard !self.isImporting else { return }
+                guard self.session != nil else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenExpenseIds = Set<UUID>()
                 let uniqueExpenses = remoteExpenses.filter { seenExpenseIds.insert($0.id).inserted }
@@ -290,6 +294,7 @@ final class AppStore: ObservableObject {
             .sink { [weak self] remoteFriends in
                 guard let self = self else { return }
                 guard !self.isImporting else { return }
+                guard self.session != nil else { return }
                 
                 self.processFriendsUpdate(remoteFriends)
             }

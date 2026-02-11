@@ -209,18 +209,18 @@ actor ConvexAccountService: AccountService {
     func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
         let args: [String: ConvexEncodable?] = [
             "sourceId": sourceId.uuidString,
-            "targetId": targetId.uuidString
+            "targetCanonicalId": targetId.uuidString
         ]
         _ = try await client.mutation("aliases:mergeMemberIds", with: args)
     }
 
     func deleteLinkedFriend(memberId: UUID) async throws {
-        let args: [String: ConvexEncodable?] = ["memberId": memberId.uuidString]
+        let args: [String: ConvexEncodable?] = ["friendMemberId": memberId.uuidString]
         _ = try await client.mutation("cleanup:deleteLinkedFriend", with: args)
     }
 
     func deleteUnlinkedFriend(memberId: UUID) async throws {
-        let args: [String: ConvexEncodable?] = ["memberId": memberId.uuidString]
+        let args: [String: ConvexEncodable?] = ["friendMemberId": memberId.uuidString]
         _ = try await client.mutation("cleanup:deleteUnlinkedFriend", with: args)
     }
     
@@ -324,16 +324,10 @@ actor ConvexAccountService: AccountService {
     }
 
     func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {
-        // We need the current account email to perform the merge
-        guard let account = try await lookupAccount() else {
-            throw PayBackError.accountNotFound(email: "current")
-        }
-        
         // Constructing dictionary for convex-swift
         let convexArgs: [String: ConvexEncodable] = [
             "friendId1": friendId1,
-            "friendId2": friendId2,
-            "accountEmail": account.email
+            "friendId2": friendId2
         ]
         _ = try await client.mutation("aliases:mergeUnlinkedFriends", with: convexArgs)
     }

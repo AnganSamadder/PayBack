@@ -6,6 +6,7 @@ import {
   LINKING_ERROR_CODES,
   normalizeMemberId,
 } from "./identity";
+import { getCurrentUserOrThrow } from "./helpers";
 
 /**
  * Internal helper for transitive alias resolution.
@@ -172,13 +173,22 @@ async function wouldCreateCycle(
 export const mergeMemberIds = mutation({
   args: {
     sourceId: v.string(),
-    targetCanonicalId: v.string(),
-    accountEmail: v.string(),
+    targetCanonicalId: v.optional(v.string()),
+    // Backward-compatible alias for older clients.
+    targetId: v.optional(v.string()),
+    // Deprecated: ignored, account email is derived from auth context.
+    accountEmail: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const { user } = await getCurrentUserOrThrow(ctx);
+
     const sourceId = normalizeMemberId(args.sourceId);
-    const targetCanonicalId = normalizeMemberId(args.targetCanonicalId);
-    const accountEmail = args.accountEmail.toLowerCase().trim();
+    const rawTarget = args.targetCanonicalId ?? args.targetId;
+    if (!rawTarget) {
+      throw new Error("targetCanonicalId is required");
+    }
+    const targetCanonicalId = normalizeMemberId(rawTarget);
+    const accountEmail = user.email.toLowerCase().trim();
 
     // Self-merge is a no-op
     if (sourceId === targetCanonicalId) {
@@ -278,12 +288,15 @@ export const mergeUnlinkedFriends = mutation({
   args: {
     friendId1: v.string(),
     friendId2: v.string(),
-    accountEmail: v.string(),
+    // Deprecated: ignored, account email is derived from auth context.
+    accountEmail: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const { user } = await getCurrentUserOrThrow(ctx);
+
     const friendId1 = normalizeMemberId(args.friendId1);
     const friendId2 = normalizeMemberId(args.friendId2);
-    const accountEmail = args.accountEmail.toLowerCase().trim();
+    const accountEmail = user.email.toLowerCase().trim();
 
     if (friendId1 === friendId2) {
       return {

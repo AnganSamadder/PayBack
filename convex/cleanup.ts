@@ -1,6 +1,7 @@
 import { mutation, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
+import { normalizeMemberId } from "./identity";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -415,11 +416,21 @@ export const removeLegacyFields = internalMutation({
 
 export const deleteLinkedFriend = mutation({
   args: {
-    friendMemberId: v.string(),
-    accountEmail: v.string(),
+    friendMemberId: v.optional(v.string()),
+    // Backward-compatible alias for older clients.
+    memberId: v.optional(v.string()),
+    // Deprecated: ignored, account email is derived from auth context.
+    accountEmail: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { friendMemberId, accountEmail } = args;
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    const accountEmail = user.email.toLowerCase().trim();
+    const rawMemberId = args.friendMemberId ?? args.memberId;
+    if (!rawMemberId) {
+      throw new Error("friendMemberId is required");
+    }
+    const friendMemberId = normalizeMemberId(rawMemberId);
 
     const friend = await ctx.db
       .query("account_friends")
@@ -494,11 +505,21 @@ export const deleteLinkedFriend = mutation({
 
 export const deleteUnlinkedFriend = mutation({
   args: {
-    friendMemberId: v.string(),
-    accountEmail: v.string(),
+    friendMemberId: v.optional(v.string()),
+    // Backward-compatible alias for older clients.
+    memberId: v.optional(v.string()),
+    // Deprecated: ignored, account email is derived from auth context.
+    accountEmail: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { friendMemberId, accountEmail } = args;
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    const accountEmail = user.email.toLowerCase().trim();
+    const rawMemberId = args.friendMemberId ?? args.memberId;
+    if (!rawMemberId) {
+      throw new Error("friendMemberId is required");
+    }
+    const friendMemberId = normalizeMemberId(rawMemberId);
 
     const friend = await ctx.db
       .query("account_friends")
@@ -652,10 +673,15 @@ export const hardDeleteAccount = internalMutation({
 });
 
 export const selfDeleteAccount = mutation({
-  args: { accountEmail: v.string() },
+  args: { accountEmail: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
-    if (!user || user.email !== args.accountEmail) {
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    const accountEmail = user.email.toLowerCase().trim();
+    if (args.accountEmail && args.accountEmail.toLowerCase().trim() !== accountEmail) {
       throw new Error("Can only delete your own account");
     }
 
@@ -671,10 +697,10 @@ export const selfDeleteAccount = mutation({
       const allFriends = await ctx.db.query("account_friends").collect();
 
       for (const friendRecord of allFriends) {
-        if (friendRecord.account_email === args.accountEmail) continue;
+        if (friendRecord.account_email === accountEmail) continue;
 
         const pointsToMe =
-          friendRecord.linked_account_email === args.accountEmail ||
+          friendRecord.linked_account_email === accountEmail ||
           friendRecord.linked_account_id === user.id ||
           equivalentIds.includes(friendRecord.member_id);
 
@@ -692,7 +718,7 @@ export const selfDeleteAccount = mutation({
 
     const myFriends = await ctx.db
       .query("account_friends")
-      .withIndex("by_account_email", (q) => q.eq("account_email", args.accountEmail))
+      .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
       .collect();
 
     // FAN-OUT CLEANUP: Delete my user_expenses view
