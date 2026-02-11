@@ -165,7 +165,88 @@ export const list = query({
       }
     }
 
-    return validatedFriends;
+    // Final response-level dedupe by identity to prevent duplicate "same person"
+    // rows (common during link transitions where legacy/unlinked rows coexist).
+    const aliasToIdentityKey = new Map<string, string>();
+    for (const friend of validatedFriends) {
+      if (!friend.has_linked_account) continue;
+      const linkedIdentityKey =
+        friend.linked_account_email?.trim().toLowerCase() ||
+        friend.linked_account_id ||
+        friend.linked_member_id
+          ? `linked:${friend.linked_account_email?.trim().toLowerCase() || friend.linked_account_id || normalizeMemberId(friend.linked_member_id!)}`
+          : `member:${friend.member_id}`;
+
+      const aliases = normalizeMemberIds([
+        friend.member_id,
+        ...(friend.alias_member_ids || []),
+        ...(friend.linked_member_id ? [friend.linked_member_id] : []),
+      ]);
+      for (const alias of aliases) {
+        aliasToIdentityKey.set(normalizeMemberId(alias), linkedIdentityKey);
+      }
+    }
+
+    type FriendRow = (typeof validatedFriends)[number];
+    const dedupedByIdentity = new Map<string, FriendRow>();
+
+    const score = (friend: FriendRow) => ({
+      linked: friend.has_linked_account ? 1 : 0,
+      aliasCount: (friend.alias_member_ids || []).length,
+      updatedAt: friend.updated_at ?? 0,
+    });
+
+    const shouldReplace = (current: FriendRow, candidate: FriendRow) => {
+      const a = score(candidate);
+      const b = score(current);
+      if (a.linked !== b.linked) return a.linked > b.linked;
+      if (a.aliasCount !== b.aliasCount) return a.aliasCount > b.aliasCount;
+      if (a.updatedAt !== b.updatedAt) return a.updatedAt > b.updatedAt;
+      return candidate.member_id < current.member_id;
+    };
+
+    for (const friend of validatedFriends) {
+      const normalizedId = normalizeMemberId(friend.member_id);
+      const linkedIdentityKey =
+        friend.linked_account_email?.trim().toLowerCase() ||
+        friend.linked_account_id ||
+        friend.linked_member_id
+          ? `linked:${friend.linked_account_email?.trim().toLowerCase() || friend.linked_account_id || normalizeMemberId(friend.linked_member_id!)}`
+          : undefined;
+      const identityKey =
+        linkedIdentityKey ||
+        aliasToIdentityKey.get(normalizedId) ||
+        `member:${normalizedId}`;
+
+      const existing = dedupedByIdentity.get(identityKey);
+      if (!existing) {
+        dedupedByIdentity.set(identityKey, friend);
+        continue;
+      }
+
+      const mergedAliasSet = new Set<string>(normalizeMemberIds([
+        ...(existing.alias_member_ids || []),
+        ...(friend.alias_member_ids || []),
+        existing.member_id,
+        friend.member_id,
+        ...(existing.linked_member_id ? [existing.linked_member_id] : []),
+        ...(friend.linked_member_id ? [friend.linked_member_id] : []),
+      ]));
+
+      const winner = shouldReplace(existing, friend) ? friend : existing;
+      const loser = winner === existing ? friend : existing;
+
+      dedupedByIdentity.set(identityKey, {
+        ...winner,
+        has_linked_account: winner.has_linked_account || loser.has_linked_account,
+        linked_account_id: winner.linked_account_id || loser.linked_account_id,
+        linked_account_email: winner.linked_account_email || loser.linked_account_email,
+        linked_member_id: winner.linked_member_id || loser.linked_member_id,
+        alias_member_ids: Array.from(mergedAliasSet),
+      });
+    }
+
+    return Array.from(dedupedByIdentity.values());
   },
 });
 

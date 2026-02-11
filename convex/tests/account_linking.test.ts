@@ -181,7 +181,7 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
   expect(expenseRefetch.is_settled).toBe(true);
 });
 
-test("friends:list enriches linked friend aliases to absorb stale duplicate rows", async () => {
+test("friends:list dedupes linked identity rows and preserves enriched aliases", async () => {
   const t = convexTest(schema);
 
   await t.run(async (ctx) => {
@@ -237,10 +237,11 @@ test("friends:list enriches linked friend aliases to absorb stale duplicate rows
   });
 
   const friends = await ownerCtx.query(api.friends.list, {});
-  expect(friends.length).toBe(2);
+  expect(friends.length).toBe(1);
 
-  const linkedFriend = friends.find((f) => f.has_linked_account);
+  const linkedFriend = friends[0];
   expect(linkedFriend).toBeDefined();
+  expect(linkedFriend?.has_linked_account).toBe(true);
   expect(linkedFriend?.alias_member_ids).toContain("canonical_member");
   expect(linkedFriend?.alias_member_ids).toContain("stale_member_id");
   expect(linkedFriend?.alias_member_ids).toContain("legacy_alias_member");
