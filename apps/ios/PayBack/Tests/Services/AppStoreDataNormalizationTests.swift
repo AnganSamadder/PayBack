@@ -506,6 +506,89 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         XCTAssertTrue(true) // Test completes without error
     }
 
+    func testScheduleFriendSync_DoesNotPersistGroupOnlyMembersAsFriends() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        let existingFriend = AccountFriend(
+            memberId: UUID(),
+            name: "Existing Friend",
+            nickname: nil,
+            hasLinkedAccount: false,
+            linkedAccountId: nil,
+            linkedAccountEmail: nil
+        )
+
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [existingFriend])
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        sut.addGroup(name: "Weekend", memberNames: ["Bob"])
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        let latestSyncedFriends = await mockAccountService.latestSyncedFriends(accountEmail: account.email)
+        let syncedFriends = try XCTUnwrap(latestSyncedFriends)
+        XCTAssertTrue(syncedFriends.contains(where: { $0.memberId == existingFriend.memberId }))
+
+        let bobId = try XCTUnwrap(
+            sut.groups
+                .first(where: { $0.name == "Weekend" })?
+                .members
+                .first(where: { !sut.isCurrentUser($0) })?
+                .id
+        )
+        XCTAssertFalse(syncedFriends.contains(where: { $0.memberId == bobId }))
+    }
+
+    func testMakeParticipants_IncludesLinkedAccountMetadataForLinkedFriends() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        let linkedFriendId = UUID()
+        let linkedFriend = AccountFriend(
+            memberId: linkedFriendId,
+            name: "Angan",
+            nickname: nil,
+            hasLinkedAccount: true,
+            linkedAccountId: "angan-auth-id",
+            linkedAccountEmail: "angan@example.com"
+        )
+
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        let group = SpendingGroup(
+            name: "Trip",
+            members: [
+                GroupMember(id: sut.currentUser.id, name: sut.currentUser.name, isCurrentUser: true),
+                GroupMember(id: linkedFriendId, name: "Angan")
+            ]
+        )
+        sut.addExistingGroup(group)
+
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 30,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, linkedFriendId],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 15),
+                ExpenseSplit(memberId: linkedFriendId, amount: 15)
+            ]
+        )
+
+        sut.addExpense(expense)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        let syncedParticipants = await mockExpenseCloudService.participants(for: expense.id)
+        let participants = try XCTUnwrap(syncedParticipants)
+        let me = participants.first(where: { $0.memberId == sut.currentUser.id })
+        let friend = participants.first(where: { $0.memberId == linkedFriendId })
+
+        XCTAssertEqual(me?.linkedAccountId, sut.session?.account.id)
+        XCTAssertEqual(me?.linkedAccountEmail, sut.session?.account.email)
+        XCTAssertEqual(friend?.linkedAccountId, "angan-auth-id")
+        XCTAssertEqual(friend?.linkedAccountEmail, "angan@example.com")
+    }
+
     // MARK: - Friend Members Deduplication Tests
 
     func testFriendMembers_SkipsUnlinkedRemoteFriendWhenNameMatchesGroupMemberButIdsDiffer() async throws {

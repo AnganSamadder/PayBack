@@ -244,3 +244,29 @@ In `expenses.create` for `group.is_direct`, friend matching must consider identi
 - alias closure from `member_aliases`
 
 `member_id`-only matching causes false `"not a confirmed friend"` errors for valid linked friends with legacy IDs.
+
+Additionally, if a friend has `linked_account_email` / `linked_account_id`, resolve the linked account and include:
+- linked account `member_id`
+- linked account `alias_member_ids`
+
+Without linked-account alias expansion, direct expenses can still be rejected when group members use legacy alias IDs.
+
+### Group Membership vs Friendship Rule (iOS)
+Group membership does **not** imply direct friendship.
+
+Required behavior:
+1. `AppStore.loadRemoteData` must process only server-returned friends (`remoteFriends`) and must not synthesize friends from group members.
+2. `AppStore.scheduleFriendSync` must sync only deduped `self.friends` and never `derivedFriendsFromGroups()`.
+
+If this rule is broken, users can appear as unintended friends after shared group updates (e.g., friend-of-friend in a group).
+
+### Expense Participant Identity Metadata Rule (iOS)
+When upserting expenses to Convex, participant metadata must include correct linked account identity for **both**:
+- current user identity aliases
+- linked friends resolved via `areSamePerson(...)`
+
+Required behavior:
+1. Build participant `linkedAccountId` / `linkedAccountEmail` from resolved identity metadata (not only direct `currentUser.id` equality).
+2. Normalize empty values to `nil` and lowercase emails before sending.
+
+Missing participant linked-account metadata can prevent cross-account fan-out and cause expenses to appear missing after account switch.

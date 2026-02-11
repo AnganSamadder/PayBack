@@ -1471,8 +1471,7 @@ final class AppStore: ObservableObject {
 
     private func scheduleFriendSync() {
         guard let session, !isImporting else { return }
-        let mergedFriends = mergeFriends(remote: friends, derived: derivedFriendsFromGroups())
-        processFriendsUpdate(mergedFriends)
+        processFriendsUpdate(friends)
         purgeCurrentUserFriendRecords()
         pruneSelfOnlyDirectGroups()
         normalizeDirectGroupFlags()
@@ -1528,8 +1527,7 @@ final class AppStore: ObservableObject {
                 self.expenses = normalization.expenses
                 self.persistCurrentState()
                 self.logFetchedData(groups: normalization.groups, expenses: normalization.expenses)
-                let merged = self.mergeFriends(remote: remoteFriends, derived: self.derivedFriendsFromGroups())
-                self.processFriendsUpdate(merged)
+                self.processFriendsUpdate(remoteFriends)
                 self.normalizeDirectGroupFlags()
                 self.purgeCurrentUserFriendRecords()
                 self.pruneSelfOnlyDirectGroups()
@@ -2289,94 +2287,35 @@ final class AppStore: ObservableObject {
                 name = "Participant"
             }
             
+            let linkedMetadata = linkedAccountMetadata(for: memberId)
+
             return ExpenseParticipant(
                 memberId: memberId,
                 name: name,
-                linkedAccountId: linkedAccountId(for: memberId),
-                linkedAccountEmail: linkedEmail(for: memberId)
+                linkedAccountId: linkedMetadata.id,
+                linkedAccountEmail: linkedMetadata.email
             )
         }
     }
 
-    private func derivedFriendsFromGroups() -> [AccountFriend] {
-        var seen: Set<UUID> = []
-        var results: [AccountFriend] = []
-
-        for group in groups {
-            for member in group.members where !isCurrentUser(member) {
-                if seen.insert(member.id).inserted {
-                    results.append(AccountFriend(
-                        memberId: member.id,
-                        name: member.name,
-                        nickname: nil,
-                        hasLinkedAccount: false,
-                        linkedAccountId: nil,
-                        linkedAccountEmail: nil,
-                        status: nil
-                    ))
-                }
-            }
+    private func linkedAccountMetadata(for memberId: UUID) -> (id: String?, email: String?) {
+        if let account = session?.account, isCurrentUserMemberId(memberId) {
+            return (account.id, normalizedEmail(account.email))
         }
 
-        return results
-    }
-
-    private func mergeFriends(remote: [AccountFriend], derived: [AccountFriend]) -> [AccountFriend] {
-        var combined: [UUID: AccountFriend] = [:]
-
-        for friend in derived {
-            guard !isCurrentUserFriend(friend) else { continue }
-            combined[friend.memberId] = friend
+        guard let friend = friends.first(where: { areSamePerson($0.memberId, memberId) }) else {
+            return (nil, nil)
         }
 
-        for friend in remote {
-            guard !isCurrentUserFriend(friend) else { continue }
-            if let existing = combined[friend.memberId] {
-                // Remote friend should be authoritative for identity/linking metadata.
-                // Keep a few derived fallbacks only when remote fields are missing.
-                var merged = friend
-                if merged.profileColorHex == nil {
-                    merged.profileColorHex = existing.profileColorHex
-                }
-                if merged.profileImageUrl == nil {
-                    merged.profileImageUrl = existing.profileImageUrl
-                }
-                if merged.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    merged.name = existing.name
-                }
-                combined[friend.memberId] = merged
-            } else {
-                combined[friend.memberId] = friend
-            }
-        }
+        let linkedId = friend.linkedAccountId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let linkedEmail = friend.linkedAccountEmail?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
 
-        return combined.values.sorted { lhs, rhs in
-            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-        }
-    }
-
-    private func linkedAccountId(for memberId: UUID) -> String? {
-        if let account = session?.account {
-            if memberId == currentUser.id {
-                return account.id
-            }
-            if account.linkedMemberId == memberId {
-                return account.id
-            }
-        }
-        return nil
-    }
-
-    private func linkedEmail(for memberId: UUID) -> String? {
-        if let account = session?.account {
-            if memberId == currentUser.id {
-                return account.email.lowercased()
-            }
-            if account.linkedMemberId == memberId {
-                return account.email.lowercased()
-            }
-        }
-        return nil
+        return (
+            linkedId?.isEmpty == true ? nil : linkedId,
+            linkedEmail?.isEmpty == true ? nil : linkedEmail
+        )
     }
     
     func settleExpenseForCurrentUser(_ expense: Expense) {

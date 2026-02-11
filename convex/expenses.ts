@@ -108,6 +108,7 @@ export const create = mutation({
 
     if (group.is_direct) {
       const equivalentIdCache = new Map<string, Set<string>>();
+      const linkedAccountCache = new Map<string, any | null>();
       const getEquivalentIdSet = async (memberId: string): Promise<Set<string>> => {
         const normalized = normalizeMemberId(memberId);
         const cached = equivalentIdCache.get(normalized);
@@ -118,6 +119,41 @@ export const create = mutation({
         set.add(normalized);
         equivalentIdCache.set(normalized, set);
         return set;
+      };
+      const getLinkedAccountForFriend = async (friend: any) => {
+        const emailKey =
+          typeof friend.linked_account_email === "string" &&
+          friend.linked_account_email.trim().length > 0
+            ? friend.linked_account_email.trim().toLowerCase()
+            : undefined;
+        const authKey =
+          typeof friend.linked_account_id === "string" &&
+          friend.linked_account_id.trim().length > 0
+            ? friend.linked_account_id.trim()
+            : undefined;
+
+        const cacheKey = emailKey ? `email:${emailKey}` : authKey ? `auth:${authKey}` : undefined;
+        if (!cacheKey) return null;
+        if (linkedAccountCache.has(cacheKey)) {
+          return linkedAccountCache.get(cacheKey) ?? null;
+        }
+
+        let linkedAccount = null;
+        if (emailKey) {
+          linkedAccount = await ctx.db
+            .query("accounts")
+            .withIndex("by_email", (q) => q.eq("email", emailKey))
+            .unique();
+        }
+        if (!linkedAccount && authKey) {
+          linkedAccount = await ctx.db
+            .query("accounts")
+            .withIndex("by_auth_id", (q) => q.eq("id", authKey))
+            .unique();
+        }
+
+        linkedAccountCache.set(cacheKey, linkedAccount ?? null);
+        return linkedAccount;
       };
 
       const currentUserEquivalentIds = new Set<string>();
@@ -142,6 +178,17 @@ export const create = mutation({
         );
 
         for (const seedId of friendIdentitySeeds) {
+          const equivalentIds = await getEquivalentIdSet(seedId);
+          for (const id of equivalentIds) {
+            identityIds.add(id);
+          }
+        }
+        const linkedAccount = await getLinkedAccountForFriend(friend);
+        const linkedAccountSeeds = [
+          linkedAccount?.member_id,
+          ...(linkedAccount?.alias_member_ids || []),
+        ].filter((value): value is string => typeof value === "string" && value.length > 0);
+        for (const seedId of linkedAccountSeeds) {
           const equivalentIds = await getEquivalentIdSet(seedId);
           for (const id of equivalentIds) {
             identityIds.add(id);
