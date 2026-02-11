@@ -2,7 +2,12 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { reconcileUserExpenses } from "./helpers";
 import { checkRateLimit } from "./rateLimit";
-import { findAccountByMemberId, normalizeMemberId, normalizeMemberIds } from "./identity";
+import {
+  findAccountByAuthIdOrDocId,
+  findAccountByMemberId,
+  normalizeMemberId,
+  normalizeMemberIds,
+} from "./identity";
 import { getAllEquivalentMemberIds } from "./aliases";
 
 async function getCurrentUser(ctx: any) {
@@ -39,6 +44,12 @@ function intersects(lhs: Set<string>, rhs: Set<string>): boolean {
     if (rhs.has(value)) return true;
   }
   return false;
+}
+
+function normalizePersonName(name: string | undefined | null): string | undefined {
+  if (typeof name !== "string") return undefined;
+  const normalized = name.trim().toLowerCase().replace(/\s+/g, " ");
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 export const create = mutation({
@@ -95,14 +106,82 @@ export const create = mutation({
       ...participant,
       member_id: normalizeMemberId(participant.member_id),
     }));
+    const linkedAccountCache = new Map<string, any | null>();
+    const resolveLinkedAccount = async ({
+      linkedAccountEmail,
+      linkedAccountId,
+      memberSeeds,
+    }: {
+      linkedAccountEmail?: string;
+      linkedAccountId?: string;
+      memberSeeds: string[];
+    }) => {
+      const emailKey =
+        typeof linkedAccountEmail === "string" && linkedAccountEmail.trim().length > 0
+          ? linkedAccountEmail.trim().toLowerCase()
+          : undefined;
+      const authKey =
+        typeof linkedAccountId === "string" && linkedAccountId.trim().length > 0
+          ? linkedAccountId.trim()
+          : undefined;
+      const normalizedMemberSeeds = memberSeeds
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => normalizeMemberId(value));
+      const memberSeedForCache = normalizedMemberSeeds[0];
+      const cacheKey = emailKey
+        ? `email:${emailKey}`
+        : authKey
+          ? `auth:${authKey}`
+          : memberSeedForCache
+            ? `member:${memberSeedForCache}`
+            : undefined;
 
-    // Build participant_emails from linked participants
-    const participantEmails: string[] = [user.email.toLowerCase()]; // Always include owner
-    for (const p of normalizedParticipants) {
-      if (p.linked_account_email && !participantEmails.includes(p.linked_account_email)) {
-        participantEmails.push(p.linked_account_email.toLowerCase());
+      if (cacheKey && linkedAccountCache.has(cacheKey)) {
+        return linkedAccountCache.get(cacheKey) ?? null;
+      }
+
+      let linkedAccount = null;
+      if (emailKey) {
+        linkedAccount = await ctx.db
+          .query("accounts")
+          .withIndex("by_email", (q) => q.eq("email", emailKey))
+          .unique();
+      }
+      if (!linkedAccount && authKey) {
+        linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, authKey);
+      }
+      if (!linkedAccount) {
+        for (const seed of normalizedMemberSeeds) {
+          linkedAccount = await findAccountByMemberId(ctx.db, seed);
+          if (linkedAccount) break;
+        }
+      }
+
+      if (cacheKey) {
+        linkedAccountCache.set(cacheKey, linkedAccount ?? null);
+      }
+      return linkedAccount;
+    };
+
+    // Build participant_emails from linked participants plus server-side account resolution.
+    const participantEmailSet = new Set<string>([user.email.toLowerCase()]);
+    for (const participant of normalizedParticipants) {
+      if (
+        participant.linked_account_email &&
+        participant.linked_account_email.trim().length > 0
+      ) {
+        participantEmailSet.add(participant.linked_account_email.trim().toLowerCase());
+      }
+      const participantAccount = await resolveLinkedAccount({
+        linkedAccountEmail: participant.linked_account_email,
+        linkedAccountId: participant.linked_account_id,
+        memberSeeds: [participant.member_id],
+      });
+      if (participantAccount?.email) {
+        participantEmailSet.add(String(participantAccount.email).trim().toLowerCase());
       }
     }
+    const participantEmails = Array.from(participantEmailSet);
 
     // VALIDATION: Check Group & Friendship for Direct Expenses
     const group = await ctx.db
@@ -114,7 +193,6 @@ export const create = mutation({
 
     if (group.is_direct) {
       const equivalentIdCache = new Map<string, Set<string>>();
-      const linkedAccountCache = new Map<string, any | null>();
       const getEquivalentIdSet = async (memberId: string): Promise<Set<string>> => {
         const normalized = normalizeMemberId(memberId);
         const cached = equivalentIdCache.get(normalized);
@@ -127,59 +205,11 @@ export const create = mutation({
         return set;
       };
       const getLinkedAccountForFriend = async (friend: any) => {
-        const emailKey =
-          typeof friend.linked_account_email === "string" &&
-          friend.linked_account_email.trim().length > 0
-            ? friend.linked_account_email.trim().toLowerCase()
-            : undefined;
-        const authKey =
-          typeof friend.linked_account_id === "string" &&
-          friend.linked_account_id.trim().length > 0
-            ? friend.linked_account_id.trim()
-            : undefined;
-
-        const memberSeedForCache = [friend.linked_member_id, friend.member_id].find(
-          (value): value is string => typeof value === "string" && value.trim().length > 0
-        );
-        const cacheKey = emailKey
-          ? `email:${emailKey}`
-          : authKey
-            ? `auth:${authKey}`
-            : memberSeedForCache
-              ? `member:${normalizeMemberId(memberSeedForCache)}`
-              : undefined;
-
-        if (cacheKey && linkedAccountCache.has(cacheKey)) {
-          return linkedAccountCache.get(cacheKey) ?? null;
-        }
-
-        let linkedAccount = null;
-        if (emailKey) {
-          linkedAccount = await ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q) => q.eq("email", emailKey))
-            .unique();
-        }
-        if (!linkedAccount && authKey) {
-          linkedAccount = await ctx.db
-            .query("accounts")
-            .withIndex("by_auth_id", (q) => q.eq("id", authKey))
-            .unique();
-        }
-        if (!linkedAccount) {
-          const memberLookupSeeds = [friend.linked_member_id, friend.member_id].filter(
-            (value): value is string => typeof value === "string" && value.trim().length > 0
-          );
-          for (const seed of memberLookupSeeds) {
-            linkedAccount = await findAccountByMemberId(ctx.db, seed);
-            if (linkedAccount) break;
-          }
-        }
-
-        if (cacheKey) {
-          linkedAccountCache.set(cacheKey, linkedAccount ?? null);
-        }
-        return linkedAccount;
+        return resolveLinkedAccount({
+          linkedAccountEmail: friend.linked_account_email,
+          linkedAccountId: friend.linked_account_id,
+          memberSeeds: [friend.linked_member_id, friend.member_id],
+        });
       };
 
       const currentUserEquivalentIds = new Set<string>();
@@ -244,6 +274,19 @@ export const create = mutation({
         );
 
         if (!matchingFriend) {
+          const normalizedGroupMemberName = normalizePersonName(groupMember?.name);
+          if (normalizedGroupMemberName) {
+            const byNameMatches = ownerFriendIdentityRows.filter(
+              ({ friend }) =>
+                isEligibleDirectFriendRecord(friend) &&
+                normalizePersonName(friend.name) === normalizedGroupMemberName
+            );
+            // Legacy fallback for remapped member IDs where friend identity was split but names stayed stable.
+            if (byNameMatches.length === 1) {
+              continue;
+            }
+          }
+
           throw new Error(
             `Cannot create direct expense: Member ${groupMember?.name ?? memberId} is not a confirmed friend.`
           );

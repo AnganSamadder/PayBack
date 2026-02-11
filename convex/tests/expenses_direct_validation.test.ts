@@ -439,6 +439,143 @@ test("expenses:create allows direct expense when legacy friend status is an empt
   expect(expenses.length).toBe(1);
 });
 
+test("expenses:create allows direct expense when linked_account_id stores account document id", async () => {
+  const t = convexTest(schema);
+  const now = Date.now();
+
+  const ownerDocId = await t.run(async (ctx) => {
+    return await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now,
+    });
+  });
+
+  const friendDocId = await t.run(async (ctx) => {
+    return await ctx.db.insert("accounts", {
+      id: "friend_auth_id",
+      email: "friend@example.com",
+      display_name: "Friend",
+      member_id: "friend_canonical",
+      created_at: now,
+    });
+  });
+
+  await t.run(async (ctx) => {
+    // Legacy bug: linked_account_id persisted as accounts._id (document id), not auth id.
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_legacy_member",
+      name: "Friend",
+      profile_avatar_color: "#445566",
+      has_linked_account: true,
+      linked_account_id: String(friendDocId),
+      status: "friend",
+      updated_at: now,
+    });
+    await ctx.db.insert("groups", {
+      id: "direct_group_doc_id_link",
+      name: "Owner + Friend",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "friend_canonical", name: "Friend" },
+      ],
+      owner_email: "owner@example.com",
+      owner_account_id: "owner_auth_id",
+      owner_id: ownerDocId,
+      is_direct: true,
+      created_at: now,
+      updated_at: now,
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+
+  const result = await ownerCtx.mutation(
+    api.expenses.create,
+    buildDirectExpenseArgs({
+      expenseId: "direct_expense_doc_id_link",
+      groupId: "direct_group_doc_id_link",
+      ownerMemberId: "owner_member",
+      otherMemberId: "friend_canonical",
+    })
+  );
+
+  expect(result).toBeDefined();
+  const expenses = await t.run(async (ctx) => await ctx.db.query("expenses").collect());
+  expect(expenses.length).toBe(1);
+});
+
+test("expenses:create allows direct expense for legacy name-only friend rows and resolves participant email from member id", async () => {
+  const t = convexTest(schema);
+  const now = Date.now();
+
+  const ownerDocId = await t.run(async (ctx) => {
+    return await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now,
+    });
+  });
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "friend_auth_id",
+      email: "friend@example.com",
+      display_name: "Angan Samadder",
+      member_id: "friend_canonical",
+      created_at: now,
+    });
+    // Legacy drift: friend table keeps the old member_id and no link metadata.
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_legacy_member",
+      name: "Angan Samadder",
+      profile_avatar_color: "#778899",
+      has_linked_account: false,
+      status: "friend",
+      updated_at: now,
+    });
+    await ctx.db.insert("groups", {
+      id: "direct_group_name_fallback",
+      name: "Owner + Angan",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "friend_canonical", name: "Angan Samadder" },
+      ],
+      owner_email: "owner@example.com",
+      owner_account_id: "owner_auth_id",
+      owner_id: ownerDocId,
+      is_direct: true,
+      created_at: now,
+      updated_at: now,
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+
+  const result = await ownerCtx.mutation(
+    api.expenses.create,
+    buildDirectExpenseArgs({
+      expenseId: "direct_expense_name_fallback",
+      groupId: "direct_group_name_fallback",
+      ownerMemberId: "owner_member",
+      otherMemberId: "friend_canonical",
+    })
+  );
+
+  expect(result).toBeDefined();
+  const expense = await t.run(async (ctx) =>
+    ctx.db.query("expenses").withIndex("by_client_id", (q) => q.eq("id", "direct_expense_name_fallback")).unique()
+  );
+  expect(expense).toBeDefined();
+  expect(expense?.participant_emails).toContain("friend@example.com");
+});
+
 test("expenses:create rejects direct expense when involved member is not a friend", async () => {
   const t = convexTest(schema);
   const now = Date.now();

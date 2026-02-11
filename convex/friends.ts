@@ -1,7 +1,12 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { findAccountByMemberId, normalizeMemberId, normalizeMemberIds } from "./identity";
+import {
+  findAccountByAuthIdOrDocId,
+  findAccountByMemberId,
+  normalizeMemberId,
+  normalizeMemberIds,
+} from "./identity";
 
 export const list = query({
   args: {},
@@ -51,6 +56,9 @@ export const list = query({
           .withIndex("by_email", (q) => q.eq("email", friend.linked_account_email!))
           .unique();
       }
+      if (!linkedAccount && friend.linked_account_id) {
+        linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id);
+      }
       if (!linkedAccount && friend.linked_member_id) {
         linkedAccount = await findAccountByMemberId(ctx.db, friend.linked_member_id);
       }
@@ -82,13 +90,17 @@ export const list = query({
 
     const validatedFriends = [];
     for (const friend of normalizedFriends) {
-      if (friend.has_linked_account && friend.linked_account_email) {
+      if (friend.has_linked_account && (friend.linked_account_email || friend.linked_account_id)) {
         const identityKey =
           friend.linked_account_email?.trim().toLowerCase() ||
           friend.linked_account_id ||
           friend.linked_member_id;
         const context = identityKey ? linkedIdentityContexts.get(identityKey) : undefined;
-        const linkedAccount = context?.account;
+        const linkedAccount =
+          context?.account ||
+          (friend.linked_account_id
+            ? await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id)
+            : null);
 
         if (!linkedAccount) {
           validatedFriends.push({
@@ -297,6 +309,13 @@ export const upsert = mutation({
         .find((friend) => normalizeMemberId(friend.member_id) === normalizedMemberId);
 
     if (existingLegacy) {
+      const preserveExistingLink = existingLegacy.has_linked_account && !args.has_linked_account;
+      const finalHasLinkedAccount = args.has_linked_account || preserveExistingLink;
+      const finalLinkedAccountId = args.linked_account_id ?? existingLegacy.linked_account_id;
+      const finalLinkedAccountEmail =
+        args.linked_account_email ?? existingLegacy.linked_account_email;
+      const finalStatus = args.status ?? existingLegacy.status;
+
       await ctx.db.patch(existingLegacy._id, {
         member_id: normalizedMemberId,
         name: safeName,
@@ -304,10 +323,10 @@ export const upsert = mutation({
         original_name: args.original_name,
         original_nickname: args.original_nickname,
         prefer_nickname: args.prefer_nickname,
-        has_linked_account: args.has_linked_account,
-        linked_account_id: args.linked_account_id,
-        linked_account_email: args.linked_account_email,
-        status: args.status,
+        has_linked_account: finalHasLinkedAccount,
+        linked_account_id: finalHasLinkedAccount ? finalLinkedAccountId : undefined,
+        linked_account_email: finalHasLinkedAccount ? finalLinkedAccountEmail : undefined,
+        status: finalStatus,
         updated_at: Date.now(),
       });
       return existingLegacy._id;

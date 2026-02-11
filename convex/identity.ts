@@ -73,6 +73,27 @@ export async function findAccountByMemberId(
 }
 
 /**
+ * Backward-compatible account lookup by auth ID.
+ * Handles legacy rows that mistakenly stored Convex document _id instead of auth/account id.
+ */
+export async function findAccountByAuthIdOrDocId(
+  db: DatabaseReader,
+  accountId: string
+): Promise<any | null> {
+  const trimmed = accountId.trim();
+  if (!trimmed) return null;
+
+  const byAuthId = await db
+    .query("accounts")
+    .withIndex("by_auth_id", (q) => q.eq("id", trimmed))
+    .unique();
+  if (byAuthId) return byAuthId;
+
+  const accounts = await db.query("accounts").collect();
+  return accounts.find((account) => String(account._id) === trimmed) ?? null;
+}
+
+/**
  * Backward-compatible alias lookup while case-normalization migration rolls out.
  */
 export async function findAliasByAliasMemberId(

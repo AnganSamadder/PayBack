@@ -247,3 +247,62 @@ test("friends:list dedupes linked identity rows and preserves enriched aliases",
   expect(linkedFriend?.alias_member_ids).toContain("legacy_alias_member");
   expect(linkedFriend?.linked_member_id).toBe("canonical_member");
 });
+
+test("friends:upsert preserves existing linked metadata on stale unlinked client sync", async () => {
+  const t = convexTest(schema);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member",
+    });
+
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: true,
+      linked_account_id: "friend_auth_id",
+      linked_account_email: "friend@example.com",
+      status: "friend",
+      updated_at: now,
+    });
+  });
+
+  const ownerCtx = t.withIdentity({
+    subject: "owner_auth_id",
+    email: "owner@example.com",
+    name: "Owner",
+    pictureUrl: "http://placeholder.com",
+    tokenIdentifier: "owner_auth_id",
+    issuer: "http://placeholder.com",
+    emailVerified: true,
+    updatedAt: "2023-01-01",
+  });
+
+  await ownerCtx.mutation(api.friends.upsert, {
+    member_id: "friend_member",
+    name: "Friend",
+    has_linked_account: false,
+  });
+
+  const row = await t.run(async (ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@example.com").eq("member_id", "friend_member")
+      )
+      .unique()
+  );
+
+  expect(row).toBeDefined();
+  expect(row?.has_linked_account).toBe(true);
+  expect(row?.linked_account_id).toBe("friend_auth_id");
+  expect(row?.linked_account_email).toBe("friend@example.com");
+  expect(row?.status).toBe("friend");
+});
