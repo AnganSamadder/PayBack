@@ -248,7 +248,7 @@ final class UIViewsMinimalTests: XCTestCase {
     // MARK: - ProfileView Tests
     
     func test_profileView_initialization() {
-        let view = ProfileView()
+        let view = ProfileView(path: .constant([]))
         XCTAssertNotNil(view)
     }
     
@@ -271,8 +271,8 @@ final class UIViewsMinimalTests: XCTestCase {
     
     func test_activityView_initialization() {
         let view = ActivityView(
-            selectedTab: .constant(0),
-            shouldResetNavigation: .constant(false)
+            path: .constant([]),
+            selectedSegment: .constant(0)
         )
         XCTAssertNotNil(view)
     }
