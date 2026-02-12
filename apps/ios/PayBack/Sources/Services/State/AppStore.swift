@@ -81,7 +81,10 @@ final class AppStore: ObservableObject {
         self.expenses = localData.expenses
         self.friends = []
         self.currentUser = GroupMember(name: "You", isCurrentUser: true)
-        
+
+        // One-time migration: showRealNames → preferNicknames/preferWholeNames
+        Self.migrateDisplayNameSettings()
+
         // Setup subscriptions...
         $groups.combineLatest($expenses)
             .debounce(for: .milliseconds(250), scheduler: DispatchQueue.main)
@@ -108,7 +111,21 @@ final class AppStore: ObservableObject {
         
         AppConfig.markTiming("AppStore init completed")
     }
-    
+
+    /// Migrates the old `showRealNames` UserDefaults key to the new
+    /// `preferNicknames` / `preferWholeNames` pair. Runs once; subsequent
+    /// calls are no-ops because the old key is removed after migration.
+    private static func migrateDisplayNameSettings() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: "showRealNames") != nil else { return }
+        let showRealNames = defaults.bool(forKey: "showRealNames")
+        // showRealNames=true  → preferNicknames=false (real names by default)
+        // showRealNames=false → preferNicknames=true  (nicknames by default)
+        defaults.set(!showRealNames, forKey: "preferNicknames")
+        defaults.set(false, forKey: "preferWholeNames")
+        defaults.removeObject(forKey: "showRealNames")
+    }
+
     /// Runs off the main actor to avoid blocking UI startup
     func checkSession() async {
         AppConfig.markTiming("AppStore.checkSession started")
@@ -789,6 +806,19 @@ final class AppStore: ObservableObject {
         
         Task {
             _ = try? await accountService.updateProfile(colorHex: color, imageUrl: imageUrl)
+        }
+    }
+
+    func updateAccountSettings(preferNicknames: Bool, preferWholeNames: Bool) {
+        if var account = session?.account {
+            account.preferNicknames = preferNicknames
+            account.preferWholeNames = preferWholeNames
+            session = UserSession(account: account)
+        }
+        persistCurrentState()
+
+        Task {
+            try? await accountService.updateSettings(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
     }
     
@@ -2904,7 +2934,7 @@ final class AppStore: ObservableObject {
         guard session != nil else {
             throw PayBackError.authSessionMissing
         }
-        
+
         // Update preference in local state
         await MainActor.run {
             if let index = friends.firstIndex(where: { $0.memberId == memberId }) {
@@ -2913,12 +2943,35 @@ final class AppStore: ObservableObject {
                 friends[index] = updatedFriend
             }
         }
-        
+
         // Sync to Convex
         guard let session = session else {
             throw PayBackError.authSessionMissing
         }
-        
+
+        let currentFriends = await MainActor.run { friends }
+        try await accountService.syncFriends(accountEmail: session.account.email, friends: currentFriends)
+    }
+
+    func updateFriendDisplayPreference(memberId: UUID, preference: String?) async throws {
+        guard session != nil else {
+            throw PayBackError.authSessionMissing
+        }
+
+        // Update preference in local state
+        await MainActor.run {
+            if let index = friends.firstIndex(where: { $0.memberId == memberId }) {
+                var updatedFriend = friends[index]
+                updatedFriend.displayPreference = preference
+                friends[index] = updatedFriend
+            }
+        }
+
+        // Sync to Convex
+        guard let session = session else {
+            throw PayBackError.authSessionMissing
+        }
+
         let currentFriends = await MainActor.run { friends }
         try await accountService.syncFriends(accountEmail: session.account.email, friends: currentFriends)
     }
@@ -3281,8 +3334,8 @@ final class AppStore: ObservableObject {
         }
 
         return selectable.sorted {
-            $0.displayName(showRealNames: true)
-                .localizedCaseInsensitiveCompare($1.displayName(showRealNames: true)) == .orderedAscending
+            ($0.firstName ?? $0.name)
+                .localizedCaseInsensitiveCompare($1.firstName ?? $1.name) == .orderedAscending
         }
     }
 

@@ -15,6 +15,7 @@ protocol AccountService: Actor {
     ) async throws
     
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String?
+    func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws
     func uploadProfileImage(_ data: Data) async throws -> String
     
     /// Checks if the user is authenticated on the backend
@@ -138,6 +139,10 @@ actor MockAccountService: AccountService {
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
         // Mock implementation
         return imageUrl
+    }
+
+    func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws {
+        // Mock implementation
     }
     
     func uploadProfileImage(_ data: Data) async throws -> String {

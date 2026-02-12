@@ -16,12 +16,16 @@ actor ConvexAccountService: AccountService {
         let id: String
         let email: String
         let display_name: String
+        let first_name: String?
+        let last_name: String?
         let profile_image_url: String?
         let profile_avatar_color: String?
         let linked_member_id: String?
         let equivalent_member_ids: [String]?
         let member_id: String?
         let alias_member_ids: [String]?
+        let prefer_nicknames: Bool?
+        let prefer_whole_names: Bool?
     }
 
     func lookupAccount() async throws -> UserAccount? {
@@ -31,10 +35,14 @@ actor ConvexAccountService: AccountService {
                  id: dto.id,
                  email: dto.email,
                  displayName: dto.display_name,
+                 firstName: dto.first_name,
+                 lastName: dto.last_name,
                  linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
                  equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
                  profileImageUrl: dto.profile_image_url,
-                 profileColorHex: dto.profile_avatar_color
+                 profileColorHex: dto.profile_avatar_color,
+                 preferNicknames: dto.prefer_nicknames ?? false,
+                 preferWholeNames: dto.prefer_whole_names ?? false
              )
         }
         return nil
@@ -56,10 +64,15 @@ actor ConvexAccountService: AccountService {
                  id: dto.id,
                  email: dto.email,
                  displayName: dto.display_name,
-                 linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
-                 profileImageUrl: dto.profile_image_url,
-                 profileColorHex: dto.profile_avatar_color
-             )
+                 firstName: dto.first_name,
+                 lastName: dto.last_name,
+                  linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
+                 equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
+                  profileImageUrl: dto.profile_image_url,
+                  profileColorHex: dto.profile_avatar_color,
+                 preferNicknames: dto.prefer_nicknames ?? false,
+                 preferWholeNames: dto.prefer_whole_names ?? false
+              )
         }
         return nil
     }
@@ -78,6 +91,9 @@ actor ConvexAccountService: AccountService {
         let member_id: String
         let name: String
         let nickname: String?
+        let first_name: String?
+        let last_name: String?
+        let display_preference: String?
         let has_linked_account: Bool
         let linked_account_id: String?
         let linked_account_email: String?
@@ -90,6 +106,9 @@ actor ConvexAccountService: AccountService {
                 member_id: friend.memberId.uuidString,
                 name: friend.name,
                 nickname: friend.nickname,
+                first_name: friend.firstName,
+                last_name: friend.lastName,
+                display_preference: friend.displayPreference,
                 has_linked_account: friend.hasLinkedAccount,
                 linked_account_id: friend.linkedAccountId,
                 linked_account_email: friend.linkedAccountEmail,
@@ -107,6 +126,27 @@ actor ConvexAccountService: AccountService {
                !nickname.isEmpty
             {
                 convexArgs["nickname"] = nickname
+            }
+
+            if let firstName = args.first_name?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !firstName.isEmpty
+            {
+                convexArgs["first_name"] = firstName
+            }
+
+            if let lastName = args.last_name?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !lastName.isEmpty
+            {
+                convexArgs["last_name"] = lastName
+            }
+
+            if let displayPreference = args.display_preference?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !displayPreference.isEmpty
+            {
+                convexArgs["display_preference"] = displayPreference
             }
 
             if let linkedAccountId = args.linked_account_id?
@@ -193,6 +233,14 @@ actor ConvexAccountService: AccountService {
         _ = try await client.mutation("users:updateProfile", with: args)
         return imageUrl
     }
+
+    func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws {
+        let args: [String: ConvexEncodable?] = [
+            "prefer_nicknames": preferNicknames,
+            "prefer_whole_names": preferWholeNames
+        ]
+        _ = try await client.mutation("users:updateSettings", with: args)
+    }
     
     private struct UploadResponse: Decodable {
         let storageId: String
@@ -272,10 +320,14 @@ actor ConvexAccountService: AccountService {
                             id: dto.id,
                             email: dto.email,
                             displayName: dto.display_name,
+                            firstName: dto.first_name,
+                            lastName: dto.last_name,
                             linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
                             equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
                             profileImageUrl: dto.profile_image_url,
-                            profileColorHex: dto.profile_avatar_color
+                            profileColorHex: dto.profile_avatar_color,
+                            preferNicknames: dto.prefer_nicknames ?? false,
+                            preferWholeNames: dto.prefer_whole_names ?? false
                         )
                         continuation.yield(account)
                     }
