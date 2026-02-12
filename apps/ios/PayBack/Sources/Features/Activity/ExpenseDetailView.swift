@@ -2,13 +2,15 @@ import SwiftUI
 
 struct ExpenseDetailView: View {
     @EnvironmentObject var store: AppStore
-    @AppStorage("showRealNames") private var showRealNames: Bool = true
     @Environment(\.dismiss) private var dismiss
     let expense: Expense
     let onBack: (() -> Void)?
 
     @State private var showSettleSheet = false
     @State private var selectedSettleMethod = SettleMethod.markAsPaid
+
+    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
+    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
 
     init(expense: Expense, onBack: (() -> Void)? = nil) {
         self.expense = expense
@@ -198,10 +200,10 @@ struct ExpenseDetailView: View {
         if id == store.currentUser.id {
             return store.currentUser.name
         }
-        
+
         // Try to find in friends list first (respects display preference)
         if let friend = store.friends.first(where: { $0.memberId == id }) {
-            return friend.displayName(showRealNames: showRealNames)
+            return friend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         
         // Try from the group members

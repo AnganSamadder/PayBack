@@ -49,7 +49,6 @@ struct GroupDetailSwipeBackModifier: ViewModifier {
 
 struct GroupDetailView: View {
     @EnvironmentObject var store: AppStore
-    @AppStorage("showRealNames") private var showRealNames: Bool = true
     let groupId: UUID
     let onBack: () -> Void
     let onMemberTap: (GroupMember) -> Void
@@ -65,6 +64,9 @@ struct GroupDetailView: View {
     @State private var showMergeSheet = false
     @State private var showMergeErrorAlert = false
     @State private var mergeErrorMessage = ""
+
+    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
+    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
     
     // Get the live group from store to ensure updates are reflected
     private var group: SpendingGroup? {
@@ -366,7 +368,7 @@ struct GroupDetailView: View {
 
         // Find the AccountFriend for this member (check both primary and remapped IDs)
         if let accountFriend = store.friends.first(where: { isMemberMatch($0.memberId, member) }) {
-            return accountFriend.displayName(showRealNames: showRealNames)
+            return accountFriend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return member.name
     }
@@ -379,7 +381,7 @@ struct GroupDetailView: View {
 
         // Find the AccountFriend for this member (check both primary and remapped IDs)
         if let accountFriend = store.friends.first(where: { isMemberMatch($0.memberId, member) }) {
-            return accountFriend.secondaryDisplayName(showRealNames: showRealNames)
+            return accountFriend.secondaryDisplayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return nil
     }
@@ -694,60 +696,62 @@ private struct GroupIconView: View {
 // MARK: - Settle Confirmation View
 private struct SettleConfirmationView: View {
     @EnvironmentObject var store: AppStore
-    @AppStorage("showRealNames") private var showRealNames: Bool = true
     let group: SpendingGroup
     let selectedExpenseIds: Set<UUID>
     let selectedExpenses: [Expense]
     let paymentRecipients: [(member: GroupMember, amount: Double)]
     let onConfirm: () -> Void
     let onCancel: () -> Void
+
+    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
+    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
     
     private func memberName(for id: UUID, in expense: Expense) -> String {
         // Current user always shows their name
         if id == store.currentUser.id {
             return store.currentUser.name
         }
-        
+
         // Try to find in friends list first (respects display preference)
         if let friend = store.friends.first(where: { $0.memberId == id }) {
-            return friend.displayName(showRealNames: showRealNames)
+            return friend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
-        
+
         // Try from the group members
         if let member = group.members.first(where: { $0.id == id }) {
             return member.name
         }
-        
+
         // Try from cached participantNames in the expense
         if let cachedName = expense.participantNames?[id] {
             return cachedName
         }
-        
+
         return "Unknown"
     }
-    
+
     private func recipientDisplayName(_ member: GroupMember) -> String {
         // Current user always shows their name
         if store.isCurrentUser(member) {
             return member.name
         }
-        
+
         // Find the AccountFriend for this member
         if let accountFriend = store.friends.first(where: { $0.memberId == member.id }) {
-            return accountFriend.displayName(showRealNames: showRealNames)
+            return accountFriend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return member.name
     }
-    
+
     private func recipientSecondaryName(_ member: GroupMember) -> String? {
         // Current user has no secondary name
         if store.isCurrentUser(member) {
             return nil
         }
-        
+
         // Find the AccountFriend for this member
         if let accountFriend = store.friends.first(where: { $0.memberId == member.id }) {
-            return accountFriend.secondaryDisplayName(showRealNames: showRealNames)
+            return accountFriend.secondaryDisplayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return nil
     }
