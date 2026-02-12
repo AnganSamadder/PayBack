@@ -32,7 +32,8 @@ for pattern in "${SECRET_PATTERNS[@]}"; do
 done
 
 # Check newly added lines in staged diff for high-risk secret patterns.
-STAGED_ADDED_LINES=$(git diff --cached --no-color --unified=0 | grep '^+' | grep -v '^+++' || true)
+# Exclude test files where mock JWTs / tokens are expected.
+STAGED_ADDED_LINES=$(git diff --cached --no-color --unified=0 -- ':!*Tests*' ':!*tests*' ':!*Fixtures*' | grep '^+' | grep -v '^+++' || true)
 CONTENT_SECRET_PATTERNS=(
     "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"   # JWT-like token
     "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"                # Private key material
