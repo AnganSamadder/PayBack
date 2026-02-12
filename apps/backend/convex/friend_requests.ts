@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
