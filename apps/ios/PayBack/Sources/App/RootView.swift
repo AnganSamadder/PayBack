@@ -5,20 +5,14 @@ struct RootView: View {
     @EnvironmentObject var store: AppStore
     @Binding var pendingInviteToken: UUID?
     
-    @State private var selectedTab: Int = 0
+    @State private var tabNavigationState = TabNavigationState()
     @State private var showAddOverlay: Bool = false
-    @State private var expandCircle: Bool = false
     @State private var selectedGroupForNewExpense: SpendingGroup?
     @Namespace private var addNS
-    @State private var addReveal: Bool = false
     @State private var backgroundSnapshot: UIImage?
     @State private var showPickerUI: Bool = false
     @State private var circleSize: CGFloat = 64
     @State private var showExpandingCircle: Bool = false
-    @State private var activityViewSelectedTab: Int = 0
-    @State private var friendsNavigationState: FriendsNavigationState = .home
-    @State private var groupsNavigationState: GroupsNavigationState = .home
-    @State private var shouldResetActivityNavigation: Bool = false
     @State private var showInviteClaim: Bool = false
     @State private var inviteTokenToShow: UUID?
 
@@ -26,24 +20,32 @@ struct RootView: View {
         ZStack {
             VStack(spacing: 0) {
                 // Main content with native 5-tab TabView
-                TabView(selection: $selectedTab) {
+                TabView(selection: selectedTabBinding) {
                     // Tab 0: Friends
-                    FriendsTabView(navigationState: $friendsNavigationState, selectedTab: $selectedTab)
+                    FriendsTabView(
+                        path: $tabNavigationState.friendsPath,
+                        selectedRootTab: selectedTabBinding,
+                        rootResetToken: tabNavigationState.friendsRootResetToken
+                    )
                         .environmentObject(store)
                         .tabItem {
                             Image(systemName: "person.2")
                             Text("Friends")
                         }
-                        .tag(0)
+                        .tag(RootTab.friends.rawValue)
 
                     // Tab 1: Groups
-                    GroupsTabView(navigationState: $groupsNavigationState, selectedTab: $selectedTab)
+                    GroupsTabView(
+                        path: $tabNavigationState.groupsPath,
+                        selectedRootTab: selectedTabBinding,
+                        rootResetToken: tabNavigationState.groupsRootResetToken
+                    )
                         .environmentObject(store)
                         .tabItem {
                             Image(systemName: "person.3")
                             Text("Groups")
                         }
-                        .tag(1)
+                        .tag(RootTab.groups.rawValue)
                     
                     // Tab 2: Empty spacer for FAB (invisible but takes space)
                     Color.clear
@@ -51,47 +53,37 @@ struct RootView: View {
                             // Empty - no icon or text, FAB covers this
                             Text("")
                         }
-                        .tag(2)
+                        .tag(RootTab.fabSpacer.rawValue)
 
                     // Tab 3: Activity
-                    ActivityView(selectedTab: $activityViewSelectedTab, shouldResetNavigation: $shouldResetActivityNavigation)
+                    ActivityView(
+                        path: $tabNavigationState.activityPath,
+                        selectedSegment: $tabNavigationState.activitySegment,
+                        rootResetToken: tabNavigationState.activityRootResetToken
+                    )
                         .environmentObject(store)
                         .tabItem {
                             Image(systemName: "clock.arrow.circlepath")
                             Text("Activity")
                         }
-                        .tag(3)
+                        .tag(RootTab.activity.rawValue)
 
                     // Tab 4: Profile
-                    ProfileView()
+                    ProfileView(
+                        path: $tabNavigationState.profilePath,
+                        rootResetToken: tabNavigationState.profileRootResetToken
+                    )
                         .environmentObject(store)
                         .tabItem {
                             Image(systemName: "person.circle")
                             Text("Profile")
                         }
-                        .tag(4)
+                        .tag(RootTab.profile.rawValue)
                 }
-                .onChange(of: selectedTab) { oldValue, newValue in
-                    // Prevent tab 2 from being selected (it's the FAB spacer)
-                    if newValue == 2 {
-                        selectedTab = oldValue
-                        return
-                    }
-                    // Reset navigation states when switching tabs
-                    if oldValue != newValue {
-                        withAnimation(.easeInOut(duration: 0.35)) {
-                            if oldValue == 0 && friendsNavigationState != .home {
-                                friendsNavigationState = .home
-                            }
-                            if oldValue == 1 && groupsNavigationState != .home {
-                                groupsNavigationState = .home
-                            }
-                            if newValue == 3 {
-                                shouldResetActivityNavigation = true
-                            }
-                        }
-                    }
-                }
+                .background(
+                    TabBarReselectObserver(onTabTap: handleTabTap)
+                        .frame(width: 0, height: 0)
+                )
             }
 
             // Center FAB overlay; expose bounds via preference for precise circle origin
@@ -288,6 +280,39 @@ struct RootView: View {
             window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
         }
     }
+
+    private var selectedTabBinding: Binding<Int> {
+        Binding(
+            get: { tabNavigationState.selectedTab.rawValue },
+            set: { newValue in
+                guard let newTab = RootTab(rawValue: newValue), newTab != .fabSpacer else {
+                    return
+                }
+                tabNavigationState.selectedTab = newTab
+            }
+        )
+    }
+
+    private func handleTabTap(index: Int, isReselect: Bool) {
+        guard let tappedTab = RootTab(rawValue: index), tappedTab != .fabSpacer else {
+            return
+        }
+
+        if isReselect {
+            switch tappedTab {
+            case .friends:
+                tabNavigationState.resetFriendsToRoot()
+            case .groups:
+                tabNavigationState.resetGroupsToRoot()
+            case .activity:
+                tabNavigationState.resetActivityToRoot()
+            case .profile:
+                tabNavigationState.resetProfileToRoot()
+            case .fabSpacer:
+                break
+            }
+        }
+    }
 }
 
 // PreferenceKey to pass the FAB's bounds anchor to the overlay
@@ -415,4 +440,3 @@ private struct SectionHeader: View {
             .padding(.horizontal, 4)
     }
 }
-

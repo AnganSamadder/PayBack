@@ -1,10 +1,8 @@
 import SwiftUI
 
 struct ExpenseDetailView: View {
-    @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let expense: Expense
-    let onBack: (() -> Void)?
 
     @State private var showSettleSheet = false
     @State private var selectedSettleMethod = SettleMethod.markAsPaid
@@ -12,9 +10,8 @@ struct ExpenseDetailView: View {
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
 
-    init(expense: Expense, onBack: (() -> Void)? = nil) {
+    init(expense: Expense) {
         self.expense = expense
-        self.onBack = onBack
     }
     
     var body: some View {
@@ -164,17 +161,18 @@ struct ExpenseDetailView: View {
                 .background(Color.clear)
             }
         }
-        .customNavigationHeaderWithAction(
-            title: "Expense Details",
-            onBack: handleBack,
-            rightAction: {
-                selectedSettleMethod = .markAsPaid
-                showSettleSheet = true
-            },
-            rightActionIcon: "ellipsis.circle"
-        )
-        .toolbar(.hidden, for: .navigationBar)
-        .navigationBarBackButtonHidden(true)
+        .navigationTitle("Expense Details")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    selectedSettleMethod = .markAsPaid
+                    showSettleSheet = true
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
         .sheet(isPresented: $showSettleSheet) {
             SettleExpenseSheet(expense: expense, settleMethod: $selectedSettleMethod)
         }
@@ -185,14 +183,6 @@ struct ExpenseDetailView: View {
         let isPaidByUser = expense.paidByMemberId == store.currentUser.id
         let isOwingUser = expense.splits.contains { $0.memberId == store.currentUser.id }
         return isPaidByUser || isOwingUser
-    }
-
-    private func handleBack() {
-        if let onBack {
-            onBack()
-        } else {
-            dismiss()
-        }
     }
 
     private func memberName(for id: UUID) -> String {

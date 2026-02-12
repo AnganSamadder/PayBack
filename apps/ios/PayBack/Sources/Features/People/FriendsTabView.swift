@@ -1,93 +1,48 @@
 import SwiftUI
 
-// Navigation state for Friends tab
-enum FriendsNavigationState: Equatable {
-    case home
-    case friendDetail(GroupMember)
-    case expenseDetail(SpendingGroup, Expense)
-}
-
 struct FriendsTabView: View {
     @EnvironmentObject var store: AppStore
-    @Binding var navigationState: FriendsNavigationState
-    @Binding var selectedTab: Int
+    @Binding var path: [FriendsRoute]
+    @Binding var selectedRootTab: Int
+    var rootResetToken: UUID = UUID()
     @State private var showAddFriend = false
     @State private var showLinkRequests = false
-    @State private var lastGroupForFriendDetail: SpendingGroup?
     
     var body: some View {
-        NavigationStack {
-            ZStack {
-                switch navigationState {
-                case .home:
-                    homeContent
-                case .friendDetail(let friend):
-                    DetailContainer(
-                        action: {
-                            navigationState = .home
-                            lastGroupForFriendDetail = nil
-                        },
-                        background: {
-                            homeContent
-                                .opacity(0.2)
-                                .scaleEffect(0.95)
-                                .offset(y: 50)
-                        }
-                    ) {
-                        FriendDetailView(friend: friend, onBack: {
-                            navigationState = .home
-                            lastGroupForFriendDetail = nil
-                        }, onExpenseSelected: { expense in
-                            if let group = store.group(by: expense.groupId) {
-                                lastGroupForFriendDetail = group
-                                navigationState = .expenseDetail(group, expense)
+        NavigationStack(path: $path) {
+            homeContent
+            .id(rootResetToken)
+            .navigationDestination(for: FriendsRoute.self) { route in
+                switch route {
+                case .friendDetail(let memberId):
+                    if let friend = store.navigationMember(id: memberId) {
+                        FriendDetailView(
+                            friend: friend,
+                            onExpenseSelected: { expense in
+                                path.append(.expenseDetail(expenseId: expense.id))
                             }
-                        })
+                        )
                         .environmentObject(store)
+                    } else {
+                        NavigationRouteUnavailableView(
+                            title: "Friend Not Available",
+                            message: "This friend could not be found. They may have been deleted or merged."
+                        )
                     }
-                case .expenseDetail(_, let expense):
-                    DetailContainer(
-                        action: {
-                            if let lastGroup = lastGroupForFriendDetail {
-                                // Return to friend detail if we came from there
-                                if let friend = lastGroup.members.first(where: { $0.id != store.currentUser.id }) {
-                                    navigationState = .friendDetail(friend)
-                                    lastGroupForFriendDetail = nil
-                                } else {
-                                    navigationState = .home
-                                    lastGroupForFriendDetail = nil
-                                }
-                            } else {
-                                navigationState = .home
-                            }
-                        },
-                        background: {
-                            homeContent
-                                .opacity(0.2)
-                                .scaleEffect(0.95)
-                                .offset(y: 50)
-                        }
-                    ) {
-                        ExpenseDetailView(expense: expense, onBack: {
-                            if let lastGroup = lastGroupForFriendDetail {
-                                // Return to friend detail if we came from there
-                                if let friend = lastGroup.members.first(where: { $0.id != store.currentUser.id }) {
-                                    navigationState = .friendDetail(friend)
-                                    lastGroupForFriendDetail = nil
-                                } else {
-                                    navigationState = .home
-                                    lastGroupForFriendDetail = nil
-                                }
-                            } else {
-                                navigationState = .home
-                            }
-                        })
-                        .environmentObject(store)
+                case .expenseDetail(let expenseId):
+                    if let expense = store.navigationExpense(id: expenseId) {
+                        ExpenseDetailView(expense: expense)
+                            .environmentObject(store)
+                    } else {
+                        NavigationRouteUnavailableView(
+                            title: "Expense Not Available",
+                            message: "This expense could not be found. It may have been removed."
+                        )
                     }
                 }
             }
             .background(AppTheme.background.ignoresSafeArea())
-            .toolbar(.hidden, for: .navigationBar)
+            .toolbar(path.isEmpty ? .hidden : .visible, for: .navigationBar)
         }
     }
     
@@ -95,8 +50,7 @@ struct FriendsTabView: View {
     private var homeContent: some View {
         ZStack(alignment: .topLeading) {
             FriendsList(onFriendSelected: { friend in
-                lastGroupForFriendDetail = nil
-                navigationState = .friendDetail(friend)
+                path.append(.friendDetail(memberId: friend.id))
             })
             .padding(.horizontal)
         }
@@ -173,7 +127,7 @@ struct FriendsTabView: View {
     private func handleDoubleTap() {
         // Double-tap on Friends title switches to Groups tab
         withAnimation(.easeInOut(duration: 0.3)) {
-            selectedTab = 1
+            selectedRootTab = RootTab.groups.rawValue
         }
     }
     
@@ -186,8 +140,8 @@ struct FriendsTabView: View {
 
 private struct FriendsList: View {
     @EnvironmentObject var store: AppStore
-    @State private var sortOrder: SortOrder = .alphabetical
-    @State private var isAscending: Bool = true
+    @AppStorage("friendsSortOrder") private var sortOrder: SortOrder = .alphabetical
+    @AppStorage("friendsSortAscending") private var isAscending: Bool = true
     @State private var friendToDelete: GroupMember?
     @State private var showDeleteConfirmation = false
     let onFriendSelected: (GroupMember) -> Void

@@ -1,56 +1,9 @@
 import SwiftUI
 
-// Swipe back modifier for GroupDetailView
-struct GroupDetailSwipeBackModifier: ViewModifier {
-    let action: () -> Void
-    let dragThreshold: CGFloat
-
-    @State private var dragOffset: CGFloat = 0
-    @State private var isDragging = false
-
-    func body(content: Content) -> some View {
-        content
-            .offset(x: dragOffset)
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        // Only allow dragging from the left edge and significant horizontal movement
-                        if value.startLocation.x < 20 &&
-                           abs(value.translation.height) < abs(value.translation.width) &&
-                           value.translation.width >= 0 { // Only allow rightward movement
-
-                            isDragging = true
-                            dragOffset = value.translation.width
-                        }
-                    }
-                    .onEnded { value in
-                        if isDragging {
-                            isDragging = false
-
-                            // Check if swipe was successful
-                            if value.translation.width > dragThreshold &&
-                               value.startLocation.x < 20 &&
-                               abs(value.translation.height) < abs(value.translation.width) {
-
-                                // Successful swipe - complete the action with smooth transition
-                                action()
-                            } else {
-                                // Failed swipe - animate back to original position
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    dragOffset = 0
-                                }
-                            }
-                        }
-                    }
-            )
-            .animation(isDragging ? .interactiveSpring(response: 0.3, dampingFraction: 0.7) : .none, value: dragOffset)
-    }
-}
-
 struct GroupDetailView: View {
     @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
     let groupId: UUID
-    let onBack: () -> Void
     let onMemberTap: (GroupMember) -> Void
     let onExpenseTap: (Expense) -> Void
     @State private var showAddExpense = false
@@ -75,14 +28,16 @@ struct GroupDetailView: View {
 
     init(
         group: SpendingGroup,
-        onBack: @escaping () -> Void,
         onMemberTap: @escaping (GroupMember) -> Void = { _ in },
         onExpenseTap: @escaping (Expense) -> Void = { _ in }
     ) {
         self.groupId = group.id
-        self.onBack = onBack
         self.onMemberTap = onMemberTap
         self.onExpenseTap = onExpenseTap
+    }
+
+    private func handleBack() {
+        dismiss()
     }
     
     var body: some View {
@@ -125,15 +80,11 @@ struct GroupDetailView: View {
                 .background(Color.clear)
             } else {
                 // Group was deleted, go back
-                Color.clear.onAppear { onBack() }
+                Color.clear.onAppear { handleBack() }
             }
         }
-        .customNavigationHeader(
-            title: "Group Details",
-            onBack: onBack
-        )
-        .toolbar(.hidden, for: .navigationBar)
-        .navigationBarBackButtonHidden(true)
+        .navigationTitle("Group Details")
+        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showAddExpense) {
             if let group = group {
                 AddExpenseView(group: group)
@@ -181,8 +132,8 @@ struct GroupDetailView: View {
         .alert("Leave Group?", isPresented: $showLeaveConfirmation) {
             Button("Leave", role: .destructive) {
                 store.leaveGroup(groupId)
-                // onBack() is triggered automatically when group becomes nil
-                // (see the else branch: Color.clear.onAppear { onBack() })
+                // Back navigation is triggered automatically when group becomes nil
+                // (see the else branch: Color.clear.onAppear { handleBack() })
             }
             Button("Cancel", role: .cancel) { }
         } message: {

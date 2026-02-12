@@ -2,12 +2,11 @@ import SwiftUI
 
 struct ActivityView: View {
     @EnvironmentObject var store: AppStore
-    @Binding var selectedTab: Int
-    @Binding var shouldResetNavigation: Bool
-    @State private var navigationState: ActivityNavigationState = .home
-    @State private var expenseDetailReturnState: ActivityNavigationState?
-    @State private var friendDetailReturnState: ActivityNavigationState?
+    @Binding var path: [ActivityRoute]
+    @Binding var selectedSegment: Int
+    var rootResetToken: UUID = UUID()
 
+    // Backward-compatible enum retained for tests that reference ActivityView.ActivityNavigationState.
     enum ActivityNavigationState: Hashable {
         case home
         case expenseDetail(Expense)
@@ -19,12 +18,12 @@ struct ActivityView: View {
         VStack(spacing: 0) {
             // Bubbly tab bar
             HStack(spacing: 8) {
-                TabButton(title: "Dashboard", isSelected: selectedTab == 0) {
-                    selectedTab = 0
+                TabButton(title: "Dashboard", isSelected: selectedSegment == 0) {
+                    selectedSegment = 0
                 }
 
-                TabButton(title: "History", isSelected: selectedTab == 1) {
-                    selectedTab = 1
+                TabButton(title: "History", isSelected: selectedSegment == 1) {
+                    selectedSegment = 1
                 }
 
                 Spacer()
@@ -60,27 +59,22 @@ struct ActivityView: View {
             .padding(.vertical, 12)
 
                         // Tab content with swipe gesture
-            TabView(selection: $selectedTab) {
+            TabView(selection: $selectedSegment) {
                 DashboardView(
                     onGroupTap: { group in
-                        friendDetailReturnState = nil
-                        expenseDetailReturnState = nil
-                        navigationState = .groupDetail(group)
+                        path.append(.groupDetail(groupId: group.id))
                     },
                     onFriendTap: { friend in
-                        friendDetailReturnState = .home
-                        navigationState = .friendDetail(friend)
+                        path.append(.friendDetail(memberId: friend.id))
                     },
                     onExpenseTap: { expense in
-                        expenseDetailReturnState = .home
-                        navigationState = .expenseDetail(expense)
+                        path.append(.expenseDetail(expenseId: expense.id))
                     }
                 )
                 .tag(0)
 
                 HistoryView(onExpenseTap: { expense in
-                    expenseDetailReturnState = .home
-                    navigationState = .expenseDetail(expense)
+                    path.append(.expenseDetail(expenseId: expense.id))
                 })
                 .tag(1)
             }
@@ -89,97 +83,58 @@ struct ActivityView: View {
     }
 
     var body: some View {
-        ZStack {
-            switch navigationState {
-            case .home:
-                homeContent
-            case .expenseDetail(let expense):
-                DetailContainer(
-                    action: {
-                        navigationState = expenseDetailReturnState ?? .home
-                        expenseDetailReturnState = nil
-                    },
-                    background: {
-                        homeContent
-                            .opacity(0.2)
-                            .scaleEffect(0.95)
-                            .offset(y: 50)
-                    }
-                ) {
-                    ExpenseDetailView(expense: expense, onBack: {
-                        navigationState = expenseDetailReturnState ?? .home
-                        expenseDetailReturnState = nil
-                    })
-                    .environmentObject(store)
-                }
-            case .groupDetail(let group):
-                DetailContainer(
-                    action: {
-                        navigationState = .home
-                        expenseDetailReturnState = nil
-                        friendDetailReturnState = nil
-                    },
-                    background: {
-                        homeContent
-                            .opacity(0.2)
-                            .scaleEffect(0.95)
-                            .offset(y: 50)
-                    }
-                ) {
-                    GroupDetailView(
-                        group: group,
-                        onBack: {
-                            navigationState = .home
-                            expenseDetailReturnState = nil
-                            friendDetailReturnState = nil
-                        },
-                        onMemberTap: { member in
-                            friendDetailReturnState = .groupDetail(group)
-                            navigationState = .friendDetail(member)
-                        },
-                        onExpenseTap: { expense in
-                            expenseDetailReturnState = .groupDetail(group)
-                            navigationState = .expenseDetail(expense)
+        NavigationStack(path: $path) {
+            homeContent
+                .id(rootResetToken)
+                .navigationDestination(for: ActivityRoute.self) { route in
+                    switch route {
+                    case .groupDetail(let groupId):
+                        if let group = store.navigationGroup(id: groupId) {
+                            GroupDetailView(
+                                group: group,
+                                onMemberTap: { member in
+                                    path.append(.friendDetail(memberId: member.id))
+                                },
+                                onExpenseTap: { expense in
+                                    path.append(.expenseDetail(expenseId: expense.id))
+                                }
+                            )
+                            .environmentObject(store)
+                        } else {
+                            NavigationRouteUnavailableView(
+                                title: "Group Not Available",
+                                message: "This group could not be found. It may have been deleted."
+                            )
                         }
-                    )
-                    .environmentObject(store)
-                }
-            case .friendDetail(let friend):
-                DetailContainer(
-                    action: {
-                        navigationState = friendDetailReturnState ?? .home
-                        friendDetailReturnState = nil
-                    },
-                    background: {
-                        homeContent
-                            .opacity(0.2)
-                            .scaleEffect(0.95)
-                            .offset(y: 50)
-                    }
-                ) {
-                    FriendDetailView(
-                        friend: friend,
-                        onBack: {
-                            navigationState = friendDetailReturnState ?? .home
-                            friendDetailReturnState = nil
-                        },
-                        onExpenseSelected: { expense in
-                            expenseDetailReturnState = .friendDetail(friend)
-                            navigationState = .expenseDetail(expense)
+                    case .friendDetail(let memberId):
+                        if let friend = store.navigationMember(id: memberId) {
+                            FriendDetailView(
+                                friend: friend,
+                                onExpenseSelected: { expense in
+                                    path.append(.expenseDetail(expenseId: expense.id))
+                                }
+                            )
+                            .environmentObject(store)
+                        } else {
+                            NavigationRouteUnavailableView(
+                                title: "Friend Not Available",
+                                message: "This friend could not be found. They may have been removed."
+                            )
                         }
-                    )
-                    .environmentObject(store)
+                    case .expenseDetail(let expenseId):
+                        if let expense = store.navigationExpense(id: expenseId) {
+                            ExpenseDetailView(expense: expense)
+                                .environmentObject(store)
+                        } else {
+                            NavigationRouteUnavailableView(
+                                title: "Expense Not Available",
+                                message: "This expense could not be found. It may have been removed."
+                            )
+                        }
+                    }
                 }
-            }
-        }
-        .background(AppTheme.background.ignoresSafeArea())
-        .onChange(of: shouldResetNavigation) { oldValue, newValue in
-            if newValue {
-                navigationState = .home
-                expenseDetailReturnState = nil
-                friendDetailReturnState = nil
-                shouldResetNavigation = false
-            }
+                .background(AppTheme.background.ignoresSafeArea())
+                .toolbar(path.isEmpty ? .hidden : .visible, for: .navigationBar)
         }
     }
     

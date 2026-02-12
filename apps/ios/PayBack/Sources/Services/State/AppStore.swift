@@ -2453,6 +2453,43 @@ final class AppStore: ObservableObject {
 
     func group(by id: UUID) -> SpendingGroup? { groups.first { $0.id == id } }
 
+    func navigationGroup(id: UUID) -> SpendingGroup? {
+        group(by: id)
+    }
+
+    func navigationExpense(id: UUID) -> Expense? {
+        expenses.first { $0.id == id }
+    }
+
+    func navigationMember(id: UUID) -> GroupMember? {
+        if isMe(id) {
+            return currentUser
+        }
+
+        if let friendMember = friendMembers.first(where: { areSamePerson($0.id, id) }) {
+            return friendMember
+        }
+
+        for group in groups {
+            if let member = group.members.first(where: { areSamePerson($0.id, id) }) {
+                return member
+            }
+        }
+
+        if let friend = friends.first(where: { areSamePerson($0.memberId, id) }) {
+            return GroupMember(
+                id: friend.memberId,
+                name: friend.name,
+                profileImageUrl: friend.profileImageUrl,
+                profileColorHex: friend.profileColorHex,
+                isCurrentUser: false,
+                accountFriendMemberId: friend.memberId
+            )
+        }
+
+        return nil
+    }
+
     // MARK: - Direct (person-to-person) helpers
     func directGroup(with friend: GroupMember) -> SpendingGroup {
         guard !isCurrentUser(friend) else {
