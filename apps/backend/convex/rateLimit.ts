@@ -16,7 +16,7 @@ export async function checkRateLimit(
 ) {
   const now = Date.now();
   const key = `rate_limit:${userId}:${action}`;
-  
+
   const rateLimit = await ctx.db
     .query("rate_limits")
     .withIndex("by_key", (q) => q.eq("key", key))
@@ -26,7 +26,7 @@ export async function checkRateLimit(
     await ctx.db.insert("rate_limits", {
       key,
       count: 1,
-      window_start: now,
+      window_start: now
     });
     return;
   }
@@ -35,17 +35,19 @@ export async function checkRateLimit(
     // Reset window
     await ctx.db.patch(rateLimit._id, {
       count: 1,
-      window_start: now,
+      window_start: now
     });
     return;
   }
 
   if (rateLimit.count >= limit) {
     // We use a specific message that includes 429 to satisfy requirements
-    throw new Error(`Rate limit exceeded for ${action}. Please try again in a minute. (Status: 429)`);
+    throw new Error(
+      `Rate limit exceeded for ${action}. Please try again in a minute. (Status: 429)`
+    );
   }
 
   await ctx.db.patch(rateLimit._id, {
-    count: rateLimit.count + 1,
+    count: rateLimit.count + 1
   });
 }

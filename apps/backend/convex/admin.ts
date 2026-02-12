@@ -8,10 +8,7 @@ async function requireAdmin(ctx: any) {
     throw new Error("Unauthenticated");
   }
 
-  const configured = [
-    ...(process.env.ADMIN_EMAILS ?? "").split(","),
-    process.env.ADMIN_EMAIL ?? "",
-  ]
+  const configured = [...(process.env.ADMIN_EMAILS ?? "").split(","), process.env.ADMIN_EMAIL ?? ""]
     .map((email) => email.trim().toLowerCase())
     .filter(Boolean);
 
@@ -23,7 +20,7 @@ async function requireAdmin(ctx: any) {
 
 export const hardDeleteUser = mutation({
   args: {
-    email: v.string(),
+    email: v.string()
   },
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -35,13 +32,13 @@ export const hardDeleteUser = mutation({
 
     if (!user) {
       const scrubStats = await hardCleanupOrphanedAccount(ctx, {
-        email: args.email,
+        email: args.email
       });
       return { status: "not_found_but_scrubbed", email: args.email, stats: scrubStats };
     }
 
     const cleanupStats = await hardCleanupOrphanedAccount(ctx, {
-      email: user.email,
+      email: user.email
     });
 
     await ctx.db.delete(user._id);
@@ -49,7 +46,7 @@ export const hardDeleteUser = mutation({
     return {
       status: "deleted",
       email: user.email,
-      stats: cleanupStats,
+      stats: cleanupStats
     };
-  },
+  }
 });

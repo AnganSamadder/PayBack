@@ -24,7 +24,7 @@ export const cleanupOrphans = internalMutation({
       JSON.stringify({
         scope: "janitor.cleanupOrphans",
         operationId,
-        step: "start",
+        step: "start"
       })
     );
 
@@ -40,12 +40,12 @@ export const cleanupOrphans = internalMutation({
         key: stateKey,
         account_friends_cursor: undefined,
         groups_cursor: undefined,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       }));
 
     const friendsPage = await ctx.db.query("account_friends").paginate({
       numItems: 100,
-      cursor: existingState?.account_friends_cursor ?? null,
+      cursor: existingState?.account_friends_cursor ?? null
     });
     const friendEmails = new Set(friendsPage.page.map((f) => f.account_email));
 
@@ -73,14 +73,14 @@ export const cleanupOrphans = internalMutation({
         totalOwnerEmails: ownerEmailsToCheck.size,
         friendPageSize: friendsPage.page.length,
         groupsTotalSize: allGroups.length,
-        friendCursorWasNull: (existingState?.account_friends_cursor ?? null) === null,
+        friendCursorWasNull: (existingState?.account_friends_cursor ?? null) === null
       })
     );
 
     await ctx.db.patch(stateId, {
       account_friends_cursor: friendsPage.isDone ? undefined : friendsPage.continueCursor,
       groups_cursor: undefined, // groups are fully scanned each run
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
 
     const orphanedOwnerEmails: string[] = [];
@@ -115,7 +115,7 @@ export const cleanupOrphans = internalMutation({
         orphanOwnerCount: orphanedOwnerEmails.length,
         orphanLinkedCount: orphanedLinkedEmails.length,
         orphanOwnerEmails: orphanedOwnerEmails.slice(0, 10),
-        orphanLinkedEmails: orphanedLinkedEmails.slice(0, 10),
+        orphanLinkedEmails: orphanedLinkedEmails.slice(0, 10)
       })
     );
 
@@ -125,7 +125,7 @@ export const cleanupOrphans = internalMutation({
           scope: "janitor.cleanupOrphans",
           operationId,
           step: "complete",
-          message: "No orphans found",
+          message: "No orphans found"
         })
       );
       return { orphansFound: 0, orphansCleaned: 0 };
@@ -155,14 +155,17 @@ export const cleanupOrphans = internalMutation({
             operationId,
             step: "linked_cleanup_error",
             email,
-            error: String(error),
+            error: String(error)
           })
         );
         results.push({ email, type: "linked", success: false, error: String(error) });
       }
     }
 
-    const ownerEmailsToClean = orphanedOwnerEmails.slice(0, MAX_ORPHANS_PER_RUN - linkedEmailsToClean.length);
+    const ownerEmailsToClean = orphanedOwnerEmails.slice(
+      0,
+      MAX_ORPHANS_PER_RUN - linkedEmailsToClean.length
+    );
 
     for (const email of ownerEmailsToClean) {
       try {
@@ -175,7 +178,7 @@ export const cleanupOrphans = internalMutation({
             operationId,
             step: "owner_cleanup_error",
             email,
-            error: String(error),
+            error: String(error)
           })
         );
         results.push({ email, type: "owner", success: false, error: String(error) });
@@ -193,14 +196,14 @@ export const cleanupOrphans = internalMutation({
         orphansFound: totalOrphans,
         orphansCleaned: totalCleaned,
         remainingOrphans: totalOrphans - totalCleaned,
-        results,
+        results
       })
     );
 
     return {
       orphansFound: totalOrphans,
       orphansCleaned: totalCleaned,
-      remainingOrphans: totalOrphans - totalCleaned,
+      remainingOrphans: totalOrphans - totalCleaned
     };
-  },
+  }
 });

@@ -4,16 +4,16 @@ This plan is intentionally written as a durable handoff artifact. Update it as c
 
 ## Goals (what “works” means)
 
-1) **Backwards compatible CSV import** across all historical export variants we’ve observed.
+1. **Backwards compatible CSV import** across all historical export variants we’ve observed.
 
-2) **All people in an imported export become “my friends”** even if none of them have linked accounts yet.
+2. **All people in an imported export become “my friends”** even if none of them have linked accounts yet.
    - Linked accounts are an enhancement (visibility/claiming), not a prerequisite for importing expenses.
 
-3) **Direct expenses must import and show up** for the importer.
+3. **Direct expenses must import and show up** for the importer.
    - In Convex, `expenses:create` currently requires that every non-current-user involved member in a direct group has an `account_friends` row with `status == "friend"`.
    - Therefore: the importer must ensure those rows will exist (and be “friend”) before attempting expense upserts.
 
-4) **Format changes must be guarded by mocks + tests**, so compatibility is preserved long-term.
+4. **Format changes must be guarded by mocks + tests**, so compatibility is preserved long-term.
 
 ## Non-goals / Clarifications
 
@@ -80,50 +80,59 @@ Authoritative per-version schema definitions live in `docs/import-export/VERSION
 ### Phase 0 — Documentation + compatibility discipline (no behavior change)
 
 **Deliverables**
+
 - `docs/import-export/VERSIONS.md` describing each observed format variant + detection rules.
 - `docs/import-export/MOCKS.md` describing the mock CSV fixture matrix.
 - `docs/import-export/WORKLOG.md` tracking progress across sessions.
 - Add a short note in `AGENTS.md`: when import/export format changes, update VERSIONS+MOCKS+fixtures+tests.
 
 **Acceptance criteria**
+
 - Docs exist and reflect real-world variants without containing PII.
 
 ### Phase 1 — iOS importer: make every imported person a “friend” before expenses
 
 **Files**
+
 - `apps/ios/PayBack/Sources/Services/Core/DataImportService.swift`
 
 **Changes**
-1) **Promote implicit contacts to friends**
+
+1. **Promote implicit contacts to friends**
    - Any time the importer synthesizes an `AccountFriend` for a member encountered in groups/expenses, set `status = "friend"` (not `"peer"`).
    - This matches the product requirement: anyone in the imported export is “my friend”, even if unlinked.
 
-2) **Reorder importer phases**
+2. **Reorder importer phases**
    - Ensure all group members are resolved (memberId mapping) and friends exist in `store.friends` before importing any expenses.
 
-3) **Sync friends before expense creation (best effort)**
+3. **Sync friends before expense creation (best effort)**
    - Call `await store.syncFriendsToCloud()` after friend creation and before adding expenses.
    - Note: tests run without Convex; in production this reduces the chance of direct-expense upsert rejection.
 
 **Acceptance criteria**
+
 - After importing any fixture, for every direct group expense, every involved member other than the current user has a corresponding `AccountFriend` in `store.friends` with `status == "friend"`.
 
 ### Phase 2 — iOS exporter: preserve friend status
 
 **Files**
+
 - `apps/ios/PayBack/Sources/Services/Core/DataExportService.swift`
 
 **Changes**
+
 - Append a 9th column to FRIENDS rows: `status`.
 - Update the FRIENDS header comment to include `status`.
 
 **Acceptance criteria**
+
 - Export → Import round-trip preserves `status` for friends.
 - Older importers remain tolerant (they should ignore extra columns; our importer already does).
 
 ### Phase 3 — Mocks: versioned CSV fixtures (generic/non-PII)
 
 **Files/dirs (proposed)**
+
 - `apps/ios/PayBack/Tests/Fixtures/ImportExport/CSV/` (or `.../Fixtures/csv_import_export/` if we prefer lower-case)
   - `v1/` (Variant A)
   - `v2-min/` (Variant B)
@@ -131,6 +140,7 @@ Authoritative per-version schema definitions live in `docs/import-export/VERSION
   - `v3-status/` (Variant D)
 
 **Fixture policy**
+
 - Fixtures must be fully synthetic (no real emails/names/IDs from user data).
 - Fixtures must be stable: fixed timestamps and UUIDs.
 - Any time the export format changes, update:
@@ -144,23 +154,26 @@ See `docs/import-export/MOCKS.md` for the full matrix.
 ### Phase 4 — Tests: enforce backwards compatibility offline
 
 **Constraints**
+
 - CI cannot run Convex; tests must run without a backend.
 
 **Test strategy**
-1) Parsing tests
+
+1. Parsing tests
    - Ensure `parseExport` accepts all fixture variants (missing sections, smaller column counts, optional columns).
 
-2) Import integration tests
+2. Import integration tests
    - Import each fixture into a fresh `AppStore(skipClerkInit: true)`.
    - Assert postconditions on local store state:
      - Expected counts.
      - No synthesized contacts are left as `status == "peer"`.
      - For direct groups, involved members map to existing friends with `status == "friend"`.
 
-3) Export/import round-trip tests
+3. Export/import round-trip tests
    - Export generated state with status → import → validate status preserved.
 
 **Acceptance criteria**
+
 - `FAIL_ON_WARNINGS=1 ./scripts/test-ci-locally.sh` passes.
 
 ## Risk mitigation

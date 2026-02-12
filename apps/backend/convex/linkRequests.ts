@@ -16,7 +16,7 @@ export const listIncoming = query({
       .query("link_requests")
       .withIndex("by_recipient_email", (q) => q.eq("recipient_email", identity.email!))
       .collect();
-  },
+  }
 });
 
 /**
@@ -39,7 +39,7 @@ export const listOutgoing = query({
       .query("link_requests")
       .withIndex("by_requester_id", (q) => q.eq("requester_id", user.id))
       .collect();
-  },
+  }
 });
 
 /**
@@ -50,7 +50,7 @@ export const create = mutation({
     id: v.string(), // Client-generated UUID
     recipient_email: v.string(),
     target_member_id: v.string(),
-    target_member_name: v.string(),
+    target_member_name: v.string()
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -87,11 +87,11 @@ export const create = mutation({
       target_member_name: args.target_member_name,
       created_at: now,
       status: "pending",
-      expires_at: expiresAt,
+      expires_at: expiresAt
     });
 
     return requestId;
-  },
+  }
 });
 
 /**
@@ -134,7 +134,7 @@ export const accept = mutation({
 
     // Update request status first to preserve idempotency semantics.
     await ctx.db.patch(request._id, {
-      status: "accepted",
+      status: "accepted"
     });
 
     // Delegate to the shared invite claim core.
@@ -142,9 +142,9 @@ export const accept = mutation({
       userAccountId: user._id,
       targetMemberId: request.target_member_id,
       creatorEmail: request.requester_email,
-      creatorId: request.requester_id,
+      creatorId: request.requester_id
     });
-  },
+  }
 });
 
 /**
@@ -173,9 +173,9 @@ export const decline = mutation({
     // Update request status
     await ctx.db.patch(request._id, {
       status: "declined",
-      rejected_at: now,
+      rejected_at: now
     });
-  },
+  }
 });
 
 /**
@@ -208,5 +208,5 @@ export const cancel = mutation({
 
     // Delete the request
     await ctx.db.delete(request._id);
-  },
+  }
 });

@@ -3,11 +3,6 @@ import { internal } from "./_generated/api";
 
 const crons = cronJobs();
 
-crons.cron(
-  "janitor cleanup orphans",
-  "*/5 * * * *",
-  internal.janitor.cleanupOrphans,
-  {}
-);
+crons.cron("janitor cleanup orphans", "*/5 * * * *", internal.janitor.cleanupOrphans, {});
 
 export default crons;

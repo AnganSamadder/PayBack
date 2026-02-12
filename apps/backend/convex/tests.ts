@@ -23,7 +23,9 @@ import { resolveCanonicalMemberIdInternal } from "./aliases";
 
 function assertEqual<T>(actual: T, expected: T, message: string): void {
   if (actual !== expected) {
-    throw new Error(`ASSERTION FAILED: ${message}\n  Expected: ${JSON.stringify(expected)}\n  Actual: ${JSON.stringify(actual)}`);
+    throw new Error(
+      `ASSERTION FAILED: ${message}\n  Expected: ${JSON.stringify(expected)}\n  Actual: ${JSON.stringify(actual)}`
+    );
   }
 }
 
@@ -35,7 +37,9 @@ function assertNotNull<T>(value: T | null | undefined, message: string): asserts
 
 function assertNull<T>(value: T | null | undefined, message: string): void {
   if (value !== null && value !== undefined) {
-    throw new Error(`ASSERTION FAILED: ${message}\n  Expected null/undefined, got: ${JSON.stringify(value)}`);
+    throw new Error(
+      `ASSERTION FAILED: ${message}\n  Expected null/undefined, got: ${JSON.stringify(value)}`
+    );
   }
 }
 
@@ -69,7 +73,7 @@ export const test_member_id_assigned_at_creation = internalMutation({
       email: testEmail,
       display_name: testDisplayName,
       member_id: `member-${Date.now()}`,
-      created_at: Date.now(),
+      created_at: Date.now()
     });
 
     // Query the account back
@@ -80,8 +84,7 @@ export const test_member_id_assigned_at_creation = internalMutation({
     // The account should have a member_id set at creation time
     assertNotNull(
       account.member_id,
-      "Account should have member_id assigned at creation. " +
-        "This is the canonical field."
+      "Account should have member_id assigned at creation. " + "This is the canonical field."
     );
 
     // Verify member_id looks like a UUID
@@ -94,7 +97,7 @@ export const test_member_id_assigned_at_creation = internalMutation({
     await ctx.db.delete(accountId);
 
     return { success: true, message: "member_id correctly assigned at creation" };
-  },
+  }
 });
 
 // ============================================================================
@@ -127,7 +130,7 @@ export const test_claim_creates_alias_not_overwrites = internalMutation({
       email: userBEmail,
       display_name: "User B",
       created_at: now,
-      member_id: userBCanonicalMemberId, // B's canonical member_id
+      member_id: userBCanonicalMemberId // B's canonical member_id
     });
 
     // Create an invite token from User A targeting a different member_id
@@ -138,12 +141,12 @@ export const test_claim_creates_alias_not_overwrites = internalMutation({
       target_member_id: inviteTargetMemberId,
       target_member_name: "User B (from A's perspective)",
       created_at: now,
-      expires_at: now + 86400000,
+      expires_at: now + 86400000
     });
 
     await ctx.runMutation(internal.inviteTokens._internalClaimForAccount, {
       userAccountId: userBAccountId,
-      tokenId: `test-token-${now}`,
+      tokenId: `test-token-${now}`
     });
 
     // Query the account to verify member_id hasn't changed
@@ -184,8 +187,11 @@ export const test_claim_creates_alias_not_overwrites = internalMutation({
     await ctx.db.delete(tokenId);
     await ctx.db.delete(userBAccountId);
 
-    return { success: true, message: "Claim correctly creates alias without overwriting canonical" };
-  },
+    return {
+      success: true,
+      message: "Claim correctly creates alias without overwriting canonical"
+    };
+  }
 });
 
 // ============================================================================
@@ -218,7 +224,7 @@ export const test_self_claim_rejected = internalMutation({
       email: userEmail,
       display_name: "Self User",
       created_at: now,
-      member_id: userMemberId,
+      member_id: userMemberId
     });
 
     // Create an invite token that targets the same user's member_id
@@ -231,7 +237,7 @@ export const test_self_claim_rejected = internalMutation({
       target_member_id: userMemberId, // Same as the claimant's member_id!
       target_member_name: "Self User",
       created_at: now,
-      expires_at: now + 86400000,
+      expires_at: now + 86400000
     });
 
     // RED: Attempt to claim the token targeting our own member_id.
@@ -239,7 +245,7 @@ export const test_self_claim_rejected = internalMutation({
     try {
       await ctx.runMutation(internal.inviteTokens._internalClaimForAccount, {
         userAccountId: userAccountId,
-        tokenId: `test-token-self-${now}`,
+        tokenId: `test-token-self-${now}`
       });
       throw new Error("Self-claim should have been rejected by _internalClaimForAccount");
     } catch (error: any) {
@@ -261,9 +267,9 @@ export const test_self_claim_rejected = internalMutation({
 
     return {
       success: true,
-      message: "Self-claim rejection verified.",
+      message: "Self-claim rejection verified."
     };
-  },
+  }
 });
 
 // ============================================================================
@@ -294,7 +300,7 @@ export const test_cross_link_rejected = internalMutation({
       email: `test-a-cross-${now}@example.com`,
       display_name: "Account A",
       created_at: now,
-      member_id: contestedMemberId, // A owns this member_id
+      member_id: contestedMemberId // A owns this member_id
     });
 
     // Create Account B who will try to claim the same member_id
@@ -303,7 +309,7 @@ export const test_cross_link_rejected = internalMutation({
       email: `test-b-cross-${now}@example.com`,
       display_name: "Account B",
       created_at: now,
-      member_id: `member-b-${now}`, // B has their own member_id
+      member_id: `member-b-${now}` // B has their own member_id
     });
 
     // Create an invite targeting the contested member_id
@@ -314,14 +320,14 @@ export const test_cross_link_rejected = internalMutation({
       target_member_id: contestedMemberId, // Already owned by A!
       target_member_name: "Contested Member",
       created_at: now,
-      expires_at: now + 86400000,
+      expires_at: now + 86400000
     });
 
     // RED: Claiming an invite that targets another user's canonical member_id should fail.
     try {
       await ctx.runMutation(internal.inviteTokens._internalClaimForAccount, {
         userAccountId: accountBId,
-        tokenId: `test-token-cross-${now}`,
+        tokenId: `test-token-cross-${now}`
       });
       throw new Error("Cross-link claim should have been rejected");
     } catch (error: any) {
@@ -341,9 +347,9 @@ export const test_cross_link_rejected = internalMutation({
 
     return {
       success: true,
-      message: "Cross-link rejection verified via claim path.",
+      message: "Cross-link rejection verified via claim path."
     };
-  },
+  }
 });
 
 // ============================================================================
@@ -378,7 +384,7 @@ export const test_nickname_cleared_if_matches_real_name = internalMutation({
       email: ownerEmail,
       display_name: "Owner",
       created_at: now,
-      member_id: `owner-member-${now}`,
+      member_id: `owner-member-${now}`
     });
 
     const friendAccountId = await ctx.db.insert("accounts", {
@@ -386,7 +392,7 @@ export const test_nickname_cleared_if_matches_real_name = internalMutation({
       email: friendEmail,
       display_name: friendRealName,
       created_at: now,
-      member_id: friendMemberId,
+      member_id: friendMemberId
     });
 
     await ctx.db.insert("account_friends", {
@@ -396,7 +402,7 @@ export const test_nickname_cleared_if_matches_real_name = internalMutation({
       nickname: "Alice Smith",
       profile_avatar_color: "#FF0000",
       has_linked_account: false,
-      updated_at: now,
+      updated_at: now
     });
 
     const tokenRecordId = await ctx.db.insert("invite_tokens", {
@@ -406,12 +412,12 @@ export const test_nickname_cleared_if_matches_real_name = internalMutation({
       target_member_id: friendMemberId,
       target_member_name: "Alice",
       created_at: now,
-      expires_at: now + 86400000,
+      expires_at: now + 86400000
     });
 
     await ctx.runMutation(internal.inviteTokens._internalClaimForAccount, {
       userAccountId: friendAccountId,
-      tokenId: testTokenIdValue,
+      tokenId: testTokenIdValue
     });
 
     const updatedFriendRecord = await ctx.db
@@ -435,9 +441,9 @@ export const test_nickname_cleared_if_matches_real_name = internalMutation({
 
     return {
       success: true,
-      message: "Nickname correctly cleared during claim when matching real name",
+      message: "Nickname correctly cleared during claim when matching real name"
     };
-  },
+  }
 });
 
 // ============================================================================
@@ -469,7 +475,7 @@ export const test_import_legacy_ids_resolves_to_canonical = internalMutation({
       email: ownerEmail,
       display_name: "Import Owner",
       created_at: now,
-      member_id: `owner-member-${now}`,
+      member_id: `owner-member-${now}`
     });
 
     // 2. Create friend account (the canonical identity)
@@ -478,7 +484,7 @@ export const test_import_legacy_ids_resolves_to_canonical = internalMutation({
       email: `test-import-friend-${now}@example.com`,
       display_name: "Canonical Friend",
       created_at: now,
-      member_id: canonicalId,
+      member_id: canonicalId
     });
 
     // 3. Create alias record (simulating migration state)
@@ -486,7 +492,7 @@ export const test_import_legacy_ids_resolves_to_canonical = internalMutation({
       canonical_member_id: canonicalId,
       alias_member_id: aliasId,
       account_email: ownerEmail,
-      created_at: now,
+      created_at: now
     });
 
     // 4. Run bulkImport with legacy ALIAS IDs
@@ -497,10 +503,10 @@ export const test_import_legacy_ids_resolves_to_canonical = internalMutation({
     // tests.ts is internalMutation, so it has sudo power? No, bulkImport checks getCurrentUserOrThrow.
     // We cannot easily mock auth user for bulkImport in this test env.
     // So we will verify the *resolution logic* by calling resolveCanonicalMemberIdInternal directly.
-    
+
     // Check resolution
     const resolvedId = await resolveCanonicalMemberIdInternal(ctx.db, aliasId);
-    
+
     assertEqual(
       resolvedId,
       canonicalId,
@@ -525,15 +531,17 @@ export const test_import_legacy_ids_resolves_to_canonical = internalMutation({
     );
 
     // Cleanup
-    const alias = await ctx.db.query("member_aliases").withIndex("by_alias_member_id", q => q.eq("alias_member_id", aliasId)).unique();
+    const alias = await ctx.db
+      .query("member_aliases")
+      .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", aliasId))
+      .unique();
     if (alias) await ctx.db.delete(alias._id);
     await ctx.db.delete(friendAccountId);
     await ctx.db.delete(ownerId);
 
     return {
       success: true,
-      message: "Alias resolution verified for import scenarios",
+      message: "Alias resolution verified for import scenarios"
     };
-  },
+  }
 });
-

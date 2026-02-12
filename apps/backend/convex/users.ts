@@ -28,7 +28,7 @@ export async function createAccountRecord(
     profile_avatar_color: input.profile_avatar_color || getRandomAvatarColor(),
     member_id: crypto.randomUUID(),
     created_at: now,
-    updated_at: now,
+    updated_at: now
   });
 }
 
@@ -42,7 +42,7 @@ const logSelfHeal = (
       scope: "users.store.self_heal",
       ...base,
       step,
-      ...data,
+      ...data
     })
   );
 };
@@ -56,7 +56,7 @@ export async function cleanupOrphanedDataForEmail(
   const baseLog = { operationId, email, subject };
 
   logSelfHeal(baseLog, "start", {
-    message: "Cleaning orphaned data before account creation",
+    message: "Cleaning orphaned data before account creation"
   });
 
   const friends = await ctx.db
@@ -70,7 +70,7 @@ export async function cleanupOrphanedDataForEmail(
   }
   logSelfHeal(baseLog, "delete_account_friends", {
     deletedCount: friendIds.length,
-    sampleIds: sampleIds(friendIds),
+    sampleIds: sampleIds(friendIds)
   });
 
   const groupsByEmail = await ctx.db
@@ -79,9 +79,7 @@ export async function cleanupOrphanedDataForEmail(
     .collect();
   const groupsByAccountId = await ctx.db
     .query("groups")
-    .withIndex("by_owner_account_id", (q: any) =>
-      q.eq("owner_account_id", subject)
-    )
+    .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", subject))
     .collect();
   const groupsById = new Map<string, any>();
   for (const group of groupsByEmail) {
@@ -112,11 +110,11 @@ export async function cleanupOrphanedDataForEmail(
   }
   logSelfHeal(baseLog, "delete_groups", {
     deletedCount: groupIds.length,
-    sampleIds: sampleIds(groupIds),
+    sampleIds: sampleIds(groupIds)
   });
   logSelfHeal(baseLog, "delete_group_expenses", {
     deletedCount: groupExpenseIds.length,
-    sampleIds: sampleIds(groupExpenseIds),
+    sampleIds: sampleIds(groupExpenseIds)
   });
 
   const expensesByEmail = await ctx.db
@@ -125,9 +123,7 @@ export async function cleanupOrphanedDataForEmail(
     .collect();
   const expensesByAccountId = await ctx.db
     .query("expenses")
-    .withIndex("by_owner_account_id", (q: any) =>
-      q.eq("owner_account_id", subject)
-    )
+    .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", subject))
     .collect();
   const expenseById = new Map<string, any>();
   for (const expense of expensesByEmail) {
@@ -146,23 +142,19 @@ export async function cleanupOrphanedDataForEmail(
   }
   logSelfHeal(baseLog, "delete_owned_expenses", {
     deletedCount: ownedExpenseIds.length,
-    sampleIds: sampleIds(ownedExpenseIds),
+    sampleIds: sampleIds(ownedExpenseIds)
   });
 
   const linkedById =
     subject.length > 0
       ? await ctx.db
           .query("account_friends")
-          .withIndex("by_linked_account_id", (q: any) =>
-            q.eq("linked_account_id", subject)
-          )
+          .withIndex("by_linked_account_id", (q: any) => q.eq("linked_account_id", subject))
           .collect()
       : [];
   const linkedByEmail = await ctx.db
     .query("account_friends")
-    .withIndex("by_linked_account_email", (q: any) =>
-      q.eq("linked_account_email", email)
-    )
+    .withIndex("by_linked_account_email", (q: any) => q.eq("linked_account_email", email))
     .collect();
   const linkedByIdMap = new Map<string, any>();
   for (const friend of linkedById) {
@@ -174,24 +166,20 @@ export async function cleanupOrphanedDataForEmail(
 
   const unlinkedIds: string[] = [];
   for (const friend of linkedByIdMap.values()) {
-    if (
-      !friend.has_linked_account &&
-      !friend.linked_account_id &&
-      !friend.linked_account_email
-    ) {
+    if (!friend.has_linked_account && !friend.linked_account_id && !friend.linked_account_email) {
       continue;
     }
     await ctx.db.patch(friend._id, {
       has_linked_account: false,
       linked_account_id: undefined,
       linked_account_email: undefined,
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
     unlinkedIds.push(friend._id);
   }
   logSelfHeal(baseLog, "unlink_from_others", {
     unlinkedCount: unlinkedIds.length,
-    sampleIds: sampleIds(unlinkedIds),
+    sampleIds: sampleIds(unlinkedIds)
   });
 
   const incomingRequests = await ctx.db
@@ -223,7 +211,7 @@ export async function cleanupOrphanedDataForEmail(
     deletedCount: deletedRequestIds.size,
     incomingCount,
     outgoingCount,
-    sampleIds: sampleIds(requestIds),
+    sampleIds: sampleIds(requestIds)
   });
 
   const allInvites = await ctx.db
@@ -237,7 +225,7 @@ export async function cleanupOrphanedDataForEmail(
   }
   logSelfHeal(baseLog, "delete_invite_tokens", {
     deletedCount: inviteIds.length,
-    sampleIds: sampleIds(inviteIds),
+    sampleIds: sampleIds(inviteIds)
   });
 
   logSelfHeal(baseLog, "complete", {
@@ -247,7 +235,7 @@ export async function cleanupOrphanedDataForEmail(
     expensesDeleted: ownedExpenseIds.length,
     requestsDeleted: deletedRequestIds.size,
     invitesDeleted: inviteIds.length,
-    unlinkedFriends: unlinkedIds.length,
+    unlinkedFriends: unlinkedIds.length
   });
 
   return {
@@ -258,21 +246,18 @@ export async function cleanupOrphanedDataForEmail(
     expensesDeleted: ownedExpenseIds.length,
     requestsDeleted: deletedRequestIds.size,
     invitesDeleted: inviteIds.length,
-    unlinkedFriends: unlinkedIds.length,
+    unlinkedFriends: unlinkedIds.length
   };
 }
 
-export async function hardCleanupOrphanedAccount(
-  ctx: any,
-  { email }: { email: string }
-) {
+export async function hardCleanupOrphanedAccount(ctx: any, { email }: { email: string }) {
   const operationId = crypto.randomUUID();
 
   const friends = await ctx.db
     .query("account_friends")
     .withIndex("by_account_email", (q: any) => q.eq("account_email", email))
     .collect();
-  
+
   let friendsDeleted = 0;
   for (const friend of friends) {
     await ctx.db.delete(friend._id);
@@ -283,7 +268,7 @@ export async function hardCleanupOrphanedAccount(
     .query("account_friends")
     .withIndex("by_linked_account_email", (q: any) => q.eq("linked_account_email", email))
     .collect();
-  
+
   let linkedFriendsDeleted = 0;
   for (const friend of linkedByEmail) {
     await ctx.db.delete(friend._id);
@@ -294,7 +279,7 @@ export async function hardCleanupOrphanedAccount(
     .query("groups")
     .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
     .collect();
-  
+
   let groupsDeleted = 0;
   let expensesDeleted = 0;
   for (const group of groupsByEmail) {
@@ -302,12 +287,12 @@ export async function hardCleanupOrphanedAccount(
       .query("expenses")
       .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
       .collect();
-    
+
     for (const expense of expenses) {
       await ctx.db.delete(expense._id);
       expensesDeleted++;
     }
-    
+
     await ctx.db.delete(group._id);
     groupsDeleted++;
   }
@@ -316,7 +301,7 @@ export async function hardCleanupOrphanedAccount(
     .query("expenses")
     .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
     .collect();
-  
+
   for (const expense of expensesByEmail) {
     await ctx.db.delete(expense._id);
     expensesDeleted++;
@@ -326,7 +311,7 @@ export async function hardCleanupOrphanedAccount(
     .query("link_requests")
     .withIndex("by_recipient_email", (q: any) => q.eq("recipient_email", email))
     .collect();
-  
+
   let requestsDeleted = 0;
   for (const req of linkRequests) {
     await ctx.db.delete(req._id);
@@ -337,7 +322,7 @@ export async function hardCleanupOrphanedAccount(
     .query("link_requests")
     .withIndex("by_requester_email", (q: any) => q.eq("requester_email", email))
     .collect();
-  
+
   for (const req of outgoingRequests) {
     await ctx.db.delete(req._id);
     requestsDeleted++;
@@ -347,24 +332,26 @@ export async function hardCleanupOrphanedAccount(
     .query("invite_tokens")
     .withIndex("by_creator_email", (q: any) => q.eq("creator_email", email))
     .collect();
-  
+
   let invitesDeleted = 0;
   for (const invite of invites) {
     await ctx.db.delete(invite._id);
     invitesDeleted++;
   }
 
-  console.log(JSON.stringify({
-    scope: "users.hardCleanupOrphanedAccount",
-    operationId,
-    email,
-    friendsDeleted,
-    linkedFriendsDeleted,
-    groupsDeleted,
-    expensesDeleted,
-    requestsDeleted,
-    invitesDeleted,
-  }));
+  console.log(
+    JSON.stringify({
+      scope: "users.hardCleanupOrphanedAccount",
+      operationId,
+      email,
+      friendsDeleted,
+      linkedFriendsDeleted,
+      groupsDeleted,
+      expensesDeleted,
+      requestsDeleted,
+      invitesDeleted
+    })
+  );
 
   return {
     operationId,
@@ -373,7 +360,7 @@ export async function hardCleanupOrphanedAccount(
     groupsDeleted,
     expensesDeleted,
     requestsDeleted,
-    invitesDeleted,
+    invitesDeleted
   };
 }
 
@@ -383,15 +370,15 @@ export async function hardCleanupOrphanedAccount(
  */
 export const store = mutation({
   args: {},
-    handler: async (ctx) => {
-      const identity = await ctx.auth.getUserIdentity();
-      if (!identity) {
-        throw new Error("Called storeUser without authentication present");
-      }
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Called storeUser without authentication present");
+    }
 
-      await checkRateLimit(ctx, identity.subject, "users:store", 10);
+    await checkRateLimit(ctx, identity.subject, "users:store", 10);
 
-      // Check if we already have an account for this user
+    // Check if we already have an account for this user
 
     const user = await ctx.db
       .query("accounts")
@@ -403,24 +390,24 @@ export const store = mutation({
       // For now, we just return the existing user's ID
       // We could patch the display_name if it changed
       if (user.display_name !== identity.name && identity.name) {
-          await ctx.db.patch(user._id, { display_name: identity.name, updated_at: Date.now() });
+        await ctx.db.patch(user._id, { display_name: identity.name, updated_at: Date.now() });
       }
       return user._id;
     }
 
     await cleanupOrphanedDataForEmail(ctx, {
       email: identity.email!,
-      subject: identity.subject,
+      subject: identity.subject
     });
 
     const newUserId = await createAccountRecord(ctx, {
       id: identity.subject,
       email: identity.email!,
-      display_name: identity.name || identity.email!.split("@")[0] || "User",
+      display_name: identity.name || identity.email!.split("@")[0] || "User"
     });
 
     return newUserId;
-  },
+  }
 });
 
 /**
@@ -431,7 +418,7 @@ export const isAuthenticated = query({
   args: {},
   handler: async (ctx) => {
     return (await ctx.auth.getUserIdentity()) !== null;
-  },
+  }
 });
 
 /**
@@ -463,9 +450,9 @@ export const viewer = query({
     return {
       ...user,
       member_id: canonicalMemberId,
-      alias_member_ids: equivalentMemberIds.filter((id) => id !== canonicalMemberId),
+      alias_member_ids: equivalentMemberIds.filter((id) => id !== canonicalMemberId)
     };
-  },
+  }
 });
 
 /**
@@ -502,11 +489,11 @@ export const updateLinkedMemberId = mutation({
     await ctx.db.patch(user._id, {
       member_id: args.member_id,
       alias_member_ids: updatedAliases,
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
 
     return user._id;
-  },
+  }
 });
 
 /**
@@ -521,7 +508,7 @@ export const generateUploadUrl = action({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Unauthenticated");
     return await ctx.storage.generateUploadUrl();
-  },
+  }
 });
 
 /**
@@ -531,7 +518,7 @@ export const updateProfile = mutation({
   args: {
     profile_avatar_color: v.optional(v.string()),
     profile_image_url: v.optional(v.string()),
-    storage_id: v.optional(v.id("_storage")),
+    storage_id: v.optional(v.id("_storage"))
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -545,8 +532,9 @@ export const updateProfile = mutation({
     if (!user) throw new Error("User not found");
 
     const patches: any = { updated_at: Date.now() };
-    if (args.profile_avatar_color !== undefined) patches.profile_avatar_color = args.profile_avatar_color;
-    
+    if (args.profile_avatar_color !== undefined)
+      patches.profile_avatar_color = args.profile_avatar_color;
+
     // Handle storage ID to URL conversion
     if (args.storage_id) {
       const url = await ctx.storage.getUrl(args.storage_id);
@@ -569,14 +557,16 @@ export const updateProfile = mutation({
 
     for (const friend of friendsToUpdate) {
       const friendPatches: any = { updated_at: Date.now() };
-      if (args.profile_avatar_color !== undefined) friendPatches.profile_avatar_color = args.profile_avatar_color;
+      if (args.profile_avatar_color !== undefined)
+        friendPatches.profile_avatar_color = args.profile_avatar_color;
       // Use the resolved URL (from storage or direct arg)
-      if (patches.profile_image_url !== undefined) friendPatches.profile_image_url = patches.profile_image_url;
+      if (patches.profile_image_url !== undefined)
+        friendPatches.profile_image_url = patches.profile_image_url;
       await ctx.db.patch(friend._id, friendPatches);
     }
-    
+
     return patches.profile_image_url;
-  },
+  }
 });
 
 /**
@@ -598,7 +588,7 @@ export const sessionStatus = query({
       .unique();
 
     return user ? "active" : "deleted";
-  },
+  }
 });
 
 /**
@@ -623,7 +613,7 @@ export const validateAccountIds = query({
       }
     }
     return existingIds;
-  },
+  }
 });
 
 export const resolveLinkedAccountsForMemberIds = query({
@@ -652,7 +642,7 @@ export const resolveLinkedAccountsForMemberIds = query({
         results.push({
           member_id: memberId,
           account_id: accountByCanonicalId.id,
-          email: accountByCanonicalId.email,
+          email: accountByCanonicalId.email
         });
         continue;
       }
@@ -667,11 +657,11 @@ export const resolveLinkedAccountsForMemberIds = query({
         results.push({
           member_id: memberId,
           account_id: match.id,
-          email: match.email,
+          email: match.email
         });
       }
     }
 
     return results;
-  },
+  }
 });

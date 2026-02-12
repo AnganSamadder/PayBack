@@ -19,7 +19,7 @@ export const checkDataIntegrity = internalQuery({
 
     // CHECK 1: Orphaned friend links (account_friends pointing to non-existent accounts)
     const allFriends = await ctx.db.query("account_friends").collect();
-    
+
     for (const friend of allFriends) {
       if (friend.has_linked_account) {
         // Check if linked_account_id exists
@@ -34,11 +34,11 @@ export const checkDataIntegrity = internalQuery({
               memberName: friend.name,
               memberId: friend.member_id,
               linkedAccountId: friend.linked_account_id,
-              linkedAccountEmail: friend.linked_account_email,
-            },
+              linkedAccountEmail: friend.linked_account_email
+            }
           });
         }
-        
+
         // Check if linked_account_email exists
         if (friend.linked_account_email && !accountEmailSet.has(friend.linked_account_email)) {
           issues.push({
@@ -50,8 +50,8 @@ export const checkDataIntegrity = internalQuery({
               accountEmail: friend.account_email,
               memberName: friend.name,
               memberId: friend.member_id,
-              linkedAccountEmail: friend.linked_account_email,
-            },
+              linkedAccountEmail: friend.linked_account_email
+            }
           });
         }
       }
@@ -68,7 +68,7 @@ export const checkDataIntegrity = internalQuery({
 
     for (const [accountEmail, friends] of friendsByAccount.entries()) {
       const nameToMemberIds = new Map<string, Set<string>>();
-      
+
       for (const friend of friends) {
         const normalizedName = friend.name.toLowerCase().trim();
         if (!nameToMemberIds.has(normalizedName)) {
@@ -76,14 +76,12 @@ export const checkDataIntegrity = internalQuery({
         }
         nameToMemberIds.get(normalizedName)!.add(friend.member_id);
       }
-      
+
       // Report duplicates
       for (const [name, memberIds] of nameToMemberIds.entries()) {
         if (memberIds.size > 1) {
-          const duplicateFriends = friends.filter(
-            (f) => f.name.toLowerCase().trim() === name
-          );
-          
+          const duplicateFriends = friends.filter((f) => f.name.toLowerCase().trim() === name);
+
           issues.push({
             type: "member_id_fragmentation",
             severity: "warning",
@@ -96,9 +94,9 @@ export const checkDataIntegrity = internalQuery({
                 friendId: f._id,
                 memberId: f.member_id,
                 hasLinkedAccount: f.has_linked_account,
-                linkedAccountEmail: f.linked_account_email,
-              })),
-            },
+                linkedAccountEmail: f.linked_account_email
+              }))
+            }
           });
         }
       }
@@ -106,19 +104,19 @@ export const checkDataIntegrity = internalQuery({
 
     // CHECK 3: Cross-reference with groups for ID fragmentation
     const allGroups = await ctx.db.query("groups").collect();
-    
+
     for (const [accountEmail, friends] of friendsByAccount.entries()) {
       const userGroups = allGroups.filter((g) => g.owner_email === accountEmail);
-      
+
       for (const friend of friends) {
         const normalizedName = friend.name.toLowerCase().trim();
-        
+
         // Find members in groups with the same name
         for (const group of userGroups) {
           const matchingMembers = group.members.filter(
             (m) => m.name.toLowerCase().trim() === normalizedName
           );
-          
+
           for (const member of matchingMembers) {
             if (member.id !== friend.member_id) {
               issues.push({
@@ -131,8 +129,8 @@ export const checkDataIntegrity = internalQuery({
                   friendMemberId: friend.member_id,
                   groupMemberId: member.id,
                   groupId: group.id,
-                  groupName: group.name,
-                },
+                  groupName: group.name
+                }
               });
             }
           }
@@ -142,7 +140,7 @@ export const checkDataIntegrity = internalQuery({
 
     // CHECK 4: Expenses with orphaned linked_account_id in participants
     const allExpenses = await ctx.db.query("expenses").collect();
-    
+
     for (const expense of allExpenses) {
       for (const participant of expense.participants) {
         if (participant.linked_account_id && !accountIdSet.has(participant.linked_account_id)) {
@@ -157,12 +155,15 @@ export const checkDataIntegrity = internalQuery({
               participantMemberId: participant.member_id,
               participantName: participant.name,
               linkedAccountId: participant.linked_account_id,
-              linkedAccountEmail: participant.linked_account_email,
-            },
+              linkedAccountEmail: participant.linked_account_email
+            }
           });
         }
-        
-        if (participant.linked_account_email && !accountEmailSet.has(participant.linked_account_email)) {
+
+        if (
+          participant.linked_account_email &&
+          !accountEmailSet.has(participant.linked_account_email)
+        ) {
           issues.push({
             type: "orphaned_expense_participant_email_link",
             severity: "error",
@@ -173,8 +174,8 @@ export const checkDataIntegrity = internalQuery({
               groupId: expense.group_id,
               participantMemberId: participant.member_id,
               participantName: participant.name,
-              linkedAccountEmail: participant.linked_account_email,
-            },
+              linkedAccountEmail: participant.linked_account_email
+            }
           });
         }
       }
@@ -183,7 +184,7 @@ export const checkDataIntegrity = internalQuery({
     // Generate summary
     const errorCount = issues.filter((i) => i.severity === "error").length;
     const warningCount = issues.filter((i) => i.severity === "warning").length;
-    
+
     const summary = `Data Integrity Check Complete
     Total Issues: ${issues.length}
     Errors: ${errorCount}
@@ -198,5 +199,5 @@ export const checkDataIntegrity = internalQuery({
     - Orphaned expense participant email links: ${issues.filter((i) => i.type === "orphaned_expense_participant_email_link").length}`;
 
     return { issues, summary };
-  },
+  }
 });

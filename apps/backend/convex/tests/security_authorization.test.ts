@@ -12,7 +12,7 @@ function identity(email: string, subject: string) {
     tokenIdentifier: subject,
     issuer: "http://placeholder.com",
     emailVerified: true,
-    updatedAt: "2023-01-01",
+    updatedAt: "2023-01-01"
   };
 }
 
@@ -26,14 +26,14 @@ describe("Security Authorization", () => {
         email: "attacker@test.com",
         display_name: "Attacker",
         created_at: Date.now(),
-        member_id: "attacker_member",
+        member_id: "attacker_member"
       });
       await ctx.db.insert("accounts", {
         id: "victim_id",
         email: "victim@test.com",
         display_name: "Victim",
         created_at: Date.now(),
-        member_id: "victim_member",
+        member_id: "victim_member"
       });
     });
 
@@ -42,7 +42,7 @@ describe("Security Authorization", () => {
     await attackerCtx.mutation(api.aliases.mergeMemberIds, {
       sourceId: "source_member",
       targetCanonicalId: "target_member",
-      accountEmail: "victim@test.com",
+      accountEmail: "victim@test.com"
     });
 
     const aliases = await t.run(async (ctx) => ctx.db.query("member_aliases").collect());
@@ -59,14 +59,14 @@ describe("Security Authorization", () => {
         email: "attacker@test.com",
         display_name: "Attacker",
         created_at: Date.now(),
-        member_id: "attacker_member",
+        member_id: "attacker_member"
       });
       await ctx.db.insert("accounts", {
         id: "victim_id",
         email: "victim@test.com",
         display_name: "Victim",
         created_at: Date.now(),
-        member_id: "victim_member",
+        member_id: "victim_member"
       });
       await ctx.db.insert("account_friends", {
         account_email: "victim@test.com",
@@ -74,7 +74,7 @@ describe("Security Authorization", () => {
         name: "Victim A",
         profile_avatar_color: "#000000",
         has_linked_account: false,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
       await ctx.db.insert("account_friends", {
         account_email: "victim@test.com",
@@ -82,7 +82,7 @@ describe("Security Authorization", () => {
         name: "Victim B",
         profile_avatar_color: "#111111",
         has_linked_account: false,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     });
 
@@ -92,7 +92,7 @@ describe("Security Authorization", () => {
       attackerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
         friendId1: "victim_friend_a",
         friendId2: "victim_friend_b",
-        accountEmail: "victim@test.com",
+        accountEmail: "victim@test.com"
       })
     ).rejects.toThrow();
   });
@@ -106,14 +106,14 @@ describe("Security Authorization", () => {
         email: "attacker@test.com",
         display_name: "Attacker",
         created_at: Date.now(),
-        member_id: "attacker_member",
+        member_id: "attacker_member"
       });
       await ctx.db.insert("accounts", {
         id: "victim_id",
         email: "victim@test.com",
         display_name: "Victim",
         created_at: Date.now(),
-        member_id: "victim_member",
+        member_id: "victim_member"
       });
       await ctx.db.insert("account_friends", {
         account_email: "victim@test.com",
@@ -123,14 +123,14 @@ describe("Security Authorization", () => {
         has_linked_account: true,
         linked_account_id: "linked_auth_id",
         linked_account_email: "linked@test.com",
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     });
 
     const attackerCtx = t.withIdentity(identity("attacker@test.com", "attacker_id"));
     const result = await attackerCtx.mutation(api.cleanup.deleteLinkedFriend, {
       friendMemberId: "victim_friend_linked",
-      accountEmail: "victim@test.com",
+      accountEmail: "victim@test.com"
     });
 
     expect(result.success).toBe(false);
@@ -155,14 +155,14 @@ describe("Security Authorization", () => {
         email: "attacker@test.com",
         display_name: "Attacker",
         created_at: Date.now(),
-        member_id: "attacker_member",
+        member_id: "attacker_member"
       });
       await ctx.db.insert("accounts", {
         id: "victim_id",
         email: "victim@test.com",
         display_name: "Victim",
         created_at: Date.now(),
-        member_id: "victim_member",
+        member_id: "victim_member"
       });
       await ctx.db.insert("account_friends", {
         account_email: "victim@test.com",
@@ -170,14 +170,14 @@ describe("Security Authorization", () => {
         name: "Unlinked Friend",
         profile_avatar_color: "#654321",
         has_linked_account: false,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     });
 
     const attackerCtx = t.withIdentity(identity("attacker@test.com", "attacker_id"));
     const result = await attackerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
       friendMemberId: "victim_friend_unlinked",
-      accountEmail: "victim@test.com",
+      accountEmail: "victim@test.com"
     });
 
     expect(result.success).toBe(false);
@@ -204,14 +204,14 @@ describe("Security Authorization", () => {
         email: "victim@test.com",
         display_name: "Victim",
         created_at: Date.now(),
-        member_id: "victim_member",
+        member_id: "victim_member"
       });
       await ctx.db.insert("accounts", {
         id: "attacker_id",
         email: "attacker@test.com",
         display_name: "Attacker",
         created_at: Date.now(),
-        member_id: "attacker_member",
+        member_id: "attacker_member"
       });
     });
 
@@ -238,14 +238,14 @@ describe("Security Authorization", () => {
         email: "sender@test.com",
         display_name: "Sender",
         created_at: Date.now(),
-        member_id: "sender_member",
+        member_id: "sender_member"
       });
       await ctx.db.insert("accounts", {
         id: "recipient_auth_id",
         email: "recipient@test.com",
         display_name: "Recipient",
         created_at: Date.now(),
-        member_id: "recipient_member",
+        member_id: "recipient_member"
       });
     });
 

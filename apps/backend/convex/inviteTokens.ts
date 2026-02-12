@@ -10,7 +10,7 @@ import {
   LINKING_CONTRACT_VERSION,
   LINKING_ERROR_CODES,
   normalizeMemberId,
-  normalizeMemberIds,
+  normalizeMemberIds
 } from "./identity";
 
 // Helper to get current authenticated user
@@ -37,15 +37,11 @@ function normalizeLinkClaimContext(input: LinkClaimContext): LinkClaimContext {
   return {
     targetMemberId: normalizeMemberId(input.targetMemberId),
     creatorEmail: input.creatorEmail.toLowerCase().trim(),
-    creatorId: input.creatorId,
+    creatorId: input.creatorId
   };
 }
 
-async function findFriendRecordByMemberId(
-  ctx: any,
-  accountEmail: string,
-  memberId: string
-) {
+async function findFriendRecordByMemberId(ctx: any, accountEmail: string, memberId: string) {
   const normalizedMemberId = normalizeMemberId(memberId);
   let record = await ctx.db
     .query("account_friends")
@@ -71,7 +67,9 @@ async function findFriendRecordByMemberId(
     .withIndex("by_account_email", (q: any) => q.eq("account_email", accountEmail))
     .collect();
 
-  return allFriends.find((friend: any) => normalizeMemberId(friend.member_id) === normalizedMemberId);
+  return allFriends.find(
+    (friend: any) => normalizeMemberId(friend.member_id) === normalizedMemberId
+  );
 }
 
 function mergeSplitsByMember(splits: any[], targetMemberId: string, canonicalMemberId: string) {
@@ -88,7 +86,7 @@ function mergeSplitsByMember(splits: any[], targetMemberId: string, canonicalMem
     if (!existing) {
       merged.set(key, {
         ...split,
-        member_id: key,
+        member_id: key
       });
       continue;
     }
@@ -97,7 +95,7 @@ function mergeSplitsByMember(splits: any[], targetMemberId: string, canonicalMem
       ...existing,
       amount: existing.amount + split.amount,
       // If any duplicate split is unsettled, keep unsettled for safety.
-      is_settled: Boolean(existing.is_settled) && Boolean(split.is_settled),
+      is_settled: Boolean(existing.is_settled) && Boolean(split.is_settled)
     });
   }
 
@@ -112,7 +110,7 @@ export const create = mutation({
   args: {
     id: v.string(), // Client-generated UUID for deduplication
     target_member_id: v.string(),
-    target_member_name: v.string(),
+    target_member_name: v.string()
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
@@ -140,11 +138,11 @@ export const create = mutation({
       target_member_id: normalizedTargetMemberId,
       target_member_name: args.target_member_name,
       created_at: now,
-      expires_at: expiresAt,
+      expires_at: expiresAt
     });
 
     return tokenId;
-  },
+  }
 });
 
 /**
@@ -160,7 +158,7 @@ export const get = query({
       .unique();
 
     return token;
-  },
+  }
 });
 
 /**
@@ -181,7 +179,7 @@ export const validate = query({
         is_valid: false,
         error: "Token not found",
         token: null,
-        expense_preview: null,
+        expense_preview: null
       };
     }
 
@@ -201,9 +199,9 @@ export const validate = query({
         token: {
           ...token,
           creator_name: creatorAccount?.display_name,
-          creator_profile_image_url: creatorAccount?.profile_image_url,
+          creator_profile_image_url: creatorAccount?.profile_image_url
         },
-        expense_preview: null,
+        expense_preview: null
       };
     }
 
@@ -214,9 +212,9 @@ export const validate = query({
         token: {
           ...token,
           creator_name: creatorAccount?.display_name,
-          creator_profile_image_url: creatorAccount?.profile_image_url,
+          creator_profile_image_url: creatorAccount?.profile_image_url
         },
-        expense_preview: null,
+        expense_preview: null
       };
     }
 
@@ -267,15 +265,15 @@ export const validate = query({
       token: {
         ...token,
         creator_name: creatorAccount?.display_name,
-        creator_profile_image_url: creatorAccount?.profile_image_url,
+        creator_profile_image_url: creatorAccount?.profile_image_url
       },
       expense_preview: {
         expense_count: memberExpenses.length,
         group_names: groupNames,
-        total_balance: totalBalance,
-      },
+        total_balance: totalBalance
+      }
     };
-  },
+  }
 });
 
 /**
@@ -309,10 +307,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
     );
   }
 
-  const resolvedTarget = await resolveCanonicalMemberIdInternal(
-    ctx.db,
-    linkContext.targetMemberId
-  );
+  const resolvedTarget = await resolveCanonicalMemberIdInternal(ctx.db, linkContext.targetMemberId);
   const normalizedResolvedTarget = normalizeMemberId(resolvedTarget);
 
   if (
@@ -342,19 +337,19 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         canonical_member_id: userCanonicalMemberId,
         alias_member_id: linkContext.targetMemberId,
         account_email: user.email.toLowerCase().trim(),
-        created_at: now,
+        created_at: now
       });
     }
   }
 
   const updatedAliases = normalizeMemberIds([
     ...(user.alias_member_ids || []),
-    linkContext.targetMemberId,
+    linkContext.targetMemberId
   ]).filter((memberId) => memberId !== userCanonicalMemberId);
 
   await ctx.db.patch(user._id, {
     alias_member_ids: updatedAliases,
-    updated_at: now,
+    updated_at: now
   });
 
   // Get the creator's account info for creating the claimant's friend record
@@ -394,7 +389,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         linked_account_email: user.email,
         linked_member_id: userCanonicalMemberId,
         name: user.display_name ?? user.email ?? "Unknown",
-        updated_at: now,
+        updated_at: now
       });
       await ctx.db.delete(friendRecord._id);
       return;
@@ -411,7 +406,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         linked_member_id: userCanonicalMemberId,
         name: user.display_name ?? user.email ?? "Unknown",
         original_name: shouldStoreOriginalName ? friendRecord.name : undefined,
-        updated_at: now,
+        updated_at: now
       });
     } else {
       await ctx.db.patch(friendRecord._id, {
@@ -423,7 +418,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         name: user.display_name ?? user.email ?? "Unknown",
         nickname: friendRecord.nickname,
         original_name: shouldStoreOriginalName ? friendRecord.name : undefined,
-        updated_at: now,
+        updated_at: now
       });
     }
   };
@@ -452,7 +447,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
           linked_account_email: creatorAccount.email,
           linked_member_id: creatorMemberId,
           name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
-          updated_at: now,
+          updated_at: now
         });
       } else {
         await ctx.db.patch(claimantFriendRecord._id, {
@@ -463,7 +458,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
           linked_member_id: creatorMemberId,
           name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
           nickname: claimantFriendRecord.nickname,
-          updated_at: now,
+          updated_at: now
         });
       }
     } else {
@@ -477,7 +472,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         linked_member_id: creatorMemberId,
         profile_image_url: creatorAccount.profile_image_url,
         profile_avatar_color: creatorAccount.profile_avatar_color ?? getRandomAvatarColor(),
-        updated_at: now,
+        updated_at: now
       });
     }
   }
@@ -536,8 +531,8 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         id: canonicalizedMemberId,
         name:
           canonicalizedMemberId === userCanonicalMemberId
-            ? user.display_name ?? user.email ?? member.name
-            : member.name,
+            ? (user.display_name ?? user.email ?? member.name)
+            : member.name
       };
 
       const existing = dedupedMembers.get(canonicalizedMemberId);
@@ -556,7 +551,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
     if (changed || updatedMembers.length !== group.members.length) {
       await ctx.db.patch(group._id, {
         members: updatedMembers,
-        updated_at: now,
+        updated_at: now
       });
     }
   }
@@ -625,7 +620,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
           member_id: canonicalizedMemberId,
           name:
             canonicalizedMemberId === userCanonicalMemberId
-              ? user.display_name ?? user.email ?? participant.name
+              ? (user.display_name ?? user.email ?? participant.name)
               : participant.name,
           linked_account_id:
             canonicalizedMemberId === userCanonicalMemberId
@@ -634,7 +629,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
           linked_account_email:
             canonicalizedMemberId === userCanonicalMemberId
               ? user.email
-              : participant.linked_account_email,
+              : participant.linked_account_email
         };
 
         if (!existing) {
@@ -645,7 +640,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
             name: nextParticipant.name || existing.name,
             linked_account_id: nextParticipant.linked_account_id || existing.linked_account_id,
             linked_account_email:
-              nextParticipant.linked_account_email || existing.linked_account_email,
+              nextParticipant.linked_account_email || existing.linked_account_email
           });
         }
       }
@@ -665,15 +660,20 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         splits: mergedSplits,
         participants: Array.from(participantsByMember.values()),
         participant_emails: participantEmails,
-        updated_at: now,
+        updated_at: now
       });
 
       const participantUsers = await Promise.all(
         participantEmails.map((email: string) =>
-          ctx.db.query("accounts").withIndex("by_email", (q: any) => q.eq("email", email)).unique()
+          ctx.db
+            .query("accounts")
+            .withIndex("by_email", (q: any) => q.eq("email", email))
+            .unique()
         )
       );
-      const participantUserIds = participantUsers.filter((u: any) => u !== null).map((u: any) => u.id);
+      const participantUserIds = participantUsers
+        .filter((u: any) => u !== null)
+        .map((u: any) => u.id);
       await reconcileUserExpenses(ctx, expense.id, participantUserIds);
     }
   }
@@ -685,7 +685,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
     alias_member_ids: updatedAliases,
     linked_member_id: userCanonicalMemberId,
     linked_account_id: user.id,
-    linked_account_email: user.email,
+    linked_account_email: user.email
   };
 }
 
@@ -721,15 +721,15 @@ export const claim = mutation({
 
     await ctx.db.patch(token._id, {
       claimed_by: user.id,
-      claimed_at: now,
+      claimed_at: now
     });
 
     return await claimForUser(ctx, user, {
       targetMemberId: token.target_member_id,
       creatorEmail: token.creator_email,
-      creatorId: token.creator_id,
+      creatorId: token.creator_id
     });
-  },
+  }
 });
 
 /**
@@ -750,7 +750,7 @@ export const listByCreator = query({
 
     // Filter to active tokens only
     return tokens.filter((t) => !t.claimed_by && t.expires_at > now);
-  },
+  }
 });
 
 /**
@@ -778,13 +778,13 @@ export const revoke = mutation({
 
     // Delete the token
     await ctx.db.delete(token._id);
-  },
+  }
 });
 
 export const _internalClaimForAccount = internalMutation({
   args: {
     userAccountId: v.id("accounts"),
-    tokenId: v.string(),
+    tokenId: v.string()
   },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userAccountId);
@@ -808,15 +808,15 @@ export const _internalClaimForAccount = internalMutation({
 
     await ctx.db.patch(token._id, {
       claimed_by: user.id,
-      claimed_at: now,
+      claimed_at: now
     });
 
     return await claimForUser(ctx, user, {
       targetMemberId: token.target_member_id,
       creatorEmail: token.creator_email,
-      creatorId: token.creator_id,
+      creatorId: token.creator_id
     });
-  },
+  }
 });
 
 export const _internalClaimTargetMemberForAccount = internalMutation({
@@ -824,7 +824,7 @@ export const _internalClaimTargetMemberForAccount = internalMutation({
     userAccountId: v.id("accounts"),
     targetMemberId: v.string(),
     creatorEmail: v.string(),
-    creatorId: v.optional(v.string()),
+    creatorId: v.optional(v.string())
   },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userAccountId);
@@ -833,7 +833,7 @@ export const _internalClaimTargetMemberForAccount = internalMutation({
     return await claimForUser(ctx, user, {
       targetMemberId: args.targetMemberId,
       creatorEmail: args.creatorEmail,
-      creatorId: args.creatorId,
+      creatorId: args.creatorId
     });
-  },
+  }
 });

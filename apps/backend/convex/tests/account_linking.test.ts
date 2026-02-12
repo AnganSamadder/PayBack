@@ -13,7 +13,7 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
       email: "user_a@example.com",
       display_name: "User A",
       created_at: Date.now(),
-      member_id: "member_a",
+      member_id: "member_a"
     });
   });
 
@@ -24,7 +24,7 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
       email: "user_b@example.com",
       display_name: "User B",
       created_at: Date.now(),
-      member_id: "member_b_canonical",
+      member_id: "member_b_canonical"
     });
   });
 
@@ -37,7 +37,7 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
       name: "User B Manual",
       profile_avatar_color: "#000000",
       has_linked_account: false,
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
   });
 
@@ -54,7 +54,7 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
       owner_account_id: "user_a",
       owner_id: userA,
       created_at: Date.now(),
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
   });
 
@@ -85,17 +85,17 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
         { member_id: manualFriendId, name: "User B Manual" }
       ],
       created_at: Date.now(),
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
   });
-  
+
   // Also need to populate user_expenses for User A to see it
   await t.run(async (ctx) => {
-      await ctx.db.insert("user_expenses", {
-          user_id: "user_a",
-          expense_id: "expense_1",
-          updated_at: Date.now()
-      });
+    await ctx.db.insert("user_expenses", {
+      user_id: "user_a",
+      expense_id: "expense_1",
+      updated_at: Date.now()
+    });
   });
 
   // 6. Verify Initial State (User A sees expense, User B owes $50)
@@ -122,11 +122,11 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
         linked_account_email: "user_b@example.com",
         has_linked_account: true,
         status: "accepted",
-        profile_avatar_color: "#000000", // Added missing field
-      },
+        profile_avatar_color: "#000000" // Added missing field
+      }
     ],
     groups: [],
-    expenses: [],
+    expenses: []
   };
 
   const ctxA = t.withIdentity({
@@ -137,13 +137,13 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
     tokenIdentifier: "user_a",
     issuer: "http://placeholder.com",
     emailVerified: true,
-    updatedAt: "2023-01-01",
+    updatedAt: "2023-01-01"
   });
-  
+
   await ctxA.mutation(api.bulkImport.bulkImport, importPayload);
 
   // 9. VERIFY POST-LINK STATE
-  
+
   // A. Check for Duplicate Friends
   const friends = await t.run(async (ctx) => {
     return await ctx.db.query("account_friends").collect();
@@ -157,26 +157,34 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
     return await ctx.db.query("member_aliases").collect();
   });
   console.log("Aliases after link:", aliases);
-  const alias = aliases.find(a => a.alias_member_id === manualFriendId && a.canonical_member_id === "member_b_canonical");
+  const alias = aliases.find(
+    (a) => a.alias_member_id === manualFriendId && a.canonical_member_id === "member_b_canonical"
+  );
   expect(alias).toBeDefined();
 
   // C. Check Expense Visibility for User B (The Linked User)
   const userExpensesB = await t.run(async (ctx) => {
-    return await ctx.db.query("user_expenses").withIndex("by_user_id", q => q.eq("user_id", "user_b")).collect();
+    return await ctx.db
+      .query("user_expenses")
+      .withIndex("by_user_id", (q) => q.eq("user_id", "user_b"))
+      .collect();
   });
   console.log("User B Expenses:", userExpensesB);
   expect(userExpensesB.length).toBe(1);
 
   // D. Verify User A (Owner) STILL has visibility
   const userExpensesA = await t.run(async (ctx) => {
-    return await ctx.db.query("user_expenses").withIndex("by_user_id", q => q.eq("user_id", "user_a")).collect();
+    return await ctx.db
+      .query("user_expenses")
+      .withIndex("by_user_id", (q) => q.eq("user_id", "user_a"))
+      .collect();
   });
   console.log("User A Expenses:", userExpensesA);
   expect(userExpensesA.length).toBe(1); // User A must not lose the expense
 
   // E. Check Settlement Status
   const expenseRefetch = await t.run(async (ctx) => {
-     return await ctx.db.get(expenseId);
+    return await ctx.db.get(expenseId);
   });
   expect(expenseRefetch.is_settled).toBe(true);
 });
@@ -190,7 +198,7 @@ test("friends:list dedupes linked identity rows and preserves enriched aliases",
       email: "owner@example.com",
       display_name: "Owner",
       created_at: Date.now(),
-      member_id: "owner_member",
+      member_id: "owner_member"
     });
     await ctx.db.insert("accounts", {
       id: "linked_user",
@@ -198,7 +206,7 @@ test("friends:list dedupes linked identity rows and preserves enriched aliases",
       display_name: "Linked User",
       created_at: Date.now(),
       member_id: "canonical_member",
-      alias_member_ids: ["legacy_alias_member"],
+      alias_member_ids: ["legacy_alias_member"]
     });
 
     // Stale linked row (old/manual ID).
@@ -211,7 +219,7 @@ test("friends:list dedupes linked identity rows and preserves enriched aliases",
       linked_account_id: "linked_user",
       linked_account_email: "linked@example.com",
       linked_member_id: "stale_member_id",
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
 
     // Duplicate unlinked row using canonical member id.
@@ -221,7 +229,7 @@ test("friends:list dedupes linked identity rows and preserves enriched aliases",
       name: "Linked User",
       profile_avatar_color: "#111111",
       has_linked_account: false,
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
   });
 
@@ -233,7 +241,7 @@ test("friends:list dedupes linked identity rows and preserves enriched aliases",
     tokenIdentifier: "owner",
     issuer: "http://placeholder.com",
     emailVerified: true,
-    updatedAt: "2023-01-01",
+    updatedAt: "2023-01-01"
   });
 
   const friends = await ownerCtx.query(api.friends.list, {});
@@ -258,7 +266,7 @@ test("friends:upsert preserves existing linked metadata on stale unlinked client
       email: "owner@example.com",
       display_name: "Owner",
       created_at: now,
-      member_id: "owner_member",
+      member_id: "owner_member"
     });
 
     await ctx.db.insert("account_friends", {
@@ -270,7 +278,7 @@ test("friends:upsert preserves existing linked metadata on stale unlinked client
       linked_account_id: "friend_auth_id",
       linked_account_email: "friend@example.com",
       status: "friend",
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -282,13 +290,13 @@ test("friends:upsert preserves existing linked metadata on stale unlinked client
     tokenIdentifier: "owner_auth_id",
     issuer: "http://placeholder.com",
     emailVerified: true,
-    updatedAt: "2023-01-01",
+    updatedAt: "2023-01-01"
   });
 
   await ownerCtx.mutation(api.friends.upsert, {
     member_id: "friend_member",
     name: "Friend",
-    has_linked_account: false,
+    has_linked_account: false
   });
 
   const row = await t.run(async (ctx) =>

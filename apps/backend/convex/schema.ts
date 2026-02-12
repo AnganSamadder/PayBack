@@ -17,7 +17,7 @@ export default defineSchema({
     alias_member_ids: v.optional(v.array(v.string())),
 
     created_at: v.number(),
-    updated_at: v.optional(v.number()),
+    updated_at: v.optional(v.number())
   })
     .index("by_email", ["email"])
     .index("by_member_id", ["member_id"])
@@ -28,7 +28,7 @@ export default defineSchema({
     recipient_email: v.string(),
     status: v.string(), // "pending", "accepted", "rejected"
     created_at: v.number(),
-    updated_at: v.optional(v.number()),
+    updated_at: v.optional(v.number())
   })
     .index("by_recipient_email", ["recipient_email"])
     .index("by_sender_id", ["sender_id"])
@@ -49,7 +49,7 @@ export default defineSchema({
     linked_member_id: v.optional(v.string()), // Canonical Member ID link
     status: v.optional(v.string()),
     profile_image_url: v.optional(v.string()),
-    updated_at: v.number(),
+    updated_at: v.number()
   })
     .index("by_account_email", ["account_email"])
     .index("by_account_email_and_member_id", ["account_email", "member_id"])
@@ -65,7 +65,7 @@ export default defineSchema({
     canonical_member_id: v.string(), // The "real" member ID (receiver's existing canonical member_id)
     alias_member_id: v.string(), // The member ID that aliases to canonical (sender's target_member_id)
     account_email: v.string(), // The account that created this alias relationship
-    created_at: v.number(),
+    created_at: v.number()
   })
     .index("by_alias_member_id", ["alias_member_id"])
     .index("by_canonical_member_id", ["canonical_member_id"]),
@@ -79,7 +79,7 @@ export default defineSchema({
         name: v.string(),
         profile_image_url: v.optional(v.string()),
         profile_avatar_color: v.optional(v.string()),
-        is_current_user: v.optional(v.boolean()),
+        is_current_user: v.optional(v.boolean())
       })
     ),
     owner_email: v.string(),
@@ -89,7 +89,7 @@ export default defineSchema({
     is_direct: v.optional(v.boolean()),
     created_at: v.number(),
     updated_at: v.number(),
-    is_payback_generated_mock_data: v.optional(v.boolean()),
+    is_payback_generated_mock_data: v.optional(v.boolean())
   })
     .index("by_owner_account_id", ["owner_account_id"])
     .index("by_owner_email", ["owner_email"])
@@ -110,7 +110,7 @@ export default defineSchema({
         id: v.string(),
         member_id: v.string(),
         amount: v.number(),
-        is_settled: v.boolean(),
+        is_settled: v.boolean()
       })
     ),
     is_settled: v.boolean(),
@@ -126,19 +126,21 @@ export default defineSchema({
         member_id: v.string(),
         name: v.string(),
         linked_account_id: v.optional(v.string()),
-        linked_account_email: v.optional(v.string()),
+        linked_account_email: v.optional(v.string())
       })
     ),
     linked_participants: v.optional(v.any()),
-    subexpenses: v.optional(v.array(
-      v.object({
-        id: v.string(),
-        amount: v.number(),
-      })
-    )),
+    subexpenses: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          amount: v.number()
+        })
+      )
+    ),
     created_at: v.number(),
     updated_at: v.number(),
-    is_payback_generated_mock_data: v.optional(v.boolean()),
+    is_payback_generated_mock_data: v.optional(v.boolean())
   })
     .index("by_owner_account_id", ["owner_account_id"])
     .index("by_owner_email", ["owner_email"])
@@ -148,9 +150,9 @@ export default defineSchema({
     .index("by_client_id", ["id"]),
 
   user_expenses: defineTable({
-    user_id: v.string(),       // The user who "sees" this expense
-    expense_id: v.string(),    // Reference to expenses.id (UUID)
-    updated_at: v.number(),    // For sorting
+    user_id: v.string(), // The user who "sees" this expense
+    expense_id: v.string(), // Reference to expenses.id (UUID)
+    updated_at: v.number() // For sorting
   })
     .index("by_user_id", ["user_id"])
     .index("by_expense_id", ["expense_id"])
@@ -167,7 +169,7 @@ export default defineSchema({
     created_at: v.number(),
     status: v.string(),
     expires_at: v.number(),
-    rejected_at: v.optional(v.number()),
+    rejected_at: v.optional(v.number())
   })
     .index("by_recipient_email", ["recipient_email"])
     .index("by_requester_id", ["requester_id"])
@@ -183,7 +185,7 @@ export default defineSchema({
     created_at: v.number(),
     expires_at: v.number(),
     claimed_by: v.optional(v.string()),
-    claimed_at: v.optional(v.number()),
+    claimed_at: v.optional(v.number())
   })
     .index("by_creator_id", ["creator_id"])
     .index("by_creator_email", ["creator_email"])
@@ -194,12 +196,12 @@ export default defineSchema({
     key: v.string(),
     account_friends_cursor: v.optional(v.string()),
     groups_cursor: v.optional(v.string()),
-    updated_at: v.number(),
+    updated_at: v.number()
   }).index("by_key", ["key"]),
 
   rate_limits: defineTable({
     key: v.string(), // rate_limit:{userId}:{action}
     count: v.number(),
-    window_start: v.number(),
-  }).index("by_key", ["key"]),
+    window_start: v.number()
+  }).index("by_key", ["key"])
 });

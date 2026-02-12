@@ -12,7 +12,7 @@ function identityFor(email: string, subject: string) {
     tokenIdentifier: subject,
     issuer: "http://placeholder.com",
     emailVerified: true,
-    updatedAt: "2023-01-01",
+    updatedAt: "2023-01-01"
   };
 }
 
@@ -35,21 +35,21 @@ function buildDirectExpenseArgs(args: {
         id: `${args.expenseId}_split_owner`,
         member_id: args.ownerMemberId,
         amount: 10,
-        is_settled: false,
+        is_settled: false
       },
       {
         id: `${args.expenseId}_split_other`,
         member_id: args.otherMemberId,
         amount: 10,
-        is_settled: false,
-      },
+        is_settled: false
+      }
     ],
     is_settled: false,
     participant_member_ids: [args.ownerMemberId, args.otherMemberId],
     participants: [
       { member_id: args.ownerMemberId, name: "Owner" },
-      { member_id: args.otherMemberId, name: "Friend" },
-    ],
+      { member_id: args.otherMemberId, name: "Friend" }
+    ]
   };
 }
 
@@ -63,7 +63,7 @@ test("expenses:create allows direct expense when involved member is an alias of 
       email: "owner@example.com",
       display_name: "Owner",
       member_id: "owner_member",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -73,13 +73,13 @@ test("expenses:create allows direct expense when involved member is an alias of 
       email: "friend@example.com",
       display_name: "Friend",
       member_id: "friend_canonical",
-      created_at: now,
+      created_at: now
     });
     await ctx.db.insert("member_aliases", {
       canonical_member_id: "friend_canonical",
       alias_member_id: "friend_alias",
       account_email: "owner@example.com",
-      created_at: now,
+      created_at: now
     });
     await ctx.db.insert("account_friends", {
       account_email: "owner@example.com",
@@ -90,21 +90,21 @@ test("expenses:create allows direct expense when involved member is an alias of 
       linked_account_id: "friend_auth_id",
       linked_account_email: "friend@example.com",
       status: "accepted",
-      updated_at: now,
+      updated_at: now
     });
     await ctx.db.insert("groups", {
       id: "direct_group_alias",
       name: "Owner + Friend",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "friend_alias", name: "Friend" },
+        { id: "friend_alias", name: "Friend" }
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
       owner_id: ownerDocId,
       is_direct: true,
       created_at: now,
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -116,7 +116,7 @@ test("expenses:create allows direct expense when involved member is an alias of 
       expenseId: "direct_expense_alias",
       groupId: "direct_group_alias",
       ownerMemberId: "owner_member",
-      otherMemberId: "friend_alias",
+      otherMemberId: "friend_alias"
     })
   );
 
@@ -135,7 +135,7 @@ test("expenses:create allows direct expense for legacy friend rows without expli
       email: "owner@example.com",
       display_name: "Owner",
       member_id: "owner_member",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -146,21 +146,21 @@ test("expenses:create allows direct expense for legacy friend rows without expli
       name: "Legacy Friend",
       profile_avatar_color: "#111111",
       has_linked_account: false,
-      updated_at: now,
+      updated_at: now
     });
     await ctx.db.insert("groups", {
       id: "direct_group_legacy",
       name: "Owner + Legacy",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "legacy_friend_member", name: "Legacy Friend" },
+        { id: "legacy_friend_member", name: "Legacy Friend" }
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
       owner_id: ownerDocId,
       is_direct: true,
       created_at: now,
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -172,7 +172,7 @@ test("expenses:create allows direct expense for legacy friend rows without expli
       expenseId: "direct_expense_legacy",
       groupId: "direct_group_legacy",
       ownerMemberId: "owner_member",
-      otherMemberId: "legacy_friend_member",
+      otherMemberId: "legacy_friend_member"
     })
   );
 
@@ -191,7 +191,7 @@ test("expenses:create allows direct expense when friend is linked via linked_mem
       email: "owner@example.com",
       display_name: "Owner",
       member_id: "owner_member",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -201,7 +201,7 @@ test("expenses:create allows direct expense when friend is linked via linked_mem
       email: "friend@example.com",
       display_name: "Friend",
       member_id: "friend_canonical",
-      created_at: now,
+      created_at: now
     });
     // Legacy friend row still keyed by old member_id, but linked_member_id points to canonical identity.
     await ctx.db.insert("account_friends", {
@@ -214,21 +214,21 @@ test("expenses:create allows direct expense when friend is linked via linked_mem
       linked_account_id: "friend_auth_id",
       linked_account_email: "friend@example.com",
       status: "accepted",
-      updated_at: now,
+      updated_at: now
     });
     await ctx.db.insert("groups", {
       id: "direct_group_linked_member",
       name: "Owner + Friend",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "friend_canonical", name: "Friend" },
+        { id: "friend_canonical", name: "Friend" }
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
       owner_id: ownerDocId,
       is_direct: true,
       created_at: now,
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -240,7 +240,7 @@ test("expenses:create allows direct expense when friend is linked via linked_mem
       expenseId: "direct_expense_linked_member",
       groupId: "direct_group_linked_member",
       ownerMemberId: "owner_member",
-      otherMemberId: "friend_canonical",
+      otherMemberId: "friend_canonical"
     })
   );
 
@@ -259,7 +259,7 @@ test("expenses:create allows direct expense when linked account carries legacy a
       email: "owner@example.com",
       display_name: "Owner",
       member_id: "owner_member",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -270,7 +270,7 @@ test("expenses:create allows direct expense when linked account carries legacy a
       display_name: "Friend",
       member_id: "friend_canonical",
       alias_member_ids: ["friend_legacy_member"],
-      created_at: now,
+      created_at: now
     });
     await ctx.db.insert("account_friends", {
       account_email: "owner@example.com",
@@ -281,21 +281,21 @@ test("expenses:create allows direct expense when linked account carries legacy a
       linked_account_id: "friend_auth_id",
       linked_account_email: "friend@example.com",
       status: "accepted",
-      updated_at: now,
+      updated_at: now
     });
     await ctx.db.insert("groups", {
       id: "direct_group_linked_aliases",
       name: "Owner + Friend",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "friend_legacy_member", name: "Friend" },
+        { id: "friend_legacy_member", name: "Friend" }
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
       owner_id: ownerDocId,
       is_direct: true,
       created_at: now,
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -307,7 +307,7 @@ test("expenses:create allows direct expense when linked account carries legacy a
       expenseId: "direct_expense_linked_aliases",
       groupId: "direct_group_linked_aliases",
       ownerMemberId: "owner_member",
-      otherMemberId: "friend_legacy_member",
+      otherMemberId: "friend_legacy_member"
     })
   );
 
@@ -326,7 +326,7 @@ test("expenses:create allows direct expense when legacy friend row has no linked
       email: "owner@example.com",
       display_name: "Owner",
       member_id: "owner_member",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -337,7 +337,7 @@ test("expenses:create allows direct expense when legacy friend row has no linked
       display_name: "Friend",
       member_id: "friend_canonical",
       alias_member_ids: ["friend_legacy_member"],
-      created_at: now,
+      created_at: now
     });
     // Legacy row missing linked_account_email/linked_account_id/linked_member_id.
     await ctx.db.insert("account_friends", {
@@ -347,21 +347,21 @@ test("expenses:create allows direct expense when legacy friend row has no linked
       profile_avatar_color: "#654321",
       has_linked_account: true,
       status: "accepted",
-      updated_at: now,
+      updated_at: now
     });
     await ctx.db.insert("groups", {
       id: "direct_group_legacy_alias_only",
       name: "Owner + Friend",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "friend_canonical", name: "Friend" },
+        { id: "friend_canonical", name: "Friend" }
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
       owner_id: ownerDocId,
       is_direct: true,
       created_at: now,
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -373,7 +373,7 @@ test("expenses:create allows direct expense when legacy friend row has no linked
       expenseId: "direct_expense_legacy_alias_only",
       groupId: "direct_group_legacy_alias_only",
       ownerMemberId: "owner_member",
-      otherMemberId: "friend_canonical",
+      otherMemberId: "friend_canonical"
     })
   );
 
@@ -392,7 +392,7 @@ test("expenses:create allows direct expense when legacy friend status is an empt
       email: "owner@example.com",
       display_name: "Owner",
       member_id: "owner_member",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -404,21 +404,21 @@ test("expenses:create allows direct expense when legacy friend status is an empt
       profile_avatar_color: "#112233",
       has_linked_account: false,
       status: "",
-      updated_at: now,
+      updated_at: now
     });
     await ctx.db.insert("groups", {
       id: "direct_group_empty_status",
       name: "Owner + Friend",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "friend_member", name: "Friend" },
+        { id: "friend_member", name: "Friend" }
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
       owner_id: ownerDocId,
       is_direct: true,
       created_at: now,
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -430,7 +430,7 @@ test("expenses:create allows direct expense when legacy friend status is an empt
       expenseId: "direct_expense_empty_status",
       groupId: "direct_group_empty_status",
       ownerMemberId: "owner_member",
-      otherMemberId: "friend_member",
+      otherMemberId: "friend_member"
     })
   );
 
@@ -449,7 +449,7 @@ test("expenses:create allows direct expense when linked_account_id stores accoun
       email: "owner@example.com",
       display_name: "Owner",
       member_id: "owner_member",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -459,7 +459,7 @@ test("expenses:create allows direct expense when linked_account_id stores accoun
       email: "friend@example.com",
       display_name: "Friend",
       member_id: "friend_canonical",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -473,21 +473,21 @@ test("expenses:create allows direct expense when linked_account_id stores accoun
       has_linked_account: true,
       linked_account_id: String(friendDocId),
       status: "friend",
-      updated_at: now,
+      updated_at: now
     });
     await ctx.db.insert("groups", {
       id: "direct_group_doc_id_link",
       name: "Owner + Friend",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "friend_canonical", name: "Friend" },
+        { id: "friend_canonical", name: "Friend" }
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
       owner_id: ownerDocId,
       is_direct: true,
       created_at: now,
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -499,7 +499,7 @@ test("expenses:create allows direct expense when linked_account_id stores accoun
       expenseId: "direct_expense_doc_id_link",
       groupId: "direct_group_doc_id_link",
       ownerMemberId: "owner_member",
-      otherMemberId: "friend_canonical",
+      otherMemberId: "friend_canonical"
     })
   );
 
@@ -518,7 +518,7 @@ test("expenses:create allows direct expense for legacy name-only friend rows and
       email: "owner@example.com",
       display_name: "Owner",
       member_id: "owner_member",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -528,7 +528,7 @@ test("expenses:create allows direct expense for legacy name-only friend rows and
       email: "friend@example.com",
       display_name: "Angan Samadder",
       member_id: "friend_canonical",
-      created_at: now,
+      created_at: now
     });
     // Legacy drift: friend table keeps the old member_id and no link metadata.
     await ctx.db.insert("account_friends", {
@@ -538,21 +538,21 @@ test("expenses:create allows direct expense for legacy name-only friend rows and
       profile_avatar_color: "#778899",
       has_linked_account: false,
       status: "friend",
-      updated_at: now,
+      updated_at: now
     });
     await ctx.db.insert("groups", {
       id: "direct_group_name_fallback",
       name: "Owner + Angan",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "friend_canonical", name: "Angan Samadder" },
+        { id: "friend_canonical", name: "Angan Samadder" }
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
       owner_id: ownerDocId,
       is_direct: true,
       created_at: now,
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -564,13 +564,16 @@ test("expenses:create allows direct expense for legacy name-only friend rows and
       expenseId: "direct_expense_name_fallback",
       groupId: "direct_group_name_fallback",
       ownerMemberId: "owner_member",
-      otherMemberId: "friend_canonical",
+      otherMemberId: "friend_canonical"
     })
   );
 
   expect(result).toBeDefined();
   const expense = await t.run(async (ctx) =>
-    ctx.db.query("expenses").withIndex("by_client_id", (q) => q.eq("id", "direct_expense_name_fallback")).unique()
+    ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "direct_expense_name_fallback"))
+      .unique()
   );
   expect(expense).toBeDefined();
   expect(expense?.participant_emails).toContain("friend@example.com");
@@ -586,7 +589,7 @@ test("expenses:create allows direct expense for valid 1:1 direct group even when
       email: "owner@example.com",
       display_name: "Owner",
       member_id: "owner_member",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -596,21 +599,21 @@ test("expenses:create allows direct expense for valid 1:1 direct group even when
       email: "friend@example.com",
       display_name: "Friend",
       member_id: "friend_member",
-      created_at: now,
+      created_at: now
     });
     await ctx.db.insert("groups", {
       id: "direct_group_no_friend_row",
       name: "Owner + Friend",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "friend_member", name: "Friend" },
+        { id: "friend_member", name: "Friend" }
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
       owner_id: ownerDocId,
       is_direct: true,
       created_at: now,
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -622,7 +625,7 @@ test("expenses:create allows direct expense for valid 1:1 direct group even when
       expenseId: "direct_expense_no_friend_row",
       groupId: "direct_group_no_friend_row",
       ownerMemberId: "owner_member",
-      otherMemberId: "friend_member",
+      otherMemberId: "friend_member"
     })
   );
 
@@ -647,7 +650,7 @@ test("expenses:create rejects direct expense when involved member is not a frien
       email: "owner@example.com",
       display_name: "Owner",
       member_id: "owner_member",
-      created_at: now,
+      created_at: now
     });
   });
 
@@ -657,14 +660,14 @@ test("expenses:create rejects direct expense when involved member is not a frien
       name: "Owner + Stranger",
       members: [
         { id: "owner_member", name: "Owner", is_current_user: true },
-        { id: "friend_member", name: "Friend" },
+        { id: "friend_member", name: "Friend" }
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
       owner_id: ownerDocId,
       is_direct: true,
       created_at: now,
-      updated_at: now,
+      updated_at: now
     });
   });
 
@@ -677,7 +680,7 @@ test("expenses:create rejects direct expense when involved member is not a frien
         expenseId: "direct_expense_unrelated",
         groupId: "direct_group_unrelated",
         ownerMemberId: "owner_member",
-        otherMemberId: "stranger_member_not_in_group",
+        otherMemberId: "stranger_member_not_in_group"
       })
     )
   ).rejects.toThrow("not a confirmed friend");

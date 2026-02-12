@@ -5,7 +5,7 @@ import {
   findAccountByAuthIdOrDocId,
   findAccountByMemberId,
   normalizeMemberId,
-  normalizeMemberIds,
+  normalizeMemberIds
 } from "./identity";
 
 export const list = query({
@@ -38,7 +38,7 @@ export const list = query({
     const linkedIdentityContexts = new Map<string, LinkedIdentityContext>();
     const normalizedFriends = friends.map((friend) => ({
       ...friend,
-      normalizedMemberId: normalizeMemberId(friend.member_id),
+      normalizedMemberId: normalizeMemberId(friend.member_id)
     }));
 
     const linkedFriends = normalizedFriends.filter((friend) => friend.has_linked_account);
@@ -74,7 +74,7 @@ export const list = query({
       linkedIdentityContexts.set(identityKey, {
         account: linkedAccount,
         aliasSet,
-        memberIds: new Set<string>([friend.normalizedMemberId]),
+        memberIds: new Set<string>([friend.normalizedMemberId])
       });
     }
 
@@ -110,16 +110,16 @@ export const list = query({
             linked_account_id: undefined,
             linked_account_email: undefined,
             linked_member_id: undefined,
-            alias_member_ids: [],
+            alias_member_ids: []
           });
           continue;
         }
-        
+
         // Enrich with aliases from the linked account
         const duplicateMemberIds = context ? Array.from(context.memberIds) : [];
         const enrichedAliases = normalizeMemberIds([
           ...(linkedAccount.alias_member_ids || []),
-          ...duplicateMemberIds,
+          ...duplicateMemberIds
         ]);
 
         validatedFriends.push({
@@ -128,17 +128,16 @@ export const list = query({
           linked_member_id: linkedAccount.member_id
             ? normalizeMemberId(linkedAccount.member_id)
             : undefined,
-          alias_member_ids: enrichedAliases,
+          alias_member_ids: enrichedAliases
         });
-      }
-
-      else if (friend.has_linked_account && friend.linked_member_id) {
+      } else if (friend.has_linked_account && friend.linked_member_id) {
         const identityKey =
           friend.linked_account_email?.trim().toLowerCase() ||
           friend.linked_account_id ||
           friend.linked_member_id;
         const context = identityKey ? linkedIdentityContexts.get(identityKey) : undefined;
-        const linkedByMemberId = context?.account ?? await findAccountByMemberId(ctx.db, friend.linked_member_id);
+        const linkedByMemberId =
+          context?.account ?? (await findAccountByMemberId(ctx.db, friend.linked_member_id));
 
         if (!linkedByMemberId) {
           validatedFriends.push({
@@ -148,16 +147,16 @@ export const list = query({
             linked_account_id: undefined,
             linked_account_email: undefined,
             linked_member_id: undefined,
-            alias_member_ids: [],
+            alias_member_ids: []
           });
           continue;
         }
-        
+
         // Enrich with aliases from the linked account
         const duplicateMemberIds = context ? Array.from(context.memberIds) : [];
         const enrichedAliases = normalizeMemberIds([
           ...(linkedByMemberId.alias_member_ids || []),
-          ...duplicateMemberIds,
+          ...duplicateMemberIds
         ]);
 
         validatedFriends.push({
@@ -166,13 +165,13 @@ export const list = query({
           linked_member_id: linkedByMemberId.member_id
             ? normalizeMemberId(linkedByMemberId.member_id)
             : undefined,
-          alias_member_ids: enrichedAliases,
+          alias_member_ids: enrichedAliases
         });
       } else {
         validatedFriends.push({
-            ...friend,
-            member_id: friend.normalizedMemberId,
-            alias_member_ids: [],
+          ...friend,
+          member_id: friend.normalizedMemberId,
+          alias_member_ids: []
         });
       }
     }
@@ -192,7 +191,7 @@ export const list = query({
       const aliases = normalizeMemberIds([
         friend.member_id,
         ...(friend.alias_member_ids || []),
-        ...(friend.linked_member_id ? [friend.linked_member_id] : []),
+        ...(friend.linked_member_id ? [friend.linked_member_id] : [])
       ]);
       for (const alias of aliases) {
         aliasToIdentityKey.set(normalizeMemberId(alias), linkedIdentityKey);
@@ -205,7 +204,7 @@ export const list = query({
     const score = (friend: FriendRow) => ({
       linked: friend.has_linked_account ? 1 : 0,
       aliasCount: (friend.alias_member_ids || []).length,
-      updatedAt: friend.updated_at ?? 0,
+      updatedAt: friend.updated_at ?? 0
     });
 
     const shouldReplace = (current: FriendRow, candidate: FriendRow) => {
@@ -226,9 +225,7 @@ export const list = query({
           ? `linked:${friend.linked_account_email?.trim().toLowerCase() || friend.linked_account_id || normalizeMemberId(friend.linked_member_id!)}`
           : undefined;
       const identityKey =
-        linkedIdentityKey ||
-        aliasToIdentityKey.get(normalizedId) ||
-        `member:${normalizedId}`;
+        linkedIdentityKey || aliasToIdentityKey.get(normalizedId) || `member:${normalizedId}`;
 
       const existing = dedupedByIdentity.get(identityKey);
       if (!existing) {
@@ -236,14 +233,16 @@ export const list = query({
         continue;
       }
 
-      const mergedAliasSet = new Set<string>(normalizeMemberIds([
-        ...(existing.alias_member_ids || []),
-        ...(friend.alias_member_ids || []),
-        existing.member_id,
-        friend.member_id,
-        ...(existing.linked_member_id ? [existing.linked_member_id] : []),
-        ...(friend.linked_member_id ? [friend.linked_member_id] : []),
-      ]));
+      const mergedAliasSet = new Set<string>(
+        normalizeMemberIds([
+          ...(existing.alias_member_ids || []),
+          ...(friend.alias_member_ids || []),
+          existing.member_id,
+          friend.member_id,
+          ...(existing.linked_member_id ? [existing.linked_member_id] : []),
+          ...(friend.linked_member_id ? [friend.linked_member_id] : [])
+        ])
+      );
 
       const winner = shouldReplace(existing, friend) ? friend : existing;
       const loser = winner === existing ? friend : existing;
@@ -254,12 +253,12 @@ export const list = query({
         linked_account_id: winner.linked_account_id || loser.linked_account_id,
         linked_account_email: winner.linked_account_email || loser.linked_account_email,
         linked_member_id: winner.linked_member_id || loser.linked_member_id,
-        alias_member_ids: Array.from(mergedAliasSet),
+        alias_member_ids: Array.from(mergedAliasSet)
       });
     }
 
     return Array.from(dedupedByIdentity.values());
-  },
+  }
 });
 
 /**
@@ -276,7 +275,7 @@ export const upsert = mutation({
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
-    status: v.optional(v.string()),
+    status: v.optional(v.string())
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -287,10 +286,7 @@ export const upsert = mutation({
     const safeName = args.name?.trim() || "Unknown";
 
     let normalizedNickname = args.nickname;
-    if (
-      normalizedNickname &&
-      normalizedNickname.trim().toLowerCase() === safeName.toLowerCase()
-    ) {
+    if (normalizedNickname && normalizedNickname.trim().toLowerCase() === safeName.toLowerCase()) {
       normalizedNickname = undefined;
     }
 
@@ -302,11 +298,12 @@ export const upsert = mutation({
       .unique();
     const existingLegacy =
       existing ??
-      (await ctx.db
-        .query("account_friends")
-        .withIndex("by_account_email", (q) => q.eq("account_email", identity.email!))
-        .collect())
-        .find((friend) => normalizeMemberId(friend.member_id) === normalizedMemberId);
+      (
+        await ctx.db
+          .query("account_friends")
+          .withIndex("by_account_email", (q) => q.eq("account_email", identity.email!))
+          .collect()
+      ).find((friend) => normalizeMemberId(friend.member_id) === normalizedMemberId);
 
     if (existingLegacy) {
       const preserveExistingLink = existingLegacy.has_linked_account && !args.has_linked_account;
@@ -327,7 +324,7 @@ export const upsert = mutation({
         linked_account_id: finalHasLinkedAccount ? finalLinkedAccountId : undefined,
         linked_account_email: finalHasLinkedAccount ? finalLinkedAccountEmail : undefined,
         status: finalStatus,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
       return existingLegacy._id;
     } else {
@@ -344,10 +341,10 @@ export const upsert = mutation({
         linked_account_id: args.linked_account_id,
         linked_account_email: args.linked_account_email,
         status: args.status,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     }
-  },
+  }
 });
 
 /**
@@ -368,5 +365,5 @@ export const clearAllForUser = mutation({
       await ctx.db.delete(friend._id);
     }
     return null;
-  },
+  }
 });

@@ -3,6 +3,7 @@
 This document outlines the steps required to safely deploy the PayBack backend (Convex) and ensure compatibility with the iOS application.
 
 ## 1. Pre-Deployment
+
 - [ ] **Run All Tests**: Ensure all backend tests pass.
   ```bash
   bun run test
@@ -20,6 +21,7 @@ This document outlines the steps required to safely deploy the PayBack backend (
 - [ ] **Database Backup**: Perform a manual export in the Convex dashboard if significant data migrations are involved.
 
 ## 2. Deployment
+
 - [ ] **Standard Deployment**:
   ```bash
   npx convex deploy
@@ -35,6 +37,7 @@ This document outlines the steps required to safely deploy the PayBack backend (
   5. **Phase 5**: Update `schema.ts` to make fields required and redeploy.
 
 ## 3. Post-Deployment
+
 - [ ] **Functional Verification**:
   - [ ] Verify user registration and login.
   - [ ] Test group creation and expense addition.
@@ -46,6 +49,7 @@ This document outlines the steps required to safely deploy the PayBack backend (
   - [ ] Verify Clerk webhooks are being processed successfully.
 
 ## 4. Rollback Plan
+
 - [ ] **Function Rollback**: Redeploy the previous stable version from git.
 - [ ] **Schema Rollback**:
   - Revert `schema.ts` to the previous state.

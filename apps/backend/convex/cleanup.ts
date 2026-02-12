@@ -45,7 +45,7 @@ const logHardDelete = (
       scope: "cleanup.hard_delete",
       ...base,
       step,
-      ...data,
+      ...data
     })
   );
 };
@@ -58,7 +58,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     email: account.email,
     subject: account.id,
     accountId: account._id,
-    memberId: account.member_id,
+    memberId: account.member_id
   };
 
   logHardDelete(baseLog, "start", { message: "Starting hard delete" });
@@ -74,7 +74,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   }
   logHardDelete(baseLog, "delete_account_friends", {
     deletedCount: friendIds.length,
-    sampleIds: sampleIds(friendIds),
+    sampleIds: sampleIds(friendIds)
   });
 
   // Delete user_expenses view for this account (user_id is Clerk id)
@@ -90,9 +90,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     .collect();
   const groupsByAccountId = await ctx.db
     .query("groups")
-    .withIndex("by_owner_account_id", (q: any) =>
-      q.eq("owner_account_id", account.id)
-    )
+    .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", account.id))
     .collect();
   const groupsById = new Map<string, any>();
   for (const group of groupsByEmail) {
@@ -122,11 +120,11 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   }
   logHardDelete(baseLog, "delete_groups", {
     deletedCount: groupIds.length,
-    sampleIds: sampleIds(groupIds),
+    sampleIds: sampleIds(groupIds)
   });
   logHardDelete(baseLog, "delete_group_expenses", {
     deletedCount: groupExpenseIds.length,
-    sampleIds: sampleIds(groupExpenseIds),
+    sampleIds: sampleIds(groupExpenseIds)
   });
 
   const expensesByEmail = await ctx.db
@@ -135,9 +133,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     .collect();
   const expensesByAccountId = await ctx.db
     .query("expenses")
-    .withIndex("by_owner_account_id", (q: any) =>
-      q.eq("owner_account_id", account.id)
-    )
+    .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", account.id))
     .collect();
   const expenseById = new Map<string, any>();
   for (const expense of expensesByEmail) {
@@ -156,16 +152,14 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   }
   logHardDelete(baseLog, "delete_owned_expenses", {
     deletedCount: ownedExpenseIds.length,
-    sampleIds: sampleIds(ownedExpenseIds),
+    sampleIds: sampleIds(ownedExpenseIds)
   });
 
   const deletedFriendRecordIds: string[] = [];
 
   const linkedById = await ctx.db
     .query("account_friends")
-    .withIndex("by_linked_account_id", (q: any) =>
-      q.eq("linked_account_id", account.id)
-    )
+    .withIndex("by_linked_account_id", (q: any) => q.eq("linked_account_id", account.id))
     .collect();
   for (const fr of linkedById) {
     await ctx.db.delete(fr._id);
@@ -174,9 +168,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
 
   const linkedByEmail = await ctx.db
     .query("account_friends")
-    .withIndex("by_linked_account_email", (q: any) =>
-      q.eq("linked_account_email", account.email)
-    )
+    .withIndex("by_linked_account_email", (q: any) => q.eq("linked_account_email", account.email))
     .collect();
   for (const fr of linkedByEmail) {
     if (deletedFriendRecordIds.includes(fr._id)) continue;
@@ -187,9 +179,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   if (account.member_id) {
     const linkedByMemberId = await ctx.db
       .query("account_friends")
-      .withIndex("by_linked_member_id", (q: any) =>
-        q.eq("linked_member_id", account.member_id)
-      )
+      .withIndex("by_linked_member_id", (q: any) => q.eq("linked_member_id", account.member_id))
       .collect();
     for (const fr of linkedByMemberId) {
       if (deletedFriendRecordIds.includes(fr._id)) continue;
@@ -200,14 +190,12 @@ async function performHardDelete(ctx: any, account: any, source: string) {
 
   logHardDelete(baseLog, "delete_linked_friend_records", {
     deletedCount: deletedFriendRecordIds.length,
-    sampleIds: sampleIds(deletedFriendRecordIds),
+    sampleIds: sampleIds(deletedFriendRecordIds)
   });
 
   const incomingRequests = await ctx.db
     .query("link_requests")
-    .withIndex("by_recipient_email", (q: any) =>
-      q.eq("recipient_email", account.email)
-    )
+    .withIndex("by_recipient_email", (q: any) => q.eq("recipient_email", account.email))
     .collect();
   let deletedRequests = 0;
   const requestIds: string[] = [];
@@ -229,7 +217,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   }
   logHardDelete(baseLog, "delete_link_requests", {
     deletedCount: deletedRequests,
-    sampleIds: sampleIds(requestIds),
+    sampleIds: sampleIds(requestIds)
   });
 
   const invites = await ctx.db
@@ -243,7 +231,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   }
   logHardDelete(baseLog, "delete_invite_tokens", {
     deletedCount: inviteIds.length,
-    sampleIds: sampleIds(inviteIds),
+    sampleIds: sampleIds(inviteIds)
   });
 
   let aliasesDeleted = 0;
@@ -264,9 +252,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
 
     const aliasesAsAlias = await ctx.db
       .query("member_aliases")
-      .withIndex("by_alias_member_id", (q: any) =>
-        q.eq("alias_member_id", account.member_id!)
-      )
+      .withIndex("by_alias_member_id", (q: any) => q.eq("alias_member_id", account.member_id!))
       .collect();
 
     for (const alias of aliasesAsAlias) {
@@ -277,7 +263,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   }
   logHardDelete(baseLog, "delete_member_aliases", {
     deletedCount: aliasesDeleted,
-    sampleIds: sampleIds(aliasIds),
+    sampleIds: sampleIds(aliasIds)
   });
 
   await ctx.db.delete(account._id);
@@ -289,7 +275,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     linkedFriendRecordsDeleted: deletedFriendRecordIds.length,
     linkRequestsDeleted: deletedRequests,
     invitesDeleted: inviteIds.length,
-    aliasesDeleted,
+    aliasesDeleted
   });
 
   return {
@@ -299,7 +285,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     groupsDeleted: groupIds.length,
     expensesDeleted: ownedExpenseIds.length + groupExpenseIds.length,
     linkedFriendRecordsDeleted: deletedFriendRecordIds.length,
-    aliasesDeleted,
+    aliasesDeleted
   };
 }
 
@@ -309,35 +295,35 @@ export const deleteSelfFriends = mutation({
     // Admin mode: Clean for ALL users
     const users = await ctx.db.query("accounts").collect();
     console.log(`Analyzing ${users.length} users for self-friends...`);
-    
+
     for (const user of users) {
-        const friends = await ctx.db
-          .query("account_friends")
-          .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
-          .collect();
-          
-        let selfFriendsCount = 0;
-        
-        for (const friend of friends) {
-            // Logic: A friend is a "self-friend" if:
-            // 1. Their name matches the user's display name
-            // 2. AND they are not linked (or linked to self, which is invalid anyway)
-            // 3. AND/OR we deduce it from context (harder).
-            
-  // The screenshot showed duplicates of "Example Person" with "unset" linked account.
-            
-            if (friend.name === user.display_name && !friend.has_linked_account) {
-                 console.log(`Deleting self-friend for ${user.email}: ${friend.name} (${friend._id})`);
-                 await ctx.db.delete(friend._id);
-                 selfFriendsCount++;
-            }
+      const friends = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+        .collect();
+
+      let selfFriendsCount = 0;
+
+      for (const friend of friends) {
+        // Logic: A friend is a "self-friend" if:
+        // 1. Their name matches the user's display name
+        // 2. AND they are not linked (or linked to self, which is invalid anyway)
+        // 3. AND/OR we deduce it from context (harder).
+
+        // The screenshot showed duplicates of "Example Person" with "unset" linked account.
+
+        if (friend.name === user.display_name && !friend.has_linked_account) {
+          console.log(`Deleting self-friend for ${user.email}: ${friend.name} (${friend._id})`);
+          await ctx.db.delete(friend._id);
+          selfFriendsCount++;
         }
-        
-        if (selfFriendsCount > 0) {
-            console.log(`Cleaned ${selfFriendsCount} self-friends for ${user.email}`);
-        }
+      }
+
+      if (selfFriendsCount > 0) {
+        console.log(`Cleaned ${selfFriendsCount} self-friends for ${user.email}`);
+      }
     }
-    
+
     return "Cleanup complete";
   }
 });
@@ -357,7 +343,7 @@ export const clearFriendsForEmail = internalMutation({
       await ctx.db.delete(friend._id);
     }
     return { deleted: friends.length, email: args.email };
-  },
+  }
 });
 
 export const deleteAccountByEmail = internalMutation({
@@ -373,7 +359,7 @@ export const deleteAccountByEmail = internalMutation({
     }
 
     return await performHardDelete(ctx, user, "deleteAccountByEmail");
-  },
+  }
 });
 
 /**
@@ -385,15 +371,15 @@ export const deleteSubexpensesTable = mutation({
   handler: async (ctx) => {
     // Query the orphaned table using type assertion
     const allSubexpenses = await ctx.db.query("subexpenses" as any).collect();
-    
+
     let deleted = 0;
     for (const sub of allSubexpenses) {
       await ctx.db.delete(sub._id);
       deleted++;
     }
-    
+
     return { deleted, message: `Deleted ${deleted} rows from orphaned subexpenses table` };
-  },
+  }
 });
 
 export const removeLegacyFields = internalMutation({
@@ -402,16 +388,19 @@ export const removeLegacyFields = internalMutation({
     const accounts = await ctx.db.query("accounts").collect();
     let patched = 0;
     for (const acc of accounts) {
-      if ((acc as any).linked_member_id !== undefined || (acc as any).equivalent_member_ids !== undefined) {
+      if (
+        (acc as any).linked_member_id !== undefined ||
+        (acc as any).equivalent_member_ids !== undefined
+      ) {
         await ctx.db.patch(acc._id, {
           linked_member_id: undefined,
-          equivalent_member_ids: undefined,
+          equivalent_member_ids: undefined
         });
         patched++;
       }
     }
     return { patched, total: accounts.length };
-  },
+  }
 });
 
 export const deleteLinkedFriend = mutation({
@@ -420,7 +409,7 @@ export const deleteLinkedFriend = mutation({
     // Backward-compatible alias for older clients.
     memberId: v.optional(v.string()),
     // Deprecated: ignored, account email is derived from auth context.
-    accountEmail: v.optional(v.string()),
+    accountEmail: v.optional(v.string())
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
@@ -446,7 +435,7 @@ export const deleteLinkedFriend = mutation({
     if (!friend.has_linked_account) {
       return {
         success: false,
-        message: "Friend is not linked. Use deleteUnlinkedFriend instead.",
+        message: "Friend is not linked. Use deleteUnlinkedFriend instead."
       };
     }
 
@@ -498,9 +487,9 @@ export const deleteLinkedFriend = mutation({
       message: "Linked friend removed",
       directGroupDeleted,
       expensesDeleted,
-      linkedAccountPreserved: true,
+      linkedAccountPreserved: true
     };
-  },
+  }
 });
 
 export const deleteUnlinkedFriend = mutation({
@@ -509,7 +498,7 @@ export const deleteUnlinkedFriend = mutation({
     // Backward-compatible alias for older clients.
     memberId: v.optional(v.string()),
     // Deprecated: ignored, account email is derived from auth context.
-    accountEmail: v.optional(v.string()),
+    accountEmail: v.optional(v.string())
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
@@ -535,7 +524,7 @@ export const deleteUnlinkedFriend = mutation({
     if (friend.has_linked_account) {
       return {
         success: false,
-        message: "Friend is linked. Use deleteLinkedFriend instead.",
+        message: "Friend is linked. Use deleteLinkedFriend instead."
       };
     }
 
@@ -555,9 +544,7 @@ export const deleteUnlinkedFriend = mutation({
       const hasFriend = group.members.some((m) => equivalentIds.includes(m.id));
       if (!hasFriend) continue;
 
-      const remainingMembers = group.members.filter(
-        (m) => !equivalentIds.includes(m.id)
-      );
+      const remainingMembers = group.members.filter((m) => !equivalentIds.includes(m.id));
 
       if (remainingMembers.length <= 1) {
         const groupExpenses = await ctx.db
@@ -575,7 +562,7 @@ export const deleteUnlinkedFriend = mutation({
       } else {
         await ctx.db.patch(group._id, {
           members: remainingMembers,
-          updated_at: Date.now(),
+          updated_at: Date.now()
         });
 
         const groupExpenses = await ctx.db
@@ -599,9 +586,7 @@ export const deleteUnlinkedFriend = mutation({
             await ctx.db.delete(expense._id);
             expensesDeleted++;
           } else {
-            const newSplits = expense.splits.filter(
-              (s) => !equivalentIds.includes(s.member_id)
-            );
+            const newSplits = expense.splits.filter((s) => !equivalentIds.includes(s.member_id));
             const newParticipants = expense.participants.filter(
               (p) => !equivalentIds.includes(p.member_id)
             );
@@ -614,7 +599,7 @@ export const deleteUnlinkedFriend = mutation({
               participants: newParticipants,
               participant_member_ids: remainingParticipants,
               involved_member_ids: newInvolvedIds,
-              updated_at: Date.now(),
+              updated_at: Date.now()
             });
             expensesModified++;
           }
@@ -626,9 +611,7 @@ export const deleteUnlinkedFriend = mutation({
     for (const memberId of equivalentIds) {
       const aliasesAsCanonical = await ctx.db
         .query("member_aliases")
-        .withIndex("by_canonical_member_id", (q) =>
-          q.eq("canonical_member_id", memberId)
-        )
+        .withIndex("by_canonical_member_id", (q) => q.eq("canonical_member_id", memberId))
         .collect();
 
       for (const alias of aliasesAsCanonical) {
@@ -655,9 +638,9 @@ export const deleteUnlinkedFriend = mutation({
       groupsModified,
       expensesDeleted,
       expensesModified,
-      aliasesDeleted,
+      aliasesDeleted
     };
-  },
+  }
 });
 
 export const hardDeleteAccount = internalMutation({
@@ -669,7 +652,7 @@ export const hardDeleteAccount = internalMutation({
     }
 
     return await performHardDelete(ctx, account, "hardDeleteAccount");
-  },
+  }
 });
 
 export const selfDeleteAccount = mutation({
@@ -689,10 +672,7 @@ export const selfDeleteAccount = mutation({
 
     if (user.member_id) {
       const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id);
-      const equivalentIds = await getAllEquivalentMemberIds(
-        ctx.db,
-        canonicalId
-      );
+      const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalId);
 
       const allFriends = await ctx.db.query("account_friends").collect();
 
@@ -709,7 +689,7 @@ export const selfDeleteAccount = mutation({
             has_linked_account: false,
             linked_account_id: undefined,
             linked_account_email: undefined,
-            updated_at: Date.now(),
+            updated_at: Date.now()
           });
           friendshipsUnlinked++;
         }
@@ -740,7 +720,7 @@ export const selfDeleteAccount = mutation({
       success: true,
       message: "Account deleted, friendships unlinked, expenses preserved",
       friendshipsUnlinked,
-      expensesPreserved: true,
+      expensesPreserved: true
     };
-  },
+  }
 });

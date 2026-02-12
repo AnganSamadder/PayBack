@@ -1,6 +1,10 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUserOrThrow, reconcileUserExpenses, reconcileExpensesForMember } from "./helpers";
+import {
+  getCurrentUserOrThrow,
+  reconcileUserExpenses,
+  reconcileExpensesForMember
+} from "./helpers";
 import { resolveCanonicalMemberIdInternal } from "./aliases";
 import { normalizeMemberId, normalizeMemberIds } from "./identity";
 
@@ -15,7 +19,7 @@ const friendValidator = v.object({
   status: v.optional(v.string()),
   profile_image_url: v.optional(v.string()),
   email: v.optional(v.string()),
-  phone: v.optional(v.string()),
+  phone: v.optional(v.string())
 });
 
 const groupMemberValidator = v.object({
@@ -23,33 +27,33 @@ const groupMemberValidator = v.object({
   name: v.string(),
   profile_image_url: v.optional(v.string()),
   profile_avatar_color: v.optional(v.string()),
-  is_current_user: v.optional(v.boolean()),
+  is_current_user: v.optional(v.boolean())
 });
 
 const groupValidator = v.object({
   id: v.string(),
   name: v.string(),
   members: v.array(groupMemberValidator),
-  is_direct: v.optional(v.boolean()),
+  is_direct: v.optional(v.boolean())
 });
 
 const splitValidator = v.object({
   id: v.string(),
   member_id: v.string(),
   amount: v.number(),
-  is_settled: v.boolean(),
+  is_settled: v.boolean()
 });
 
 const participantValidator = v.object({
   member_id: v.string(),
   name: v.string(),
   linked_account_id: v.optional(v.string()),
-  linked_account_email: v.optional(v.string()),
+  linked_account_email: v.optional(v.string())
 });
 
 const subexpenseValidator = v.object({
   id: v.string(),
-  amount: v.number(),
+  amount: v.number()
 });
 
 const expenseValidator = v.object({
@@ -65,14 +69,14 @@ const expenseValidator = v.object({
   participant_member_ids: v.array(v.string()),
   participants: v.array(participantValidator),
   linked_participants: v.optional(v.any()),
-  subexpenses: v.optional(v.array(subexpenseValidator)),
+  subexpenses: v.optional(v.array(subexpenseValidator))
 });
 
 export const bulkImport = mutation({
   args: {
     friends: v.array(friendValidator),
     groups: v.array(groupValidator),
-    expenses: v.array(expenseValidator),
+    expenses: v.array(expenseValidator)
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
@@ -145,14 +149,15 @@ export const bulkImport = mutation({
         .unique();
       const existing =
         existingExact ??
-        (await ctx.db
-          .query("account_friends")
-          .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
-          .collect())
-          .find(
-            (candidate) =>
-              normalizeMemberId(candidate.member_id) === normalizeMemberId(friend.member_id)
-          );
+        (
+          await ctx.db
+            .query("account_friends")
+            .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+            .collect()
+        ).find(
+          (candidate) =>
+            normalizeMemberId(candidate.member_id) === normalizeMemberId(friend.member_id)
+        );
 
       // Explicit-review policy: never canonicalize identity by name-only matching.
       const match = existing;
@@ -178,7 +183,9 @@ export const bulkImport = mutation({
           finalStatus = "manual";
           finalHasLinked = false;
         } else {
-          linkedMemberId = linkedAccount.member_id ? normalizeMemberId(linkedAccount.member_id) : undefined;
+          linkedMemberId = linkedAccount.member_id
+            ? normalizeMemberId(linkedAccount.member_id)
+            : undefined;
         }
       }
 
@@ -194,40 +201,40 @@ export const bulkImport = mutation({
             linked_account_email: finalLinkedEmail,
             linked_member_id: linkedMemberId,
             status: finalStatus,
-            updated_at: Date.now(),
+            updated_at: Date.now()
           });
           created.friends++;
 
           // Trigger reconciliation if we just linked a user
           if (finalLinkedEmail && linkedMemberId) {
-             const linkedAccount = await ctx.db
-                .query("accounts")
-                .withIndex("by_email", (q) => q.eq("email", finalLinkedEmail!))
-                .unique();
-                
-             if (linkedAccount) {
-                await reconcileExpensesForMember(ctx, user.email, match.member_id, linkedAccount.id);
-             }
+            const linkedAccount = await ctx.db
+              .query("accounts")
+              .withIndex("by_email", (q) => q.eq("email", finalLinkedEmail!))
+              .unique();
+
+            if (linkedAccount) {
+              await reconcileExpensesForMember(ctx, user.email, match.member_id, linkedAccount.id);
+            }
           }
         }
-        
+
         // Ensure alias exists if we have a link (for existing records too)
         if (linkedMemberId && match.member_id !== linkedMemberId) {
-             const existingAlias = await ctx.db
-                .query("member_aliases")
-                .withIndex("by_alias_member_id", (q) =>
-                  q.eq("alias_member_id", normalizeMemberId(match.member_id))
-                )
-                .unique();
-                
-             if (!existingAlias) {
-                 await ctx.db.insert("member_aliases", {
-                     account_email: user.email,
-                     alias_member_id: normalizeMemberId(match.member_id),
-                     canonical_member_id: linkedMemberId,
-                     created_at: Date.now(),
-                 });
-             }
+          const existingAlias = await ctx.db
+            .query("member_aliases")
+            .withIndex("by_alias_member_id", (q) =>
+              q.eq("alias_member_id", normalizeMemberId(match.member_id))
+            )
+            .unique();
+
+          if (!existingAlias) {
+            await ctx.db.insert("member_aliases", {
+              account_email: user.email,
+              alias_member_id: normalizeMemberId(match.member_id),
+              canonical_member_id: linkedMemberId,
+              created_at: Date.now()
+            });
+          }
         }
         continue;
       }
@@ -236,24 +243,28 @@ export const bulkImport = mutation({
       // This handles cases where the CSV has an old/garbage ID that we *know*
       const knownAlias = await ctx.db
         .query("member_aliases")
-        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", normalizeMemberId(friend.member_id)))
+        .withIndex("by_alias_member_id", (q) =>
+          q.eq("alias_member_id", normalizeMemberId(friend.member_id))
+        )
         .unique();
 
       if (knownAlias) {
-         const canonicalFriend = await ctx.db
-            .query("account_friends")
-            .withIndex("by_account_email_and_member_id", (q) =>
-              q.eq("account_email", user.email).eq("member_id", normalizeMemberId(knownAlias.canonical_member_id))
-            )
-            .unique();
+        const canonicalFriend = await ctx.db
+          .query("account_friends")
+          .withIndex("by_account_email_and_member_id", (q) =>
+            q
+              .eq("account_email", user.email)
+              .eq("member_id", normalizeMemberId(knownAlias.canonical_member_id))
+          )
+          .unique();
 
-         if (canonicalFriend) {
-             memberIdMap.set(friend.member_id, normalizeMemberId(knownAlias.canonical_member_id));
-             continue; 
-         }
-         
-         memberIdMap.set(friend.member_id, normalizeMemberId(knownAlias.canonical_member_id));
-         friend.member_id = normalizeMemberId(knownAlias.canonical_member_id);
+        if (canonicalFriend) {
+          memberIdMap.set(friend.member_id, normalizeMemberId(knownAlias.canonical_member_id));
+          continue;
+        }
+
+        memberIdMap.set(friend.member_id, normalizeMemberId(knownAlias.canonical_member_id));
+        friend.member_id = normalizeMemberId(knownAlias.canonical_member_id);
       }
 
       // NO MATCH FOUND - Create New Friend
@@ -271,38 +282,40 @@ export const bulkImport = mutation({
         linked_member_id: linkedMemberId,
         status: finalStatus,
         profile_image_url: friend.profile_image_url,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
-      
+
       // Ensure alias exists for new friend
       if (linkedMemberId && friend.member_id !== linkedMemberId) {
-           const existingAlias = await ctx.db
-              .query("member_aliases")
-              .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", normalizeMemberId(friend.member_id)))
-              .unique();
-              
-           if (!existingAlias) {
-               await ctx.db.insert("member_aliases", {
-                   account_email: user.email,
-                   alias_member_id: normalizeMemberId(friend.member_id),
-                   canonical_member_id: linkedMemberId,
-                   created_at: Date.now(),
-               });
-           }
+        const existingAlias = await ctx.db
+          .query("member_aliases")
+          .withIndex("by_alias_member_id", (q) =>
+            q.eq("alias_member_id", normalizeMemberId(friend.member_id))
+          )
+          .unique();
+
+        if (!existingAlias) {
+          await ctx.db.insert("member_aliases", {
+            account_email: user.email,
+            alias_member_id: normalizeMemberId(friend.member_id),
+            canonical_member_id: linkedMemberId,
+            created_at: Date.now()
+          });
+        }
       }
 
       // Trigger reconciliation for new friend
       if (finalLinkedEmail && linkedMemberId) {
-          const linkedAccount = await ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q) => q.eq("email", finalLinkedEmail!))
-            .unique();
-            
-          if (linkedAccount) {
-             await reconcileExpensesForMember(ctx, user.email, friend.member_id, linkedAccount.id);
-          }
+        const linkedAccount = await ctx.db
+          .query("accounts")
+          .withIndex("by_email", (q) => q.eq("email", finalLinkedEmail!))
+          .unique();
+
+        if (linkedAccount) {
+          await reconcileExpensesForMember(ctx, user.email, friend.member_id, linkedAccount.id);
+        }
       }
-      
+
       created.friends++;
     }
 
@@ -311,21 +324,24 @@ export const bulkImport = mutation({
       .query("groups")
       .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
       .collect();
-      
-    const groupRefMap = new Map<string, typeof existingGroups[0]["_id"]>();
+
+    const groupRefMap = new Map<string, (typeof existingGroups)[0]["_id"]>();
     for (const eg of existingGroups) groupRefMap.set(eg.id, eg._id);
 
     for (const group of args.groups) {
-      const existing = await ctx.db.query("groups").withIndex("by_client_id", q => q.eq("id", group.id)).unique();
+      const existing = await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", group.id))
+        .unique();
       if (existing) {
         groupRefMap.set(group.id, existing._id);
         continue;
       }
-      
+
       // Remap members
-      const remappedMembers = group.members.map(m => ({
-          ...m,
-          id: normalizeMemberId(memberIdMap.get(normalizeMemberId(m.id)) || m.id)
+      const remappedMembers = group.members.map((m) => ({
+        ...m,
+        id: normalizeMemberId(memberIdMap.get(normalizeMemberId(m.id)) || m.id)
       }));
 
       const groupDocId = await ctx.db.insert("groups", {
@@ -337,7 +353,7 @@ export const bulkImport = mutation({
         owner_id: user._id,
         is_direct: group.is_direct ?? false,
         created_at: Date.now(),
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
       groupRefMap.set(group.id, groupDocId);
       created.groups++;
@@ -345,7 +361,10 @@ export const bulkImport = mutation({
 
     // Process Expenses
     for (const expense of args.expenses) {
-      const existing = await ctx.db.query("expenses").withIndex("by_client_id", q => q.eq("id", expense.id)).unique();
+      const existing = await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", expense.id))
+        .unique();
       if (existing) continue;
 
       const groupRef = groupRefMap.get(expense.group_id);
@@ -360,7 +379,7 @@ export const bulkImport = mutation({
           participantEmails.push(p.linked_account_email.toLowerCase());
         }
       }
-      
+
       // Remap IDs in Expense
       const remappedPaidBy = normalizeMemberId(
         memberIdMap.get(normalizeMemberId(expense.paid_by_member_id)) || expense.paid_by_member_id
@@ -370,14 +389,14 @@ export const bulkImport = mutation({
       );
       const remappedSplits = expense.splits.map((s) => ({
         ...s,
-        member_id: normalizeMemberId(memberIdMap.get(normalizeMemberId(s.member_id)) || s.member_id),
+        member_id: normalizeMemberId(memberIdMap.get(normalizeMemberId(s.member_id)) || s.member_id)
       }));
       const remappedParticipantIds = normalizeMemberIds(
         expense.participant_member_ids.map((id) => memberIdMap.get(normalizeMemberId(id)) || id)
       );
       const remappedParticipants = expense.participants.map((p) => ({
         ...p,
-        member_id: normalizeMemberId(memberIdMap.get(normalizeMemberId(p.member_id)) || p.member_id),
+        member_id: normalizeMemberId(memberIdMap.get(normalizeMemberId(p.member_id)) || p.member_id)
       }));
 
       await ctx.db.insert("expenses", {
@@ -400,13 +419,16 @@ export const bulkImport = mutation({
         linked_participants: expense.linked_participants,
         subexpenses: expense.subexpenses,
         created_at: Date.now(),
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
 
       // Reconcile user_expenses for this new expense
       const participantUsers = await Promise.all(
         participantEmails.map((email) =>
-          ctx.db.query("accounts").withIndex("by_email", (q) => q.eq("email", email)).unique()
+          ctx.db
+            .query("accounts")
+            .withIndex("by_email", (q) => q.eq("email", email))
+            .unique()
         )
       );
       const participantUserIds = participantUsers
@@ -420,7 +442,7 @@ export const bulkImport = mutation({
     return {
       success: errors.length === 0,
       created,
-      errors,
+      errors
     };
-  },
+  }
 });

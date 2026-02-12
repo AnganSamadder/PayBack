@@ -29,7 +29,7 @@ export const send = mutation({
     // Check existing request
     const existing = await ctx.db
       .query("friend_requests")
-      .withIndex("by_recipient_email_and_status", (q) => 
+      .withIndex("by_recipient_email_and_status", (q) =>
         q.eq("recipient_email", args.email).eq("status", "pending")
       )
       .filter((q) => q.eq(q.field("sender_id"), sender._id))
@@ -42,7 +42,7 @@ export const send = mutation({
       sender_id: sender._id,
       recipient_email: args.email,
       status: "pending",
-      created_at: Date.now(),
+      created_at: Date.now()
     });
 
     // Update Sender's friend list (Optimistic: "Request Sent")
@@ -61,7 +61,7 @@ export const send = mutation({
     if (existingFriend) {
       await ctx.db.patch(existingFriend._id, {
         status: "request_sent",
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     } else {
       await ctx.db.insert("account_friends", {
@@ -74,12 +74,12 @@ export const send = mutation({
         linked_account_email: recipient.email,
         profile_image_url: recipient.profile_image_url,
         profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     }
-    
+
     return { success: true };
-  },
+  }
 });
 
 /**
@@ -100,15 +100,15 @@ export const accept = mutation({
     if (!sender) throw new Error("Sender account not found");
 
     const recipient = await ctx.db
-        .query("accounts")
-        .withIndex("by_email", (q) => q.eq("email", identity.email!))
-        .unique();
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", identity.email!))
+      .unique();
     if (!recipient) throw new Error("Recipient account not found");
 
     // 1. Update Request
     await ctx.db.patch(request._id, {
-        status: "accepted",
-        updated_at: Date.now()
+      status: "accepted",
+      updated_at: Date.now()
     });
 
     // 2. Add Sender to Recipient's Friends
@@ -130,7 +130,7 @@ export const accept = mutation({
         has_linked_account: true,
         linked_account_id: sender.id,
         linked_account_email: sender.email,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     } else {
       await ctx.db.insert("account_friends", {
@@ -143,7 +143,7 @@ export const accept = mutation({
         linked_account_email: sender.email,
         profile_image_url: sender.profile_image_url,
         profile_avatar_color: sender.profile_avatar_color ?? getRandomAvatarColor(),
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     }
 
@@ -166,7 +166,7 @@ export const accept = mutation({
         has_linked_account: true,
         linked_account_id: recipient.id,
         linked_account_email: recipient.email,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     } else {
       await ctx.db.insert("account_friends", {
@@ -179,7 +179,7 @@ export const accept = mutation({
         linked_account_email: recipient.email,
         profile_image_url: recipient.profile_image_url,
         profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     }
 
@@ -201,8 +201,8 @@ export const reject = mutation({
     if (request.recipient_email !== identity.email) throw new Error("Not authorized");
 
     await ctx.db.patch(request._id, {
-        status: "rejected",
-        updated_at: Date.now()
+      status: "rejected",
+      updated_at: Date.now()
     });
 
     return { success: true };
@@ -219,28 +219,28 @@ export const listIncoming = query({
     if (!identity) return [];
 
     const requests = await ctx.db
-        .query("friend_requests")
-        .withIndex("by_recipient_email_and_status", (q) => 
-            q.eq("recipient_email", identity.email!).eq("status", "pending")
-        )
-        .collect();
+      .query("friend_requests")
+      .withIndex("by_recipient_email_and_status", (q) =>
+        q.eq("recipient_email", identity.email!).eq("status", "pending")
+      )
+      .collect();
 
     // Enrich with sender details
     const results = [];
     for (const req of requests) {
-        const sender = await ctx.db.get(req.sender_id);
-        if (sender) {
-            results.push({
-                request: req,
-                sender: {
-                    id: sender._id,
-                    name: sender.display_name,
-                    email: sender.email,
-                    profile_image_url: sender.profile_image_url,
-                    profile_avatar_color: sender.profile_avatar_color
-                }
-            });
-        }
+      const sender = await ctx.db.get(req.sender_id);
+      if (sender) {
+        results.push({
+          request: req,
+          sender: {
+            id: sender._id,
+            name: sender.display_name,
+            email: sender.email,
+            profile_image_url: sender.profile_image_url,
+            profile_avatar_color: sender.profile_avatar_color
+          }
+        });
+      }
     }
     return results;
   }

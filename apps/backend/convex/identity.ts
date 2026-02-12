@@ -5,7 +5,7 @@ export const LINKING_CONTRACT_VERSION = 2;
 export const LINKING_ERROR_CODES = {
   aliasConflict: "ALIAS_CONFLICT",
   aliasCycle: "ALIAS_CYCLE",
-  selfClaim: "SELF_CLAIM",
+  selfClaim: "SELF_CLAIM"
 } as const;
 
 export function normalizeMemberId(memberId: string): string {

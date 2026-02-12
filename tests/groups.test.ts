@@ -16,8 +16,8 @@ test("create and list groups", async () => {
     id: groupClientId,
     members: [
       { id: "member-1", name: "Alice" },
-      { id: "member-2", name: "Bob" },
-    ],
+      { id: "member-2", name: "Bob" }
+    ]
   });
 
   const groups = await t.query(api.groups.list, {});
@@ -28,7 +28,7 @@ test("create and list groups", async () => {
 
   await createMockGroup(t, {
     name: "Work Mates",
-    id: "group-456",
+    id: "group-456"
   });
 
   const groupsAfter = await t.query(api.groups.list, {});

@@ -12,7 +12,7 @@ function adminIdentity() {
     tokenIdentifier: "admin_user",
     issuer: "http://placeholder.com",
     emailVerified: true,
-    updatedAt: "2023-01-01",
+    updatedAt: "2023-01-01"
   };
 }
 
@@ -26,7 +26,7 @@ describe("Hard Delete Cleanup", () => {
         email: "user_a@test.com",
         display_name: "User A",
         created_at: Date.now(),
-        member_id: "member_a",
+        member_id: "member_a"
       });
     });
 
@@ -36,7 +36,7 @@ describe("Hard Delete Cleanup", () => {
         email: "user_b@test.com",
         display_name: "User B",
         created_at: Date.now(),
-        member_id: "member_b",
+        member_id: "member_b"
       });
     });
 
@@ -50,7 +50,7 @@ describe("Hard Delete Cleanup", () => {
         linked_account_id: "user_b",
         linked_account_email: "user_b@test.com",
         linked_member_id: "member_b",
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     });
 
@@ -62,7 +62,7 @@ describe("Hard Delete Cleanup", () => {
       tokenIdentifier: "user_a",
       issuer: "http://placeholder.com",
       emailVerified: true,
-      updatedAt: "2023-01-01",
+      updatedAt: "2023-01-01"
     });
 
     const friendsBefore = await ctxA.query(api.friends.list, {});
@@ -91,7 +91,7 @@ describe("Hard Delete Cleanup", () => {
         email: "user_a@test.com",
         display_name: "User A",
         created_at: Date.now(),
-        member_id: "member_a",
+        member_id: "member_a"
       });
     });
 
@@ -101,7 +101,7 @@ describe("Hard Delete Cleanup", () => {
         email: "user_b@test.com",
         display_name: "User B",
         created_at: Date.now(),
-        member_id: "member_b",
+        member_id: "member_b"
       });
     });
 
@@ -113,7 +113,7 @@ describe("Hard Delete Cleanup", () => {
         profile_avatar_color: "#FF0000",
         has_linked_account: true,
         linked_member_id: "member_b",
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     });
 
@@ -125,7 +125,7 @@ describe("Hard Delete Cleanup", () => {
       tokenIdentifier: "user_a",
       issuer: "http://placeholder.com",
       emailVerified: true,
-      updatedAt: "2023-01-01",
+      updatedAt: "2023-01-01"
     });
 
     const friendsBefore = await ctxA.query(api.friends.list, {});
@@ -151,7 +151,7 @@ describe("Hard Delete Cleanup", () => {
         email: "user_a@test.com",
         display_name: "User A",
         created_at: Date.now(),
-        member_id: "member_a",
+        member_id: "member_a"
       });
     });
 
@@ -161,7 +161,7 @@ describe("Hard Delete Cleanup", () => {
         email: "user_b@test.com",
         display_name: "User B",
         created_at: Date.now(),
-        member_id: "member_b",
+        member_id: "member_b"
       });
     });
 
@@ -175,7 +175,7 @@ describe("Hard Delete Cleanup", () => {
         linked_account_id: "user_b",
         linked_account_email: "user_b@test.com",
         linked_member_id: "member_b",
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     });
 
@@ -189,7 +189,7 @@ describe("Hard Delete Cleanup", () => {
         linked_account_id: "user_a",
         linked_account_email: "user_a@test.com",
         linked_member_id: "member_a",
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     });
 
@@ -226,7 +226,7 @@ describe("Hard Delete Cleanup", () => {
         email: "user_a@test.com",
         display_name: "User A",
         created_at: Date.now(),
-        member_id: "member_a",
+        member_id: "member_a"
       });
     });
 
@@ -238,16 +238,14 @@ describe("Hard Delete Cleanup", () => {
         profile_avatar_color: "#999999",
         has_linked_account: true,
         linked_member_id: "member_deleted",
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     });
 
     const linkedByMemberId = await t.run(async (ctx) => {
       return await ctx.db
         .query("account_friends")
-        .withIndex("by_linked_member_id", (q) =>
-          q.eq("linked_member_id", "member_deleted")
-        )
+        .withIndex("by_linked_member_id", (q) => q.eq("linked_member_id", "member_deleted"))
         .collect();
     });
 
@@ -264,7 +262,7 @@ describe("Hard Delete Cleanup", () => {
         email: "user_a@test.com",
         display_name: "User A",
         created_at: Date.now(),
-        member_id: "member_a",
+        member_id: "member_a"
       });
 
       await ctx.db.insert("accounts", {
@@ -272,7 +270,7 @@ describe("Hard Delete Cleanup", () => {
         email: "user_b@test.com",
         display_name: "User B",
         created_at: Date.now(),
-        member_id: "member_b",
+        member_id: "member_b"
       });
 
       await ctx.db.insert("account_friends", {
@@ -283,7 +281,7 @@ describe("Hard Delete Cleanup", () => {
         has_linked_account: true,
         linked_account_id: "user_b",
         linked_account_email: "user_b@test.com",
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     });
 
@@ -297,12 +295,8 @@ describe("Hard Delete Cleanup", () => {
 
     expect(allFriends.length).toBe(0);
 
-    const ghostLinked = allFriends.filter(
-      (f) => f.linked_account_email === "user_b@test.com"
-    );
-    const ghostUnlinked = allFriends.filter(
-      (f) => f.name === "User B" && !f.has_linked_account
-    );
+    const ghostLinked = allFriends.filter((f) => f.linked_account_email === "user_b@test.com");
+    const ghostUnlinked = allFriends.filter((f) => f.name === "User B" && !f.has_linked_account);
 
     expect(ghostLinked.length).toBe(0);
     expect(ghostUnlinked.length).toBe(0);

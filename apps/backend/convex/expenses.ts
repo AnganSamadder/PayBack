@@ -6,7 +6,7 @@ import {
   findAccountByAuthIdOrDocId,
   findAccountByMemberId,
   normalizeMemberId,
-  normalizeMemberIds,
+  normalizeMemberIds
 } from "./identity";
 import { getAllEquivalentMemberIds } from "./aliases";
 
@@ -16,10 +16,10 @@ async function getCurrentUser(ctx: any) {
     throw new Error("Unauthenticated");
   }
   const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
-      
+    .query("accounts")
+    .withIndex("by_email", (q) => q.eq("email", identity.email!))
+    .unique();
+
   return { identity, user };
 }
 
@@ -66,28 +66,30 @@ export const create = mutation({
         id: v.string(),
         member_id: v.string(),
         amount: v.number(),
-        is_settled: v.boolean(),
+        is_settled: v.boolean()
       })
     ),
     is_settled: v.boolean(),
-    owner_email: v.optional(v.string()), 
-    owner_account_id: v.optional(v.string()), 
+    owner_email: v.optional(v.string()),
+    owner_account_id: v.optional(v.string()),
     participant_member_ids: v.array(v.string()),
     participants: v.array(
       v.object({
         member_id: v.string(),
         name: v.string(),
         linked_account_id: v.optional(v.string()),
-        linked_account_email: v.optional(v.string()),
+        linked_account_email: v.optional(v.string())
       })
     ),
     linked_participants: v.optional(v.any()),
-    subexpenses: v.optional(v.array(
-      v.object({
-        id: v.string(),
-        amount: v.number(),
-      })
-    )),
+    subexpenses: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          amount: v.number()
+        })
+      )
+    )
   },
   handler: async (ctx, args) => {
     const { identity, user } = await getCurrentUser(ctx);
@@ -99,18 +101,18 @@ export const create = mutation({
     const normalizedInvolved = normalizeMemberIds(args.involved_member_ids);
     const normalizedSplits = args.splits.map((split) => ({
       ...split,
-      member_id: normalizeMemberId(split.member_id),
+      member_id: normalizeMemberId(split.member_id)
     }));
     const normalizedParticipantMemberIds = normalizeMemberIds(args.participant_member_ids);
     const normalizedParticipants = args.participants.map((participant) => ({
       ...participant,
-      member_id: normalizeMemberId(participant.member_id),
+      member_id: normalizeMemberId(participant.member_id)
     }));
     const linkedAccountCache = new Map<string, any | null>();
     const resolveLinkedAccount = async ({
       linkedAccountEmail,
       linkedAccountId,
-      memberSeeds,
+      memberSeeds
     }: {
       linkedAccountEmail?: string;
       linkedAccountId?: string;
@@ -166,16 +168,13 @@ export const create = mutation({
     // Build participant_emails from linked participants plus server-side account resolution.
     const participantEmailSet = new Set<string>([user.email.toLowerCase()]);
     for (const participant of normalizedParticipants) {
-      if (
-        participant.linked_account_email &&
-        participant.linked_account_email.trim().length > 0
-      ) {
+      if (participant.linked_account_email && participant.linked_account_email.trim().length > 0) {
         participantEmailSet.add(participant.linked_account_email.trim().toLowerCase());
       }
       const participantAccount = await resolveLinkedAccount({
         linkedAccountEmail: participant.linked_account_email,
         linkedAccountId: participant.linked_account_id,
-        memberSeeds: [participant.member_id],
+        memberSeeds: [participant.member_id]
       });
       if (participantAccount?.email) {
         participantEmailSet.add(String(participantAccount.email).trim().toLowerCase());
@@ -185,9 +184,9 @@ export const create = mutation({
 
     // VALIDATION: Check Group & Friendship for Direct Expenses
     const group = await ctx.db
-        .query("groups")
-        .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
-        .unique();
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
+      .unique();
 
     if (!group) throw new Error("Group not found");
 
@@ -208,7 +207,7 @@ export const create = mutation({
         return resolveLinkedAccount({
           linkedAccountEmail: friend.linked_account_email,
           linkedAccountId: friend.linked_account_id,
-          memberSeeds: [friend.linked_member_id, friend.member_id],
+          memberSeeds: [friend.linked_member_id, friend.member_id]
         });
       };
 
@@ -224,7 +223,7 @@ export const create = mutation({
       const groupMemberIdentityRows = await Promise.all(
         group.members.map(async (member) => ({
           member,
-          identityIds: await getEquivalentIdSet(member.id),
+          identityIds: await getEquivalentIdSet(member.id)
         }))
       );
 
@@ -262,7 +261,7 @@ export const create = mutation({
         const linkedAccount = await getLinkedAccountForFriend(friend);
         const linkedAccountSeeds = [
           linkedAccount?.member_id,
-          ...(linkedAccount?.alias_member_ids || []),
+          ...(linkedAccount?.alias_member_ids || [])
         ].filter((value): value is string => typeof value === "string" && value.length > 0);
         for (const seedId of linkedAccountSeeds) {
           const equivalentIds = await getEquivalentIdSet(seedId);
@@ -289,8 +288,7 @@ export const create = mutation({
         // Must resolve to an existing friend identity (member_id, linked_member_id, or aliases).
         const matchingFriend = ownerFriendIdentityRows.find(
           ({ friend, identityIds }) =>
-            isEligibleDirectFriendRecord(friend) &&
-            intersects(identityIds, memberEquivalentIds)
+            isEligibleDirectFriendRecord(friend) && intersects(identityIds, memberEquivalentIds)
         );
 
         if (!matchingFriend) {
@@ -332,7 +330,7 @@ export const create = mutation({
 
     if (existing) {
       // Update existing record
-        await ctx.db.patch(existing._id, {
+      await ctx.db.patch(existing._id, {
         description: args.description,
         date: args.date,
         total_amount: args.total_amount,
@@ -346,13 +344,18 @@ export const create = mutation({
         participant_member_ids: normalizedParticipantMemberIds,
         participant_emails: participantEmails,
         subexpenses: args.subexpenses,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
 
-      const participantUsers = await Promise.all(participantEmails.map(email => 
-        ctx.db.query("accounts").withIndex("by_email", q => q.eq("email", email)).unique()
-      ));
-      const participantUserIds = participantUsers.filter(u => u !== null).map(u => u!.id);
+      const participantUsers = await Promise.all(
+        participantEmails.map((email) =>
+          ctx.db
+            .query("accounts")
+            .withIndex("by_email", (q) => q.eq("email", email))
+            .unique()
+        )
+      );
+      const participantUserIds = participantUsers.filter((u) => u !== null).map((u) => u!.id);
       await reconcileUserExpenses(ctx, args.id, participantUserIds);
 
       return existing._id;
@@ -378,17 +381,22 @@ export const create = mutation({
       linked_participants: args.linked_participants,
       subexpenses: args.subexpenses,
       created_at: Date.now(),
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
 
-    const participantUsers = await Promise.all(participantEmails.map(email => 
-      ctx.db.query("accounts").withIndex("by_email", q => q.eq("email", email)).unique()
-    ));
-    const participantUserIds = participantUsers.filter(u => u !== null).map(u => u!.id);
+    const participantUsers = await Promise.all(
+      participantEmails.map((email) =>
+        ctx.db
+          .query("accounts")
+          .withIndex("by_email", (q) => q.eq("email", email))
+          .unique()
+      )
+    );
+    const participantUserIds = participantUsers.filter((u) => u !== null).map((u) => u!.id);
     await reconcileUserExpenses(ctx, args.id, participantUserIds);
-    
+
     return expenseId;
-  },
+  }
 });
 
 export const listByGroup = query({
@@ -398,19 +406,19 @@ export const listByGroup = query({
     if (!user) return [];
 
     const expenses = await ctx.db
-        .query("expenses")
-        .withIndex("by_group_id", q => q.eq("group_id", args.group_id))
-        .collect();
-        
+      .query("expenses")
+      .withIndex("by_group_id", (q) => q.eq("group_id", args.group_id))
+      .collect();
+
     return expenses;
-  },
+  }
 });
 
 export const listByGroupPaginated = query({
   args: {
     groupId: v.id("groups"),
     cursor: v.optional(v.string()),
-    limit: v.optional(v.number()),
+    limit: v.optional(v.number())
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
@@ -424,14 +432,14 @@ export const listByGroupPaginated = query({
       .order("desc")
       .paginate({
         cursor: args.cursor ?? null,
-        numItems: args.limit ?? 50,
+        numItems: args.limit ?? 50
       });
 
     return {
       items: result.page,
-      nextCursor: result.isDone ? null : result.continueCursor,
+      nextCursor: result.isDone ? null : result.continueCursor
     };
-  },
+  }
 });
 
 export const list = query({
@@ -442,112 +450,114 @@ export const list = query({
 
     const userExpenses = await ctx.db
       .query("user_expenses")
-      .withIndex("by_user_id_and_updated_at", q => q.eq("user_id", user.id))
+      .withIndex("by_user_id_and_updated_at", (q) => q.eq("user_id", user.id))
       .order("desc")
       .collect();
 
-    const expenses = await Promise.all(userExpenses.map(async (ue) => {
-      return await ctx.db
-        .query("expenses")
-        .withIndex("by_client_id", q => q.eq("id", ue.expense_id))
-        .unique();
-    }));
+    const expenses = await Promise.all(
+      userExpenses.map(async (ue) => {
+        return await ctx.db
+          .query("expenses")
+          .withIndex("by_client_id", (q) => q.eq("id", ue.expense_id))
+          .unique();
+      })
+    );
 
-    return expenses.filter(e => e !== null);
-  },
+    return expenses.filter((e) => e !== null);
+  }
 });
 
 // Delete a single expense by client UUID
 export const deleteExpense = mutation({
-    args: { id: v.string() },
-    handler: async (ctx, args) => {
-        const { user } = await getCurrentUser(ctx);
-        if (!user) throw new Error("User not found");
-        
-        const expense = await ctx.db
-            .query("expenses")
-            .withIndex("by_client_id", (q) => q.eq("id", args.id))
-            .unique();
-            
-        if (!expense) return;
-        
-        // Auth check - only owner can delete
-        if (expense.owner_id !== user._id && expense.owner_email !== user.email) {
-            throw new Error("Not authorized to delete this expense");
-        }
-        
-        await reconcileUserExpenses(ctx, args.id, []);
-        await ctx.db.delete(expense._id);
+  args: { id: v.string() },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+
+    const expense = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", args.id))
+      .unique();
+
+    if (!expense) return;
+
+    // Auth check - only owner can delete
+    if (expense.owner_id !== user._id && expense.owner_email !== user.email) {
+      throw new Error("Not authorized to delete this expense");
     }
+
+    await reconcileUserExpenses(ctx, args.id, []);
+    await ctx.db.delete(expense._id);
+  }
 });
 
 // Delete multiple expenses by client UUIDs
 export const deleteExpenses = mutation({
-    args: { ids: v.array(v.string()) },
-    handler: async (ctx, args) => {
-        const { user } = await getCurrentUser(ctx);
-        if (!user) throw new Error("User not found");
-        
-        for (const id of args.ids) {
-            const expense = await ctx.db
-                .query("expenses")
-                .withIndex("by_client_id", (q) => q.eq("id", id))
-                .unique();
-                
-            if (!expense) continue;
-            
-            // Auth check - only owner can delete
-            if (expense.owner_id !== user._id && expense.owner_email !== user.email) {
-                continue;
-            }
-            
-            await reconcileUserExpenses(ctx, id, []);
-            await ctx.db.delete(expense._id);
-        }
+  args: { ids: v.array(v.string()) },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+
+    for (const id of args.ids) {
+      const expense = await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", id))
+        .unique();
+
+      if (!expense) continue;
+
+      // Auth check - only owner can delete
+      if (expense.owner_id !== user._id && expense.owner_email !== user.email) {
+        continue;
+      }
+
+      await reconcileUserExpenses(ctx, id, []);
+      await ctx.db.delete(expense._id);
     }
+  }
 });
 
 // Clear ALL expenses for the current user
 export const clearAllForUser = mutation({
-    args: {},
-    handler: async (ctx) => {
-        const { user } = await getCurrentUser(ctx);
-        if (!user) throw new Error("User not found");
-        
-        // Get all expenses owned by this user
-        const ownedExpenses = await ctx.db
-            .query("expenses")
-            .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-            .collect();
-            
-        const byEmail = await ctx.db
-            .query("expenses")
-            .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
-            .collect();
-            
-        // Merge and dedupe by client UUID so we can reconcile user_expenses correctly.
-        const ownedExpenseByClientId = new Map<string, any>();
-        ownedExpenses.forEach((expense) => ownedExpenseByClientId.set(expense.id, expense));
-        byEmail.forEach((expense) => ownedExpenseByClientId.set(expense.id, expense));
+  args: {},
+  handler: async (ctx) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
 
-        // Delete all owned expenses and fully reconcile fan-out rows.
-        for (const expense of ownedExpenseByClientId.values()) {
-            await reconcileUserExpenses(ctx, expense.id, []);
-            await ctx.db.delete(expense._id);
-        }
+    // Get all expenses owned by this user
+    const ownedExpenses = await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
+      .collect();
 
-        // Also remove this user from user_expenses visibility rows for shared expenses.
-        const viewerExpenseRows = await ctx.db
-          .query("user_expenses")
-          .withIndex("by_user_id", (q) => q.eq("user_id", user.id))
-          .collect();
-        for (const row of viewerExpenseRows) {
-          await ctx.db.delete(row._id);
-        }
+    const byEmail = await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
+      .collect();
 
-        return {
-          deleted_owned_expenses: ownedExpenseByClientId.size,
-          removed_viewer_visibility_rows: viewerExpenseRows.length,
-        };
+    // Merge and dedupe by client UUID so we can reconcile user_expenses correctly.
+    const ownedExpenseByClientId = new Map<string, any>();
+    ownedExpenses.forEach((expense) => ownedExpenseByClientId.set(expense.id, expense));
+    byEmail.forEach((expense) => ownedExpenseByClientId.set(expense.id, expense));
+
+    // Delete all owned expenses and fully reconcile fan-out rows.
+    for (const expense of ownedExpenseByClientId.values()) {
+      await reconcileUserExpenses(ctx, expense.id, []);
+      await ctx.db.delete(expense._id);
     }
+
+    // Also remove this user from user_expenses visibility rows for shared expenses.
+    const viewerExpenseRows = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_user_id", (q) => q.eq("user_id", user.id))
+      .collect();
+    for (const row of viewerExpenseRows) {
+      await ctx.db.delete(row._id);
+    }
+
+    return {
+      deleted_owned_expenses: ownedExpenseByClientId.size,
+      removed_viewer_visibility_rows: viewerExpenseRows.length
+    };
+  }
 });

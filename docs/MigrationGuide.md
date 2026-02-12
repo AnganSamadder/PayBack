@@ -17,22 +17,26 @@ We are moving away from string-based IDs for internal relationships to improve t
 The following fields are now deprecated and should be replaced in new code:
 
 ### Groups Table
-| Deprecated Field | New Field | Description |
-| :--- | :--- | :--- |
+
+| Deprecated Field            | New Field         | Description                       |
+| :-------------------------- | :---------------- | :-------------------------------- |
 | `owner_account_id` (string) | `owner_id` (v.id) | Reference to the owner's account. |
 
 ### Expenses Table
-| Deprecated Field | New Field | Description |
-| :--- | :--- | :--- |
-| `owner_account_id` (string) | `owner_id` (v.id) | Reference to the owner's account. |
-| `group_id` (string) | `group_ref` (v.id) | Reference to the group this expense belongs to. |
+
+| Deprecated Field            | New Field          | Description                                     |
+| :-------------------------- | :----------------- | :---------------------------------------------- |
+| `owner_account_id` (string) | `owner_id` (v.id)  | Reference to the owner's account.               |
+| `group_id` (string)         | `group_ref` (v.id) | Reference to the group this expense belongs to. |
 
 ## Query Updates
 
-Existing queries have been updated to *prefer* the new `v.id` fields and their corresponding indexes.
+Existing queries have been updated to _prefer_ the new `v.id` fields and their corresponding indexes.
 
 ### Example: Listing Groups
+
 **Old Way:**
+
 ```typescript
 const groups = await ctx.db
   .query("groups")
@@ -41,6 +45,7 @@ const groups = await ctx.db
 ```
 
 **New Way:**
+
 ```typescript
 const groups = await ctx.db
   .query("groups")

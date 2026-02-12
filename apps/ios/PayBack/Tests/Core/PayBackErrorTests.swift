@@ -180,9 +180,9 @@ final class PayBackErrorTests: XCTestCase {
     // MARK: - General Errors
     
     func testConfigurationMissing_HasDescription() {
-        let error = PayBackError.configurationMissing(service: "Supabase")
+        let error = PayBackError.configurationMissing(service: "BackendService")
         XCTAssertNotNil(error.errorDescription)
-        XCTAssertTrue(error.errorDescription?.contains("Supabase") ?? false)
+        XCTAssertTrue(error.errorDescription?.contains("BackendService") ?? false)
     }
     
     func testUnderlying_HasDescription() {

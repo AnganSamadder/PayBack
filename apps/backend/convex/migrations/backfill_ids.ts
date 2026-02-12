@@ -17,7 +17,7 @@ export const backfillIds = internalMutation({
 
         if (account) {
           await ctx.db.patch(group._id, {
-            owner_id: account._id,
+            owner_id: account._id
           });
           groupsUpdated++;
         }
@@ -62,11 +62,17 @@ export const backfillIds = internalMutation({
         await ctx.db.patch(expense._id, patch);
       }
     }
-    console.log(`Processed ${expensesProcessed} expenses. Updated owner_id: ${expensesOwnerUpdated}, group_ref: ${expensesGroupUpdated}`);
+    console.log(
+      `Processed ${expensesProcessed} expenses. Updated owner_id: ${expensesOwnerUpdated}, group_ref: ${expensesGroupUpdated}`
+    );
 
     return {
       groups: { processed: groupsProcessed, updated: groupsUpdated },
-      expenses: { processed: expensesProcessed, ownerUpdated: expensesOwnerUpdated, groupUpdated: expensesGroupUpdated },
+      expenses: {
+        processed: expensesProcessed,
+        ownerUpdated: expensesOwnerUpdated,
+        groupUpdated: expensesGroupUpdated
+      }
     };
-  },
+  }
 });

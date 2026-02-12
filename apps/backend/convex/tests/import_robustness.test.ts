@@ -17,7 +17,7 @@ test("import_robustness: handles aliases and id mismatches", async () => {
       email: ownerEmail,
       display_name: "Angan",
       created_at: Date.now(),
-      member_id: "member_angan",
+      member_id: "member_angan"
     });
   });
 
@@ -29,7 +29,7 @@ test("import_robustness: handles aliases and id mismatches", async () => {
       name: "Test User",
       profile_avatar_color: "#000000",
       has_linked_account: false,
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
   });
 
@@ -39,7 +39,7 @@ test("import_robustness: handles aliases and id mismatches", async () => {
       account_email: ownerEmail,
       alias_member_id: aliasFriendId,
       canonical_member_id: canonicalFriendId,
-      created_at: Date.now(),
+      created_at: Date.now()
     });
   });
 
@@ -50,8 +50,8 @@ test("import_robustness: handles aliases and id mismatches", async () => {
       {
         member_id: aliasFriendId, // Using the ALIAS
         name: "Test User Imported", // Name doesn't matter if ID matches via alias
-        profile_avatar_color: "#000000",
-      },
+        profile_avatar_color: "#000000"
+      }
     ],
     groups: [
       {
@@ -60,7 +60,7 @@ test("import_robustness: handles aliases and id mismatches", async () => {
         members: [
           { id: "member_angan", name: "Angan", is_current_user: true },
           { id: aliasFriendId, name: "Test User" } // Using ALIAS in group too
-        ],
+        ]
       }
     ],
     expenses: []
@@ -75,31 +75,31 @@ test("import_robustness: handles aliases and id mismatches", async () => {
     tokenIdentifier: "user_a",
     issuer: "",
     emailVerified: true,
-    updatedAt: "",
+    updatedAt: ""
   });
-  
+
   await ctxA.mutation(api.bulkImport.bulkImport, importPayload);
 
   // 5. VERIFY: No duplicates created
   const friends = await t.run(async (ctx) => {
     return await ctx.db.query("account_friends").collect();
   });
-  
+
   // Should still be 1 friend (Canonical)
   expect(friends.length).toBe(1);
   expect(friends[0].member_id).toBe(canonicalFriendId);
   // Name might update if we allowed it, but here we expect it to match the canonical record
-  
+
   // 6. VERIFY: Group Member Remapping
   const groups = await t.run(async (ctx) => {
     return await ctx.db.query("groups").collect();
   });
-  
+
   expect(groups.length).toBe(1);
   const group = groups[0];
-  
+
   // The member ID in the group should have been remapped from ALIAS -> CANONICAL
-  const memberIds = group.members.map(m => m.id);
+  const memberIds = group.members.map((m) => m.id);
   expect(memberIds).toContain(canonicalFriendId.toLowerCase());
   expect(memberIds).not.toContain(aliasFriendId.toLowerCase());
 });
@@ -117,16 +117,16 @@ test("import_robustness: does not dedupe by name-only when id mismatches", async
       email: ownerEmail,
       display_name: "Angan",
       created_at: Date.now(),
-      member_id: "member_angan",
+      member_id: "member_angan"
     });
-    
+
     await ctx.db.insert("account_friends", {
       account_email: ownerEmail,
       member_id: existingId,
       name: "Test User", // Matches name
       profile_avatar_color: "#000000",
       has_linked_account: false,
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
   });
 
@@ -136,18 +136,18 @@ test("import_robustness: does not dedupe by name-only when id mismatches", async
       {
         member_id: importId,
         name: "Test User", // Name match!
-        profile_avatar_color: "#000000",
-      },
+        profile_avatar_color: "#000000"
+      }
     ],
     groups: [
-        {
-            id: "group_2",
-            name: "Group Name Match",
-            members: [
-                { id: "member_angan", name: "Angan" },
-                { id: importId, name: "Test User" } // Uses import ID
-            ]
-        }
+      {
+        id: "group_2",
+        name: "Group Name Match",
+        members: [
+          { id: "member_angan", name: "Angan" },
+          { id: importId, name: "Test User" } // Uses import ID
+        ]
+      }
     ],
     expenses: []
   };
@@ -160,26 +160,26 @@ test("import_robustness: does not dedupe by name-only when id mismatches", async
     tokenIdentifier: "user_a",
     issuer: "",
     emailVerified: true,
-    updatedAt: "",
+    updatedAt: ""
   });
-  
+
   await ctxA.mutation(api.bulkImport.bulkImport, importPayload);
 
   // 3. VERIFY
   const friends = await t.run(async (ctx) => {
     return await ctx.db.query("account_friends").collect();
   });
-  
+
   // Name-only matching is disabled by default (explicit-review policy).
   expect(friends.length).toBe(2);
-  expect(friends.some(f => f.member_id === existingId)).toBe(true);
-  expect(friends.some(f => f.member_id === importId.toLowerCase())).toBe(true);
-  
+  expect(friends.some((f) => f.member_id === existingId)).toBe(true);
+  expect(friends.some((f) => f.member_id === importId.toLowerCase())).toBe(true);
+
   // Group keeps the imported ID (normalized), no implicit identity merge.
   const groups = await t.run(async (ctx) => {
     return await ctx.db.query("groups").collect();
   });
   const group = groups[0];
-  const memberIds = group.members.map(m => m.id);
+  const memberIds = group.members.map((m) => m.id);
   expect(memberIds).toContain(importId.toLowerCase());
 });
