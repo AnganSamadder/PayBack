@@ -662,7 +662,7 @@ export const backfillFirstLastNames = mutation({
         await ctx.db.patch(account._id, {
           first_name: firstName,
           last_name: lastName,
-          updated_at: Date.now(),
+          updated_at: Date.now()
         });
         accountsUpdated++;
       }
@@ -683,7 +683,7 @@ export const backfillFirstLastNames = mutation({
           await ctx.db.patch(friend._id, {
             first_name: linkedAccount.first_name,
             last_name: linkedAccount.last_name,
-            updated_at: Date.now(),
+            updated_at: Date.now()
           });
           friendsUpdated++;
           continue;
@@ -697,12 +697,12 @@ export const backfillFirstLastNames = mutation({
         await ctx.db.patch(friend._id, {
           first_name: firstName,
           last_name: lastName,
-          updated_at: Date.now(),
+          updated_at: Date.now()
         });
         friendsUpdated++;
       }
     }
 
     return { accountsUpdated, friendsUpdated };
-  },
+  }
 });

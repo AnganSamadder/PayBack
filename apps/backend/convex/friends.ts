@@ -342,7 +342,10 @@ export const upsert = mutation({
         prefer_nickname: args.prefer_nickname,
         first_name: args.first_name ?? existingLegacy.first_name,
         last_name: args.last_name ?? existingLegacy.last_name,
-        display_preference: args.display_preference === undefined ? existingLegacy.display_preference : args.display_preference,
+        display_preference:
+          args.display_preference === undefined
+            ? existingLegacy.display_preference
+            : args.display_preference,
         has_linked_account: finalHasLinkedAccount,
         linked_account_id: finalHasLinkedAccount ? finalLinkedAccountId : undefined,
         linked_account_email: finalHasLinkedAccount ? finalLinkedAccountEmail : undefined,
