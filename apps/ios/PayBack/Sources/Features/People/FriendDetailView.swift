@@ -2,8 +2,9 @@ import SwiftUI
 
 struct FriendDetailView: View {
     @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
     let friend: GroupMember
-    let onBack: () -> Void
+    let onBack: (() -> Void)?
     let onExpenseSelected: ((Expense) -> Void)?
     
     @State private var selectedTab: FriendDetailTab = .direct
@@ -21,7 +22,7 @@ struct FriendDetailView: View {
     @State private var showMergeSheet = false
     @State private var showDeleteConfirmation = false
 
-    init(friend: GroupMember, onBack: @escaping () -> Void, onExpenseSelected: ((Expense) -> Void)? = nil) {
+    init(friend: GroupMember, onBack: (() -> Void)? = nil, onExpenseSelected: ((Expense) -> Void)? = nil) {
         self.friend = friend
         self.onBack = onBack
         self.onExpenseSelected = onExpenseSelected
@@ -233,6 +234,14 @@ struct FriendDetailView: View {
     }
 
     // MARK: - Invite Link Button
+
+    private func handleBack() {
+        if let onBack {
+            onBack()
+        } else {
+            dismiss()
+        }
+    }
     
     private var addFriendButtons: some View {
         VStack(spacing: 12) {
@@ -651,7 +660,7 @@ struct FriendDetailView: View {
             try await store.mergeFriend(unlinkedMemberId: friend.id, into: target.memberId)
             await MainActor.run {
                 Haptics.notify(.success)
-                onBack() // Navigate back as the current "friend" (non-friend member) is now merged/gone
+                handleBack() // Navigate back as the current "friend" (non-friend member) is now merged/gone
             }
         } catch {
             await MainActor.run {
@@ -685,20 +694,13 @@ struct FriendDetailView: View {
             }
             .background(Color.clear)
         }
-        .customNavigationHeader(
-            title: "Friend Details",
-            onBack: onBack
-        )
-        .toolbar(.hidden, for: .navigationBar)
-        .navigationBarBackButtonHidden(true)
+        .navigationTitle("Friend Details")
+        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showAddExpense) {
             if let directGroup = getDirectGroup() {
                 AddExpenseView(group: directGroup)
                     .environmentObject(store)
             }
-        }
-        .onAppear {
-            selectedTab = .direct
         }
         .onChange(of: friend.id) { oldValue, newValue in
             selectedTab = .direct
@@ -731,7 +733,7 @@ struct FriendDetailView: View {
             Button("Delete \(friend.name)", role: .destructive) {
                 Haptics.notify(.warning)
                 store.deleteFriend(friend)
-                onBack()
+                handleBack()
             }
             Button("Cancel", role: .cancel) {}
         } message: {

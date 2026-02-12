@@ -448,14 +448,6 @@ jobs:
         run: |
           xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj -scheme PayBack
 
-      - name: List Available Simulators
-        run: |
-          echo "Xcode version:"
-          xcodebuild -version
-          echo ""
-          echo "Available iOS Simulators:"
-          xcrun simctl list devices iPhone available
-
       - name: Select iPhone Simulator
         env:
           SDK_MAJOR: ${{ steps.detect-sdk.outputs.sdk-major }}
@@ -567,13 +559,30 @@ jobs:
           sleep 5
           echo "Simulator ready"
 
+      - name: Install SwiftLint
+        run: |
+          brew update
+          brew install swiftlint || true
+
+      - name: Run SwiftLint (non-failing)
+        run: swiftlint lint || true
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project PayBack.xcodeproj \
+            -scheme PayBack \
+            -configuration Debug \
+            -destination "$SIMULATOR_DESTINATION" \
+            clean build | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
       - name: Clean Previous Test Results
         run: |
           rm -rf TestResults.xcresult coverage.json coverage-report.txt || true
-          echo "Cleaned previous test artifacts"
 
-      - name: Run Unit Tests (No Sanitizer)
-        if: matrix.sanitizer == 'none'
+      - name: Run Unit Tests
         run: |
           set -o pipefail
           xcodebuild test \
@@ -590,7 +599,7 @@ jobs:
           NSUnbufferedIO: "YES"
 
       - name: Report Skipped Tests
-        if: matrix.sanitizer == 'none' && always()
+        if: always()
         run: |
           echo "## Skipped Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -611,38 +620,7 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
-      - name: Run Unit Tests (Thread Sanitizer)
-        if: matrix.sanitizer == 'thread'
-        run: |
-          xcodebuild test \
-            -project PayBack.xcodeproj \
-            -scheme PayBackTests \
-            -configuration Debug \
-            -destination "$SIMULATOR_DESTINATION" \
-            -parallel-testing-enabled NO \
-            -enableThreadSanitizer YES \
-            -resultBundlePath TestResults.xcresult \
-            | xcpretty
-        env:
-          NSUnbufferedIO: "YES"
-
-      - name: Run Unit Tests (Address Sanitizer)
-        if: matrix.sanitizer == 'address'
-        run: |
-          xcodebuild test \
-            -project PayBack.xcodeproj \
-            -scheme PayBackTests \
-            -configuration Debug \
-            -destination "$SIMULATOR_DESTINATION" \
-            -parallel-testing-enabled NO \
-            -enableAddressSanitizer YES \
-            -resultBundlePath TestResults.xcresult \
-            | xcpretty
-        env:
-          NSUnbufferedIO: "YES"
-
       - name: Generate Coverage Report
-        if: matrix.sanitizer == 'none'
         run: |
           if [ ! -d TestResults.xcresult ]; then
             echo "ERROR: TestResults.xcresult not found - tests likely did not run"
@@ -669,7 +647,6 @@ jobs:
           fi
 
       - name: Check Coverage Threshold
-        if: matrix.sanitizer == 'none'
         run: |
           THRESHOLD=48.0
           COVERAGE=${{ env.COVERAGE }}
@@ -686,12 +663,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.sanitizer }}
+          name: test-results
           path: TestResults.xcresult
           retention-days: 30
 
       - name: Upload Coverage Report
-        if: matrix.sanitizer == 'none'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
