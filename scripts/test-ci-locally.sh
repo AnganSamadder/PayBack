@@ -30,7 +30,7 @@ NC='\033[0m' # No Color
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SANITIZER="${SANITIZER:-none}"
 CI_FLAVOR="${CI_FLAVOR:-github}"
-FAIL_ON_WARNINGS="${FAIL_ON_WARNINGS:-0}"
+FAIL_ON_WARNINGS="${FAIL_ON_WARNINGS:-1}"
 
 # XcodeCloud parity mode settings
 if [ "$CI_FLAVOR" = "xcodecloud" ]; then

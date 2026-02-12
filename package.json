@@ -4,7 +4,7 @@
   "description": "PayBack is a simple app to help organize shared expenses. Create groups, add expenses, and keep track of who owes what. The goal is to make splitting bills and settling up quick and clear.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest"
   },
   "repository": {
     "type": "git",
@@ -20,5 +20,10 @@
   "homepage": "https://github.com/AnganSamadder/PayBack#readme",
   "dependencies": {
     "convex": "^1.31.3"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
+    "convex-test": "^0.0.41",
+    "vitest": "^4.0.18"
   }
 }

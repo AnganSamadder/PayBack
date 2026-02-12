@@ -172,7 +172,7 @@ final class EmailAuthServiceTests: XCTestCase {
         // This test documents the current behavior
         let invalidEmail = "not-an-email"
         let password = "ValidPass123"
-        let displayName = "Test User"
+        let displayName = "Example User"
         
         // Mock service accepts any string as email
         let signUpResult = try await sut.signUp(email: invalidEmail, password: password, firstName: displayName, lastName: nil)
@@ -351,7 +351,7 @@ final class EmailAuthServiceTests: XCTestCase {
     }
     
     func testSpecialCharactersInDisplayName() async throws {
-        let specialName = "Test User! @#$%^&*() 你好"
+        let specialName = "Example User! @#$%^&*() 你好"
         let signUpResult = try await sut.signUp(email: "test@example.com", password: "password123", firstName: specialName, lastName: nil)
         let result = try unwrapResult(signUpResult)
         XCTAssertEqual(result.displayName, specialName)

@@ -273,7 +273,7 @@ struct AddFriendSheet: View {
         }
         
         // Check for duplicate
-        if store.friendMembers.contains(where: { $0.name.lowercased() == trimmed.lowercased() }) {
+        if store.confirmedFriendMembers.contains(where: { $0.name.lowercased() == trimmed.lowercased() }) {
             Haptics.notify(.error)
             searchState = .error("A friend with this name already exists.")
             return

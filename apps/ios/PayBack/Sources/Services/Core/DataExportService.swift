@@ -38,7 +38,7 @@ struct DataExportService {
         
         // Friends section
         lines.append("[FRIENDS]")
-        lines.append("# member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email,profile_image_url,profile_avatar_color")
+        lines.append("# member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email,profile_image_url,profile_avatar_color,status")
         for friend in friends {
             let row = [
                 friend.memberId.uuidString,
@@ -48,7 +48,8 @@ struct DataExportService {
                 friend.linkedAccountId ?? "",
                 friend.linkedAccountEmail ?? "",
                 escapeCSV(friend.profileImageUrl ?? ""),
-                escapeCSV(friend.profileColorHex ?? "")
+                escapeCSV(friend.profileColorHex ?? ""),
+                friend.status ?? "friend"
             ].joined(separator: ",")
             lines.append(row)
         }

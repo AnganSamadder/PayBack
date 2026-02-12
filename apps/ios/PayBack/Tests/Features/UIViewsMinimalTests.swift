@@ -82,7 +82,7 @@ final class UIViewsMinimalTests: XCTestCase {
         let error2 = AddFriendSheet.SearchState.error("Test error")
         XCTAssertEqual(error1, error2)
         
-        let account = UserAccount(id: "test-id", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-id", email: "test@example.com", displayName: "Example User")
         let found1 = AddFriendSheet.SearchState.found(account)
         let found2 = AddFriendSheet.SearchState.found(account)
         XCTAssertEqual(found1, found2)
@@ -216,6 +216,33 @@ final class UIViewsMinimalTests: XCTestCase {
         
         XCTAssertNotNil(view)
         XCTAssertFalse(closureCalled)
+    }
+
+    func test_addExpensePayerLogic_defaultPayer_prefersCurrentUserMarker() {
+        let other = GroupMember(name: "Angan", isCurrentUser: false)
+        let me = GroupMember(name: "Test User", isCurrentUser: true)
+
+        let defaultPayer = AddExpensePayerLogic.defaultPayerId(
+            for: [other, me],
+            currentUserMemberId: nil
+        )
+
+        XCTAssertEqual(defaultPayer, me.id)
+    }
+
+    func test_addExpensePayerLogic_label_usesCurrentUserIdNotFirstMember() {
+        let other = GroupMember(name: "Angan", isCurrentUser: false)
+        let me = GroupMember(name: "Test User", isCurrentUser: false)
+        let members = [other, me]
+
+        XCTAssertEqual(
+            AddExpensePayerLogic.payerLabel(for: me.id, in: members, currentUserMemberId: me.id),
+            "Me"
+        )
+        XCTAssertEqual(
+            AddExpensePayerLogic.payerLabel(for: other.id, in: members, currentUserMemberId: me.id),
+            "Angan"
+        )
     }
     
     // MARK: - ProfileView Tests

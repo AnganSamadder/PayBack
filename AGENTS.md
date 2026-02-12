@@ -1,125 +1,311 @@
-# AGENTS.md
+# PROJECT KNOWLEDGE BASE
 
-This file guides agentic coding assistants working in this repo.
+**This is a LIVING DOCUMENT. Agents: Update this file after solving hard or recurring issues. Do not treat as a changelog.**
 
-## Scope
-- Applies to the entire repository.
-- No Cursor or Copilot instruction files were found in this repo.
+**Generated:** 2026-02-07 02:59:11
+**Commit:** 8a34b1
+**Branch:** main
 
-## Primary CI Parity Rule
-- Always use the local CI simulation script for full test runs: `./scripts/test-ci-locally.sh`.
-- This script must remain in lockstep with GitHub Actions. If `.github/workflows/ci.yml` changes, update `scripts/test-ci-locally.sh` to replicate CI behavior exactly (steps, flags, simulator selection, coverage settings).
+## OVERVIEW
+PayBack is an expense sharing app featuring a native Swift iOS client (MVVM + Central Store) and a Convex backend (TypeScript).
 
-## Git Commits
-- Match the repo’s current commit style: conventional-commit prefix like `fix:` or `fix(tests):`, followed by a short, lowercase summary.
-- Commit messages must be a single line (no body).
+## STRUCTURE
+```
+.
+├── apps/ios/PayBack/  # Native iOS application
+├── convex/            # Backend (Schema, Functions, Auth)
+├── packages/          # Shared packages
+└── scripts/           # CI/CD utilities
+```
 
-## Build Commands
-- Build app (CI-like destination selection handled in script):
-  - `./scripts/test-ci-locally.sh` (builds as part of its flow)
-- Manual build (Debug, simulator):
-  - `xcodebuild -project PayBack.xcodeproj -scheme PayBack -configuration Debug -destination "platform=iOS Simulator,id=<UDID>" clean build`
+## WHERE TO LOOK
+| Task | Location | Notes |
+|------|----------|-------|
+| iOS UI/Views | `apps/ios/PayBack/Sources/Features` | Organized by domain |
+| iOS State | `apps/ios/PayBack/Sources/Services/State` | `AppStore.swift` is the God Object |
+| Backend Schema | `convex/schema.ts` | Source of truth for data model |
+| Backend Logic | `convex/` | Mutations, queries, actions |
+| Tests | `apps/ios/PayBack/Tests` & `convex/tests` | Integration focused |
 
-## Lint Commands
-- SwiftLint (non-failing in CI, but still preferred locally):
-  - `swiftlint lint`
-- Install SwiftLint if missing:
-  - `brew install swiftlint`
+## COMMANDS
+```bash
+# Full CI Simulation (Build + Test)
+./scripts/test-ci-locally.sh
 
-## Tests
-- When running tests, use the full local CI simulation: `./scripts/test-ci-locally.sh`.
-- This script must stay in lockstep with the GitHub Actions test workflow. If CI changes, update `scripts/test-ci-locally.sh` so local runs replicate CI behavior exactly (same steps, simulator selection, and flags).
+# Convex Development
+bunx convex dev
 
-## Zero Warnings Policy
-- Test runs must be warning-free (treat warnings as failures).
-- Before pushing, run: `FAIL_ON_WARNINGS=1 ./scripts/test-ci-locally.sh`.
-- If Xcode emits non-actionable tool warnings, update `./scripts/test-ci-locally.sh` warning filtering rather than ignoring warnings in code.
+# iOS Build
+xcodebuild -scheme PayBack -destination "platform=iOS Simulator,name=iPhone 15"
+```
 
-## Test Commands
-- Full CI-equivalent test run (preferred):
-  - `./scripts/test-ci-locally.sh`
-- Unit tests (no sanitizer, matches CI "none" job):
-  - `xcodebuild test -project PayBack.xcodeproj -scheme PayBackTests -configuration Debug -destination "platform=iOS Simulator,id=<UDID>" -parallel-testing-enabled NO -enableCodeCoverage YES -resultBundlePath TestResults.xcresult`
-- Unit tests with Thread Sanitizer:
-  - `xcodebuild test -project PayBack.xcodeproj -scheme PayBackTests -configuration Debug -destination "platform=iOS Simulator,id=<UDID>" -parallel-testing-enabled NO -enableThreadSanitizer YES -resultBundlePath TestResults.xcresult`
-- Unit tests with Address Sanitizer:
-  - `xcodebuild test -project PayBack.xcodeproj -scheme PayBackTests -configuration Debug -destination "platform=iOS Simulator,id=<UDID>" -parallel-testing-enabled NO -enableAddressSanitizer YES -resultBundlePath TestResults.xcresult`
-- Resolve dependencies (CI step):
-  - `xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj -scheme PayBack`
+## CONVENTIONS
+- **Commits**: Conventional Commits (`feat:`, `fix:`). Single line.
+- **Linting**: Zero warnings policy (`FAIL_ON_WARNINGS=1`).
+- **Runtime**: `bun` / `bunx` preferred over `npm`.
 
-## Running a Single Test
-- Use `-only-testing` with `PayBackTests`:
-  - `xcodebuild test -project PayBack.xcodeproj -scheme PayBackTests -configuration Debug -destination "platform=iOS Simulator,id=<UDID>" -only-testing:PayBackTests/StylesTests/testAvatarViewWithWhitespace`
-- To run a full test class:
-  - `xcodebuild test -project PayBack.xcodeproj -scheme PayBackTests -configuration Debug -destination "platform=iOS Simulator,id=<UDID>" -only-testing:PayBackTests/StylesTests`
+## NOTES
+- **CI Parity**: `test-ci-locally.sh` mirrors GitHub Actions.
+- **Architecture**: iOS uses a Central Store; avoid local `@State` for shared data.
+- **Backend**: `accounts` table is the user source of truth; handle ghost data via `bulkImport`.
 
-## Simulator Selection
-- CI dynamically chooses the newest iOS runtime with preferred iPhone models.
-- For local parity, use the same logic by running `./scripts/test-ci-locally.sh`.
-- If running manually, use `xcrun simctl list devices iPhone available` and pick a matching UDID.
+## DELETION PROTOCOL
 
-## Coverage
-- CI expects coverage when sanitizer is `none`.
-- Coverage output is stored in `coverage.json` and `coverage-report.txt`.
-- Coverage threshold in CI is `48.0%`.
+### Hard Delete (Admin/Backend)
+When a user is **hard deleted** from the Convex dashboard or via `performHardDelete`:
+1. The user's `accounts` record is permanently deleted
+2. All `account_friends` records owned by the user are deleted
+3. **Cascading cleanup**: Friends of the deleted user have their links removed via:
+   - `by_linked_account_id` index
+   - `by_linked_account_email` index
+   - `by_linked_member_id` index (added 2026-02-07)
+4. The deleted user disappears from all friend lists immediately (Convex live sync)
 
-## Code Style Guidelines (Swift)
+### Soft Delete (User-Initiated)
+When a user **deletes their own account**:
+1. The account is marked as deleted (soft delete flag)
+2. The user becomes a "Ghost" - their data remains for history purposes
+3. Friends see the user as **unlinked** but can still see past transactions
+4. Name displays as the friend's nickname or original name (not "Unknown")
 
-### Imports
-- Keep imports minimal and file-scoped.
-- Prefer standard ordering:
-  1. Apple frameworks (SwiftUI, UIKit, Foundation)
-  2. Third-party frameworks
-  3. Internal modules
-- Avoid unused imports.
+### Key Tables
+- `accounts`: User source of truth
+- `account_friends`: Friend relationships with optional linking to accounts
+- Indexes: `by_linked_account_id`, `by_linked_account_email`, `by_linked_member_id`
 
-### Formatting
-- Follow existing indentation (spaces, 4-space standard in Swift files here).
-- Keep line length reasonable (match local style; wrap long argument lists onto new lines).
-- Prefer trailing closures when it improves readability.
-- Align chained modifiers vertically in SwiftUI.
+## MEMBER ID RESOLUTION (iOS)
 
-### Types and Naming
-- Types use `UpperCamelCase` (structs, enums, protocols, classes).
-- Functions, variables, and properties use `lowerCamelCase`.
-- Boolean names should read clearly (`isValid`, `hasAccount`, `shouldSync`).
-- Avoid single-letter names except in very small scopes (e.g., map/forEach closures).
+### The Problem
+After CSV import, group members may have different `id` values than their corresponding friends' `memberId`. This breaks `isFriend` checks.
 
-### SwiftUI
-- Keep views small and composable.
-- Prefer private computed subviews for complex layouts.
-- Keep `body` readable; extract complex logic into helpers.
-- Use `@State`, `@StateObject`, and `@EnvironmentObject` consistently with existing patterns.
+### The Solution
+`GroupMember` has an `accountFriendMemberId: UUID?` property that stores the original friend's `memberId`. When looking up if a group member is a friend:
 
-### Error Handling
-- Prefer typed errors (enums conforming to `Error`) over string-based errors.
-- Use `Result` or `throws` consistently with the existing API style.
-- Keep user-facing error messages sanitized (no PII).
+```swift
+// FriendDetailView.swift - isFriend computed property
+let lookupId = friend.accountFriendMemberId ?? friend.id
+return store.friends.contains { $0.memberId == lookupId }
+```
 
-### Concurrency
-- Respect actor isolation in existing services.
-- Use `async`/`await` rather than completion callbacks in new code.
-- Avoid blocking the main thread with long-running tasks.
+### Import ID Consistency
+`DataImportService.swift` ensures:
+1. `memberIdMapping` is checked before generating new UUIDs
+2. `nameToExistingId` provides name-based deduplication
+3. Same person = same UUID across friends and group members
 
-### Testing
-- Add tests alongside feature changes when a logical location exists.
-- Keep tests deterministic and avoid reliance on external state.
-- Use existing test helpers and fixtures where possible.
+## CSV IMPORT LOGIC (iOS ↔ Convex)
 
-### Colors and Styling
-- Use `AppTheme` for colors; avoid hard-coded UIColor/Color values.
-- Follow design-system components (`AvatarView`, `GroupIcon`, `EmptyStateView`) rather than reinventing.
+### The Remapping Mismatch (Fixed 2026-02-07)
+**Problem**: iOS imports generate **new local UUIDs** to avoid collisions, but `performBulkImport` originally sent the **original CSV UUIDs** to Convex.
+**Result**: iOS stores Group `ABC` (remapped), Convex stores Group `XYZ` (original). Syncing breaks because iOS doesn't know `XYZ`.
 
-### Data Models
-- Keep Codable conformance and hashing consistent with existing implementations.
-- Prefer explicit initializers when adding new fields to models.
-- Avoid breaking `Equatable` or `Hashable` semantics.
+### The Protocol
+1. **Local Import**: `importData` generates `memberIdMapping` and `groupIdMapping` (Original → New).
+2. **Transform**: `applyRemappings()` mutates the parsed data using these mappings.
+3. **Bulk Import**: Sends the **remapped UUIDs** to Convex.
+4. **Consistency**: Local iOS state and Convex backend now share the exact same UUIDs.
 
-## Repo-Specific Notes
-- iOS app lives in `apps/ios/PayBack`.
-- Design system components are in `apps/ios/PayBack/Sources/DesignSystem`.
-- Tests are in `apps/ios/PayBack/Tests`.
+**Rule**: Always pass `memberIdMapping` and `groupIdMapping` to `performBulkImport` to ensure ID consistency.
 
-## Lint/Test Parity Reminder
-- If you change CI steps in `.github/workflows/ci.yml`, update `./scripts/test-ci-locally.sh` to match.
-- If you add a new testing/linting command, document it here.
+## BALANCE CALCULATION LOGIC (iOS)
+
+### The Zero Balance Bug (Fixed 2026-02-07)
+**Problem**: Users saw "Settled ($0.00)" even with unsettled transactions because `netBalance` calculations only checked the primary `friend.id` or `currentUser.id`. Linked accounts (via invites or CSV remapping) often have different IDs in the expense splits.
+
+### The Fix
+1. **Friend Detail**: `FriendDetailView.netBalance` must check BOTH `friend.id` AND `friend.accountFriendMemberId`.
+2. **Dashboard**: `AppStore.netBalance(for: Group)` must use `currentUser.equivalentMemberIds` (from `UserAccount`) to catch all splits belonging to the user, including those under remapped IDs.
+
+**Rule**: When calculating balances or filtering expenses, ALWAYS check for ID equivalence (`accountFriendMemberId` for friends, `equivalentMemberIds` for current user).
+
+## USER LINKING PROCESS
+
+### Overview
+Linking connects a local "Unlinked" friend (often created manually or via CSV import) to a real registered User Account. This allows two users to share the same friend/member identity in groups and expenses.
+
+### The Flow
+1.  **Invite Creation**: User A creates a link for a specific group member (e.g., "Test User" with ID `X`).
+2.  **Claiming**: User B ("Test User") clicks the link.
+    -   Backend (`inviteTokens:claim`) verifies the token.
+    -   It updates User B's `alias_member_ids` to include `X`. This is CRITICAL for User B to see expenses assigned to `X` as their own.
+    -   It updates User A's `account_friends` record for `X` to set `linked_account_id` to User B's account ID.
+3.  **Syncing**:
+    -   User B receives updated `UserAccount` containing `alias_member_ids`.
+    -   User A receives updated `account_friends` list.
+
+### ID Resolution Logic (The "0 Balance" Fix)
+**Problem**: Before linking, User B is participating in expenses as ID `X`. After linking, User B logs in with ID `Y`.
+**Solution**:
+-   Backend sends `alias_member_ids` (including `X`) in the User object.
+-   iOS `UserAccount` model MUST map `alias_member_ids` (JSON key) to `equivalentMemberIds` (Swift property) via `CodingKeys`.
+-   `AppStore` checks `equivalentMemberIds` when calculating "My" balance. `isMe(memberId)` checks `currentUser.id` OR `linkedMemberId` OR `equivalentMemberIds`.
+
+### Friend Identity Resolution & Deduplication (Fixed 2026-02-07)
+**Symptom**: User A sees two entries for "Test User" - one unlinked (original) and one linked (new account).
+**Root Cause**: When a friend link is claimed, the backend might return both the original friend record and the new linked friend record if they exist separately in `account_friends` or `groups`.
+
+**The Solution**:
+1.  **Backend Enrichment**: `convex/friends.ts` now includes `alias_member_ids` in the `AccountFriend` object (fetched from the linked user's account).
+2.  **Client-Side Identity Map**:
+    -   `AppStore` builds a `memberAliasMap` during friend updates.
+    -   If Friend B lists Friend A's ID in its `aliasMemberIds`, Friend B is considered the "Master" and Friend A is the "Alias".
+3.  **Deduplication**:
+    -   `AppStore.processFriendsUpdate` filters out any friend that is found to be an alias of another present friend.
+    -   Only the "Master" (linked) friend remains in the `store.friends` list.
+4.  **Identity Checks**:
+    -   `store.areSamePerson(id1, id2)` checks the `memberAliasMap` to resolve identity, ensuring expenses assigned to the alias ID are correctly attributed to the master friend in the UI.
+
+### Duplicate Friend Reappearance Guard (Fixed 2026-02-10)
+**Symptom**: After account switch/login, owner still sees duplicate friend cards (linked + unlinked) for the same person.
+
+**Root Causes**:
+1. `scheduleFriendSync` previously synced a **pre-dedupe** friend list back to Convex, which could reintroduce duplicate rows.
+2. DTO mapping could miss identity equivalence when `alias_member_ids` was sparse in some updates.
+
+**Required Guards**:
+1. In `AppStore.scheduleFriendSync`, only sync `self.friends` **after** `processFriendsUpdate(...)` dedupe.
+2. In Convex friend DTO mapping, treat `linked_member_id` as an identity alias fallback (not only `alias_member_ids`).
+3. In `friendMembers`, dedupe by `areSamePerson(...)` identity equivalence, not raw UUID equality.
+
+**Rule**: Never write pre-dedupe friend arrays to cloud. Any friend identity check in UI lists must use equivalence (`areSamePerson`), not strict UUID match.
+
+### Direct Expense Friend Drift Guard (Fixed 2026-02-11)
+**Symptoms**:
+- Direct expense creation fails with: `Member <name> is not a confirmed friend`.
+- Direct expense appears for creator but not counterparty due missing `participant_emails`.
+
+**Root Causes**:
+1. Legacy friend/member-id drift: direct-group member ID can diverge from `account_friends.member_id` after remaps/link transitions.
+2. Stale client friend sync can accidentally overwrite linked friend rows (`has_linked_account=false`) and strip link metadata.
+3. Client may omit participant link metadata; backend previously relied too heavily on client-provided `linked_account_email`.
+
+**Required Guards**:
+1. In `convex/expenses.ts`, resolve participant accounts server-side (email/id/member_id) and populate `participant_emails` from resolved accounts, not only client payload.
+2. In direct-expense friend validation, keep identity-based match first, then allow a tight legacy fallback by unique normalized friend name when IDs have drifted.
+3. In `convex/friends.ts upsert`, preserve existing linked metadata/status when stale payloads attempt to downgrade a linked friend row.
+
+**Rule**: Treat linked friend metadata as server-owned state. Client sync must never silently unlink a friend, and direct-expense visibility must be derivable server-side.
+
+### Key Data Structures
+-   **UserAccount**: `equivalentMemberIds` stores all alias UUIDs (e.g., from invites/imports).
+-   **GroupMember**: `accountFriendMemberId` stores the UUID of the linked `AccountFriend` (if any).
+-   **AccountFriend**: Represents a direct friendship. Linked via `linkedAccountId` (String).
+
+## LINKING RUNBOOK (READ FIRST)
+
+For end-to-end linking/identity debugging and implementation rules, use:
+
+- `docs/linking/ACCOUNT_LINKING_PIPELINE_RUNBOOK.md`
+
+This runbook is the canonical operational guide for:
+- invite claim + link-request acceptance pipeline
+- canonical/alias invariants
+- iOS selector correctness
+- bulk import identity rules
+- troubleshooting commands and test gates
+
+## RELEASE BLOCKERS FIXED (2026-02-11)
+
+### Convex Authorization Rule (Critical)
+Never trust client-supplied `accountEmail` (or any ownership identifier) for destructive/identity mutations.
+
+**Required pattern**:
+1. Derive caller identity from auth (`getCurrentUser` / `getCurrentUserOrThrow`).
+2. Resolve account email/id server-side from auth context.
+3. Treat client `accountEmail` as optional legacy input at most, and reject mismatches where needed.
+
+Applied to:
+- `aliases:mergeMemberIds`
+- `aliases:mergeUnlinkedFriends`
+- `cleanup:deleteLinkedFriend`
+- `cleanup:deleteUnlinkedFriend`
+- `cleanup:selfDeleteAccount`
+
+### Admin Mutation Guard
+`admin:hardDeleteUser` must be admin-only. Use explicit admin allowlist checks from auth identity before deleting by email.
+
+### Friend Linking Identity Type Rule
+`account_friends.linked_account_id` must store auth/account `id` (string identity), not Convex document `_id`.
+Using `_id` breaks comparisons/dedup paths that check against auth IDs.
+
+### iOS Payload Compatibility Rule
+When backend arg contracts change, keep iOS mutation payload keys aligned.
+
+Current required keys:
+- `aliases:mergeMemberIds`: `sourceId`, `targetCanonicalId`
+- `cleanup:deleteLinkedFriend`: `friendMemberId`
+- `cleanup:deleteUnlinkedFriend`: `friendMemberId`
+- `aliases:mergeUnlinkedFriends`: no `accountEmail` from client
+
+### iOS Realtime Sync Guard (Test/Startup Stability)
+`AppStore.subscribeToSyncManager` must ignore realtime payloads until a session exists.
+Otherwise empty remote snapshots can clobber local state before auth and break persistence expectations.
+
+### Dependencies Thread-Safety Guard
+`Dependencies.reset()` is called concurrently in tests; serialize it with a lock to avoid crashes in `DependenciesTests.testConcurrentReset_DoesNotCrash`.
+
+### Add Expense Payer Identity Guard (iOS)
+Do not infer `"Me"` from `group.members.first`.
+
+Required behavior in `AddExpenseView`:
+1. Default payer to the actual current-user member (`isCurrentUser` marker first, then `store.isCurrentUser(...)` fallback).
+2. Render `"Me"` label using current-user identity, not array position.
+3. Keep direct-group payer toggles working with the resolved identity.
+
+If this rule is broken, users can save expenses with the wrong `paidByMemberId` while UI still shows `"Me"`.
+
+### Direct Expense Friend Validation Guard (Convex)
+In `expenses.create` for `group.is_direct`, friend matching must consider identity equivalence across:
+- `account_friends.member_id`
+- `account_friends.linked_member_id`
+- alias closure from `member_aliases`
+
+`member_id`-only matching causes false `"not a confirmed friend"` errors for valid linked friends with legacy IDs.
+
+Additionally, if a friend has `linked_account_email` / `linked_account_id`, resolve the linked account and include:
+- linked account `member_id`
+- linked account `alias_member_ids`
+
+Without linked-account alias expansion, direct expenses can still be rejected when group members use legacy alias IDs.
+
+### Group Membership vs Friendship Rule (iOS)
+Group membership does **not** imply direct friendship.
+
+Required behavior:
+1. `AppStore.loadRemoteData` must process only server-returned friends (`remoteFriends`) and must not synthesize friends from group members.
+2. `AppStore.scheduleFriendSync` must sync only deduped `self.friends` and never `derivedFriendsFromGroups()`.
+
+If this rule is broken, users can appear as unintended friends after shared group updates (e.g., friend-of-friend in a group).
+
+### Expense Participant Identity Metadata Rule (iOS)
+When upserting expenses to Convex, participant metadata must include correct linked account identity for **both**:
+- current user identity aliases
+- linked friends resolved via `areSamePerson(...)`
+
+Required behavior:
+1. Build participant `linkedAccountId` / `linkedAccountEmail` from resolved identity metadata (not only direct `currentUser.id` equality).
+2. Normalize empty values to `nil` and lowercase emails before sending.
+
+Missing participant linked-account metadata can prevent cross-account fan-out and cause expenses to appear missing after account switch.
+
+### Clear-All Semantics (iOS ↔ Convex)
+`clearAllUserData` is expected to remove user-owned data **and** detach the user from shared visibility.
+
+Required backend behavior:
+1. `groups:clearAllForUser` must:
+   - delete owned groups
+   - remove the current user's canonical/alias member IDs from shared groups (leave group)
+2. `expenses:clearAllForUser` must:
+   - reconcile + delete owned expenses (`reconcileUserExpenses(..., [])` before delete)
+   - delete `user_expenses` rows for the current user (shared expense visibility cleanup)
+
+If this is not enforced, users can clear data and still see leftover shared groups/people or stale expense visibility.
+
+### Friend UI Boundary Rule
+Group participants are not equivalent to direct friends.
+
+Required behavior:
+1. Friends tab should render only true `AccountFriend` entries (confirmed friend list).
+2. Group-derived people (`friendMembers`) can be used for identity resolution and group workflows, but not as canonical friend list UI.
+
+If this boundary blurs, friend-of-friend participants (e.g., Bob in a shared group) appear as unintended friends.

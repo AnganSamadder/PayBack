@@ -6,7 +6,7 @@ final class DataExportServiceTests: XCTestCase {
     // MARK: - Test Fixtures
     
     private func createTestCurrentUser() -> GroupMember {
-        GroupMember(id: UUID(), name: "Test User")
+        GroupMember(id: UUID(), name: "Example User")
     }
     
     private func createTestGroup(name: String = "Test Group", members: [GroupMember]? = nil, isDirect: Bool = false) -> SpendingGroup {

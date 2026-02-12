@@ -57,12 +57,37 @@ struct InviteToken: Identifiable, Codable, Hashable, Sendable {
 // MARK: - Result Models
 
 public struct LinkAcceptResult: Sendable {
-    public let linkedMemberId: UUID
+    public let targetMemberId: UUID
+    public let canonicalMemberId: UUID
+    public let aliasMemberIds: [UUID]
+    public let contractVersion: Int
     public let linkedAccountId: String
     public let linkedAccountEmail: String
     
+    // Backward-compatible accessors for older call sites.
+    public var linkedMemberId: UUID { canonicalMemberId }
+    
+    public init(
+        targetMemberId: UUID,
+        canonicalMemberId: UUID,
+        aliasMemberIds: [UUID],
+        contractVersion: Int,
+        linkedAccountId: String,
+        linkedAccountEmail: String
+    ) {
+        self.targetMemberId = targetMemberId
+        self.canonicalMemberId = canonicalMemberId
+        self.aliasMemberIds = aliasMemberIds
+        self.contractVersion = contractVersion
+        self.linkedAccountId = linkedAccountId
+        self.linkedAccountEmail = linkedAccountEmail
+    }
+    
     public init(linkedMemberId: UUID, linkedAccountId: String, linkedAccountEmail: String) {
-        self.linkedMemberId = linkedMemberId
+        self.targetMemberId = linkedMemberId
+        self.canonicalMemberId = linkedMemberId
+        self.aliasMemberIds = []
+        self.contractVersion = 1
         self.linkedAccountId = linkedAccountId
         self.linkedAccountEmail = linkedAccountEmail
     }
@@ -90,5 +115,3 @@ struct ExpensePreview: Sendable {
 }
 
 // MARK: - Error Handling
-
-

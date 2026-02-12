@@ -17,6 +17,22 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         }
         return []
     }
+
+    func fetchExpensesPage(groupDocId: String, cursor: String? = nil, limit: Int = 50) async throws -> (items: [Expense], nextCursor: String?) {
+        var args: [String: ConvexEncodable?] = [
+            "groupId": groupDocId,
+            "limit": limit
+        ]
+        
+        if let cursor = cursor {
+            args["cursor"] = cursor
+        }
+        
+        for try await result in client.subscribe(to: "expenses:listByGroupPaginated", with: args, yielding: ConvexPaginatedExpensesDTO.self).values {
+            return (items: result.items.map { $0.toExpense() }, nextCursor: result.nextCursor)
+        }
+        return (items: [], nextCursor: nil)
+    }
     
     private struct ExpenseDTO: Decodable {
         let id: String
@@ -61,7 +77,22 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         }
         
         func toExpense() -> Expense {
-            Expense(
+            func buildParticipantNamesMap() -> [UUID: String]? {
+                guard !participants.isEmpty else { return nil }
+                var map: [UUID: String] = [:]
+                for p in participants {
+                    guard let memberId = UUID(uuidString: p.member_id) else { continue }
+                    let trimmedName = p.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmedName.isEmpty {
+                        map[memberId] = trimmedName
+                    }
+                }
+                return map.isEmpty ? nil : map
+            }
+            
+            let participantNames = buildParticipantNamesMap()
+            
+            return Expense(
                 id: UUID(uuidString: id) ?? UUID(),
                 groupId: UUID(uuidString: group_id) ?? UUID(),
                 description: description,
@@ -78,6 +109,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
                     )
                 },
                 isSettled: is_settled,
+                participantNames: participantNames,
                 subexpenses: subexpenses?.map { $0.toSubexpense() }
             )
         }

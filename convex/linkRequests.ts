@@ -1,5 +1,7 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
+import { normalizeMemberId } from "./identity";
 
 /**
  * Lists all incoming link requests for the current user.
@@ -81,7 +83,7 @@ export const create = mutation({
       requester_email: user.email,
       requester_name: user.display_name,
       recipient_email: args.recipient_email.toLowerCase(),
-      target_member_id: args.target_member_id,
+      target_member_id: normalizeMemberId(args.target_member_id),
       target_member_name: args.target_member_name,
       created_at: now,
       status: "pending",
@@ -130,39 +132,18 @@ export const accept = mutation({
       throw new Error("Request has expired");
     }
 
-    // Update request status
+    // Update request status first to preserve idempotency semantics.
     await ctx.db.patch(request._id, {
       status: "accepted",
     });
 
-    // Update the accepting user's linked_member_id
-    await ctx.db.patch(user._id, {
-      linked_member_id: request.target_member_id,
-      updated_at: now,
+    // Delegate to the shared invite claim core.
+    return await ctx.runMutation(internal.inviteTokens._internalClaimTargetMemberForAccount, {
+      userAccountId: user._id,
+      targetMemberId: request.target_member_id,
+      creatorEmail: request.requester_email,
+      creatorId: request.requester_id,
     });
-
-    // Update the friend record to mark as linked
-    const friendRecord = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email_and_member_id", (q) =>
-        q.eq("account_email", request.requester_email).eq("member_id", request.target_member_id)
-      )
-      .unique();
-
-    if (friendRecord) {
-      await ctx.db.patch(friendRecord._id, {
-        has_linked_account: true,
-        linked_account_id: user.id,
-        linked_account_email: user.email,
-        updated_at: now,
-      });
-    }
-
-    return {
-      linked_member_id: request.target_member_id,
-      linked_account_id: user.id,
-      linked_account_email: user.email,
-    };
   },
 });
 

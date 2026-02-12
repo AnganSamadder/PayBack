@@ -14,10 +14,8 @@ STAGED_FILES=$(git diff --cached --name-only 2>/dev/null || true)
 
 # List of patterns that should never be committed
 SECRET_PATTERNS=(
-    ".env.supabase.local"
     ".env.local"
     ".env"
-    "SupabaseConfig.plist"
     "*.p12"
     "*.mobileprovision"
 )
@@ -33,17 +31,25 @@ for pattern in "${SECRET_PATTERNS[@]}"; do
     fi
 done
 
-# Check for Supabase URLs/keys in staged content (excluding test files)
-if git diff --cached --diff-filter=ACMR | grep -v "Tests/" | grep -E "(supabase\.co|eyJ[A-Za-z0-9_-]{20,})" | grep -v "example\|mock\|placeholder" > /dev/null 2>&1; then
-    echo "⚠️  WARNING: Possible Supabase credentials detected in staged changes!"
-    echo "   Please review your changes carefully."
-    echo ""
-    read -p "   Continue anyway? (y/N) " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+# Check newly added lines in staged diff for high-risk secret patterns.
+# Exclude test files where mock JWTs / tokens are expected.
+STAGED_ADDED_LINES=$(git diff --cached --no-color --unified=0 -- ':!*Tests*' ':!*tests*' ':!*Fixtures*' | grep '^+' | grep -v '^+++' || true)
+CONTENT_SECRET_PATTERNS=(
+    "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"   # JWT-like token
+    "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"                # Private key material
+    "sk_live_[A-Za-z0-9]{16,}"                                       # Stripe live key
+    "xox[baprs]-[A-Za-z0-9-]{10,}"                                   # Slack token
+)
+
+for pattern in "${CONTENT_SECRET_PATTERNS[@]}"; do
+    if echo "$STAGED_ADDED_LINES" | grep -Eq "$pattern"; then
+        echo "❌ ERROR: Potential secret detected in staged content (pattern: $pattern)"
+        echo ""
+        echo "Remove sensitive values from staged changes before committing."
+        echo ""
         exit 1
     fi
-fi
+done
 
 echo "✅ No secrets detected in staged files."
 echo ""

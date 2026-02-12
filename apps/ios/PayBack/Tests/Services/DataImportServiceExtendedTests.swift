@@ -135,12 +135,12 @@ final class DataImportServiceExtendedTests: XCTestCase {
         data.exportedAt = Date()
         data.accountEmail = "test@example.com"
         data.currentUserId = UUID()
-        data.currentUserName = "Test User"
+        data.currentUserName = "Example User"
         
         XCTAssertNotNil(data.exportedAt)
         XCTAssertEqual(data.accountEmail, "test@example.com")
         XCTAssertNotNil(data.currentUserId)
-        XCTAssertEqual(data.currentUserName, "Test User")
+        XCTAssertEqual(data.currentUserName, "Example User")
     }
     
     // MARK: - ParsedFriend Tests

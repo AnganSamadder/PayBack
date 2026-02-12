@@ -1,7 +1,79 @@
 
-import { mutation } from "./_generated/server";
+import { mutation, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
+import { reconcileUserExpenses } from "./helpers";
+
+/**
+ * Creates member_aliases records for existing linked accounts.
+ * 
+ * This identifies cases where:
+ * 1. An invite token was claimed
+ * 2. The claimant already had a linked_member_id (canonical)
+ * 3. The token's target_member_id differs from the canonical (becomes alias)
+ * 
+ * Also preserves original_nickname from nickname field before linking.
+ */
+export const createMemberAliasesFromClaimedTokens = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const claimedTokens = await ctx.db
+      .query("invite_tokens")
+      .filter((q) => q.neq(q.field("claimed_by"), undefined))
+      .collect();
+    
+    let aliasesCreated = 0;
+    let nicknamesPreserved = 0;
+    
+    for (const token of claimedTokens) {
+      if (!token.claimed_by) continue;
+      
+      const claimantAccount = await ctx.db
+        .query("accounts")
+        .filter((q) => q.eq(q.field("id"), token.claimed_by))
+        .first();
+      
+      if (!claimantAccount?.linked_member_id) continue;
+      
+      const canonicalId = claimantAccount.linked_member_id;
+      const aliasId = token.target_member_id;
+      
+      if (canonicalId === aliasId) continue;
+      
+      const existingAlias = await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", aliasId))
+        .first();
+      
+      if (existingAlias) continue;
+      
+      await ctx.db.insert("member_aliases", {
+        canonical_member_id: canonicalId,
+        alias_member_id: aliasId,
+        account_email: token.creator_email,
+        created_at: token.claimed_at || Date.now(),
+      });
+      aliasesCreated++;
+      
+      const creatorFriend = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", token.creator_email).eq("member_id", aliasId)
+        )
+        .unique();
+      
+      if (creatorFriend && creatorFriend.nickname && !creatorFriend.original_nickname) {
+        await ctx.db.patch(creatorFriend._id, {
+          original_nickname: creatorFriend.nickname,
+          updated_at: Date.now(),
+        });
+        nicknamesPreserved++;
+      }
+    }
+    
+    return { aliasesCreated, nicknamesPreserved, tokensProcessed: claimedTokens.length };
+  },
+});
 
 export const backfillProfileColors = mutation({
   args: {},
@@ -496,5 +568,70 @@ export const backfillParticipantEmailsAdvanced = mutation({
     }
     
     return { updated, memberMappings: memberIdToEmail.size };
+  }
+});
+
+export const backfillUserExpenses = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const expenses = await ctx.db.query("expenses").collect();
+    let processed = 0;
+    
+    for (const expense of expenses) {
+      // 1. Collect User IDs (Owner + derived participants)
+      const userIds = new Set<string>();
+      if (expense.owner_account_id) {
+          userIds.add(expense.owner_account_id);
+      }
+      
+      // Add linked accounts from participants array
+      if (expense.participants) {
+        for (const p of expense.participants) {
+          if (p.linked_account_id) {
+            userIds.add(p.linked_account_id);
+          }
+        }
+      }
+      
+      // Resolve participant_emails to accounts
+      if (expense.participant_emails) {
+        for (const email of expense.participant_emails) {
+          const account = await ctx.db
+            .query("accounts")
+            .withIndex("by_email", q => q.eq("email", email))
+            .unique();
+          if (account) {
+            userIds.add(account.id);
+          }
+        }
+      }
+      
+      // 2. Reconcile
+      await reconcileUserExpenses(ctx, expense.id, Array.from(userIds));
+      processed++;
+    }
+    
+    return { processed };
+  },
+});
+
+export const backfillFriendStatus = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const friends = await ctx.db.query("account_friends").collect();
+    let updated = 0;
+    
+    for (const friend of friends) {
+      if (!friend.status) {
+        // Default to "friend" for existing records
+        await ctx.db.patch(friend._id, {
+          status: "friend", 
+          updated_at: Date.now()
+        });
+        updated++;
+      }
+    }
+    
+    return { updated, total: friends.length };
   }
 });

@@ -95,7 +95,7 @@ final class AuthCoordinatorTests: XCTestCase {
     func testLogin_Success_WithExistingAccount() async {
         let testEmail = "test@example.com"
         let testPassword = "password123"
-        let existingAccount = UserAccount(id: "123", email: testEmail, displayName: "Test User")
+        let existingAccount = UserAccount(id: "123", email: testEmail, displayName: "Example User")
         
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
@@ -667,14 +667,58 @@ actor TestAccountService: AccountService {
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
         return imageUrl
     }
-    
+
     func uploadProfileImage(_ data: Data) async throws -> String {
         return "https://example.com/mock.jpg"
     }
-    
+
     func checkAuthentication() async throws -> Bool {
         return true
     }
+
+    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws { }
+
+    func deleteLinkedFriend(memberId: UUID) async throws { }
+
+    func deleteUnlinkedFriend(memberId: UUID) async throws { }
+
+    func selfDeleteAccount() async throws { }
+
+    nonisolated func monitorSession() -> AsyncStream<UserAccount?> {
+        AsyncStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendFriendRequest(email: String) async throws { }
+
+    func acceptFriendRequest(requestId: String) async throws { }
+
+    func rejectFriendRequest(requestId: String) async throws { }
+
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest] {
+        return []
+    }
+
+    func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws { }
+    
+    func validateAccountIds(_ ids: [String]) async throws -> Set<String> {
+        return Set(ids)
+    }
+    
+    func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
+        return [:]
+    }
+
+    #if !PAYBACK_CI_NO_CONVEX
+    func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult {
+        return BulkImportResult(
+            success: true,
+            created: .init(friends: request.friends.count, groups: request.groups.count, expenses: request.expenses.count),
+            errors: []
+        )
+    }
+    #endif
 }
 
 final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {

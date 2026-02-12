@@ -174,17 +174,17 @@ final class PIIRedactionTests: XCTestCase {
                       "Second token should be redacted")
     }
     
-    func test_tokenRedaction_redactsSupabaseUserIds() {
+    func test_tokenRedaction_redactsUserIds() {
         // Arrange
-        let supabaseUserId = UUID().uuidString
-        let logMessage = "User ID: \(supabaseUserId)"
+        let userId = UUID().uuidString
+        let logMessage = "User ID: \(userId)"
         
         // Act
         let redacted = redactPII(logMessage)
         
         // Assert
-        XCTAssertFalse(redacted.contains(supabaseUserId),
-                      "Supabase user id should be redacted")
+        XCTAssertFalse(redacted.contains(userId),
+                      "User id should be redacted")
     }
     
     // MARK: - Error Message PII Tests
@@ -418,11 +418,11 @@ func redactPII(_ message: String) -> String {
         )
     }
     
-    // Redact Supabase user IDs (UUID strings that look like identifiers)
+    // Redact user IDs (UUID strings that look like identifiers)
     // Match standalone alphanumeric strings between 18-30 characters
-    let supabaseUIDPattern = "\\b[a-zA-Z0-9]{18,30}\\b"
+    let uidPattern = "\\b[a-zA-Z0-9]{18,30}\\b"
     redacted = redacted.replacingOccurrences(
-        of: supabaseUIDPattern,
+        of: uidPattern,
         with: "[UID]",
         options: .regularExpression
     )

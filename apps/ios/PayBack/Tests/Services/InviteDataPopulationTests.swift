@@ -45,7 +45,7 @@ final class InviteDataPopulationTests: XCTestCase {
     
     func testClaimInviteToken_PopulatesGroupDataAutomatically() async throws {
         // Given
-        let account = UserAccount(id: "test-user-id", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-user-id", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -61,7 +61,7 @@ final class InviteDataPopulationTests: XCTestCase {
             name: "Shared Trip",
             members: [
                 GroupMember(id: UUID(), name: "Creator"),
-                GroupMember(id: UUID(), name: "Test User") // The user is a member on the cloud
+                GroupMember(id: UUID(), name: "Example User") // The user is a member on the cloud
             ]
         )
         // Add it to the cloud service ONLY (not local store)
@@ -71,8 +71,8 @@ final class InviteDataPopulationTests: XCTestCase {
         let tokenId = UUID()
         await mockInviteLinkService.addValidToken(
             tokenId: tokenId,
-            targetMemberId: sharedGroup.members[1].id, // Matches Test User
-            targetMemberName: "Test User",
+            targetMemberId: sharedGroup.members[1].id, // Matches Example User
+            targetMemberName: "Example User",
             creatorEmail: "creator@example.com"
         )
         
@@ -99,7 +99,7 @@ final class InviteDataPopulationTests: XCTestCase {
     
     func testClaimInviteToken_PopulatesExpenseDataAutomatically() async throws {
         // Given
-        let account = UserAccount(id: "test-user-id", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-user-id", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -127,7 +127,7 @@ final class InviteDataPopulationTests: XCTestCase {
         await mockInviteLinkService.addValidToken(
             tokenId: tokenId,
             targetMemberId: userId,
-            targetMemberName: "Test User",
+            targetMemberName: "Example User",
             creatorEmail: "creator@example.com"
         )
         

@@ -1,4 +1,0 @@
-# This configuration allows the invite function to be accessed without authentication
-# since invite links need to work for users who haven't logged in yet
-[functions.invite]
-verify_jwt = false

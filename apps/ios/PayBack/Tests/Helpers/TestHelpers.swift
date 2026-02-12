@@ -32,7 +32,7 @@ struct CurrencyFixture: Codable {
 // MARK: - Bundle Helper Class
 
 /// Helper class for accessing test bundle (needed because Bundle(for:) requires a class)
-private class BundleHelper {}
+class BundleHelper {}
 
 // MARK: - Fixture Loading Helper
 

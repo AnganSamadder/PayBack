@@ -11,13 +11,13 @@ final class ConvexExpenseServiceTests: XCTestCase {
         let memberId = UUID()
         let participant = ExpenseParticipant(
             memberId: memberId,
-            name: "Test User",
+            name: "Example User",
             linkedAccountId: "acc123",
             linkedAccountEmail: "test@example.com"
         )
         
         XCTAssertEqual(participant.memberId, memberId)
-        XCTAssertEqual(participant.name, "Test User")
+        XCTAssertEqual(participant.name, "Example User")
         XCTAssertEqual(participant.linkedAccountId, "acc123")
         XCTAssertEqual(participant.linkedAccountEmail, "test@example.com")
     }

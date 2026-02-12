@@ -112,7 +112,7 @@ final class UIModelsAndEnumsTests: XCTestCase {
     }
     
     func test_searchState_found() {
-        let account1 = UserAccount(id: "test-id-1", email: "test@example.com", displayName: "Test User")
+        let account1 = UserAccount(id: "test-id-1", email: "test@example.com", displayName: "Example User")
         let state1 = AddFriendSheet.SearchState.found(account1)
         let state2 = AddFriendSheet.SearchState.found(account1)
         XCTAssertEqual(state1, state2)

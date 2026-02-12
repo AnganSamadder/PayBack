@@ -311,6 +311,22 @@ final class ConvexInviteLinkDTOTests: XCTestCase {
         XCTAssertEqual(dto.linked_account_email, "linked@example.com")
     }
     
+    func testConvexLinkAcceptResultDTO_Decodable_FromJSON_Canonical() throws {
+        let json = """
+        {
+            "canonical_member_id": "550e8400-e29b-41d4-a716-446655440000",
+            "linked_account_id": "account-123",
+            "linked_account_email": "linked@example.com"
+        }
+        """.data(using: .utf8)!
+        
+        let dto = try JSONDecoder().decode(ConvexLinkAcceptResultDTO.self, from: json)
+        
+        XCTAssertEqual(dto.linked_member_id, "550e8400-e29b-41d4-a716-446655440000")
+        XCTAssertEqual(dto.linked_account_id, "account-123")
+        XCTAssertEqual(dto.linked_account_email, "linked@example.com")
+    }
+    
     func testConvexLinkAcceptResultDTO_Decodable_SpecialCharactersInEmail() throws {
         let json = """
         {

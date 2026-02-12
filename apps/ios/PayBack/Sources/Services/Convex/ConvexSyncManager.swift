@@ -13,8 +13,21 @@ final class ConvexSyncManager: ObservableObject {
     /// All groups for the current user, kept in sync with Convex
     @Published private(set) var groups: [SpendingGroup] = []
     
+    /// Mapping from group UUID to Convex document ID for paginated expense queries
+    @Published private(set) var groupDocIds: [UUID: String] = [:]
+    
+    /// Pagination state for groups
+    @Published private(set) var nextGroupsCursor: String?
+    @Published private(set) var hasMoreGroups: Bool = true
+    @Published private(set) var isFetchingMoreGroups: Bool = false
+    
     /// All expenses for the current user, kept in sync with Convex
     @Published private(set) var expenses: [Expense] = []
+    
+    /// Per-group expenses pagination state
+    @Published private(set) var groupExpensesCursors: [UUID: String] = [:]
+    @Published private(set) var groupHasMoreExpenses: [UUID: Bool] = [:]
+    @Published private(set) var groupIsFetchingExpenses: [UUID: Bool] = [:]
     
     /// All friends for the current user
     @Published private(set) var friends: [AccountFriend] = []
@@ -69,6 +82,11 @@ final class ConvexSyncManager: ObservableObject {
         isSyncing = true
         syncError = nil
         
+        // Reset pagination state when starting sync
+        nextGroupsCursor = nil
+        hasMoreGroups = true
+        isFetchingMoreGroups = false
+        
         #if DEBUG
         print("[ConvexSyncManager] Starting real-time sync...")
         #endif
@@ -84,6 +102,15 @@ final class ConvexSyncManager: ObservableObject {
                     #endif
                     await MainActor.run {
                         self.groups = groupDTOs.compactMap { $0.toSpendingGroup() }
+                        // Build UUID -> DocId mapping for paginated expense queries
+                        var docIdMap: [UUID: String] = [:]
+                        for dto in groupDTOs {
+                            if let convexDocId = dto._id,
+                               let uuid = UUID(uuidString: dto.id) {
+                                docIdMap[uuid] = convexDocId
+                            }
+                        }
+                        self.groupDocIds = docIdMap
                     }
                 }
             } catch {
@@ -173,11 +200,20 @@ final class ConvexSyncManager: ObservableObject {
     func stopSync() {
         // Clear all cached data immediately to prevent stale data showing for new users
         groups = []
+        groupDocIds = [:]
         expenses = []
         friends = []
         incomingLinkRequests = []
         outgoingLinkRequests = []
         activeInviteTokens = []
+        
+        // Clear pagination state
+        nextGroupsCursor = nil
+        hasMoreGroups = true
+        isFetchingMoreGroups = false
+        groupExpensesCursors = [:]
+        groupHasMoreExpenses = [:]
+        groupIsFetchingExpenses = [:]
         
         groupsTask?.cancel(); groupsTask = nil
         expensesTask?.cancel(); expensesTask = nil
@@ -196,6 +232,91 @@ final class ConvexSyncManager: ObservableObject {
     func restartSync() {
         stopSync()
         startSync()
+    }
+    
+    /// Fetch the next page of groups
+    func fetchMoreGroups(limit: Int = 20) async {
+        guard !isFetchingMoreGroups && hasMoreGroups else { return }
+        
+        isFetchingMoreGroups = true
+        defer { isFetchingMoreGroups = false }
+        
+do {
+            let args: [String: ConvexEncodable?] = [
+                "cursor": nextGroupsCursor,
+                "limit": limit
+            ]
+            
+            for try await result in client.subscribe(to: "groups:listPaginated", with: args, yielding: ConvexPaginatedGroupsDTO.self).values {
+                let newGroups = result.items.compactMap { $0.toSpendingGroup() }
+                
+                let existingIds = Set(self.groups.map { $0.id })
+                let filteredNewGroups = newGroups.filter { !existingIds.contains($0.id) }
+                
+                self.groups.append(contentsOf: filteredNewGroups)
+                self.nextGroupsCursor = result.nextCursor
+                self.hasMoreGroups = result.nextCursor != nil
+                
+                for dto in result.items {
+                    if let convexDocId = dto._id,
+                       let uuid = UUID(uuidString: dto.id) {
+                        self.groupDocIds[uuid] = convexDocId
+                    }
+                }
+                
+                #if DEBUG
+                print("[ConvexSyncManager] Fetched \(filteredNewGroups.count) more groups. Next cursor: \(nextGroupsCursor ?? "nil")")
+                #endif
+                break
+            }
+        } catch {
+            self.syncError = error
+        }
+    }
+    
+    /// Fetch a page of expenses for a specific group using Convex document ID
+    func fetchExpensesPage(forGroupId groupId: UUID, limit: Int = 20) async {
+        guard groupIsFetchingExpenses[groupId] != true else { return }
+        guard groupHasMoreExpenses[groupId] != false else { return }
+        
+        guard let convexDocId = groupDocIds[groupId] else {
+            #if DEBUG
+            print("[ConvexSyncManager] No Convex DocId found for group \(groupId)")
+            #endif
+            return
+        }
+        
+        groupIsFetchingExpenses[groupId] = true
+        defer { groupIsFetchingExpenses[groupId] = false }
+        
+        do {
+            var args: [String: ConvexEncodable?] = [
+                "groupId": convexDocId,
+                "limit": limit
+            ]
+            
+            if let cursor = groupExpensesCursors[groupId] {
+                args["cursor"] = cursor
+            }
+            
+            for try await result in client.subscribe(to: "expenses:listByGroupPaginated", with: args, yielding: ConvexPaginatedExpensesDTO.self).values {
+                let newExpenses = result.items.map { $0.toExpense() }
+                
+                let existingIds = Set(self.expenses.map { $0.id })
+                let filteredNewExpenses = newExpenses.filter { !existingIds.contains($0.id) }
+                
+                self.expenses.append(contentsOf: filteredNewExpenses)
+                self.groupExpensesCursors[groupId] = result.nextCursor
+                self.groupHasMoreExpenses[groupId] = result.nextCursor != nil
+                
+                #if DEBUG
+                print("[ConvexSyncManager] Fetched \(filteredNewExpenses.count) expenses for group \(groupId). Next cursor: \(result.nextCursor ?? "nil")")
+                #endif
+                break
+            }
+        } catch {
+            self.syncError = error
+        }
     }
     
     // MARK: - Convenience Methods

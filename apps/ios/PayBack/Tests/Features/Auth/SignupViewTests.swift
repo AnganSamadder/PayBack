@@ -58,7 +58,7 @@ final class SignupViewTests: XCTestCase {
     func testIsFormValid_RequiresPasswordsToMatch() {
         // This tests the isFormValid logic that includes password matching
         let email = "test@example.com"
-        let name = "Test User"
+        let name = "Example User"
         let passwordInput = "password123"
         let confirmPasswordInput = "password123"
         
@@ -82,7 +82,7 @@ final class SignupViewTests: XCTestCase {
     
     func testIsFormValid_ReturnsFalseWhenPasswordsDontMatch() {
         let email = "test@example.com"
-        let name = "Test User"
+        let name = "Example User"
         let passwordInput = "password123"
         let confirmPasswordInput = "differentPassword"
         
@@ -100,7 +100,7 @@ final class SignupViewTests: XCTestCase {
     
     func testIsFormValid_ReturnsFalseWhenPasswordTooShort() {
         let email = "test@example.com"
-        let name = "Test User"
+        let name = "Example User"
         let passwordInput = "pass"  // Less than 6 characters
         let confirmPasswordInput = "pass"
         

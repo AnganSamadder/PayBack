@@ -1,7 +1,7 @@
 import Foundation
 
-protocol AccountService: Sendable {
-    func normalizedEmail(from rawValue: String) throws -> String
+protocol AccountService: Actor {
+    nonisolated func normalizedEmail(from rawValue: String) throws -> String
     func lookupAccount(byEmail email: String) async throws -> UserAccount?
     func createAccount(email: String, displayName: String) async throws -> UserAccount
     func updateLinkedMember(accountId: String, memberId: UUID?) async throws
@@ -19,6 +19,55 @@ protocol AccountService: Sendable {
     
     /// Checks if the user is authenticated on the backend
     func checkAuthentication() async throws -> Bool
+    
+    /// Merges two member IDs (e.g. merging a manual unlinked friend into a linked friend)
+    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws
+    
+    /// Deletes a linked friend (removes link and 1:1 expenses, keeps account)
+    func deleteLinkedFriend(memberId: UUID) async throws
+    
+    /// Deletes an unlinked friend (removes entirely from groups and expenses)
+    func deleteUnlinkedFriend(memberId: UUID) async throws
+    
+    /// Deletes the current user's account (unlinks from friends, keeps expenses, signs out)
+    func selfDeleteAccount() async throws
+    
+    /// Monitors the current user's session status in real-time
+    nonisolated func monitorSession() -> AsyncStream<UserAccount?>
+    
+    // MARK: - Friend Requests
+    func sendFriendRequest(email: String) async throws
+    func acceptFriendRequest(requestId: String) async throws
+    func rejectFriendRequest(requestId: String) async throws
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest]
+    
+    /// Merges two unlinked friends (alias to alias)
+    func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws
+    
+    /// Validates which account IDs exist in the system
+    /// Returns a set of valid account IDs
+    func validateAccountIds(_ ids: [String]) async throws -> Set<String>
+    
+    /// Resolves which member IDs have linked accounts (checking both current and historical UUIDs)
+    /// Returns mapping of member ID -> (account ID, email)
+    func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)]
+
+    #if !PAYBACK_CI_NO_CONVEX
+    /// Performs a bulk import of friends, groups, and expenses
+    func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult
+    #endif
+}
+
+struct LinkedAccountInfo: Codable, Sendable, Equatable {
+    let accountId: String
+    let email: String
+}
+
+struct IncomingFriendRequest: Identifiable, Sendable {
+    let id: String
+    let sender: UserAccount
+    let status: String
+    let createdAt: Date
 }
 
 actor MockAccountService: AccountService {
@@ -99,4 +148,91 @@ actor MockAccountService: AccountService {
     func checkAuthentication() async throws -> Bool {
         return true
     }
+    
+    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
+        // Mock implementation - no-op or simulate merge
+        #if DEBUG
+        print("[MockAccountService] Merging \(sourceId) into \(targetId)")
+        #endif
+    }
+    
+    func deleteLinkedFriend(memberId: UUID) async throws {
+        #if DEBUG
+        print("[MockAccountService] deleteLinkedFriend \(memberId)")
+        #endif
+        for (email, friendList) in friends {
+            if let idx = friendList.firstIndex(where: { $0.memberId == memberId }) {
+                var updated = friendList
+                updated.remove(at: idx)
+                friends[email] = updated
+            }
+        }
+    }
+    
+    func deleteUnlinkedFriend(memberId: UUID) async throws {
+        #if DEBUG
+        print("[MockAccountService] deleteUnlinkedFriend \(memberId)")
+        #endif
+        for (email, friendList) in friends {
+            if let idx = friendList.firstIndex(where: { $0.memberId == memberId }) {
+                var updated = friendList
+                updated.remove(at: idx)
+                friends[email] = updated
+            }
+        }
+    }
+    
+    func selfDeleteAccount() async throws {
+        #if DEBUG
+        print("[MockAccountService] selfDeleteAccount")
+        #endif
+        // Mock implementation - remove current user from accounts
+        // In a real mock, we might need to know WHO is calling, but for now just log it
+    }
+    
+    nonisolated func monitorSession() -> AsyncStream<UserAccount?> {
+        AsyncStream { continuation in
+            // Mock implementation: just finish immediately or yield current state if we tracked "currentUser"
+            // For now, simple no-op stream
+            continuation.finish()
+        }
+    }
+    
+    func sendFriendRequest(email: String) async throws {
+        // Mock
+    }
+    
+    func acceptFriendRequest(requestId: String) async throws {
+        // Mock
+    }
+    
+    func rejectFriendRequest(requestId: String) async throws {
+        // Mock
+    }
+    
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest] {
+        return []
+    }
+    
+    func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {
+        // Mock
+    }
+    
+    func validateAccountIds(_ ids: [String]) async throws -> Set<String> {
+        return Set(ids)
+    }
+    
+    func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
+        return [:]
+    }
+
+    #if !PAYBACK_CI_NO_CONVEX
+    func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult {
+        return BulkImportResult(
+            success: true,
+            created: .init(friends: request.friends.count, groups: request.groups.count, expenses: request.expenses.count),
+            errors: []
+        )
+    }
+    #endif
 }

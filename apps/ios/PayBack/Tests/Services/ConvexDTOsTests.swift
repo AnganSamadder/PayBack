@@ -340,6 +340,89 @@ final class ConvexDTOsTests: XCTestCase {
         let friend = dto.toAccountFriend()
         XCTAssertNil(friend)
     }
+
+    func testConvexAccountFriendDTO_toAccountFriend_UsesLinkedMemberIdAsAliasFallback() {
+        let dto = ConvexAccountFriendDTO(
+            member_id: "d95eae23-f741-4e63-b367-cbbe3402c0ed",
+            name: "Test User",
+            nickname: nil,
+            original_name: nil,
+            has_linked_account: true,
+            linked_account_id: "linked-account",
+            linked_account_email: "linked@example.com",
+            linked_member_id: "c00f4d64-d2c3-4b57-8e78-5daaba0dda0d",
+            alias_member_ids: nil,
+            profile_image_url: nil,
+            profile_avatar_color: nil
+        )
+
+        let friend = dto.toAccountFriend()
+        XCTAssertNotNil(friend)
+        XCTAssertEqual(friend?.aliasMemberIds?.count, 1)
+        XCTAssertEqual(
+            friend?.aliasMemberIds?.first,
+            UUID(uuidString: "c00f4d64-d2c3-4b57-8e78-5daaba0dda0d")
+        )
+    }
+
+    func testConvexAccountFriendDTO_toAccountFriend_EmptyNicknameBecomesNil() {
+        let dto = ConvexAccountFriendDTO(
+            member_id: "550e8400-e29b-41d4-a716-446655440001",
+            name: "Best Friend",
+            nickname: "   ",
+            original_name: nil,
+            has_linked_account: true,
+            linked_account_id: "account-123",
+            linked_account_email: "friend@test.com",
+            profile_image_url: nil,
+            profile_avatar_color: nil
+        )
+
+        let friend = dto.toAccountFriend()
+        XCTAssertNotNil(friend)
+        XCTAssertNil(friend?.nickname)
+    }
+
+    func testConvexAccountFriendDTO_toAccountFriend_PreservesStatus() {
+        let dto = ConvexAccountFriendDTO(
+            member_id: "550e8400-e29b-41d4-a716-446655440001",
+            name: "Best Friend",
+            nickname: nil,
+            original_name: nil,
+            status: "friend",
+            has_linked_account: true,
+            linked_account_id: "account-123",
+            linked_account_email: "Friend@Test.com",
+            profile_image_url: nil,
+            profile_avatar_color: nil
+        )
+
+        let friend = dto.toAccountFriend()
+        XCTAssertNotNil(friend)
+        XCTAssertEqual(friend?.status, "friend")
+        XCTAssertEqual(friend?.linkedAccountEmail, "friend@test.com")
+    }
+
+    func testConvexAccountFriendDTO_toAccountFriend_EmptyStatusAndLinkedFieldsBecomeNil() {
+        let dto = ConvexAccountFriendDTO(
+            member_id: "550e8400-e29b-41d4-a716-446655440001",
+            name: "Best Friend",
+            nickname: nil,
+            original_name: nil,
+            status: "   ",
+            has_linked_account: true,
+            linked_account_id: " ",
+            linked_account_email: "   ",
+            profile_image_url: nil,
+            profile_avatar_color: nil
+        )
+
+        let friend = dto.toAccountFriend()
+        XCTAssertNotNil(friend)
+        XCTAssertNil(friend?.status)
+        XCTAssertNil(friend?.linkedAccountId)
+        XCTAssertNil(friend?.linkedAccountEmail)
+    }
     
     // MARK: - ConvexUserAccountDTO Tests
     
