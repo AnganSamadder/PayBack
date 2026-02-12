@@ -132,7 +132,7 @@ export const cleanupOrphans = internalMutation({
     }
 
     const linkedEmailsToClean = orphanedLinkedEmails.slice(0, MAX_ORPHANS_PER_RUN);
-    const results = [];
+    const results: any[] = [];
 
     for (const email of linkedEmailsToClean) {
       try {

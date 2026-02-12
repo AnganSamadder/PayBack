@@ -73,45 +73,49 @@ export const create = mutation({
   }
 });
 
+export async function listInternal(ctx: any) {
+  const { identity, user } = await getCurrentUser(ctx);
+  if (!user) return [];
+
+  // Check by owner_account_id
+  const groupsByOwnerId = await ctx.db
+    .query("groups")
+    .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", user.id))
+    .collect();
+
+  // Check by owner_email
+  const groupsByEmail = await ctx.db
+    .query("groups")
+    .withIndex("by_owner_email", (q: any) => q.eq("owner_email", user.email))
+    .collect();
+
+  // Check by membership (using canonical member_id + aliases)
+  let groupsByMembership: any[] = [];
+  const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+    ctx.db,
+    user.member_id ?? user.id
+  );
+  const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+  const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
+
+  const allGroups = await ctx.db.query("groups").collect();
+  groupsByMembership = allGroups.filter((g: any) =>
+    g.members.some((m: any) => membershipIds.has(normalizeMemberId(m.id)))
+  );
+
+  // Merge results
+  const groupMap = new Map();
+  groupsByOwnerId.forEach((g: any) => groupMap.set(g._id, g));
+  groupsByEmail.forEach((g: any) => groupMap.set(g._id, g));
+  groupsByMembership.forEach((g: any) => groupMap.set(g._id, g));
+
+  return Array.from(groupMap.values());
+}
+
 export const list = query({
   args: {},
   handler: async (ctx) => {
-    const { identity, user } = await getCurrentUser(ctx);
-    if (!user) return [];
-
-    // Check by owner_account_id
-    const groupsByOwnerId = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
-      .collect();
-
-    // Check by owner_email
-    const groupsByEmail = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
-      .collect();
-
-    // Check by membership (using canonical member_id + aliases)
-    let groupsByMembership: any[] = [];
-    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-      ctx.db,
-      user.member_id ?? user.id
-    );
-    const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-    const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
-
-    const allGroups = await ctx.db.query("groups").collect();
-    groupsByMembership = allGroups.filter((g) =>
-      g.members.some((m: any) => membershipIds.has(normalizeMemberId(m.id)))
-    );
-
-    // Merge results
-    const groupMap = new Map();
-    groupsByOwnerId.forEach((g) => groupMap.set(g._id, g));
-    groupsByEmail.forEach((g) => groupMap.set(g._id, g));
-    groupsByMembership.forEach((g) => groupMap.set(g._id, g));
-
-    return Array.from(groupMap.values());
+    return await listInternal(ctx);
   }
 });
 
@@ -124,7 +128,7 @@ export const listPaginated = query({
     // Reusing list logic for consistency, but mocking pagination structure
     // Ideally this should use real pagination, but list() merges multiple sources.
     // For now, returning all items as a single page is safe and correct.
-    const allItems = await list(ctx, {});
+    const allItems = await listInternal(ctx);
 
     return {
       items: allItems,

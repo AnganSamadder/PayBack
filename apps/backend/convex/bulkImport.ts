@@ -168,7 +168,7 @@ export const bulkImport = mutation({
       let finalStatus = friend.status;
       let finalHasLinked = friend.has_linked_account ?? false;
 
-      let linkedMemberId = undefined;
+      let linkedMemberId: string | undefined = undefined;
 
       if (finalLinkedEmail) {
         const linkedAccount = await ctx.db

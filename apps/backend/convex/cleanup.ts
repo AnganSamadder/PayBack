@@ -35,7 +35,6 @@ const logHardDelete = (
     email: string;
     subject: string;
     accountId: string;
-    linkedMemberId?: string;
   },
   step: string,
   data: Record<string, unknown>
