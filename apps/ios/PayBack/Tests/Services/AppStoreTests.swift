@@ -1423,25 +1423,24 @@ final class AppStoreTests: XCTestCase {
         // Given
         let masterId = UUID()
         let aliasId = UUID()
-        
+
         let friend = AccountFriend(
             memberId: masterId,
             name: "Master",
             hasLinkedAccount: true,
             aliasMemberIds: [masterId, aliasId]
         )
-        
-        // Setup AppStore with this friend
+
+        // Setup: store friends in mock BEFORE triggering auth so fetchFriends
+        // inside loadRemoteData deterministically returns them.
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        
-        // Mock sync
+        await mockAccountService.addAccount(account)
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [friend])
-        
-        // Wait for sync to process
-        try await Task.sleep(nanoseconds: 200_000_000)
-        
+
+        // Set session directly and load remote data (avoids non-awaited Task race in completeAuthentication)
+        sut.session = UserSession(account: account)
+        await sut.loadRemoteData()
+
         // When/Then
         XCTAssertTrue(sut.areSamePerson(masterId, aliasId), "Master and Alias should be same person")
         XCTAssertTrue(sut.areSamePerson(aliasId, masterId), "Alias and Master should be same person")
@@ -1452,32 +1451,31 @@ final class AppStoreTests: XCTestCase {
         // Given
         let masterId = UUID()
         let aliasId = UUID()
-        
+
         let masterFriend = AccountFriend(
             memberId: masterId,
             name: "Master",
             hasLinkedAccount: true,
             aliasMemberIds: [masterId, aliasId]
         )
-        
+
         let aliasFriend = AccountFriend(
             memberId: aliasId,
             name: "Alias",
             hasLinkedAccount: false,
             aliasMemberIds: []
         )
-        
-        // Setup AppStore
+
+        // Setup: store friends in mock BEFORE triggering load so fetchFriends
+        // inside loadRemoteData deterministically returns them.
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        
-        // Mock sync with BOTH friends
+        await mockAccountService.addAccount(account)
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [masterFriend, aliasFriend])
-        
-        // Wait for sync to process
-        try await Task.sleep(nanoseconds: 200_000_000)
-        
+
+        // Set session directly and load remote data (avoids non-awaited Task race in completeAuthentication)
+        sut.session = UserSession(account: account)
+        await sut.loadRemoteData()
+
         // Then
         XCTAssertEqual(sut.friends.count, 1, "Should deduplicate to 1 friend")
         XCTAssertEqual(sut.friends.first?.memberId, masterId, "Should keep master friend")
