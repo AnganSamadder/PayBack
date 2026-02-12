@@ -118,19 +118,19 @@ export const list = query({
 export const listPaginated = query({
   args: {
     cursor: v.optional(v.string()),
-    limit: v.optional(v.number()),
+    limit: v.optional(v.number())
   },
   handler: async (ctx, args) => {
     // Reusing list logic for consistency, but mocking pagination structure
     // Ideally this should use real pagination, but list() merges multiple sources.
     // For now, returning all items as a single page is safe and correct.
     const allItems = await list(ctx, {});
-    
+
     return {
       items: allItems,
-      nextCursor: null,
+      nextCursor: null
     };
-  },
+  }
 });
 
 export const get = query({
@@ -148,17 +148,17 @@ export const get = query({
 
     // Auth check
     if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
-        const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-          ctx.db,
-          user.member_id ?? user.id
-        );
-        const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-        const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
+      const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+        ctx.db,
+        user.member_id ?? user.id
+      );
+      const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+      const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
 
-        if (group.members.some((m: any) => membershipIds.has(normalizeMemberId(m.id)))) {
-            return group;
-        }
-        return null;
+      if (group.members.some((m: any) => membershipIds.has(normalizeMemberId(m.id)))) {
+        return group;
+      }
+      return null;
     }
 
     return group;
@@ -229,7 +229,7 @@ export const clearAllForUser = mutation({
     const membershipIds = new Set([
       normalizeMemberId(canonicalMemberId),
       ...equivalentIds.map((id) => normalizeMemberId(id)),
-      ...(user.alias_member_ids || []).map((id: string) => normalizeMemberId(id)),
+      ...(user.alias_member_ids || []).map((id: string) => normalizeMemberId(id))
     ]);
 
     // 1) Delete groups owned by the current user.
@@ -279,7 +279,7 @@ export const clearAllForUser = mutation({
 
       await ctx.db.patch(group._id, {
         members: remainingMembers,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
       sharedGroupsUpdated += 1;
     }
@@ -287,7 +287,7 @@ export const clearAllForUser = mutation({
     return {
       deleted_owned_groups: ownedGroupIdSet.size,
       left_shared_groups: sharedGroupsUpdated,
-      deleted_empty_shared_groups: emptySharedGroupsDeleted,
+      deleted_empty_shared_groups: emptySharedGroupsDeleted
     };
   }
 });
@@ -312,9 +312,7 @@ export const leaveGroup = mutation({
     const aliases = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
     const membershipIds = new Set([canonicalMemberId, ...aliases]);
 
-    const isMember = group.members.some(
-      (m: any) => membershipIds.has(normalizeMemberId(m.id))
-    );
+    const isMember = group.members.some((m: any) => membershipIds.has(normalizeMemberId(m.id)));
     if (!isMember) throw new Error("You are not a member of this group");
 
     const normalizedNewMembers = group.members.filter(
@@ -322,12 +320,12 @@ export const leaveGroup = mutation({
     );
 
     if (normalizedNewMembers.length === 0) {
-        await ctx.db.delete(group._id);
+      await ctx.db.delete(group._id);
     } else {
-        await ctx.db.patch(group._id, { 
-            members: normalizedNewMembers,
-            updated_at: Date.now()
-        });
+      await ctx.db.patch(group._id, {
+        members: normalizedNewMembers,
+        updated_at: Date.now()
+      });
     }
   }
 });

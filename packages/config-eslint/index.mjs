@@ -21,13 +21,7 @@ export function createBaseConfig({ browser = false, node = true } = {}) {
       }
     },
     {
-      ignores: [
-        "dist/**",
-        "build/**",
-        "coverage/**",
-        "node_modules/**",
-        ".turbo/**"
-      ]
+      ignores: ["dist/**", "build/**", "coverage/**", "node_modules/**", ".turbo/**"]
     }
   ];
 }
