@@ -60,11 +60,7 @@ struct GroupDetailView: View {
     @State private var showMemberDeleteConfirmation = false
     @State private var showAddMemberSheet = false
     @State private var showUnsettledAlert = false
-    @State private var expenseToEdit: Expense?
-    @State private var showDeleteConfirmation = false
     @State private var showLeaveConfirmation = false
-    @State private var showEditGroup = false
-    @State private var showAddMembers = false
     @State private var memberToMerge: GroupMember?
     @State private var showMergeSheet = false
     @State private var showMergeErrorAlert = false
