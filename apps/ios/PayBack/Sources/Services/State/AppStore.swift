@@ -204,6 +204,21 @@ final class AppStore: ObservableObject {
                 // Complete login securely
                 await finishLogin(account: account)
                 
+                await MainActor.run {
+                    let defaults = UserDefaults.standard
+                    if defaults.object(forKey: "preferNicknames") != nil {
+                        let migratedNicknames = defaults.bool(forKey: "preferNicknames")
+                        let migratedWholeNames = defaults.bool(forKey: "preferWholeNames")
+                        
+                        print("[AppStore] Applying migrated display settings: nick=\(migratedNicknames), whole=\(migratedWholeNames)")
+                        
+                        self.updateAccountSettings(preferNicknames: migratedNicknames, preferWholeNames: migratedWholeNames)
+                        
+                        defaults.removeObject(forKey: "preferNicknames")
+                        defaults.removeObject(forKey: "preferWholeNames")
+                    }
+                }
+                
             } catch {
                 AppConfig.markTiming("Session restore failed: \(error.localizedDescription)")
             }

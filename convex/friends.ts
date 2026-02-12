@@ -49,7 +49,7 @@ export const list = query({
         friend.linked_member_id;
       if (!identityKey) continue;
 
-      let linkedAccount = null;
+      let linkedAccount: any = null;
       if (friend.linked_account_email) {
         linkedAccount = await ctx.db
           .query("accounts")
@@ -88,7 +88,7 @@ export const list = query({
       }
     }
 
-    const validatedFriends = [];
+    const validatedFriends: any[] = [];
     for (const friend of normalizedFriends) {
       if (friend.has_linked_account && (friend.linked_account_email || friend.linked_account_id)) {
         const identityKey =
@@ -279,7 +279,7 @@ export const upsert = mutation({
     prefer_nickname: v.optional(v.boolean()),
     first_name: v.optional(v.string()),
     last_name: v.optional(v.string()),
-    display_preference: v.optional(v.string()),
+    display_preference: v.optional(v.union(v.string(), v.null())),
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
@@ -332,7 +332,7 @@ export const upsert = mutation({
         prefer_nickname: args.prefer_nickname,
         first_name: args.first_name ?? existingLegacy.first_name,
         last_name: args.last_name ?? existingLegacy.last_name,
-        display_preference: args.display_preference ?? existingLegacy.display_preference,
+        display_preference: args.display_preference === undefined ? existingLegacy.display_preference : args.display_preference,
         has_linked_account: finalHasLinkedAccount,
         linked_account_id: finalHasLinkedAccount ? finalLinkedAccountId : undefined,
         linked_account_email: finalHasLinkedAccount ? finalLinkedAccountEmail : undefined,

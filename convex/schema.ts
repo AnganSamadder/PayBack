@@ -48,7 +48,7 @@ export default defineSchema({
     prefer_nickname: v.optional(v.boolean()),
     first_name: v.optional(v.string()),
     last_name: v.optional(v.string()),
-    display_preference: v.optional(v.string()), // "nickname" | "real_name" | undefined (follow global)
+    display_preference: v.optional(v.union(v.string(), v.null())),
     profile_avatar_color: v.string(),
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),

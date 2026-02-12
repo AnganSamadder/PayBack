@@ -171,12 +171,15 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     func secondaryDisplayName(preferNicknames: Bool, preferWholeNames: Bool) -> String? {
         let primary = displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
 
-        // If primary is nickname, secondary is real name
         if let nick = displayNickname, primary == nick {
-            return realName(preferWholeNames: preferWholeNames)
+            let secondary = realName(preferWholeNames: preferWholeNames)
+            
+            if secondary.caseInsensitiveCompare(primary) == .orderedSame {
+                return nil
+            }
+            return secondary
         }
 
-        // If primary is real name and nickname exists, secondary is nickname
         if displayNickname != nil {
             return displayNickname
         }
