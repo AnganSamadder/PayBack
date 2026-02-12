@@ -668,6 +668,10 @@ actor TestAccountService: AccountService {
         return imageUrl
     }
 
+    func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws {
+        // No-op for tests
+    }
+
     func uploadProfileImage(_ data: Data) async throws -> String {
         return "https://example.com/mock.jpg"
     }

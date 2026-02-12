@@ -92,6 +92,14 @@ packages:
     from: 0.1.0
 
 # ----------------------------------------------------------------------------
+# Build Configurations
+# ----------------------------------------------------------------------------
+configs:
+  Debug: debug
+  Internal: release
+  Release: release
+
+# ----------------------------------------------------------------------------
 # Project-wide Build Settings
 # ----------------------------------------------------------------------------
 settings:
@@ -115,19 +123,14 @@ settings:
       GCC_OPTIMIZATION_LEVEL: 0
       SWIFT_OPTIMIZATION_LEVEL: -Onone
       DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+    Internal:
+      GCC_OPTIMIZATION_LEVEL: s
+      SWIFT_OPTIMIZATION_LEVEL: -O
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
     Release:
       GCC_OPTIMIZATION_LEVEL: s
       SWIFT_OPTIMIZATION_LEVEL: -O
       DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
-
-# ----------------------------------------------------------------------------
-# Build Configurations
-# ----------------------------------------------------------------------------
-# configs:
-#   Debug: debug
-#   Release: release
-#   Staging: debug
-#   Production: release
 
 # ----------------------------------------------------------------------------
 # Aggregate Targets (for running scripts, dependencies)
@@ -183,6 +186,25 @@ schemes:
     archive:
       config: Release
 
+  PayBackInternal:
+    build:
+      targets:
+        PayBack: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      testPlans:
+        - path: apps/ios/PayBack/TestPlans/PayBack.xctestplan
+          default: true
+    profile:
+      config: Internal
+    analyze:
+      config: Debug
+    archive:
+      config: Internal
+
   PayBackCITests:
     build:
       targets:
@@ -214,6 +236,8 @@ targets:
     # Sources to include
     sources:
       - path: apps/ios/PayBack/Sources
+        excludes:
+          - "**/*.md"
         # name: Sources
         # type: folder
         # excludes:
@@ -284,6 +308,14 @@ targets:
             exit 0
           fi
 
+          # Guardrail: never deploy backend from non-production app configs.
+          # Internal/Debug app builds should not push server changes.
+          if [ "${CONFIGURATION:-}" != "Release" ]; then
+            echo "Convex deploy skipped for CONFIGURATION=${CONFIGURATION:-unset} (only Release deploys backend)."
+            touch "$DERIVED_FILE_DIR/convex_sync_timestamp"
+            exit 0
+          fi
+
           # Verify deploy key is available
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "warning: CONVEX_DEPLOY_KEY not set. Skipping Convex deploy."
@@ -340,6 +372,14 @@ targets:
         # SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
         # GCC_PREPROCESSOR_DEFINITIONS: "DEBUG=1"
 
+      configs:
+        Debug:
+          PAYBACK_CONVEX_ENV: development
+        Internal:
+          PAYBACK_CONVEX_ENV: development
+        Release:
+          PAYBACK_CONVEX_ENV: production
+
       # configs:
       #   Debug:
       #     SWIFT_OPTIMIZATION_LEVEL: -Onone
@@ -365,6 +405,7 @@ targets:
             CFBundleURLName: com.angansamadder.PayBack
             CFBundleURLSchemes:
               - payback
+        PAYBACK_CONVEX_ENV: $(PAYBACK_CONVEX_ENV)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -484,6 +525,8 @@ targets:
 
     sources:
       - path: apps/ios/PayBack/Sources
+        excludes:
+          - "**/*.md"
       - path: apps/ios/PayBack/Assets.xcassets
         type: resource
 

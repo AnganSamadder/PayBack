@@ -641,7 +641,6 @@
 		B1764C08C2441F553EE42E73 /* CurrencyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrencyService.swift; sourceTree = "<group>"; };
 		B19D72F7DE714661ACFBE95C /* GroupMemberExtensionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupMemberExtensionTests.swift; sourceTree = "<group>"; };
 		B2D609442013353E2172F080 /* DomainModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainModelsTests.swift; sourceTree = "<group>"; };
-		B3CB16DCDDEC82F38E1BD4BC /* AGENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AGENTS.md; sourceTree = "<group>"; };
 		B4041720D554190C0CF094EC /* ConvexConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexConfig.swift; sourceTree = "<group>"; };
 		B5612BC413F0B414514420FC /* ClerkAuthModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClerkAuthModels.swift; sourceTree = "<group>"; };
 		B5717A22E4AAD8CD7A14ED7D /* UserAccount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserAccount.swift; sourceTree = "<group>"; };
@@ -1069,7 +1068,6 @@
 		81E42A1CD3BDC991DB92A63B /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				B3CB16DCDDEC82F38E1BD4BC /* AGENTS.md */,
 				A9B13CAB72D4F922DA9680F8 /* PayBackApp.swift */,
 				376A9304FEA6B1584C82B87E /* App */,
 				59B8436C29C23B38523D0D40 /* DesignSystem */,
@@ -1600,7 +1598,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\n\n# Safety check: only deploy when explicitly enabled\nif [ \"${CONVEX_DEPLOY_ON_CI:-}\" != \"1\" ]; then\n  echo \"Convex deploy disabled (CONVEX_DEPLOY_ON_CI != 1). Skipping.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\n# Verify deploy key is available\nif [ -z \"${CONVEX_DEPLOY_KEY:-}\" ]; then\n  echo \"warning: CONVEX_DEPLOY_KEY not set. Skipping Convex deploy.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\nexport PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"\n\n# Try to find npx via nvm (local dev) or Homebrew (XcodeCloud)\nexport NVM_DIR=\"$HOME/.nvm\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\nelif [ -d \"$NVM_DIR/versions/node\" ]; then\n  LATEST_NODE=$(ls -rd \"$NVM_DIR/versions/node\"/v* 2>/dev/null | head -n 1)\n  if [ -n \"$LATEST_NODE\" ]; then\n    export PATH=\"$LATEST_NODE/bin:$PATH\"\n  fi\nfi\n\nif command -v npx >/dev/null 2>&1; then\n  echo \"Deploying Convex backend...\"\n  npx convex deploy -y --cmd 'echo \"Backend deploy successful\"'\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\nelse\n  echo \"error: npx not found in PATH. Cannot deploy Convex backend.\"\n  echo \"PATH: $PATH\"\n  exit 1\nfi\n";
+			shellScript = "set -euo pipefail\n\n# Safety check: only deploy when explicitly enabled\nif [ \"${CONVEX_DEPLOY_ON_CI:-}\" != \"1\" ]; then\n  echo \"Convex deploy disabled (CONVEX_DEPLOY_ON_CI != 1). Skipping.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\n# Guardrail: never deploy backend from non-production app configs.\n# Internal/Debug app builds should not push server changes.\nif [ \"${CONFIGURATION:-}\" != \"Release\" ]; then\n  echo \"Convex deploy skipped for CONFIGURATION=${CONFIGURATION:-unset} (only Release deploys backend).\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\n# Verify deploy key is available\nif [ -z \"${CONVEX_DEPLOY_KEY:-}\" ]; then\n  echo \"warning: CONVEX_DEPLOY_KEY not set. Skipping Convex deploy.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\nexport PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"\n\n# Try to find npx via nvm (local dev) or Homebrew (XcodeCloud)\nexport NVM_DIR=\"$HOME/.nvm\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\nelif [ -d \"$NVM_DIR/versions/node\" ]; then\n  LATEST_NODE=$(ls -rd \"$NVM_DIR/versions/node\"/v* 2>/dev/null | head -n 1)\n  if [ -n \"$LATEST_NODE\" ]; then\n    export PATH=\"$LATEST_NODE/bin:$PATH\"\n  fi\nfi\n\nif command -v npx >/dev/null 2>&1; then\n  echo \"Deploying Convex backend...\"\n  npx convex deploy -y --cmd 'echo \"Backend deploy successful\"'\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\nelse\n  echo \"error: npx not found in PATH. Cannot deploy Convex backend.\"\n  echo \"PATH: $PATH\"\n  exit 1\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -2065,6 +2063,27 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		0100FC41BA845F35E7107CB1 /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = apps/ios/PayBack/PayBack.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "apps/ios/PayBack/PayBack-Simulator.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_TESTABILITY = YES;
+				INFOPLIST_FILE = apps/ios/PayBack/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PAYBACK_CONVEX_ENV = development;
+				PRODUCT_BUNDLE_IDENTIFIER = com.angansamadder.PayBack;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Internal;
+		};
 		07A3C82FA5EDAD2F75005B57 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -2233,11 +2252,132 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				PAYBACK_CONVEX_ENV = production;
 				PRODUCT_BUNDLE_IDENTIFIER = com.angansamadder.PayBack;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
+		};
+		78A2C11A64698E9523075C1F /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				INFOPLIST_FILE = apps/ios/PayBack/Tests/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.angansamadder.PayBackTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PayBack.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PayBack";
+			};
+			name = Internal;
+		};
+		7A9DD325EDB8A656D8A62F9B /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = "";
+				INFOPLIST_FILE = apps/ios/PayBack/Info.CI.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.angansamadder.PayBackCI;
+				PRODUCT_MODULE_NAME = PayBack;
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) PAYBACK_CI_NO_CONVEX";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Internal;
+		};
+		AA9DEF8ACA808060BA5C5401 /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = "";
+				INFOPLIST_FILE = apps/ios/PayBack/Tests/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.angansamadder.PayBackCITests;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) PAYBACK_CI_NO_CONVEX";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PayBackCI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PayBackCI";
+			};
+			name = Internal;
+		};
+		C106E6202B8AC5DA0EFDEC69 /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 6;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 39YTAJZTZ6;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = s;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.10;
+			};
+			name = Internal;
 		};
 		C80AFD729D9AC874834012DC /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -2253,6 +2393,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				PAYBACK_CONVEX_ENV = development;
 				PRODUCT_BUNDLE_IDENTIFIER = com.angansamadder.PayBack;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -2358,6 +2499,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				07A3C82FA5EDAD2F75005B57 /* Debug */,
+				7A9DD325EDB8A656D8A62F9B /* Internal */,
 				DB5F7FFB8171A0C09B629E7E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2367,6 +2509,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				C80AFD729D9AC874834012DC /* Debug */,
+				0100FC41BA845F35E7107CB1 /* Internal */,
 				66529F60566465264FF6E036 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2376,6 +2519,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				FD9E62F382BE941E3FDFFF20 /* Debug */,
+				78A2C11A64698E9523075C1F /* Internal */,
 				F614E6A78E8B625F4FB9A259 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2385,6 +2529,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				2A17A237FCF076AAB38F6507 /* Debug */,
+				C106E6202B8AC5DA0EFDEC69 /* Internal */,
 				2B934191CE85F57FBDC3173F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2394,6 +2539,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D6D094BD847C7E104435D4C4 /* Debug */,
+				AA9DEF8ACA808060BA5C5401 /* Internal */,
 				F710E47BAAD7048E47105F2D /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;

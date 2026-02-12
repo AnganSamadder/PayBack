@@ -7,14 +7,14 @@ import Foundation
 /// - `isCI`: True when running in CI environment (Xcode Cloud sets CI env var)
 /// - `showDebugUI`: True only for local debug builds (not CI)
 /// - `verboseLogging`: Enables detailed startup/runtime logging
-/// - `environment`: Returns .development for debug, .production for release/CI
+/// - `environment`: Reads `PAYBACK_CONVEX_ENV` from Info.plist with debug/release fallback
 ///
 /// **Build Matrix:**
-/// | Build Source | DEBUG | CI | Debug UI | Verbose Logs | Database |
-/// |--------------|-------|----|----------|--------------|----------|
-/// | Local Debug  | ✅    | ❌  | ✅        | ✅            | Dev      |
-/// | Local Release| ❌    | ❌  | ❌        | ❌            | Prod     |
-/// | Xcode Cloud  | ❌    | ✅  | ❌        | ❌            | Prod     |
+/// | Build Config | Typical Use | Debug UI | Verbose Logs | Database |
+/// |--------------|-------------|----------|--------------|----------|
+/// | Debug        | Local run   | ✅        | ✅            | Dev      |
+/// | Internal     | Internal testing archives | ❌ | ❌       | Dev      |
+/// | Release      | External TestFlight / App Store | ❌ | ❌ | Prod |
 enum AppConfig {
     
     // MARK: - Build Detection
@@ -53,9 +53,26 @@ enum AppConfig {
     
     // MARK: - Environment
     
+    private static let convexEnvironmentInfoKey = "PAYBACK_CONVEX_ENV"
+    
+    static func resolveConvexEnvironment(rawValue: String?, fallbackIsDebugBuild: Bool) -> ConvexEnvironment {
+        if let rawValue {
+            switch rawValue.lowercased() {
+            case "development":
+                return .development
+            case "production":
+                return .production
+            default:
+                break
+            }
+        }
+        return fallbackIsDebugBuild ? .development : .production
+    }
+    
     /// The database/backend environment to use
     static var environment: ConvexEnvironment {
-        isDebugBuild ? .development : .production
+        let rawValue = Bundle.main.object(forInfoDictionaryKey: convexEnvironmentInfoKey) as? String
+        return resolveConvexEnvironment(rawValue: rawValue, fallbackIsDebugBuild: isDebugBuild)
     }
     
     // MARK: - Performance Tracking
@@ -132,4 +149,3 @@ enum AppConfig {
         print("")
     }
 }
-

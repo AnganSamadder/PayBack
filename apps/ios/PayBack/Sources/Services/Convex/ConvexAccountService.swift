@@ -16,12 +16,16 @@ actor ConvexAccountService: AccountService {
         let id: String
         let email: String
         let display_name: String
+        let first_name: String?
+        let last_name: String?
         let profile_image_url: String?
         let profile_avatar_color: String?
         let linked_member_id: String?
         let equivalent_member_ids: [String]?
         let member_id: String?
         let alias_member_ids: [String]?
+        let prefer_nicknames: Bool?
+        let prefer_whole_names: Bool?
     }
 
     func lookupAccount() async throws -> UserAccount? {
@@ -31,10 +35,14 @@ actor ConvexAccountService: AccountService {
                  id: dto.id,
                  email: dto.email,
                  displayName: dto.display_name,
+                 firstName: dto.first_name,
+                 lastName: dto.last_name,
                  linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
                  equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
                  profileImageUrl: dto.profile_image_url,
-                 profileColorHex: dto.profile_avatar_color
+                 profileColorHex: dto.profile_avatar_color,
+                 preferNicknames: dto.prefer_nicknames ?? false,
+                 preferWholeNames: dto.prefer_whole_names ?? false
              )
         }
         return nil
@@ -56,10 +64,15 @@ actor ConvexAccountService: AccountService {
                  id: dto.id,
                  email: dto.email,
                  displayName: dto.display_name,
-                 linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
-                 profileImageUrl: dto.profile_image_url,
-                 profileColorHex: dto.profile_avatar_color
-             )
+                 firstName: dto.first_name,
+                 lastName: dto.last_name,
+                  linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
+                 equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
+                  profileImageUrl: dto.profile_image_url,
+                  profileColorHex: dto.profile_avatar_color,
+                 preferNicknames: dto.prefer_nicknames ?? false,
+                 preferWholeNames: dto.prefer_whole_names ?? false
+              )
         }
         return nil
     }
@@ -78,59 +91,92 @@ actor ConvexAccountService: AccountService {
         let member_id: String
         let name: String
         let nickname: String?
+        let first_name: String?
+        let last_name: String?
+        let display_preference: String?
         let has_linked_account: Bool
         let linked_account_id: String?
         let linked_account_email: String?
         let status: String?
     }
 
+    nonisolated static func buildFriendUpsertArgs(from friend: AccountFriend) -> [String: ConvexEncodable?] {
+        let args = FriendArg(
+            member_id: friend.memberId.uuidString,
+            name: friend.name,
+            nickname: friend.nickname,
+            first_name: friend.firstName,
+            last_name: friend.lastName,
+            display_preference: friend.displayPreference,
+            has_linked_account: friend.hasLinkedAccount,
+            linked_account_id: friend.linkedAccountId,
+            linked_account_email: friend.linkedAccountEmail,
+            status: friend.status
+        )
+
+        var convexArgs: [String: ConvexEncodable?] = [
+            "member_id": args.member_id,
+            "name": args.name,
+            "has_linked_account": args.has_linked_account,
+        ]
+
+        if let nickname = args.nickname?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !nickname.isEmpty
+        {
+            convexArgs["nickname"] = nickname
+        }
+
+        if let firstName = args.first_name?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !firstName.isEmpty
+        {
+            convexArgs["first_name"] = firstName
+        }
+
+        if let lastName = args.last_name?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !lastName.isEmpty
+        {
+            convexArgs["last_name"] = lastName
+        }
+
+        let trimmedDisplayPreference = args.display_preference?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayPreferenceToPersist = trimmedDisplayPreference?.isEmpty == true
+            ? nil
+            : trimmedDisplayPreference
+        // Always include this key so backend can distinguish explicit clear (null) vs undefined.
+        convexArgs.updateValue(displayPreferenceToPersist, forKey: "display_preference")
+
+        if let linkedAccountId = args.linked_account_id?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !linkedAccountId.isEmpty
+        {
+            convexArgs["linked_account_id"] = linkedAccountId
+        }
+
+        if let linkedAccountEmail = args.linked_account_email?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+           !linkedAccountEmail.isEmpty
+        {
+            convexArgs["linked_account_email"] = linkedAccountEmail
+        }
+
+        if let status = args.status?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !status.isEmpty
+        {
+            convexArgs["status"] = status
+        }
+
+        return convexArgs
+    }
+
     func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {
         for friend in friends {
-            let args = FriendArg(
-                member_id: friend.memberId.uuidString,
-                name: friend.name,
-                nickname: friend.nickname,
-                has_linked_account: friend.hasLinkedAccount,
-                linked_account_id: friend.linkedAccountId,
-                linked_account_email: friend.linkedAccountEmail,
-                status: friend.status
-            )
-
-            var convexArgs: [String: ConvexEncodable?] = [
-                "member_id": args.member_id,
-                "name": args.name,
-                "has_linked_account": args.has_linked_account,
-            ]
-
-            if let nickname = args.nickname?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-               !nickname.isEmpty
-            {
-                convexArgs["nickname"] = nickname
-            }
-
-            if let linkedAccountId = args.linked_account_id?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-               !linkedAccountId.isEmpty
-            {
-                convexArgs["linked_account_id"] = linkedAccountId
-            }
-
-            if let linkedAccountEmail = args.linked_account_email?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased(),
-               !linkedAccountEmail.isEmpty
-            {
-                convexArgs["linked_account_email"] = linkedAccountEmail
-            }
-
-            if let status = args.status?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-               !status.isEmpty
-            {
-                convexArgs["status"] = status
-            }
-
+            let convexArgs = Self.buildFriendUpsertArgs(from: friend)
             _ = try await client.mutation("friends:upsert", with: convexArgs)
         }
         self.cachedFriends = friends
@@ -192,6 +238,14 @@ actor ConvexAccountService: AccountService {
         ]
         _ = try await client.mutation("users:updateProfile", with: args)
         return imageUrl
+    }
+
+    func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws {
+        let args: [String: ConvexEncodable?] = [
+            "prefer_nicknames": preferNicknames,
+            "prefer_whole_names": preferWholeNames
+        ]
+        _ = try await client.mutation("users:updateSettings", with: args)
     }
     
     private struct UploadResponse: Decodable {
@@ -272,10 +326,14 @@ actor ConvexAccountService: AccountService {
                             id: dto.id,
                             email: dto.email,
                             displayName: dto.display_name,
+                            firstName: dto.first_name,
+                            lastName: dto.last_name,
                             linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
                             equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
                             profileImageUrl: dto.profile_image_url,
-                            profileColorHex: dto.profile_avatar_color
+                            profileColorHex: dto.profile_avatar_color,
+                            preferNicknames: dto.prefer_nicknames ?? false,
+                            preferWholeNames: dto.prefer_whole_names ?? false
                         )
                         continuation.yield(account)
                     }

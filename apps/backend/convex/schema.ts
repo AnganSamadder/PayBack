@@ -6,8 +6,12 @@ export default defineSchema({
     id: v.string(), // Keeping query-able ID, likely matching Auth provider ID
     email: v.string(),
     display_name: v.string(),
+    first_name: v.optional(v.string()),
+    last_name: v.optional(v.string()),
     profile_image_url: v.optional(v.string()), // URL to uploaded image
     profile_avatar_color: v.optional(v.string()), // Hex code for consistent generated avatar
+    prefer_nicknames: v.optional(v.boolean()),
+    prefer_whole_names: v.optional(v.boolean()),
 
     // === CANONICAL FIELDS ===
     // member_id: The single source-of-truth member ID for this account.
@@ -42,6 +46,9 @@ export default defineSchema({
     original_name: v.optional(v.string()),
     original_nickname: v.optional(v.string()),
     prefer_nickname: v.optional(v.boolean()),
+    first_name: v.optional(v.string()),
+    last_name: v.optional(v.string()),
+    display_preference: v.optional(v.union(v.string(), v.null())),
     profile_avatar_color: v.string(),
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),

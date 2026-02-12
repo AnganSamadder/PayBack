@@ -449,6 +449,34 @@ Required behavior:
 
 If this boundary blurs, friend-of-friend participants (e.g., Bob in a shared group) appear as unintended friends.
 
+## CONVEX ENV ROUTING (iOS BUILD PIPELINE)
+
+### Goal
+Automatically route iOS builds to the correct Convex deployment without manual toggles:
+- local dev + internal testing builds -> development Convex DB
+- external TestFlight + App Store builds -> production Convex DB
+
+### Required Configuration
+1. `project.yml` defines three build configurations:
+   - `Debug`
+   - `Internal`
+   - `Release`
+2. `PayBack` target sets:
+   - `PAYBACK_CONVEX_ENV=development` for `Debug` and `Internal`
+   - `PAYBACK_CONVEX_ENV=production` for `Release`
+3. `Info.plist` includes `PAYBACK_CONVEX_ENV=$(PAYBACK_CONVEX_ENV)`.
+4. Runtime (`AppConfig.environment`) reads `PAYBACK_CONVEX_ENV` from bundle and falls back to debug/release only if missing/invalid.
+
+### Scheme Contract
+- `PayBackInternal` scheme archives with `Internal` config (development DB).
+- `PayBack` scheme archives with `Release` config (production DB).
+
+### Xcode Cloud Rule
+Use separate workflows:
+1. Internal testing workflow -> scheme `PayBackInternal`
+2. External TestFlight / App Store workflow -> scheme `PayBack`
+
+**Rule**: Never change Convex URLs manually for release cycles; choose the correct scheme/workflow and environment routing is automatic.
 ### CI Compile Guard for Convex Types (iOS)
 
 `PAYBACK_CI_NO_CONVEX` can compile out concrete Convex service types (e.g., `ConvexAccountService`).

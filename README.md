@@ -50,6 +50,23 @@ bunx convex dev
 bunx convex deploy
 ```
 
+The app automatically selects the correct Convex deployment using build config + scheme:
+
+- **Debug config**: development Convex deployment (local runs)
+- **Internal config**: development Convex deployment (internal testing archives)
+- **Release config**: production Convex deployment (external TestFlight + App Store)
+
+Scheme mapping:
+
+- `PayBackInternal` archives with `Internal`
+- `PayBack` archives with `Release`
+
+No runtime env vars are required for iOS app routing; `PAYBACK_CONVEX_ENV` is baked into `Info.plist` at build time.
+
+## Authentication
+
+Authentication is handled by [Clerk](https://clerk.dev). The Clerk publishable key is configured in `AppConfig.swift`.
+
 ## License
 
 MIT License - see `LICENSE`.

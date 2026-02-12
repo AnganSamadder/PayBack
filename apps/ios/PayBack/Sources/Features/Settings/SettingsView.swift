@@ -2,8 +2,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var store: AppStore
-    @AppStorage("showRealNames") private var showRealNames: Bool = true
     @Environment(\.dismiss) private var dismiss
+
+    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
+    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
     
     var body: some View {
         NavigationStack {
@@ -50,14 +52,39 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             
             VStack(spacing: 0) {
-                // Name display preference
-                Toggle(isOn: $showRealNames) {
+                // Prefer Nicknames toggle
+                Toggle(isOn: Binding(
+                    get: { preferNicknames },
+                    set: { store.updateAccountSettings(preferNicknames: $0, preferWholeNames: preferWholeNames) }
+                )) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Show Real Names")
+                        Text("Prefer Nicknames")
                             .font(.system(.body, design: .rounded, weight: .medium))
                             .foregroundStyle(.primary)
-                        
-                        Text("Choose whether to display account names or your custom nicknames for linked friends")
+
+                        Text("Show your custom nicknames instead of real names when available")
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(SwitchToggleStyle(tint: AppTheme.brand))
+                .padding(16)
+
+                Divider()
+                    .padding(.horizontal, 16)
+
+                // Show Full Names toggle
+                Toggle(isOn: Binding(
+                    get: { preferWholeNames },
+                    set: { store.updateAccountSettings(preferNicknames: preferNicknames, preferWholeNames: $0) }
+                )) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Show Full Names")
+                            .font(.system(.body, design: .rounded, weight: .medium))
+                            .foregroundStyle(.primary)
+
+                        Text("Display full names (first + last) instead of just first names")
                             .font(.system(.caption, design: .rounded))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

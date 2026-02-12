@@ -49,7 +49,7 @@ export const list = query({
         friend.linked_member_id;
       if (!identityKey) continue;
 
-      let linkedAccount = null;
+      let linkedAccount: any = null;
       if (friend.linked_account_email) {
         linkedAccount = await ctx.db
           .query("accounts")
@@ -101,7 +101,7 @@ export const list = query({
       }
     }
 
-    const validatedFriends = [];
+    const validatedFriends: any[] = [];
     for (const friend of normalizedFriends) {
       if (friend.has_linked_account && (friend.linked_account_email || friend.linked_account_id)) {
         const identityKey =
@@ -138,6 +138,8 @@ export const list = query({
         validatedFriends.push({
           ...friend,
           member_id: friend.normalizedMemberId,
+          first_name: friend.first_name ?? linkedAccount.first_name,
+          last_name: friend.last_name ?? linkedAccount.last_name,
           linked_member_id: linkedAccount.member_id
             ? normalizeMemberId(linkedAccount.member_id)
             : undefined,
@@ -175,6 +177,8 @@ export const list = query({
         validatedFriends.push({
           ...friend,
           member_id: friend.normalizedMemberId,
+          first_name: friend.first_name ?? linkedByMemberId.first_name,
+          last_name: friend.last_name ?? linkedByMemberId.last_name,
           linked_member_id: linkedByMemberId.member_id
             ? normalizeMemberId(linkedByMemberId.member_id)
             : undefined,
@@ -285,6 +289,9 @@ export const upsert = mutation({
     original_name: v.optional(v.string()),
     original_nickname: v.optional(v.string()),
     prefer_nickname: v.optional(v.boolean()),
+    first_name: v.optional(v.string()),
+    last_name: v.optional(v.string()),
+    display_preference: v.optional(v.union(v.string(), v.null())),
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
@@ -333,6 +340,9 @@ export const upsert = mutation({
         original_name: args.original_name,
         original_nickname: args.original_nickname,
         prefer_nickname: args.prefer_nickname,
+        first_name: args.first_name ?? existingLegacy.first_name,
+        last_name: args.last_name ?? existingLegacy.last_name,
+        display_preference: args.display_preference === undefined ? existingLegacy.display_preference : args.display_preference,
         has_linked_account: finalHasLinkedAccount,
         linked_account_id: finalHasLinkedAccount ? finalLinkedAccountId : undefined,
         linked_account_email: finalHasLinkedAccount ? finalLinkedAccountEmail : undefined,
@@ -349,6 +359,9 @@ export const upsert = mutation({
         original_name: args.original_name,
         original_nickname: args.original_nickname,
         prefer_nickname: args.prefer_nickname,
+        first_name: args.first_name,
+        last_name: args.last_name,
+        display_preference: args.display_preference,
         profile_avatar_color: getRandomAvatarColor(),
         has_linked_account: args.has_linked_account,
         linked_account_id: args.linked_account_id,
