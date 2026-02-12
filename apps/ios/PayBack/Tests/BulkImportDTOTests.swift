@@ -1,3 +1,5 @@
+#if !PAYBACK_CI_NO_CONVEX
+
 import XCTest
 @testable import PayBack
 
@@ -116,3 +118,5 @@ final class BulkImportDTOTests: XCTestCase {
         XCTAssertNotNil(json["expenses"])
     }
 }
+
+#endif
