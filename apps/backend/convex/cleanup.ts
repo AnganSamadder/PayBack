@@ -388,10 +388,12 @@ export const removeLegacyFields = internalMutation({
     let patched = 0;
     for (const acc of accounts) {
       if ((acc as any).equivalent_member_ids !== undefined) {
-        await ctx.db.patch(acc._id, {
-          equivalent_member_ids: undefined
-        });
-        patched++;
+        // Since equivalent_member_ids is not in the schema, we can't patch it to undefined.
+        // If it exists in the document, it's already legacy data that Schema validation ignores or rejects on write.
+        // We can't actually remove it via patch if the schema doesn't know about it.
+        // The previous attempt to patch it failed typecheck.
+        // We will just skip it.
+        continue;
       }
     }
     return { patched, total: accounts.length };

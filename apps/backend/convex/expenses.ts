@@ -245,7 +245,7 @@ export const create = mutation({
         .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
         .collect();
 
-      const ownerFriendIdentityRows = [];
+      const ownerFriendIdentityRows: { friend: any; identityIds: Set<string> }[] = [];
       for (const friend of ownerFriendRows) {
         const identityIds = new Set<string>();
         const friendIdentitySeeds = [friend.member_id, friend.linked_member_id].filter(
