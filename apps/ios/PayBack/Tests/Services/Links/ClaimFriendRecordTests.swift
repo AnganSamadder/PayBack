@@ -49,108 +49,120 @@ final class ClaimFriendRecordTests: XCTestCase {
         XCTAssertNil(friend.originalName)
     }
     
-    // MARK: - Display Name Logic
-    
-    func testAccountFriend_DisplayName_ShowRealName() {
+    // MARK: - Display Name Logic (New API)
+
+    func testAccountFriend_DisplayName_DefaultFirstName() {
         let friend = AccountFriend(
             memberId: UUID(),
             name: "John Smith",
             nickname: "Johnny",
-            originalName: nil,
+            firstName: "John",
+            lastName: "Smith",
             hasLinkedAccount: true,
             linkedAccountId: "123",
             linkedAccountEmail: nil,
             profileImageUrl: nil,
             profileColorHex: nil
         )
-        
-        // When showing real names
-        let displayName = friend.displayName(showRealNames: true)
-        
-        // Then: Should show real name
-        XCTAssertEqual(displayName, "John Smith")
+
+        // Default (no nicknames, no full names): shows first name
+        let displayName = friend.displayName(preferNicknames: false, preferWholeNames: false)
+        XCTAssertEqual(displayName, "John")
     }
-    
-    func testAccountFriend_DisplayName_ShowNickname() {
+
+    func testAccountFriend_DisplayName_PreferNicknames() {
         let friend = AccountFriend(
             memberId: UUID(),
             name: "John Smith",
             nickname: "Johnny",
-            originalName: nil,
+            firstName: "John",
+            lastName: "Smith",
             hasLinkedAccount: true,
             linkedAccountId: "123",
             linkedAccountEmail: nil,
             profileImageUrl: nil,
             profileColorHex: nil
         )
-        
-        // When not showing real names (use nickname)
-        let displayName = friend.displayName(showRealNames: false)
-        
-        // Then: Should show nickname
+
+        // When preferring nicknames
+        let displayName = friend.displayName(preferNicknames: true, preferWholeNames: false)
         XCTAssertEqual(displayName, "Johnny")
     }
-    
-    func testAccountFriend_DisplayName_FallbackToRealName_WhenNoNickname() {
+
+    func testAccountFriend_DisplayName_PreferFullNames() {
+        let friend = AccountFriend(
+            memberId: UUID(),
+            name: "John Smith",
+            nickname: "Johnny",
+            firstName: "John",
+            lastName: "Smith",
+            hasLinkedAccount: true,
+            linkedAccountId: "123",
+            linkedAccountEmail: nil,
+            profileImageUrl: nil,
+            profileColorHex: nil
+        )
+
+        // When preferring full names
+        let displayName = friend.displayName(preferNicknames: false, preferWholeNames: true)
+        XCTAssertEqual(displayName, "John Smith")
+    }
+
+    func testAccountFriend_DisplayName_FallbackToName_WhenNoNickname() {
         let friend = AccountFriend(
             memberId: UUID(),
             name: "Jane Doe",
             nickname: nil,
-            originalName: nil,
             hasLinkedAccount: false,
             linkedAccountId: nil,
             linkedAccountEmail: nil,
             profileImageUrl: nil,
             profileColorHex: nil
         )
-        
-        // When not showing real names but no nickname exists
-        let displayName = friend.displayName(showRealNames: false)
-        
-        // Then: Should fall back to real name
+
+        // When no nickname exists, falls back to name (which is firstName fallback)
+        let displayName = friend.displayName(preferNicknames: true, preferWholeNames: false)
         XCTAssertEqual(displayName, "Jane Doe")
     }
-    
-    // MARK: - Secondary Display Name
-    
+
+    // MARK: - Secondary Display Name (New API)
+
     func testAccountFriend_SecondaryDisplayName_ShowsNicknameWhenShowingRealName() {
         let friend = AccountFriend(
             memberId: UUID(),
             name: "John Smith",
             nickname: "Johnny",
-            originalName: nil,
+            firstName: "John",
+            lastName: "Smith",
             hasLinkedAccount: true,
             linkedAccountId: "123",
             linkedAccountEmail: nil,
             profileImageUrl: nil,
             profileColorHex: nil
         )
-        
-        // When showing real names
-        let secondaryName = friend.secondaryDisplayName(showRealNames: true)
-        
-        // Then: Secondary shows just the nickname (primary shows real name)
+
+        // When showing real names (no nickname preference)
+        let secondaryName = friend.secondaryDisplayName(preferNicknames: false, preferWholeNames: false)
         XCTAssertEqual(secondaryName, "Johnny")
     }
-    
+
     func testAccountFriend_SecondaryDisplayName_ShowsRealNameWhenShowingNickname() {
         let friend = AccountFriend(
             memberId: UUID(),
             name: "John Smith",
             nickname: "Johnny",
-            originalName: nil,
+            firstName: "John",
+            lastName: "Smith",
             hasLinkedAccount: true,
             linkedAccountId: "123",
             linkedAccountEmail: nil,
             profileImageUrl: nil,
             profileColorHex: nil
         )
-        
-        // When not showing real names
-        let secondaryName = friend.secondaryDisplayName(showRealNames: false)
-        
-        // Then: Secondary should show real name
-        XCTAssertEqual(secondaryName, "John Smith")
+
+        // When showing nicknames, secondary is real name
+        let secondaryName = friend.secondaryDisplayName(preferNicknames: true, preferWholeNames: false)
+        XCTAssertEqual(secondaryName, "John")
     }
     
     // MARK: - Claimant Friend Record Scenarios
@@ -219,8 +231,8 @@ final class ClaimFriendRecordTests: XCTestCase {
         )
         
         // Empty nickname should be treated as no nickname
-        XCTAssertEqual(friend.displayName(showRealNames: false), "Example User")
-        XCTAssertNil(friend.secondaryDisplayName(showRealNames: true))
+        XCTAssertEqual(friend.displayName(preferNicknames: true, preferWholeNames: false), "Example User")
+        XCTAssertNil(friend.secondaryDisplayName(preferNicknames: false, preferWholeNames: false))
     }
     
     func testAccountFriend_Hashable() {
