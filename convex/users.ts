@@ -13,6 +13,8 @@ export interface CreateAccountInput {
   id: string;
   email: string;
   display_name: string;
+  first_name?: string;
+  last_name?: string;
   profile_avatar_color?: string;
 }
 
@@ -25,6 +27,8 @@ export async function createAccountRecord(
     id: input.id,
     email: input.email,
     display_name: input.display_name,
+    first_name: input.first_name,
+    last_name: input.last_name,
     profile_avatar_color: input.profile_avatar_color || getRandomAvatarColor(),
     member_id: crypto.randomUUID(),
     created_at: now,
@@ -400,10 +404,13 @@ export const store = mutation({
 
     if (user !== null) {
       // Update existing user if needed (e.g. name changed)
-      // For now, we just return the existing user's ID
-      // We could patch the display_name if it changed
       if (user.display_name !== identity.name && identity.name) {
-          await ctx.db.patch(user._id, { display_name: identity.name, updated_at: Date.now() });
+          await ctx.db.patch(user._id, {
+            display_name: identity.name,
+            first_name: identity.givenName || user.first_name,
+            last_name: identity.familyName || user.last_name,
+            updated_at: Date.now(),
+          });
       }
       return user._id;
     }
@@ -413,10 +420,14 @@ export const store = mutation({
       subject: identity.subject,
     });
 
+    const displayName = identity.name || identity.email!.split("@")[0] || "User";
+
     const newUserId = await createAccountRecord(ctx, {
       id: identity.subject,
       email: identity.email!,
-      display_name: identity.name || identity.email!.split("@")[0] || "User",
+      display_name: displayName,
+      first_name: identity.givenName || undefined,
+      last_name: identity.familyName || undefined,
     });
 
     return newUserId;
@@ -576,6 +587,33 @@ export const updateProfile = mutation({
     }
     
     return patches.profile_image_url;
+  },
+});
+
+/**
+ * Updates the user's account settings.
+ */
+export const updateSettings = mutation({
+  args: {
+    prefer_nicknames: v.optional(v.boolean()),
+    prefer_whole_names: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Unauthenticated");
+
+    const user = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", identity.email!))
+      .unique();
+
+    if (!user) throw new Error("User not found");
+
+    const patches: any = { updated_at: Date.now() };
+    if (args.prefer_nicknames !== undefined) patches.prefer_nicknames = args.prefer_nicknames;
+    if (args.prefer_whole_names !== undefined) patches.prefer_whole_names = args.prefer_whole_names;
+
+    await ctx.db.patch(user._id, patches);
   },
 });
 

@@ -400,6 +400,10 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
       return;
     }
 
+    // Use the linked user's first/last name directly from their account
+    const userFirstName = user.first_name;
+    const userLastName = user.last_name;
+
     if (nicknameMatches) {
       const { nickname, ...rest } = friendRecord;
       await ctx.db.replace(friendRecord._id, {
@@ -410,6 +414,8 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         linked_account_email: user.email,
         linked_member_id: userCanonicalMemberId,
         name: user.display_name ?? user.email ?? "Unknown",
+        first_name: userFirstName,
+        last_name: userLastName,
         original_name: shouldStoreOriginalName ? friendRecord.name : undefined,
         updated_at: now,
       });
@@ -421,6 +427,8 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         linked_account_email: user.email,
         linked_member_id: userCanonicalMemberId,
         name: user.display_name ?? user.email ?? "Unknown",
+        first_name: userFirstName,
+        last_name: userLastName,
         nickname: friendRecord.nickname,
         original_name: shouldStoreOriginalName ? friendRecord.name : undefined,
         updated_at: now,
@@ -435,6 +443,10 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
   if (creatorAccount?.member_id) {
     const creatorMemberId = normalizeMemberId(creatorAccount.member_id);
     const claimantFriendRecord = await findFriendRecordByMemberId(ctx, user.email, creatorMemberId);
+
+    // Use the creator's first/last name directly from their account
+    const creatorFirstName = creatorAccount.first_name;
+    const creatorLastName = creatorAccount.last_name;
 
     if (claimantFriendRecord) {
       const nicknameMatches =
@@ -452,6 +464,8 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
           linked_account_email: creatorAccount.email,
           linked_member_id: creatorMemberId,
           name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
+          first_name: creatorFirstName,
+          last_name: creatorLastName,
           updated_at: now,
         });
       } else {
@@ -462,6 +476,8 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
           linked_account_email: creatorAccount.email,
           linked_member_id: creatorMemberId,
           name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
+          first_name: creatorFirstName,
+          last_name: creatorLastName,
           nickname: claimantFriendRecord.nickname,
           updated_at: now,
         });
@@ -471,6 +487,8 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         account_email: user.email,
         member_id: creatorMemberId,
         name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
+        first_name: creatorFirstName,
+        last_name: creatorLastName,
         has_linked_account: true,
         linked_account_id: creatorAccount.id,
         linked_account_email: creatorAccount.email,

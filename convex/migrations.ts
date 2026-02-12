@@ -620,18 +620,84 @@ export const backfillFriendStatus = mutation({
   handler: async (ctx) => {
     const friends = await ctx.db.query("account_friends").collect();
     let updated = 0;
-    
+
     for (const friend of friends) {
       if (!friend.status) {
         // Default to "friend" for existing records
         await ctx.db.patch(friend._id, {
-          status: "friend", 
+          status: "friend",
           updated_at: Date.now()
         });
         updated++;
       }
     }
-    
+
     return { updated, total: friends.length };
   }
+});
+
+/**
+ * Backfill first_name and last_name on accounts and linked friends.
+ * Splits display_name on whitespace: first word → first_name, rest → last_name.
+ * For linked friends, copies first_name/last_name from the linked account.
+ */
+export const backfillFirstLastNames = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const accounts = await ctx.db.query("accounts").collect();
+    let accountsUpdated = 0;
+
+    for (const account of accounts) {
+      if (account.first_name) continue; // Already backfilled
+      const nameParts = (account.display_name || "").trim().split(/\s+/);
+      const firstName = nameParts[0] || undefined;
+      const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined;
+
+      if (firstName) {
+        await ctx.db.patch(account._id, {
+          first_name: firstName,
+          last_name: lastName,
+          updated_at: Date.now(),
+        });
+        accountsUpdated++;
+      }
+    }
+
+    // Refresh accounts after patching
+    const updatedAccounts = await ctx.db.query("accounts").collect();
+    const accountByEmail = new Map(updatedAccounts.map((a) => [a.email, a]));
+
+    const friends = await ctx.db.query("account_friends").collect();
+    let friendsUpdated = 0;
+
+    for (const friend of friends) {
+      if (friend.first_name) continue; // Already backfilled
+      if (friend.has_linked_account && friend.linked_account_email) {
+        const linkedAccount = accountByEmail.get(friend.linked_account_email);
+        if (linkedAccount?.first_name) {
+          await ctx.db.patch(friend._id, {
+            first_name: linkedAccount.first_name,
+            last_name: linkedAccount.last_name,
+            updated_at: Date.now(),
+          });
+          friendsUpdated++;
+          continue;
+        }
+      }
+      // Fallback: split name field
+      const nameParts = (friend.name || "").trim().split(/\s+/);
+      const firstName = nameParts[0] || undefined;
+      const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined;
+      if (firstName) {
+        await ctx.db.patch(friend._id, {
+          first_name: firstName,
+          last_name: lastName,
+          updated_at: Date.now(),
+        });
+        friendsUpdated++;
+      }
+    }
+
+    return { accountsUpdated, friendsUpdated };
+  },
 });
