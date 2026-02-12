@@ -338,3 +338,11 @@ Use separate workflows:
 2. External TestFlight / App Store workflow -> scheme `PayBack`
 
 **Rule**: Never change Convex URLs manually for release cycles; choose the correct scheme/workflow and environment routing is automatic.
+### CI Compile Guard for Convex Types (iOS)
+`PAYBACK_CI_NO_CONVEX` can compile out concrete Convex service types (e.g., `ConvexAccountService`).
+
+Required behavior:
+1. `AppStore` and other core state/services must call `AccountService` protocol APIs directly.
+2. Do not use unconditional casts/references to concrete Convex classes unless wrapped in `#if !PAYBACK_CI_NO_CONVEX`.
+
+If violated, Xcode Cloud can fail with compile errors like `Cannot find type 'ConvexAccountService' in scope`.
