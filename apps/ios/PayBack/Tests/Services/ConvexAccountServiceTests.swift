@@ -168,6 +168,36 @@ final class ConvexAccountServiceTests: XCTestCase {
         XCTAssertEqual(original.linkedAccountId, decoded.linkedAccountId)
         XCTAssertEqual(original.linkedAccountEmail, decoded.linkedAccountEmail)
     }
+
+    #if !PAYBACK_CI_NO_CONVEX
+    func testBuildFriendUpsertArgs_DisplayPreferenceNil_IncludesNullForClearing() {
+        let friend = AccountFriend(
+            memberId: UUID(),
+            name: "Clear Pref",
+            displayPreference: nil
+        )
+
+        let args = ConvexAccountService.buildFriendUpsertArgs(from: friend)
+        let displayPreference = args["display_preference"]
+
+        XCTAssertNotNil(displayPreference)
+        XCTAssertNil(displayPreference!)
+    }
+
+    func testBuildFriendUpsertArgs_DisplayPreferenceWhitespace_IncludesNullForClearing() {
+        let friend = AccountFriend(
+            memberId: UUID(),
+            name: "Whitespace Pref",
+            displayPreference: "   "
+        )
+
+        let args = ConvexAccountService.buildFriendUpsertArgs(from: friend)
+        let displayPreference = args["display_preference"]
+
+        XCTAssertNotNil(displayPreference)
+        XCTAssertNil(displayPreference!)
+    }
+    #endif
     
     // MARK: - UserAccount Tests
     
