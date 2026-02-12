@@ -10,12 +10,12 @@ final class ClaimFriendRecordTests: XCTestCase {
         // Given: A friend record with linked account info
         let friend = AccountFriend(
             memberId: UUID(),
-            name: "Angan Samadder",
+            name: "Example Person",
             nickname: nil,
             originalName: "testss",
             hasLinkedAccount: true,
             linkedAccountId: "acc-12345",
-            linkedAccountEmail: "angan@example.com",
+            linkedAccountEmail: "linked@example.com",
             profileImageUrl: nil,
             profileColorHex: "#FF5733"
         )
@@ -23,8 +23,8 @@ final class ClaimFriendRecordTests: XCTestCase {
         // Then: All linked properties should be accessible
         XCTAssertTrue(friend.hasLinkedAccount)
         XCTAssertEqual(friend.linkedAccountId, "acc-12345")
-        XCTAssertEqual(friend.linkedAccountEmail, "angan@example.com")
-        XCTAssertEqual(friend.name, "Angan Samadder")
+        XCTAssertEqual(friend.linkedAccountEmail, "linked@example.com")
+        XCTAssertEqual(friend.name, "Example Person")
         XCTAssertEqual(friend.originalName, "testss")
     }
     
@@ -208,7 +208,7 @@ final class ClaimFriendRecordTests: XCTestCase {
     func testAccountFriend_EmptyNickname_TreatedAsNil() {
         let friend = AccountFriend(
             memberId: UUID(),
-            name: "Test User",
+            name: "Example User",
             nickname: "",
             originalName: nil,
             hasLinkedAccount: true,
@@ -219,7 +219,7 @@ final class ClaimFriendRecordTests: XCTestCase {
         )
         
         // Empty nickname should be treated as no nickname
-        XCTAssertEqual(friend.displayName(showRealNames: false), "Test User")
+        XCTAssertEqual(friend.displayName(showRealNames: false), "Example User")
         XCTAssertNil(friend.secondaryDisplayName(showRealNames: true))
     }
     

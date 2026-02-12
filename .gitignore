@@ -94,8 +94,6 @@ PHASE_*.md
 # Environment & Secrets
 .env
 .env.*
-.env.supabase.local
-.env.supabase
 *.key
 *.pem
 *.secret
@@ -108,13 +106,19 @@ credentials/
 
 # SPM artifacts
 Artifacts/
-SupabaseConfig.plist
-apps/ios/PayBack/SupabaseConfig.plist
 
 # Kiro IDE
 .kiro/
 .kiro-cache/
 *.kiro
+
+# Sisyphus
+.sisyphus/
+.sis
+
+# Local build/deploy caches
+.turbo/
+.vercel/
 
 # Editor directories and files
 .idea/
@@ -125,31 +129,26 @@ apps/ios/PayBack/SupabaseConfig.plist
 **/Vendor/
 
 .github/prompts/
-*.log
-coverage-report.txt
-
-.supabase-swift/
-
 
 # Helper Scripts
 node_modules/
 scripts/node_modules/
-.turbo/
+bun.lock
+
+# Monorepo build artifacts
 apps/web/playwright-report/
 apps/web/test-results/
+apps/web/dist/
 
 # XcodeGen
 *.xcodeproj
 *.xcworkspace
-wm
 
-# Sisyphus
-.sis
-.sisyphus
-.sisyphus/
-
-# Local Development
-LocalPackages/
+# Xcode/SwiftPM local checkouts (Xcode-managed, generated locally)
 Packages/
+LocalPackages/
+
+# Local agent artifacts
 roadmap/
-apps/web/dist/
+.todos/
+.sidecar/

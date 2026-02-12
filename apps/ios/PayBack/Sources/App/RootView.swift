@@ -349,10 +349,10 @@ private struct TargetPicker: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 20) {
                     // Friends section (cards on white background)
-                    if !uniqueMembers.isEmpty {
+                    if !directExpenseTargets.isEmpty {
                         SectionHeader(text: "Friends")
                         VStack(spacing: 12) {
-                            ForEach(uniqueMembers) { m in
+                            ForEach(directExpenseTargets) { m in
                                 Button { onSelectFriend(m) } label: {
                                     HStack(spacing: 12) {
                                         AvatarView(name: m.name)
@@ -401,24 +401,8 @@ private struct TargetPicker: View {
         // .background(Color.orange)
     }
 
-    private var uniqueMembers: [GroupMember] {
-        var seen: Set<UUID> = []
-        var out: [GroupMember] = []
-        
-        for g in store.groups {
-            for m in g.members where !seen.contains(m.id) {
-                // CRITICAL: Never include the current user
-                guard !store.isCurrentUser(m) else { continue }
-                
-                // Extra safety: check ID directly
-                guard m.id != store.currentUser.id else { continue }
-                
-                seen.insert(m.id)
-                out.append(m)
-            }
-        }
-        
-        return out
+    private var directExpenseTargets: [GroupMember] {
+        store.confirmedFriendMembers
     }
 }
 
@@ -431,5 +415,4 @@ private struct SectionHeader: View {
             .padding(.horizontal, 4)
     }
 }
-
 

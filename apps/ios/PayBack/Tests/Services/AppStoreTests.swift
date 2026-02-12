@@ -78,7 +78,7 @@ final class AppStoreTests: XCTestCase {
     
     func testCompleteAuthentication_SetsSession() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         
         // When
@@ -92,7 +92,7 @@ final class AppStoreTests: XCTestCase {
     
     func testSignOut_ClearsSession() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -147,6 +147,28 @@ final class AppStoreTests: XCTestCase {
         
         // When
         sut.deleteGroups(at: IndexSet(integer: 0))
+        
+        // Then
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertTrue(sut.expenses.isEmpty)
+    }
+    
+    func testLeaveGroup_RemovesGroupAndExpenses() async throws {
+        // Given
+        sut.addGroup(name: "Trip", memberNames: ["Alice"])
+        let group = sut.groups[0]
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 50,
+            paidByMemberId: group.members[0].id,
+            involvedMemberIds: [group.members[0].id],
+            splits: [ExpenseSplit(memberId: group.members[0].id, amount: 50)]
+        )
+        sut.addExpense(expense)
+        
+        // When
+        sut.leaveGroup(group.id)
         
         // Then
         XCTAssertTrue(sut.groups.isEmpty)
@@ -617,7 +639,7 @@ final class AppStoreTests: XCTestCase {
     
     func testSendLinkRequest_CreatesRequest() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -636,7 +658,7 @@ final class AppStoreTests: XCTestCase {
     
     func testSendLinkRequest_ThrowsForSelfLinking() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -661,7 +683,7 @@ final class AppStoreTests: XCTestCase {
             linkedAccountEmail: "alice@example.com"
         )
         
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -691,7 +713,7 @@ final class AppStoreTests: XCTestCase {
             linkedAccountEmail: "alice@example.com"
         )
         
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -713,7 +735,7 @@ final class AppStoreTests: XCTestCase {
     
     func testFetchLinkRequests_LoadsIncomingAndOutgoing() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -762,7 +784,7 @@ final class AppStoreTests: XCTestCase {
     
     func testFetchPreviousRequests_LoadsPreviousRequests() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -799,7 +821,7 @@ final class AppStoreTests: XCTestCase {
         let memberId = UUID()
         let requesterEmail = "sender@example.com"
         
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -847,7 +869,7 @@ final class AppStoreTests: XCTestCase {
     
     func testDeclineLinkRequest_RemovesFromIncoming() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -882,7 +904,7 @@ final class AppStoreTests: XCTestCase {
     
     func testCancelLinkRequest_RemovesFromOutgoing() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -920,7 +942,7 @@ final class AppStoreTests: XCTestCase {
     
     func testGenerateInviteLink_CreatesInviteLink() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -937,7 +959,7 @@ final class AppStoreTests: XCTestCase {
     
     func testGenerateInviteLink_SucceedsForUnlinkedMember() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -955,7 +977,7 @@ final class AppStoreTests: XCTestCase {
     
     func testValidateInviteToken_ReturnsValidation() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -1022,7 +1044,7 @@ final class AppStoreTests: XCTestCase {
             linkedAccountEmail: "alice@example.com"
         )
         
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -1053,7 +1075,7 @@ final class AppStoreTests: XCTestCase {
             linkedAccountEmail: email
         )
         
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -1083,7 +1105,7 @@ final class AppStoreTests: XCTestCase {
             linkedAccountEmail: email
         )
         
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -1205,7 +1227,7 @@ final class AppStoreTests: XCTestCase {
     
     func testReconcileAfterNetworkRecovery_TriggersReconciliation() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -1221,7 +1243,7 @@ final class AppStoreTests: XCTestCase {
     
     func testUpdateFriendNickname_UpdatesNickname() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -1261,7 +1283,7 @@ final class AppStoreTests: XCTestCase {
     
     func testClaimInviteToken_LinksAccount() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -1379,23 +1401,163 @@ final class AppStoreTests: XCTestCase {
             linkedAccountId: "account-123",
             linkedAccountEmail: email
         )
-        
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
-        _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
-        
-        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
-        sut.addGroup(name: "Test", memberNames: ["Alice"])
-        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Seed local friend state directly so this test only validates email normalization.
+        sut.addImportedFriend(linkedFriend)
         
         // When - check with different casing and whitespace
-        let isLinked1 = sut.isAccountEmailAlreadyLinked(email: "  ALICE@EXAMPLE.COM  ")
-        let isLinked2 = sut.isAccountEmailAlreadyLinked(email: "alice@example.com")
+        let isLinked = sut.isAccountEmailAlreadyLinked(email: " Alice@Example.com ")
         
-        // Then - both should return false since not yet synced to local state
-        XCTAssertFalse(isLinked1)
-        XCTAssertFalse(isLinked2)
+        // Then
+        XCTAssertTrue(isLinked)
+    }
+    
+    // MARK: - Identity Resolution Tests
+    
+    func testAreSamePerson_ReturnsTrueForSameID() {
+        let id = UUID()
+        XCTAssertTrue(sut.areSamePerson(id, id))
+    }
+    
+    func testAreSamePerson_ReturnsTrueForAliasedIDs() async throws {
+        // Given
+        let masterId = UUID()
+        let aliasId = UUID()
+
+        let friend = AccountFriend(
+            memberId: masterId,
+            name: "Master",
+            hasLinkedAccount: true,
+            aliasMemberIds: [masterId, aliasId]
+        )
+
+        // Setup: store friends in mock BEFORE triggering auth so fetchFriends
+        // inside loadRemoteData deterministically returns them.
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        await mockAccountService.addAccount(account)
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [friend])
+
+        // Set session directly and load remote data (avoids non-awaited Task race in completeAuthentication)
+        sut.session = UserSession(account: account)
+        await sut.loadRemoteData()
+
+        // When/Then
+        XCTAssertTrue(sut.areSamePerson(masterId, aliasId), "Master and Alias should be same person")
+        XCTAssertTrue(sut.areSamePerson(aliasId, masterId), "Alias and Master should be same person")
+        XCTAssertTrue(sut.areSamePerson(aliasId, aliasId), "Alias and Alias should be same person")
+    }
+    
+    func testDeduplication_HidesAliasedFriends() async throws {
+        // Given
+        let masterId = UUID()
+        let aliasId = UUID()
+
+        let masterFriend = AccountFriend(
+            memberId: masterId,
+            name: "Master",
+            hasLinkedAccount: true,
+            aliasMemberIds: [masterId, aliasId]
+        )
+
+        let aliasFriend = AccountFriend(
+            memberId: aliasId,
+            name: "Alias",
+            hasLinkedAccount: false,
+            aliasMemberIds: []
+        )
+
+        // Setup: store friends in mock BEFORE triggering load so fetchFriends
+        // inside loadRemoteData deterministically returns them.
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        await mockAccountService.addAccount(account)
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [masterFriend, aliasFriend])
+
+        // Set session directly and load remote data (avoids non-awaited Task race in completeAuthentication)
+        sut.session = UserSession(account: account)
+        await sut.loadRemoteData()
+
+        // Then
+        XCTAssertEqual(sut.friends.count, 1, "Should deduplicate to 1 friend")
+        XCTAssertEqual(sut.friends.first?.memberId, masterId, "Should keep master friend")
+    }
+
+    func testScheduleFriendSync_SyncsDedupedFriendsOnly() async throws {
+        // Given
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let linkedMemberId = UUID()
+        let canonicalMemberId = UUID()
+        let linkedFriend = AccountFriend(
+            memberId: linkedMemberId,
+            name: "Test User",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account-id",
+            linkedAccountEmail: "linked@example.com",
+            aliasMemberIds: [linkedMemberId, canonicalMemberId]
+        )
+
+        let group = SpendingGroup(
+            name: "Alias Group",
+            members: [
+                GroupMember(id: sut.currentUser.id, name: sut.currentUser.name, isCurrentUser: true),
+                GroupMember(id: canonicalMemberId, name: "Test User")
+            ]
+        )
+
+        // Remote linked friend + local group member under canonical alias ID.
+        sut.friends = [linkedFriend]
+        sut.groups = [group]
+
+        // When
+        sut.updateGroup(group)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // Then - only the canonical deduped friend list should be written to cloud.
+        let synced = await mockAccountService.latestSyncedFriends(accountEmail: account.email)
+        XCTAssertEqual(synced?.count, 1)
+        XCTAssertEqual(synced?.first?.memberId, linkedMemberId)
+    }
+
+    func testFriendMembers_DedupesIdentityEquivalentLinkedFriendAndGroupMember() async throws {
+        // Given
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let linkedMemberId = UUID()
+        let canonicalMemberId = UUID()
+
+        let linkedFriend = AccountFriend(
+            memberId: linkedMemberId,
+            name: "Test User",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account-id",
+            linkedAccountEmail: "linked@example.com",
+            aliasMemberIds: [linkedMemberId, canonicalMemberId]
+        )
+
+        sut.friends = [linkedFriend]
+        sut.groups = [
+            SpendingGroup(
+                name: "Alias Group",
+                members: [
+                    GroupMember(id: sut.currentUser.id, name: sut.currentUser.name, isCurrentUser: true),
+                    GroupMember(id: canonicalMemberId, name: "Test User")
+                ]
+            )
+        ]
+
+        // Build alias map through normal dedupe pipeline.
+        sut.updateGroup(sut.groups[0])
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // When
+        let visibleTestUsers = sut.friendMembers.filter { $0.name == "Test User" }
+
+        // Then
+        XCTAssertEqual(visibleTestUsers.count, 1, "Identity-equivalent linked/group members should collapse to one visible friend")
     }
     
     // MARK: - Direct Group Edge Cases
@@ -1828,7 +1990,7 @@ final class AppStoreTests: XCTestCase {
     
     func testAddExpense_WithComplexSplits_HandlesCorrectly() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -1869,7 +2031,7 @@ final class AppStoreTests: XCTestCase {
     
     func testUpdateGroup_WithNameChange_UpdatesCorrectly() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -1894,7 +2056,7 @@ final class AppStoreTests: XCTestCase {
     
     func testUpdateExpense_WithAmountChange_UpdatesCorrectly() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -1946,7 +2108,7 @@ final class AppStoreTests: XCTestCase {
     
     func testExpensesInGroup_FiltersCorrectly() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -2000,7 +2162,7 @@ final class AppStoreTests: XCTestCase {
     
     func testExpensesInvolvingCurrentUser_FiltersCorrectly() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -2051,6 +2213,67 @@ final class AppStoreTests: XCTestCase {
         // Then
         XCTAssertEqual(myExpenses.count, 1)
         XCTAssertEqual(myExpenses[0].description, "With Me")
+    }
+
+    func testSelectableDirectExpenseFriends_excludesStatuslessGroupOnlyFriend() async throws {
+        let bobId = UUID()
+        let bob = GroupMember(id: bobId, name: "Bob")
+        let sharedGroup = SpendingGroup(
+            name: "Shared Group",
+            members: [sut.currentUser, bob],
+            isDirect: false
+        )
+        sut.addExistingGroup(sharedGroup)
+
+        sut.addImportedFriend(
+            AccountFriend(
+                memberId: bobId,
+                name: "Bob",
+                hasLinkedAccount: false,
+                status: nil
+            )
+        )
+
+        XCTAssertFalse(
+            sut.selectableDirectExpenseFriends.contains(where: { $0.memberId == bobId }),
+            "Group-only statusless members should not appear in the + direct-expense picker."
+        )
+    }
+
+    func testSelectableDirectExpenseFriends_includesStatuslessStandaloneFriend() async throws {
+        let aliceId = UUID()
+        sut.addImportedFriend(
+            AccountFriend(
+                memberId: aliceId,
+                name: "Alice",
+                hasLinkedAccount: false,
+                status: nil
+            )
+        )
+
+        XCTAssertTrue(
+            sut.selectableDirectExpenseFriends.contains(where: { $0.memberId == aliceId }),
+            "Statusless standalone friends should remain selectable for direct expenses."
+        )
+    }
+
+    func testSelectableDirectExpenseFriends_excludesPendingLinkedFriend() async throws {
+        let pendingId = UUID()
+        sut.addImportedFriend(
+            AccountFriend(
+                memberId: pendingId,
+                name: "Pending",
+                hasLinkedAccount: true,
+                linkedAccountId: "user_pending",
+                linkedAccountEmail: "pending@example.com",
+                status: "request_sent"
+            )
+        )
+
+        XCTAssertFalse(
+            sut.selectableDirectExpenseFriends.contains(where: { $0.memberId == pendingId }),
+            "Pending friend-request rows must not appear in the + direct-expense picker."
+        )
     }
     
 

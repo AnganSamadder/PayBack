@@ -23,7 +23,7 @@ final class DataImportServiceTests: XCTestCase {
         EXPORTED_AT: 2024-01-15T10:30:00Z
         ACCOUNT_EMAIL: test@example.com
         CURRENT_USER_ID: 11111111-1111-1111-1111-111111111111
-        CURRENT_USER_NAME: Test User
+        CURRENT_USER_NAME: Example User
         
         [FRIENDS]
         # member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email
@@ -131,7 +131,7 @@ final class DataImportServiceTests: XCTestCase {
         let text = createValidExportText()
         let parsed = try DataImportService.parseExport(text)
         
-        XCTAssertEqual(parsed.currentUserName, "Test User")
+        XCTAssertEqual(parsed.currentUserName, "Example User")
     }
     
     func testParseExport_WithInvalidFormat_ThrowsError() {
@@ -428,4 +428,255 @@ final class DataImportServiceTests: XCTestCase {
         // Should skip malformed row
         XCTAssertTrue(parsed.friends.isEmpty)
     }
+    
+    // MARK: - Bulk Import Integration Tests
+    
+    #if !PAYBACK_CI_NO_CONVEX
+    func testBulkImportIntegration_ConvertsToBulkImportRequest() throws {
+        let fixtureURL = Bundle(for: type(of: self)).url(forResource: "variant-b", withExtension: "csv", subdirectory: "Fixtures/csv")
+            ?? URL(fileURLWithPath: #file)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Fixtures/csv/variant-b.csv")
+        
+        let csvText = try String(contentsOf: fixtureURL, encoding: .utf8)
+        let parsedData = try DataImportService.parseExport(csvText)
+        let request = DataImportService.convertToBulkImportRequest(from: parsedData)
+        
+        XCTAssertEqual(request.friends.count, 1)
+        let bob = request.friends.first!
+        XCTAssertEqual(bob.member_id, "A1B2C3D4-E5F6-4A5B-8C9D-E0F1A2B3C4D5")
+        XCTAssertEqual(bob.name, "Bob Johnson")
+        XCTAssertEqual(bob.nickname, "Bob")
+        XCTAssertEqual(bob.profile_image_url, "https://example.com/bob.jpg")
+        XCTAssertEqual(bob.profile_avatar_color, "#FF5733")
+        
+        XCTAssertEqual(request.groups.count, 1)
+        let group = request.groups.first!
+        XCTAssertEqual(group.id, "22222222-2222-2222-2222-222222222222")
+        XCTAssertEqual(group.name, "Trip to Hawaii")
+        XCTAssertFalse(group.is_direct)
+        XCTAssertEqual(group.members.count, 2)
+        
+        XCTAssertEqual(request.expenses.count, 1)
+        let expense = request.expenses.first!
+        XCTAssertEqual(expense.id, "E1E1E1E1-E1E1-E1E1-E1E1-E1E1E1E1E1E1")
+        XCTAssertEqual(expense.group_id, "22222222-2222-2222-2222-222222222222")
+        XCTAssertEqual(expense.description, "Dinner")
+        XCTAssertEqual(expense.total_amount, 100.0)
+        XCTAssertEqual(expense.paid_by_member_id, "3F5B8B7A-9E9D-4C1B-B6B1-3E2A3A6B4B5B")
+        XCTAssertFalse(expense.is_settled)
+        XCTAssertEqual(expense.involved_member_ids.count, 2)
+        XCTAssertEqual(expense.participant_member_ids.count, 2)
+        XCTAssertEqual(expense.participants.count, 2)
+        XCTAssertEqual(expense.splits.count, 2)
+        XCTAssertEqual(expense.subexpenses?.count, 2)
+        
+        let expectedDateMs = ISO8601DateFormatter().date(from: "2026-01-20T19:00:00Z")!.timeIntervalSince1970 * 1000
+        XCTAssertEqual(expense.date, expectedDateMs, accuracy: 1000)
+    }
+
+    func testBulkImportIntegration_ConvertsToBulkImportRequest_AllowsDuplicateMemberIdsInGroupMembersAndParticipantNames() throws {
+        // Given
+        var parsedData = ParsedExportData()
+        let currentUserId = UUID()
+        parsedData.currentUserId = currentUserId
+        parsedData.currentUserName = "Example User"
+
+        let group1Id = UUID()
+        let group2Id = UUID()
+        let sharedMemberId = UUID()
+
+        parsedData.groups = [
+            ParsedGroup(id: group1Id, name: "Group 1", isDirect: false, isDebug: false, createdAt: Date(), memberCount: 2),
+            ParsedGroup(id: group2Id, name: "Group 2", isDirect: false, isDebug: false, createdAt: Date(), memberCount: 2)
+        ]
+
+        // Same memberId appears in multiple GROUP_MEMBERS rows (valid export shape).
+        parsedData.groupMembers = [
+            ParsedGroupMember(groupId: group1Id, memberId: currentUserId, memberName: "Example User", profileImageUrl: nil, profileColorHex: nil),
+            ParsedGroupMember(groupId: group1Id, memberId: sharedMemberId, memberName: "T", profileImageUrl: nil, profileColorHex: nil),
+            ParsedGroupMember(groupId: group2Id, memberId: currentUserId, memberName: "Example User", profileImageUrl: nil, profileColorHex: nil),
+            ParsedGroupMember(groupId: group2Id, memberId: sharedMemberId, memberName: "Example User", profileImageUrl: nil, profileColorHex: nil)
+        ]
+
+        let expenseId = UUID()
+        parsedData.expenses = [
+            ParsedExpense(
+                id: expenseId,
+                groupId: group1Id,
+                description: "Dinner",
+                date: Date(),
+                totalAmount: 10.0,
+                paidByMemberId: sharedMemberId,
+                isSettled: false,
+                isDebug: false
+            )
+        ]
+
+        parsedData.expenseInvolvedMembers = [(expenseId: expenseId, memberId: sharedMemberId)]
+        parsedData.expenseSplits = [
+            ParsedExpenseSplit(expenseId: expenseId, splitId: UUID(), memberId: sharedMemberId, amount: 10.0, isSettled: false)
+        ]
+
+        // Duplicate participant names for the same expense+member should not crash.
+        parsedData.participantNames = [
+            (expenseId, sharedMemberId, "T"),
+            (expenseId, sharedMemberId, "Example User")
+        ]
+
+        // When
+        let request = DataImportService.convertToBulkImportRequest(from: parsedData)
+
+        // Then
+        XCTAssertEqual(request.expenses.count, 1)
+        let expense = request.expenses[0]
+        let participant = expense.participants.first(where: { $0.member_id == sharedMemberId.uuidString })
+        XCTAssertEqual(participant?.name, "Example User")
+    }
+    
+    func testBulkImportIntegration_ChunksExpensesCorrectly() throws {
+        var parsedData = ParsedExportData()
+        parsedData.currentUserId = UUID()
+        parsedData.currentUserName = "Example User"
+        
+        let groupId = UUID()
+        let payerId = UUID()
+        
+        parsedData.groups = [
+            ParsedGroup(id: groupId, name: "Test Group", isDirect: false, isDebug: false, createdAt: Date(), memberCount: 2)
+        ]
+        
+        parsedData.groupMembers = [
+            ParsedGroupMember(groupId: groupId, memberId: parsedData.currentUserId!, memberName: "Example User", profileImageUrl: nil, profileColorHex: nil),
+            ParsedGroupMember(groupId: groupId, memberId: payerId, memberName: "Payer", profileImageUrl: nil, profileColorHex: nil)
+        ]
+        
+        for i in 0..<150 {
+            parsedData.expenses.append(
+                ParsedExpense(
+                    id: UUID(),
+                    groupId: groupId,
+                    description: "Expense \(i)",
+                    date: Date(),
+                    totalAmount: Double(i + 1) * 10,
+                    paidByMemberId: payerId,
+                    isSettled: false,
+                    isDebug: false
+                )
+            )
+        }
+        
+        let chunks = DataImportService.chunkExpenses(from: parsedData, maxPerChunk: 100)
+        
+        XCTAssertEqual(chunks.count, 2, "150 expenses should result in 2 chunks")
+        XCTAssertEqual(chunks[0].count, 100, "First chunk should have 100 expenses")
+        XCTAssertEqual(chunks[1].count, 50, "Second chunk should have 50 expenses")
+    }
+    
+    func testBulkImportIntegration_HandlesPartialErrors() async throws {
+        let mockAccountService = MockBulkImportAccountService()
+        await mockAccountService.setBulkImportErrors(["Failed to create expense E1: group not found"])
+        
+        let parsedData = try createTestParsedData()
+        
+        let result = await DataImportService.performBulkImport(
+            from: parsedData,
+            accountService: mockAccountService
+        )
+        
+        switch result {
+        case .partialSuccess(let summary, let errors):
+            XCTAssertGreaterThan(summary.expensesAdded, 0)
+            XCTAssertEqual(errors.count, 1)
+            XCTAssertTrue(errors[0].contains("group not found"))
+        case .success:
+            break
+        case .incompatibleFormat:
+            XCTFail("Should not return incompatibleFormat for partial errors")
+        case .needsResolution:
+            XCTFail("Should not return needsResolution for bulk import")
+        }
+    }
+    
+    private func createTestParsedData() throws -> ParsedExportData {
+        var data = ParsedExportData()
+        data.currentUserId = UUID()
+        data.currentUserName = "Example User"
+        
+        let groupId = UUID()
+        let friendId = UUID()
+        
+        data.friends = [
+            ParsedFriend(memberId: friendId, name: "Friend", nickname: nil, hasLinkedAccount: false)
+        ]
+        
+        data.groups = [
+            ParsedGroup(id: groupId, name: "Test Group", isDirect: false, isDebug: false, createdAt: Date(), memberCount: 2)
+        ]
+        
+        data.groupMembers = [
+            ParsedGroupMember(groupId: groupId, memberId: data.currentUserId!, memberName: "Example User", profileImageUrl: nil, profileColorHex: nil),
+            ParsedGroupMember(groupId: groupId, memberId: friendId, memberName: "Friend", profileImageUrl: nil, profileColorHex: nil)
+        ]
+        
+        data.expenses = [
+            ParsedExpense(id: UUID(), groupId: groupId, description: "Test", date: Date(), totalAmount: 100, paidByMemberId: data.currentUserId!, isSettled: false, isDebug: false)
+        ]
+        
+        return data
+    }
+    #endif
 }
+
+#if !PAYBACK_CI_NO_CONVEX
+actor MockBulkImportAccountService: AccountService {
+    private var bulkImportErrors: [String] = []
+    var bulkImportCalls: [BulkImportRequest] = []
+    
+    func setBulkImportErrors(_ errors: [String]) {
+        bulkImportErrors = errors
+    }
+    
+    nonisolated func normalizedEmail(from rawValue: String) throws -> String {
+        rawValue.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    func lookupAccount(byEmail email: String) async throws -> UserAccount? { nil }
+    func createAccount(email: String, displayName: String) async throws -> UserAccount {
+        UserAccount(id: UUID().uuidString, email: email, displayName: displayName)
+    }
+    func updateLinkedMember(accountId: String, memberId: UUID?) async throws {}
+    func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {}
+    func fetchFriends(accountEmail: String) async throws -> [AccountFriend] { [] }
+    func updateFriendLinkStatus(accountEmail: String, memberId: UUID, linkedAccountId: String, linkedAccountEmail: String) async throws {}
+    func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? { nil }
+    func uploadProfileImage(_ data: Data) async throws -> String { "" }
+    func checkAuthentication() async throws -> Bool { true }
+    func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {}
+    func deleteLinkedFriend(memberId: UUID) async throws {}
+    func deleteUnlinkedFriend(memberId: UUID) async throws {}
+    func selfDeleteAccount() async throws {}
+    nonisolated func monitorSession() -> AsyncStream<UserAccount?> { AsyncStream { $0.finish() } }
+    func sendFriendRequest(email: String) async throws {}
+    func acceptFriendRequest(requestId: String) async throws {}
+    func rejectFriendRequest(requestId: String) async throws {}
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest] { [] }
+    func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {}
+    func validateAccountIds(_ ids: [String]) async throws -> Set<String> { Set(ids) }
+    func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] { [:] }
+    
+    func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult {
+        bulkImportCalls.append(request)
+        return BulkImportResult(
+            success: bulkImportErrors.isEmpty,
+            created: .init(
+                friends: request.friends.count,
+                groups: request.groups.count,
+                expenses: request.expenses.count
+            ),
+            errors: bulkImportErrors
+        )
+    }
+}
+#endif

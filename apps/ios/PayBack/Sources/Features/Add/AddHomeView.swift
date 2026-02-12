@@ -89,10 +89,7 @@ struct ChooseTargetView: View {
     }
 
     private var friendMembers: [GroupMember] {
-        // Double filter to ensure current user is never shown
-        return store.friendMembers
-            .filter { !store.isCurrentUser($0) }
-            .filter { $0.id != store.currentUser.id }
+        store.confirmedFriendMembers
     }
 
     private var availableGroups: [SpendingGroup] {
@@ -104,5 +101,3 @@ struct ChooseTargetView: View {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 }
-
-

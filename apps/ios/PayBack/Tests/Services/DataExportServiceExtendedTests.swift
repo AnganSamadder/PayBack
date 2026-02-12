@@ -7,7 +7,7 @@ final class DataExportServiceExtendedTests: XCTestCase {
     // MARK: - Export Content Tests
     
     func testExportAllData_withEmptyCollections_hasValidStructure() {
-        let currentUser = GroupMember(name: "Test User")
+        let currentUser = GroupMember(name: "Example User")
         let result = DataExportService.exportAllData(
             groups: [],
             expenses: [],

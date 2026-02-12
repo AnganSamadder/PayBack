@@ -16,6 +16,12 @@ struct InviteLinkClaimView: View {
     @State private var successOpacity: Double = 0
     @State private var subscriptionTask: Task<Void, Never>?
     
+    // Merge Flow State
+    @State private var showMergeSheet = false
+    @State private var potentialMatches: [AccountFriend] = []
+    @State private var justClaimedToken: InviteToken?
+    @State private var mergedFriendName: String?
+    
     private var needsAuthentication: Bool {
         store.session == nil
     }
@@ -64,6 +70,65 @@ struct InviteLinkClaimView: View {
             }
             .onDisappear {
                 subscriptionTask?.cancel()
+            }
+            .sheet(isPresented: $showMergeSheet) {
+                NavigationStack {
+                    List {
+                        Section {
+                            Text("We found a friend with a similar name in your contacts. Would you like to merge them?")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .listRowBackground(Color.clear)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
+                        }
+                        
+                        Section("Potential Match") {
+                            ForEach(potentialMatches, id: \.memberId) { friend in
+                                Button {
+                                    Task {
+                                        await mergeWithFriend(friend)
+                                    }
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading) {
+                                            Text(friend.name)
+                                                .font(.headline)
+                                            Text("Keep this history")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        
+                                        Spacer()
+                                        
+                                        if let count = expenseCountFor(friend) {
+                                            VStack(alignment: .trailing) {
+                                                Text("\(count)")
+                                                    .font(.headline)
+                                                Text("expenses")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        
+                                        Image(systemName: "arrow.merge")
+                                            .foregroundStyle(AppTheme.brand)
+                                    }
+                                    .padding(.vertical, 4)
+                                }
+                            }
+                        }
+                        
+                        Section {
+                            Button("No, Keep Separate") {
+                                completeWithoutMerge()
+                            }
+                        }
+                    }
+                    .navigationTitle("Merge Contacts?")
+                    .navigationBarTitleDisplayMode(.inline)
+                }
+                .presentationDetents([.medium])
+                .interactiveDismissDisabled()
             }
         }
     }
@@ -136,7 +201,7 @@ struct InviteLinkClaimView: View {
             
             // Expense preview
             if let preview = preview {
-                expensePreviewSection(preview: preview)
+                expensePreviewSection(token: token, preview: preview)
             }
             
             // Action buttons (only show if not processing or successful)
@@ -151,28 +216,12 @@ struct InviteLinkClaimView: View {
     @ViewBuilder
     private func senderInfoSection(token: InviteToken) -> some View {
         VStack(spacing: 16) {
-            // Avatar - show real profile pic if available
-            if let imageUrl = token.creatorProfileImageUrl, let url = URL(string: imageUrl) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 80, height: 80)
-                            .clipShape(Circle())
-                    case .failure(_):
-                        fallbackAvatar(for: token)
-                    case .empty:
-                        ProgressView()
-                            .frame(width: 80, height: 80)
-                    @unknown default:
-                        fallbackAvatar(for: token)
-                    }
-                }
-            } else {
-                fallbackAvatar(for: token)
-            }
+            // Avatar - use AvatarView for consistency
+            AvatarView(
+                name: token.creatorName ?? token.creatorEmail,
+                size: 80,
+                imageUrl: token.creatorProfileImageUrl
+            )
             
             VStack(spacing: 4) {
                 Text("Invite from")
@@ -196,19 +245,6 @@ struct InviteLinkClaimView: View {
         .background(Color(.systemBackground))
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 2)
-    }
-    
-    @ViewBuilder
-    private func fallbackAvatar(for token: InviteToken) -> some View {
-        ZStack {
-            Circle()
-                .fill(AppTheme.brand.opacity(0.2))
-                .frame(width: 80, height: 80)
-            
-            Text((token.creatorName ?? token.creatorEmail).prefix(1).uppercased())
-                .font(.system(size: 36, weight: .semibold))
-                .foregroundStyle(AppTheme.brand)
-        }
     }
     
     // MARK: - Name Confirmation Section
@@ -241,7 +277,7 @@ struct InviteLinkClaimView: View {
     // MARK: - Expense Preview Section
     
     @ViewBuilder
-    private func expensePreviewSection(preview: ExpensePreview) -> some View {
+    private func expensePreviewSection(token: InviteToken, preview: ExpensePreview) -> some View {
         VStack(spacing: 16) {
             // Summary header
             VStack(spacing: 8) {
@@ -271,14 +307,40 @@ struct InviteLinkClaimView: View {
                 )
             }
             
-            // Groups involved
-            if !preview.groupNames.isEmpty {
+            // Friends section (Direct Groups)
+            if !preview.personalExpenses.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Friends")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    
+                    // Show the target member (friend in direct group)
+                    HStack(spacing: 12) {
+                        AvatarView(name: token.targetMemberName, size: 32)
+                        Text(token.targetMemberName)
+                            .font(.headline)
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .cornerRadius(12)
+            }
+            
+            // Groups section (Multi-person groups only - exclude direct groups)
+            let multiPersonGroups = preview.groupNames.filter { groupName in
+                // Exclude direct groups (typically named after the friend)
+                groupName.lowercased().trimmingCharacters(in: .whitespaces) != token.targetMemberName.lowercased().trimmingCharacters(in: .whitespaces)
+            }
+            
+            if !multiPersonGroups.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Groups")
                         .font(.subheadline)
                         .fontWeight(.semibold)
                     
-                    ForEach(preview.groupNames, id: \.self) { groupName in
+                    ForEach(multiPersonGroups, id: \.self) { groupName in
                         HStack {
                             Image(systemName: "person.3.fill")
                                 .font(.caption)
@@ -393,12 +455,12 @@ struct InviteLinkClaimView: View {
                 .scaleEffect(successScale)
                 .opacity(successOpacity)
             
-            Text("Invite Claimed!")
+            Text(mergedFriendName != nil ? "Merged with \(mergedFriendName!)" : "Invite Claimed!")
                 .font(.title3)
                 .fontWeight(.semibold)
                 .opacity(successOpacity)
             
-            Text("Your account has been linked successfully")
+            Text(mergedFriendName != nil ? "Your transaction history has been combined." : "Your account has been linked successfully")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .opacity(successOpacity)
@@ -531,8 +593,14 @@ struct InviteLinkClaimView: View {
         isProcessing = true
         errorMessage = nil
         
+        // Capture token before claiming
+        let token = validation?.token
+        
         do {
             try await store.claimInviteToken(tokenId)
+            
+            // Check for potential matches
+            let matches = checkForSimilarFriends(token: token)
             
             await MainActor.run {
                 isProcessing = false
@@ -548,13 +616,21 @@ struct InviteLinkClaimView: View {
                 // Trigger success haptic
                 Haptics.notify(.success)
                 
-                withAnimation(AppAnimation.springy) {
-                    showSuccess = true
-                }
-                
-                // Dismiss after a delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    dismiss()
+                if !matches.isEmpty {
+                    // Show merge sheet
+                    potentialMatches = matches
+                    justClaimedToken = token
+                    showMergeSheet = true
+                } else {
+                    // Standard success flow
+                    withAnimation(AppAnimation.springy) {
+                        showSuccess = true
+                    }
+                    
+                    // Dismiss after a delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        dismiss()
+                    }
                 }
             }
         } catch {
@@ -610,5 +686,76 @@ struct InviteLinkClaimView: View {
             return "Make sure you're using the complete link."
         }
         return nil
+    }
+    
+    // MARK: - Merge Logic Helpers
+    
+    private func checkForSimilarFriends(token: InviteToken?) -> [AccountFriend] {
+        guard let token = token, let creatorName = token.creatorName else { return [] }
+        
+        // Find unlinked friends with similar names
+        return store.friends.filter { friend in
+            !friend.hasLinkedAccount &&
+            (friend.name.localizedCaseInsensitiveContains(creatorName) ||
+             creatorName.localizedCaseInsensitiveContains(friend.name))
+        }
+    }
+    
+    private func expenseCountFor(_ friend: AccountFriend) -> Int? {
+        let count = store.expenses.filter { 
+            $0.involvedMemberIds.contains(friend.memberId) || 
+            $0.paidByMemberId == friend.memberId 
+        }.count
+        return count > 0 ? count : nil
+    }
+    
+    private func mergeWithFriend(_ friend: AccountFriend) async {
+        guard let token = justClaimedToken else { return }
+        
+        // Find the linked creator friend to merge INTO
+        // We look for a friend that is linked to the token creator's ID
+        if let creatorFriend = store.friends.first(where: { $0.linkedAccountId == token.creatorId }) {
+             do {
+                 try await store.mergeFriend(unlinkedMemberId: friend.memberId, into: creatorFriend.memberId)
+                 await MainActor.run {
+                     mergedFriendName = friend.name
+                     completeWithMerge()
+                 }
+             } catch {
+                 print("[InviteLinkClaimView] Merge failed: \(error)")
+                 // Just proceed without merge on error
+                 await MainActor.run {
+                     completeWithoutMerge()
+                 }
+             }
+        } else {
+            print("[InviteLinkClaimView] Could not find creator friend record (id: \(token.creatorId))")
+            // Proceed without merge
+            await MainActor.run {
+                completeWithoutMerge()
+            }
+        }
+    }
+    
+    private func completeWithMerge() {
+        showMergeSheet = false
+        // Show success with animation
+        withAnimation(AppAnimation.springy) {
+            showSuccess = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            dismiss()
+        }
+    }
+    
+    private func completeWithoutMerge() {
+        showMergeSheet = false
+        // Show success with animation
+        withAnimation(AppAnimation.springy) {
+            showSuccess = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            dismiss()
+        }
     }
 }

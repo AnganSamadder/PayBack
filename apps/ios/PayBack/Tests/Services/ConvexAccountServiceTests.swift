@@ -175,12 +175,12 @@ final class ConvexAccountServiceTests: XCTestCase {
         let account = UserAccount(
             id: "user123",
             email: "user@example.com",
-            displayName: "Test User"
+            displayName: "Example User"
         )
         
         XCTAssertEqual(account.id, "user123")
         XCTAssertEqual(account.email, "user@example.com")
-        XCTAssertEqual(account.displayName, "Test User")
+        XCTAssertEqual(account.displayName, "Example User")
     }
     
     func testUserAccount_Identifiable_ReturnsId() {
@@ -206,7 +206,7 @@ final class ConvexAccountServiceTests: XCTestCase {
         let original = UserAccount(
             id: "user123",
             email: "user@example.com",
-            displayName: "Test User"
+            displayName: "Example User"
         )
         
         let encoder = JSONEncoder()
@@ -297,5 +297,36 @@ final class ConvexAccountServiceTests: XCTestCase {
         XCTAssertTrue(updated?.hasLinkedAccount ?? false)
         XCTAssertEqual(updated?.linkedAccountId, "linked123")
         XCTAssertEqual(updated?.linkedAccountEmail, "linked@example.com")
+    }
+
+    // MARK: - Bulk Import Tests
+
+    func testBulkImport() async throws {
+        let service = MockAccountService()
+        let request = BulkImportRequest(friends: [], groups: [], expenses: [])
+        
+        let result = try await service.bulkImport(request: request)
+        
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(result.created.friends, 0)
+        XCTAssertEqual(result.created.groups, 0)
+        XCTAssertEqual(result.created.expenses, 0)
+        XCTAssertTrue(result.errors.isEmpty)
+    }
+
+    func testBulkImport_WithData_ReturnsCorrectCounts() async throws {
+        let service = MockAccountService()
+        let request = BulkImportRequest(
+            friends: [BulkFriendDTO(member_id: UUID().uuidString, name: "Friend")],
+            groups: [BulkGroupDTO(id: UUID().uuidString, name: "Group", members: [], is_direct: false)],
+            expenses: []
+        )
+        
+        let result = try await service.bulkImport(request: request)
+        
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(result.created.friends, 1)
+        XCTAssertEqual(result.created.groups, 1)
+        XCTAssertEqual(result.created.expenses, 0)
     }
 }

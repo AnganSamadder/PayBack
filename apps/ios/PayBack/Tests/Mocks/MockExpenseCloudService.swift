@@ -4,6 +4,7 @@ import Foundation
 /// Mock expense cloud service for testing AppStore
 actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var expenses: [UUID: Expense] = [:]
+    private var participantsByExpenseId: [UUID: [ExpenseParticipant]] = [:]
     private var shouldFail: Bool = false
     
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
@@ -11,6 +12,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
             throw PayBackError.authSessionMissing
         }
         expenses[expense.id] = expense
+        participantsByExpenseId[expense.id] = participants
     }
     
     func fetchExpenses() async throws -> [Expense] {
@@ -25,6 +27,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
             throw PayBackError.authSessionMissing
         }
         expenses.removeValue(forKey: expenseId)
+        participantsByExpenseId.removeValue(forKey: expenseId)
     }
     
     func clearLegacyMockExpenses() async throws {
@@ -36,6 +39,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
             throw PayBackError.authSessionMissing
         }
         expenses[expense.id] = expense
+        participantsByExpenseId[expense.id] = participants
     }
     
     func deleteDebugExpenses() async throws {
@@ -53,6 +57,11 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     
     func reset() {
         expenses.removeAll()
+        participantsByExpenseId.removeAll()
         shouldFail = false
+    }
+
+    func participants(for expenseId: UUID) -> [ExpenseParticipant]? {
+        participantsByExpenseId[expenseId]
     }
 }

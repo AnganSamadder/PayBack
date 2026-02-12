@@ -10,10 +10,10 @@ final class MockInviteLinkServiceTests: XCTestCase {
         let service = MockInviteLinkService.shared
         let memberId = UUID()
         
-        let inviteLink = try await service.generateInviteLink(targetMemberId: memberId, targetMemberName: "Test User")
+        let inviteLink = try await service.generateInviteLink(targetMemberId: memberId, targetMemberName: "Example User")
         
         XCTAssertEqual(inviteLink.token.targetMemberId, memberId)
-        XCTAssertEqual(inviteLink.token.targetMemberName, "Test User")
+        XCTAssertEqual(inviteLink.token.targetMemberName, "Example User")
         XCTAssertNotNil(inviteLink.url)
         XCTAssertFalse(inviteLink.shareText.isEmpty)
     }

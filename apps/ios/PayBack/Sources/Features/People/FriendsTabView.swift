@@ -328,13 +328,29 @@ private struct FriendsList: View {
                 friendToDelete = nil
             }
         } message: { friend in
-            Text("This will remove \"\(friendDisplayName(friend))\" from your friends list and delete your 1:1 group history. This cannot be undone.")
+            let balance = calculateBalanceForSorting(for: friend)
+            let isLinked = store.friendHasLinkedAccount(friend)
+            var message = ""
+            
+            if isLinked {
+                message = "Remove \(friendDisplayName(friend)) as a friend? Their account will remain, but your 1:1 expenses will be deleted."
+            } else {
+                message = "Delete \(friendDisplayName(friend))? This will remove them from all your groups and expenses."
+            }
+            
+            if abs(balance) > 0.01 {
+                let currencyCode = Locale.current.currency?.identifier ?? "USD"
+                let formattedAmount = abs(balance).formatted(.currency(code: currencyCode))
+                message += "\n\n⚠️ You have unsettled expenses totaling \(formattedAmount). Deleting will remove these."
+            }
+            
+            return Text(message)
         }
     }
 
     private var sortedFriends: [GroupMember] {
         // Double filter to ensure current user is never shown
-        let friends = store.friendMembers
+        let friends = store.confirmedFriendMembers
             .filter { !store.isCurrentUser($0) }
             .filter { $0.id != store.currentUser.id }
         
@@ -363,18 +379,18 @@ private struct FriendsList: View {
         var totalBalance: Double = 0
         
         for group in store.groups {
-            if group.members.contains(where: { $0.id == friend.id }) {
+            if group.members.contains(where: { isFriend($0.id, for: friend) }) {
                 let groupExpenses = store.expenses(in: group.id)
                 
                 for exp in groupExpenses where !exp.isSettled {
-                    if exp.paidByMemberId == store.currentUser.id {
+                    if isMe(exp.paidByMemberId) {
                         // Current user paid, check if friend owes anything
-                        if let friendSplit = exp.splits.first(where: { $0.memberId == friend.id }) {
+                        if let friendSplit = exp.splits.first(where: { isFriend($0.memberId, for: friend) }) {
                             totalBalance += friendSplit.amount
                         }
-                    } else if exp.paidByMemberId == friend.id {
+                    } else if isFriend(exp.paidByMemberId, for: friend) {
                         // Friend paid, check if current user owes anything
-                        if let userSplit = exp.splits.first(where: { $0.memberId == store.currentUser.id }) {
+                        if let userSplit = exp.splits.first(where: { isMe($0.memberId) }) {
                             totalBalance -= userSplit.amount
                         }
                     }
@@ -386,19 +402,25 @@ private struct FriendsList: View {
     }
     
     private func friendDisplayName(_ friend: GroupMember) -> String {
-        // Find the AccountFriend for this member
-        if let accountFriend = store.friends.first(where: { $0.memberId == friend.id }) {
+        // Find the AccountFriend for this member using identity equivalence.
+        if let accountFriend = store.friends.first(where: { store.areSamePerson($0.memberId, friend.id) }) {
             return accountFriend.displayName(showRealNames: showRealNames)
         }
         return friend.name
     }
     
     private func friendSecondaryName(_ friend: GroupMember) -> String? {
-        // Find the AccountFriend for this member
-        if let accountFriend = store.friends.first(where: { $0.memberId == friend.id }) {
+        // Find the AccountFriend for this member using identity equivalence.
+        if let accountFriend = store.friends.first(where: { store.areSamePerson($0.memberId, friend.id) }) {
             return accountFriend.secondaryDisplayName(showRealNames: showRealNames)
         }
         return nil
+    }
+
+    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
+
+    private func isFriend(_ memberId: UUID, for friend: GroupMember) -> Bool {
+        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 }
 
@@ -421,19 +443,19 @@ private struct BalanceView: View {
         var totalBalance: Double = 0
 
         for group in store.groups {
-            guard group.members.contains(where: { $0.id == friend.id }) else { continue }
+            guard group.members.contains(where: { isFriend($0.id, for: friend) }) else { continue }
 
             let groupExpenses = store.expenses(in: group.id)
 
             for expense in groupExpenses where !expense.isSettled {
-                if expense.paidByMemberId == store.currentUser.id {
+                if isMe(expense.paidByMemberId) {
                     // Current user paid - friend owes current user
-                    if let friendSplit = expense.splits.first(where: { $0.memberId == friend.id }) {
+                    if let friendSplit = expense.splits.first(where: { isFriend($0.memberId, for: friend) }) {
                         totalBalance += friendSplit.amount
                     }
-                } else if expense.paidByMemberId == friend.id {
+                } else if isFriend(expense.paidByMemberId, for: friend) {
                     // Friend paid - current user owes friend
-                    if let userSplit = expense.splits.first(where: { $0.memberId == store.currentUser.id }) {
+                    if let userSplit = expense.splits.first(where: { isMe($0.memberId) }) {
                         totalBalance -= userSplit.amount
                     }
                 }
@@ -454,6 +476,12 @@ private struct BalanceView: View {
         return balance >= 0 ? formatted : "-\(formatted)"
     }
 
+    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
+
+    private func isFriend(_ memberId: UUID, for friend: GroupMember) -> Bool {
+        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
+    }
+
     private func balanceColor(for balance: Double) -> Color {
         if balance > 0.01 {
             return .green // Friend owes current user
@@ -464,5 +492,3 @@ private struct BalanceView: View {
         }
     }
 }
-
-

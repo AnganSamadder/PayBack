@@ -101,7 +101,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     
     func testPurgeCurrentUserFriendRecords_RemovesCurrentUserFromFriends() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -251,7 +251,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     
     func testFriendMembers_WithSession_UsesRemoteFriends() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -328,11 +328,12 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         let account = UserAccount(
             id: "test-123",
             email: "test@example.com",
-            displayName: "Test User",
+            displayName: "Example User",
             linkedMemberId: UUID()
         )
+        await mockAccountService.addAccount(account)
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 300_000_000)
         
         let member = GroupMember(id: account.linkedMemberId!, name: "Test")
         
@@ -569,7 +570,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     
     func testSendLinkRequest_WithCurrentUserMemberId_ThrowsError() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -585,7 +586,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         let account = UserAccount(
             id: "test-123",
             email: "test@example.com",
-            displayName: "Test User",
+            displayName: "Example User",
             linkedMemberId: linkedMemberId
         )
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -601,7 +602,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     
     func testSendLinkRequest_WithAccountNotFound_ThrowsError() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -615,7 +616,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     
     func testSendLinkRequest_WithSameAccountId_ThrowsError() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         
@@ -632,7 +633,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     
     func testSendLinkRequest_WithDuplicateRequest_ThrowsError() async throws {
         // Given
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Test User")
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
         

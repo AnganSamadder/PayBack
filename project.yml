@@ -324,6 +324,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.angansamadder.PayBack
         ENABLE_TESTABILITY: YES
         CODE_SIGN_STYLE: Automatic
+        # Use a reduced entitlements file on the simulator.
+        # iOS 26 simulators can deny launch when associated domains are present.
+        CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]: apps/ios/PayBack/PayBack-Simulator.entitlements
         # CODE_SIGN_IDENTITY: "Apple Development"
         # PROVISIONING_PROFILE_SPECIFIER: ""
         TARGETED_DEVICE_FAMILY: "1" # 1=iPhone, 2=iPad
@@ -347,18 +350,6 @@ targets:
 
     # Pre/Post build scripts
     # preBuildScripts:
-    #   - script: |
-    #       "${SRCROOT}/scripts/generate_supabase_config.sh"
-    #     name: Generate Supabase Config
-    #     shell: /bin/sh
-    #     showEnvVars: false
-    #     basedOnDependencyAnalysis: false
-    #     inputFiles:
-    #       - $(SRCROOT)/scripts/generate_supabase_config.sh
-    #       - $(SRCROOT)/.env.supabase.local
-    #       - $(SRCROOT)/.env.local
-    #     outputFiles:
-    #       - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/SupabaseConfig.plist
 
     # Info.plist configuration
     info:

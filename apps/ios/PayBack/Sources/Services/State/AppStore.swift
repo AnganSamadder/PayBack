@@ -2,6 +2,8 @@ import Foundation
 import Combine
 import Clerk
 
+enum LogoutAlert: Identifiable { case accountDeleted; var id: Int { hashValue } }
+
 final class AppStore: ObservableObject {
     private struct NormalizedRemoteData {
         let groups: [SpendingGroup]
@@ -17,6 +19,9 @@ final class AppStore: ObservableObject {
     @Published var friends: [AccountFriend]
     @Published private(set) var incomingLinkRequests: [LinkRequest] = []
     @Published private(set) var outgoingLinkRequests: [LinkRequest] = []
+    
+    /// Map of alias member IDs to their master member ID (from AccountFriend)
+    private var memberAliasMap: [UUID: UUID] = [:]
     @Published private(set) var previousLinkRequests: [LinkRequest] = []
 
     private let persistence: PersistenceServiceProtocol
@@ -30,11 +35,20 @@ final class AppStore: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
+    /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
+    private var pendingExpenseUpsertIds: Set<UUID> = []
+    /// Local expense deletes that have been sent to cloud but not yet observed in realtime snapshots.
+    private var pendingExpenseDeleteIds: Set<UUID> = []
     private let retryPolicy: RetryPolicy = .linkingDefault
     private let stateReconciliation = LinkStateReconciliation()
     private let failureTracker = LinkFailureTracker()
 
     @Published var isCheckingAuth = true
+    @Published var logoutAlert: LogoutAlert?
+    
+    /// When true, suppresses all cloud writes (friend sync, group upsert, expense upsert).
+    /// Used during CSV import to batch local changes before syncing.
+    @Published var isImporting: Bool = false
     
     // ... dependencies ...
 
@@ -66,7 +80,7 @@ final class AppStore: ObservableObject {
         self.groups = localData.groups
         self.expenses = localData.expenses
         self.friends = []
-        self.currentUser = GroupMember(name: "You")
+        self.currentUser = GroupMember(name: "You", isCurrentUser: true)
         
         // Setup subscriptions...
         $groups.combineLatest($expenses)
@@ -130,28 +144,43 @@ final class AppStore: ObservableObject {
             return (email, displayName)
         }
         
-        if let (email, displayName) = userInfo {
+        if let (email, _) = userInfo {
             #if !PAYBACK_CI_NO_CONVEX
             // Concurrent execution: Authenticate Convex AND prepare logic
             async let convexAuth: Void = Dependencies.authenticateConvex()
 
             // Wait for Convex auth
             await convexAuth
-            #endif
+
+            // Avoid startup races where queries run before the server recognizes auth.
+            // This is especially important for `users:viewer`, which returns null when unauthenticated.
+            do {
+                try await waitForServerAuthentication()
+            } catch {
+                #if DEBUG
+                print("[AuthDebug] Server auth confirmation timed out: \(error)")
+                #endif
+            }
             
             // 3. Convex Account Lookup
             let accountService = self.accountService // Capture service
             
             do {
                 let account = try await RetryPolicy.startup.execute {
+                    #if !PAYBACK_CI_NO_CONVEX
+                    // Ensure we are authenticated on the server before account lookup/creation.
+                    try await self.waitForServerAuthentication()
+                    #endif
+
                     if let account = try await accountService.lookupAccount(byEmail: email) {
                         AppConfig.markTiming("Account lookup complete (found)")
                         return account
                     } else {
                         AppConfig.markTiming("Account lookup complete (not found)")
-                        let account = try await accountService.createAccount(email: email, displayName: displayName)
-                        AppConfig.markTiming("Account created")
-                        return account
+                        // Account deleted/missing. Do not auto-create on session restore.
+                        // Force sign out to ensure clean state next time.
+                        await self.signOut()
+                        throw PayBackError.accountNotFound(email: email)
                     }
                 }
                 
@@ -161,6 +190,7 @@ final class AppStore: ObservableObject {
             } catch {
                 AppConfig.markTiming("Session restore failed: \(error.localizedDescription)")
             }
+            #endif
         } else {
             AppConfig.markTiming("No Clerk user found")
         }
@@ -214,6 +244,10 @@ final class AppStore: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] remoteGroups in
                 guard let self = self else { return }
+                guard !self.isImporting else { return }
+                // Ignore realtime payloads before authentication to avoid
+                // clobbering local state with empty remote snapshots.
+                guard self.session != nil else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenGroupIds = Set<UUID>()
                 let uniqueGroups = remoteGroups.filter { seenGroupIds.insert($0.id).inserted }
@@ -241,16 +275,18 @@ final class AppStore: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] remoteExpenses in
                 guard let self = self else { return }
+                guard !self.isImporting else { return }
+                guard self.session != nil else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenExpenseIds = Set<UUID>()
                 let uniqueExpenses = remoteExpenses.filter { seenExpenseIds.insert($0.id).inserted }
                 
                 let previousCount = self.expenses.count
-                self.expenses = uniqueExpenses
+                self.expenses = self.mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: uniqueExpenses)
                 
                 #if DEBUG
-                if previousCount != uniqueExpenses.count {
-                    print("[AppStore] Synced \(uniqueExpenses.count) expenses from Convex (deduped from \(remoteExpenses.count))")
+                if previousCount != self.expenses.count {
+                    print("[AppStore] Synced \(self.expenses.count) expenses from Convex (deduped from \(remoteExpenses.count))")
                 }
                 #endif
             }
@@ -261,18 +297,10 @@ final class AppStore: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] remoteFriends in
                 guard let self = self else { return }
-                // Deduplicate by memberId
-                var seenMemberIds = Set<UUID>()
-                let uniqueFriends = remoteFriends.filter { seenMemberIds.insert($0.memberId).inserted }
+                guard !self.isImporting else { return }
+                guard self.session != nil else { return }
                 
-                let previousCount = self.friends.count
-                self.friends = uniqueFriends
-                
-                #if DEBUG
-                if previousCount != uniqueFriends.count {
-                    print("[AppStore] Synced \(uniqueFriends.count) friends from Convex (deduped from \(remoteFriends.count))")
-                }
-                #endif
+                self.processFriendsUpdate(remoteFriends)
             }
             .store(in: &cancellables)
             
@@ -289,9 +317,87 @@ final class AppStore: ObservableObject {
         #endif
     }
     
-
-
+    /// Dedupes friends using alias logic and updates state
+    private func processFriendsUpdate(_ remoteFriends: [AccountFriend]) {
+        // Advanced Deduplication & Alias Mapping
+        var masterFriends: [AccountFriend] = []
+        var aliasMap: [UUID: UUID] = [:] // Alias -> Master
+        var coveredIds: Set<UUID> = [] // IDs that are either masters or aliases of masters
+        
+        // First pass: Identify masters (friends with linked accounts or aliases)
+        // Prefer linked accounts as masters.
+        let sortedFriends = remoteFriends.sorted(by: { f1, f2 in
+            if f1.hasLinkedAccount != f2.hasLinkedAccount {
+                return f1.hasLinkedAccount // Prefer linked
+            }
+            // Then prefer ones with aliases populated
+            let a1 = f1.aliasMemberIds?.count ?? 0
+            let a2 = f2.aliasMemberIds?.count ?? 0
+            if a1 != a2 {
+                return a1 > a2
+            }
+            // Stable tie-breaker to avoid churn across realtime updates.
+            return f1.memberId.uuidString < f2.memberId.uuidString
+        })
+        
+        for friend in sortedFriends {
+            // Check if this friend is already covered by a previous master
+            if coveredIds.contains(friend.memberId) {
+                continue // Skip duplicate/alias
+            }
+            
+            masterFriends.append(friend)
+            coveredIds.insert(friend.memberId)
+            
+            // Register aliases
+            if let aliases = friend.aliasMemberIds {
+                for alias in aliases {
+                    aliasMap[alias] = friend.memberId
+                    coveredIds.insert(alias)
+                }
+            }
+            // Also register self as alias of self
+            aliasMap[friend.memberId] = friend.memberId
+        }
+        
+        self.memberAliasMap = aliasMap
+        
+        let previousCount = self.friends.count
+        self.friends = masterFriends
+        
+        
+        #if DEBUG
+        if previousCount != masterFriends.count {
+            print("[AppStore] Synced \(masterFriends.count) friends from Convex (deduped from \(remoteFriends.count))")
+        }
+        #endif
+    }
+    
+    
     // MARK: - Session management
+
+    private var sessionMonitorTask: Task<Void, Never>?
+
+    private func startSessionMonitoring() async {
+        sessionMonitorTask?.cancel()
+        sessionMonitorTask = Task { @MainActor in
+            for await account in accountService.monitorSession() {
+                if account == nil && self.session != nil {
+                     self.handleForcedLogout(reason: "Account deleted")
+                }
+            }
+        }
+    }
+
+    private func handleForcedLogout(reason: String) {
+        print("[AppStore] Forced logout: ")
+        Task {
+            await signOut()
+            await MainActor.run {
+                self.logoutAlert = .accountDeleted
+            }
+        }
+    }
 
     // MARK: - Centralized Authentication
     
@@ -300,7 +406,9 @@ final class AppStore: ObservableObject {
         let normalizedEmail = try accountService.normalizedEmail(from: email)
         let result = try await emailAuthService.signIn(email: normalizedEmail, password: password)
         
-        return try await performConvexAuthAndSetup(email: normalizedEmail, name: result.displayName)
+        // Explicit login implies intent to use the app. If account is missing (e.g. wiped),
+        // recreate it to allow access. Only checkSession (auto-login) restricts creation.
+        return try await performConvexAuthAndSetup(email: normalizedEmail, name: result.displayName, allowCreation: true)
     }
     
     /// Centralized signup. returns result so coordinator can handle verification step.
@@ -317,8 +425,8 @@ final class AppStore: ObservableObject {
         )
         
         if case .complete(let authResult) = result {
-            // Auto-login if complete
-            _ = try await performConvexAuthAndSetup(email: normalizedEmail, name: authResult.displayName)
+            // Auto-login if complete (Signup flow -> allow creation)
+            _ = try await performConvexAuthAndSetup(email: normalizedEmail, name: authResult.displayName, allowCreation: true)
         }
         
         return result
@@ -329,11 +437,12 @@ final class AppStore: ObservableObject {
         let authResult = try await emailAuthService.verifyCode(code: code)
         let displayName = pendingDisplayName?.isEmpty == false ? pendingDisplayName : authResult.displayName
         
-        return try await performConvexAuthAndSetup(email: authResult.email, name: displayName)
+        // Verification usually implies signup or explicit login intent. Allow creation if needed (e.g. verified signup).
+        return try await performConvexAuthAndSetup(email: authResult.email, name: displayName, allowCreation: true)
     }
     
     /// Shared helper to authenticate Convex, wait for server, and setup session
-    private func performConvexAuthAndSetup(email: String, name: String?) async throws -> UserAccount {
+    private func performConvexAuthAndSetup(email: String, name: String?, allowCreation: Bool) async throws -> UserAccount {
         #if !PAYBACK_CI_NO_CONVEX
         // 1. Authenticate Convex
         await Dependencies.authenticateConvex()
@@ -356,7 +465,11 @@ final class AppStore: ObservableObject {
         if let existing = try await accountService.lookupAccount(byEmail: email) {
             account = existing
         } else {
-            account = try await accountService.createAccount(email: email, displayName: fallbackName)
+            if allowCreation {
+                account = try await accountService.createAccount(email: email, displayName: fallbackName)
+            } else {
+                throw PayBackError.accountNotFound(email: email)
+            }
         }
         
         // 4. Update Local Session
@@ -380,6 +493,7 @@ final class AppStore: ObservableObject {
         }
         
         await reconcileLinkState()
+        await startSessionMonitoring()
         
         return updatedAccount
     }
@@ -387,7 +501,7 @@ final class AppStore: ObservableObject {
     func completeAuthentication(id: String, email: String, name: String?) {
         Task {
             do {
-                _ = try await performConvexAuthAndSetup(email: email, name: name)
+                _ = try await performConvexAuthAndSetup(email: email, name: name, allowCreation: true)
             } catch {
                 print("Failed to complete authentication: \(error)")
             }
@@ -435,6 +549,7 @@ final class AppStore: ObservableObject {
                 }
                 await loadRemoteData()
                 await reconcileLinkState()
+        await startSessionMonitoring()
                 
         */
     }
@@ -464,7 +579,13 @@ final class AppStore: ObservableObject {
         if let linkedId = account.linkedMemberId {
             await MainActor.run {
                 if self.currentUser.id != linkedId {
-                    self.currentUser = GroupMember(id: linkedId, name: self.currentUser.name)
+                    self.currentUser = GroupMember(
+                        id: linkedId,
+                        name: self.currentUser.name,
+                        profileImageUrl: self.currentUser.profileImageUrl,
+                        profileColorHex: self.currentUser.profileColorHex,
+                        isCurrentUser: true
+                    )
                 }
             }
             return account
@@ -483,7 +604,13 @@ final class AppStore: ObservableObject {
             #endif
         }
         await MainActor.run {
-            self.currentUser = GroupMember(id: memberId, name: self.currentUser.name)
+            self.currentUser = GroupMember(
+                id: memberId,
+                name: self.currentUser.name,
+                profileImageUrl: self.currentUser.profileImageUrl,
+                profileColorHex: self.currentUser.profileColorHex,
+                isCurrentUser: true
+            )
         }
         return updatedAccount
     }
@@ -539,10 +666,12 @@ final class AppStore: ObservableObject {
         groups = []
         expenses = []
         friends = []
+        pendingExpenseUpsertIds.removeAll()
+        pendingExpenseDeleteIds.removeAll()
         
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
         // Without this, the next user logging in could inherit this user's member ID
-        currentUser = GroupMember(id: UUID(), name: "You")
+        currentUser = GroupMember(id: UUID(), name: "You", isCurrentUser: true)
         
         persistence.clear()
         
@@ -576,6 +705,8 @@ final class AppStore: ObservableObject {
         expenses = []
         groups = []
         friends = []
+        pendingExpenseUpsertIds.removeAll()
+        pendingExpenseDeleteIds.removeAll()
         
         // Persist locally
         persistCurrentState()
@@ -616,7 +747,13 @@ final class AppStore: ObservableObject {
 
     func applyDisplayName(_ name: String) {
         guard currentUser.name != name else { return }
-        currentUser = GroupMember(id: currentUser.id, name: name, profileImageUrl: currentUser.profileImageUrl, profileColorHex: currentUser.profileColorHex)
+        currentUser = GroupMember(
+            id: currentUser.id,
+            name: name,
+            profileImageUrl: currentUser.profileImageUrl,
+            profileColorHex: currentUser.profileColorHex,
+            isCurrentUser: true
+        )
         groups = groups.map { group in
             var group = group
             group.members = group.members.map { member in
@@ -725,8 +862,10 @@ final class AppStore: ObservableObject {
         groups.append(normalizedGroup)
         persistCurrentState()
 
-        Task { [group = normalizedGroup] in
-            try? await groupCloudService.upsertGroup(group)
+        if !isImporting {
+            Task { [group = normalizedGroup] in
+                try? await groupCloudService.upsertGroup(group)
+            }
         }
 
         scheduleFriendSync()
@@ -751,6 +890,19 @@ final class AppStore: ObservableObject {
             }
         }
         scheduleFriendSync()
+    }
+
+    func leaveGroup(_ groupId: UUID) {
+        guard let index = groups.firstIndex(where: { $0.id == groupId }) else { return }
+
+        groups.remove(at: index)
+        expenses.removeAll { $0.groupId == groupId }
+
+        persistCurrentState()
+
+        Task {
+            try? await groupCloudService.leaveGroup(groupId)
+        }
     }
 
     /// Removes a member from a group and deletes all expenses involving that member from that group only.
@@ -859,105 +1011,106 @@ final class AppStore: ObservableObject {
     /// 3. Deleting all expenses involving them in each group
     /// 4. Auto-deleting any groups that become single-member (only current user)
     func deleteFriend(_ friend: GroupMember) {
-        print("🔵 deleteFriend called for: \(friend.name) (\(friend.id))")
-        
-        let friendIdToRemove = friend.id
-        
-        // Step 1: Immediately remove from friends list for instant UI update
-        friends.removeAll { $0.memberId == friendIdToRemove }
-        print("🟢 Removed friend from friends list. Remaining: \(friends.count)")
-        
-        // Step 2: Find ALL groups containing this friend
-        let groupsWithFriend = groups.filter { group in
-            group.members.contains(where: { $0.id == friendIdToRemove })
+        Task {
+            await deleteUnlinkedFriend(memberId: friend.id)
         }
-        print("🟢 Found \(groupsWithFriend.count) groups containing this friend")
+    }
+    
+    func deleteLinkedFriend(memberId: UUID) async {
+        print("🔵 deleteLinkedFriend called for: \(memberId)")
         
-        var groupsToDelete: [UUID] = []
-        var groupsToUpdate: [SpendingGroup] = []
-        var allExpensesToDelete: [Expense] = []
-        
-        for group in groupsWithFriend {
-            // Find and collect all expenses involving this friend in this group
-            let expensesInGroup = expenses.filter { expense in
-                expense.groupId == group.id && (
-                    expense.paidByMemberId == friendIdToRemove ||
-                    expense.involvedMemberIds.contains(friendIdToRemove)
-                )
-            }
-            allExpensesToDelete.append(contentsOf: expensesInGroup)
+        await MainActor.run {
+            friends.removeAll { $0.memberId == memberId }
             
-            // Remove friend from the group's member list
-            var updatedGroup = group
-            updatedGroup.members.removeAll { $0.id == friendIdToRemove }
-            
-            // Check if group should be deleted (only current user left OR empty)
-            let remainingNonCurrentUserMembers = updatedGroup.members.filter { !isCurrentUser($0) }
-            if remainingNonCurrentUserMembers.isEmpty {
-                // Group only has current user - mark for deletion
-                groupsToDelete.append(group.id)
-                // Also delete ALL expenses in this group (not just ones involving the friend)
-                let allGroupExpenses = expenses.filter { $0.groupId == group.id }
-                allExpensesToDelete.append(contentsOf: allGroupExpenses)
-                print("🟢 Group '\(group.name)' will be deleted (only current user left)")
-            } else {
-                // Group still has other members - just update it
-                groupsToUpdate.append(updatedGroup)
-                print("🟢 Group '\(group.name)' will be updated (removed friend, \(updatedGroup.members.count) members remain)")
-            }
-        }
-        
-        // Step 3: Apply local changes
-        // Remove expenses
-        let expenseIdsToDelete = Set(allExpensesToDelete.map(\.id))
-        expenses.removeAll { expenseIdsToDelete.contains($0.id) }
-        
-        // Remove groups marked for deletion
-        let groupIdsToDelete = Set(groupsToDelete)
-        groups.removeAll { groupIdsToDelete.contains($0.id) }
-        
-        // Update groups that still exist
-        for updatedGroup in groupsToUpdate {
-            if let idx = groups.firstIndex(where: { $0.id == updatedGroup.id }) {
-                groups[idx] = updatedGroup
-            }
-        }
-        
-        persistCurrentState()
-        print("✅ Local state updated: deleted \(groupsToDelete.count) groups, updated \(groupsToUpdate.count) groups, removed \(expenseIdsToDelete.count) expenses")
-        
-        // Step 4: Sync to cloud
-        Task { [groupsToDelete, groupsToUpdate, allExpensesToDelete] in
-            // Delete groups from cloud
-            if !groupsToDelete.isEmpty {
-                try? await groupCloudService.deleteGroups(groupsToDelete)
+            if let directGroup = groups.first(where: { 
+                ($0.isDirect ?? false) && $0.members.contains(where: { $0.id == memberId }) 
+            }) {
+                print("🟢 Deleting direct group: \(directGroup.id)")
+                expenses.removeAll { $0.groupId == directGroup.id }
+                groups.removeAll { $0.id == directGroup.id }
             }
             
-            // Update remaining groups in cloud
-            for group in groupsToUpdate {
-                try? await groupCloudService.upsertGroup(group)
-            }
-            
-            // Delete expenses from cloud
-            for expense in allExpensesToDelete {
-                try? await expenseCloudService.deleteExpense(expense.id)
-            }
+            persistCurrentState()
         }
         
-        // Step 5: Sync the cleaned friends list to cloud
-        if let session = session {
-            let cleanedFriends = friends
-            friendSyncTask?.cancel()
-            friendSyncTask = Task { [cleanedFriends] in
-                do {
-                    try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: cleanedFriends)
-                    print("✅ Friends synced to cloud after deletion")
-                } catch {
-                    #if DEBUG
-                    print("⚠️ Failed to sync friends after deletion: \(error.localizedDescription)")
-                    #endif
+        do {
+            try await accountService.deleteLinkedFriend(memberId: memberId)
+            print("✅ Backend deleteLinkedFriend success")
+            scheduleFriendSync()
+        } catch {
+            print("🔴 Backend deleteLinkedFriend failed: \(error)")
+        }
+    }
+    
+    func deleteUnlinkedFriend(memberId: UUID) async {
+        print("🔵 deleteUnlinkedFriend called for: \(memberId)")
+        
+        await MainActor.run {
+            friends.removeAll { $0.memberId == memberId }
+            
+            let groupsWithFriend = groups.filter { group in
+                group.members.contains(where: { $0.id == memberId })
+            }
+            
+            var groupsToDelete: [UUID] = []
+            
+            for group in groupsWithFriend {
+                expenses.removeAll { expense in
+                    expense.groupId == group.id && (
+                        expense.paidByMemberId == memberId ||
+                        expense.involvedMemberIds.contains(memberId)
+                    )
+                }
+                
+                if let idx = groups.firstIndex(where: { $0.id == group.id }) {
+                    var updatedGroup = groups[idx]
+                    updatedGroup.members.removeAll { $0.id == memberId }
+                    
+                    let remaining = updatedGroup.members.filter { !isCurrentUser($0) }
+                    if remaining.isEmpty {
+                        groupsToDelete.append(group.id)
+                        expenses.removeAll { $0.groupId == group.id }
+                    } else {
+                        groups[idx] = updatedGroup
+                    }
                 }
             }
+            
+            groups.removeAll { groupsToDelete.contains($0.id) }
+            
+            persistCurrentState()
+        }
+        
+        do {
+            try await accountService.deleteUnlinkedFriend(memberId: memberId)
+            print("✅ Backend deleteUnlinkedFriend success")
+            scheduleFriendSync()
+        } catch {
+            print("🔴 Backend deleteUnlinkedFriend failed: \(error)")
+        }
+    }
+    
+    func selfDeleteAccount() async {
+        print("🔵 selfDeleteAccount called")
+        do {
+            try await accountService.selfDeleteAccount()
+            print("✅ Backend selfDeleteAccount success")
+            await signOut()
+        } catch {
+            print("🔴 Backend selfDeleteAccount failed: \(error)")
+            // We might still want to sign out locally even if backend fails, 
+            // but for safety/consistency let's alert user (handled in View)
+            // or just force signout if it's a "user not found" error?
+            // For now, assume if it fails, we don't sign out so they can try again.
+        }
+    }
+    
+    func directGroup(with memberId: UUID) -> SpendingGroup? {
+        groups.first { group in
+            (group.isDirect ?? false) &&
+            group.members.count == 2 &&
+            group.members.contains { $0.id == memberId } &&
+            group.members.contains { $0.id == currentUser.id }
         }
     }
     
@@ -966,27 +1119,20 @@ final class AppStore: ObservableObject {
     // MARK: - Friend Management
     
     func addImportedFriend(_ friend: AccountFriend) {
-        // Check if already exists
-        if !friends.contains(where: { $0.memberId == friend.memberId }) {
-            friends.append(friend)
-            persistCurrentState()
-            
-            // Sync to cloud
-            guard let session else { return }
-            friendSyncTask?.cancel()
-            friendSyncTask = Task { [friends] in
-                do {
-                    try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: friends)
-                } catch {
-                    #if DEBUG
-                    print("⚠️ Failed to sync friends after import: \(error.localizedDescription)")
-                    #endif
-                }
-            }
+        guard !friends.contains(where: { $0.memberId == friend.memberId }) else { return }
+        
+        friends.append(friend)
+        persistCurrentState()
+        
+        if !isImporting {
+            Task { scheduleFriendSync() }
         }
     }
     
-    /// Syncs all friends to Convex (used after bulk import)
+    func resolveLinkedAccountsForImport(_ memberIds: [UUID]) async throws -> [UUID: (String, String)] {
+        try await accountService.resolveLinkedAccountsForMemberIds(memberIds)
+    }
+    
     func syncFriendsToCloud() async {
         guard let session else { return }
         friendSyncTask?.cancel()
@@ -1001,14 +1147,172 @@ final class AppStore: ObservableObject {
             #endif
         }
     }
+    
+    func syncGroupsToCloud() async {
+        guard session != nil else { return }
+
+        var failures = 0
+        for group in groups {
+            do {
+                try await groupCloudService.upsertGroup(group)
+            } catch {
+                failures += 1
+                #if DEBUG
+                print("⚠️ Failed to sync group \(group.id) to cloud: \(error.localizedDescription)")
+                #endif
+            }
+        }
+
+        #if DEBUG
+        if failures == 0 {
+            print("✅ Synced \(groups.count) groups to Convex after import")
+        } else {
+            print("⚠️ Synced \(groups.count - failures)/\(groups.count) groups to Convex after import")
+        }
+        #endif
+    }
+    
+    func syncExpensesToCloud() async {
+        guard session != nil else { return }
+
+        var successCount = 0
+        var failedExpenses: [(Expense, Error)] = []
+        
+        for expense in expenses {
+            let participants = makeParticipants(for: expense)
+            do {
+                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                successCount += 1
+            } catch {
+                failedExpenses.append((expense, error))
+            }
+        }
+
+        if !failedExpenses.isEmpty {
+            Task {
+                await retryFailedExpenses(failedExpenses)
+            }
+        }
+
+        #if DEBUG
+        if failedExpenses.isEmpty {
+            print("✅ Synced \(expenses.count) expenses to Convex after import")
+        } else {
+            print("⚠️ Synced \(successCount)/\(expenses.count) expenses to Convex after import")
+        }
+        #endif
+    }
+    
+    private func retryFailedExpenses(_ failedExpenses: [(Expense, Error)], attempt: Int = 1) async {
+        guard attempt <= 5 else {
+            #if DEBUG
+            print("⚠️ Max retry attempts reached. \(failedExpenses.count) expenses failed to sync.")
+            #endif
+            return
+        }
+        
+        let delay = Double(attempt) * 10.0
+        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        
+        var stillFailed: [(Expense, Error)] = []
+        
+        for (expense, _) in failedExpenses {
+            let participants = makeParticipants(for: expense)
+            do {
+                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                #if DEBUG
+                print("✅ Retried expense \(expense.id) successfully on attempt \(attempt)")
+                #endif
+            } catch {
+                stillFailed.append((expense, error))
+            }
+        }
+        
+        if !stillFailed.isEmpty {
+            await retryFailedExpenses(stillFailed, attempt: attempt + 1)
+        }
+    }
+
+    /// Merge Convex realtime expense snapshots with in-flight local writes.
+    /// This prevents stale snapshots from clobbering optimistic local saves.
+    private func mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: [Expense]) -> [Expense] {
+        var merged = remoteExpenses
+        var remoteIndexById: [UUID: Int] = [:]
+        for (index, expense) in remoteExpenses.enumerated() {
+            remoteIndexById[expense.id] = index
+        }
+
+        // Keep local optimistic writes until realtime snapshot reflects the same payload.
+        for localExpense in expenses where pendingExpenseUpsertIds.contains(localExpense.id) {
+            if let remoteIndex = remoteIndexById[localExpense.id] {
+                if merged[remoteIndex] == localExpense {
+                    pendingExpenseUpsertIds.remove(localExpense.id)
+                } else {
+                    merged[remoteIndex] = localExpense
+                }
+            } else {
+                merged.append(localExpense)
+            }
+        }
+
+        // Keep local deletes authoritative until realtime snapshot confirms deletion.
+        for deletedId in Array(pendingExpenseDeleteIds) {
+            if remoteIndexById[deletedId] == nil {
+                pendingExpenseDeleteIds.remove(deletedId)
+            }
+            merged.removeAll { $0.id == deletedId }
+        }
+
+        // Safety dedupe for mixed local/remote merges.
+        var seenIds = Set<UUID>()
+        return merged.filter { seenIds.insert($0.id).inserted }
+    }
+
+    /// Sends expense upsert to Convex and marks it pending for realtime reconciliation.
+    private func queueExpenseUpsert(_ expense: Expense, participants: [ExpenseParticipant]) {
+        guard session != nil, !isImporting else { return }
+        pendingExpenseDeleteIds.remove(expense.id)
+        pendingExpenseUpsertIds.insert(expense.id)
+
+        Task { [retryPolicy, expenseCloudService, expense, participants] in
+            do {
+                try await retryPolicy.execute {
+                    try await expenseCloudService.upsertExpense(expense, participants: participants)
+                }
+            } catch {
+                #if DEBUG
+                print("⚠️ Failed to sync expense upsert \(expense.id): \(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
+    /// Sends expense delete to Convex and marks it pending for realtime reconciliation.
+    private func queueExpenseDelete(_ expenseId: UUID) {
+        guard session != nil, !isImporting else { return }
+        pendingExpenseUpsertIds.remove(expenseId)
+        pendingExpenseDeleteIds.insert(expenseId)
+
+        Task { [retryPolicy, expenseCloudService, expenseId] in
+            do {
+                try await retryPolicy.execute {
+                    try await expenseCloudService.deleteExpense(expenseId)
+                }
+            } catch {
+                #if DEBUG
+                print("⚠️ Failed to sync expense delete \(expenseId): \(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
 
     // MARK: - Expenses
     func addExpense(_ expense: Expense) {
         expenses.append(expense)
         persistCurrentState()
-        let participants = makeParticipants(for: expense)
-        Task { [expense, participants] in
-            try? await expenseCloudService.upsertExpense(expense, participants: participants)
+        if !isImporting {
+            let participants = makeParticipants(for: expense)
+            queueExpenseUpsert(expense, participants: participants)
         }
     }
 
@@ -1017,9 +1321,7 @@ final class AppStore: ObservableObject {
         expenses[idx] = expense
         persistCurrentState()
         let participants = makeParticipants(for: expense)
-        Task { [expense, participants] in
-            try? await expenseCloudService.upsertExpense(expense, participants: participants)
-        }
+        queueExpenseUpsert(expense, participants: participants)
     }
 
     func deleteExpenses(groupId: UUID, at offsets: IndexSet) {
@@ -1031,19 +1333,15 @@ final class AppStore: ObservableObject {
         let ids = validOffsets.map { groupExpenses[$0].id }
         expenses.removeAll { ids.contains($0.id) }
         persistCurrentState()
-        Task {
-            for id in ids {
-                try? await expenseCloudService.deleteExpense(id)
-            }
+        for id in ids {
+            queueExpenseDelete(id)
         }
     }
 
     func deleteExpense(_ expense: Expense) {
         expenses.removeAll { $0.id == expense.id }
         persistCurrentState()
-        Task {
-            try? await expenseCloudService.deleteExpense(expense.id)
-        }
+        queueExpenseDelete(expense.id)
     }
     
     // MARK: - Settlement Methods
@@ -1061,9 +1359,7 @@ final class AppStore: ObservableObject {
         expenses[idx] = updatedExpense
         persistCurrentState()
         let participants = makeParticipants(for: updatedExpense)
-        Task { [updatedExpense, participants] in
-            try? await expenseCloudService.upsertExpense(updatedExpense, participants: participants)
-        }
+        queueExpenseUpsert(updatedExpense, participants: participants)
     }
     
     func settleExpenseForMember(_ expense: Expense, memberId: UUID) {
@@ -1102,25 +1398,45 @@ final class AppStore: ObservableObject {
         // Force immediate persistence
         persistCurrentState()
         let participants = makeParticipants(for: updatedExpense)
-        Task { [updatedExpense, participants] in
-            try? await expenseCloudService.upsertExpense(updatedExpense, participants: participants)
-        }
+        queueExpenseUpsert(updatedExpense, participants: participants)
     }
     
     // MARK: - Balance Calculations
     
+    /// Checks if two member IDs represent the same person (via aliasing or direct match)
+    func areSamePerson(_ id1: UUID, _ id2: UUID) -> Bool {
+        if id1 == id2 { return true }
+        
+        // Resolve both to master ID if possible
+        let master1 = memberAliasMap[id1] ?? id1
+        let master2 = memberAliasMap[id2] ?? id2
+        
+        return master1 == master2
+    }
+
     /// Returns all member IDs that represent the current user (their own ID + linked member ID if any)
     private var currentUserMemberIds: Set<UUID> {
         var ids: Set<UUID> = [currentUser.id]
-        if let linkedId = session?.account.linkedMemberId {
-            ids.insert(linkedId)
+        if let account = session?.account {
+            if let linkedId = account.linkedMemberId {
+                ids.insert(linkedId)
+            }
+            // Also include any equivalent member IDs (e.g. from local imports/remapping)
+            ids.formUnion(account.equivalentMemberIds)
         }
         return ids
     }
     
-    /// Checks if a member ID represents the current user (either their own ID or their linked member ID)
-    private func isCurrentUserMemberId(_ memberId: UUID) -> Bool {
+    /// Checks if a member ID represents the current user (via primary ID, linked ID, or equivalent IDs)
+    func isMe(_ memberId: UUID) -> Bool {
         currentUserMemberIds.contains(memberId)
+    }
+
+    /// Checks if a member ID resolves to the same person as a given friend
+    func isFriendMember(_ memberId: UUID, friendId: UUID, accountFriendMemberId: UUID? = nil) -> Bool {
+        if areSamePerson(memberId, friendId) { return true }
+        if let accountFriendMemberId, areSamePerson(memberId, accountFriendMemberId) { return true }
+        return false
     }
     
     public func overallNetBalance() -> Double {
@@ -1139,14 +1455,14 @@ final class AppStore: ObservableObject {
         
         for expense in groupExpenses {
             // Check if current user paid (using ANY of their member IDs)
-            if isCurrentUserMemberId(expense.paidByMemberId) {
+            if isMe(expense.paidByMemberId) {
                 // User paid, add up what others owe (unsettled)
-                for split in expense.splits where !isCurrentUserMemberId(split.memberId) && !split.isSettled {
+                for split in expense.splits where !isMe(split.memberId) && !split.isSettled {
                     paidByUser += split.amount
                 }
             } else {
                 // Someone else paid, check if user owes (using ANY of their member IDs)
-                if let split = expense.splits.first(where: { isCurrentUserMemberId($0.memberId) }), !split.isSettled {
+                if let split = expense.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
                     owes += split.amount
                 }
             }
@@ -1158,16 +1474,21 @@ final class AppStore: ObservableObject {
     // MARK: - Friend Sync
 
     private func scheduleFriendSync() {
-        guard let session else { return }
-        let mergedFriends = mergeFriends(remote: friends, derived: derivedFriendsFromGroups())
-        friends = mergedFriends
+        guard let session, !isImporting else { return }
+        processFriendsUpdate(friends)
         purgeCurrentUserFriendRecords()
         pruneSelfOnlyDirectGroups()
         normalizeDirectGroupFlags()
+        let friendsToSync = self.friends
         friendSyncTask?.cancel()
         friendSyncTask = Task {
             do {
-                try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: mergedFriends)
+                // Sync only the canonical, deduped friend set. Writing merged pre-dedupe
+                // friends can reintroduce duplicate rows in Convex.
+                try await accountService.syncFriends(
+                    accountEmail: session.account.email.lowercased(),
+                    friends: friendsToSync
+                )
             } catch {
                 #if DEBUG
                 print("⚠️ Failed to sync friends: \(error.localizedDescription)")
@@ -1176,7 +1497,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func loadRemoteData() async {
+    func loadRemoteData() async {
         remoteLoadTask?.cancel()
         
         guard let session = self.session else { 
@@ -1210,16 +1531,16 @@ final class AppStore: ObservableObject {
                 self.expenses = normalization.expenses
                 self.persistCurrentState()
                 self.logFetchedData(groups: normalization.groups, expenses: normalization.expenses)
-                let merged = self.mergeFriends(remote: remoteFriends, derived: self.derivedFriendsFromGroups())
-                self.friends = merged
+                self.processFriendsUpdate(remoteFriends)
                 self.normalizeDirectGroupFlags()
                 self.purgeCurrentUserFriendRecords()
                 self.pruneSelfOnlyDirectGroups()
-                return merged
+                return self.friends
             }
             
             // Perform state reconciliation to verify link status
             await reconcileLinkState()
+        await startSessionMonitoring()
 
             // Push dirty records back to cloud
             Task { [weak self] in
@@ -1294,7 +1615,15 @@ final class AppStore: ObservableObject {
             if member.id == currentUser.id {
                 containsCurrent = true
                 if seenIds.insert(currentUser.id).inserted {
-                    newMembers.append(GroupMember(id: currentUser.id, name: currentUser.name))
+                    newMembers.append(
+                        GroupMember(
+                            id: currentUser.id,
+                            name: currentUser.name,
+                            profileImageUrl: currentUser.profileImageUrl,
+                            profileColorHex: currentUser.profileColorHex,
+                            isCurrentUser: true
+                        )
+                    )
                 }
                 continue
             }
@@ -1313,7 +1642,15 @@ final class AppStore: ObservableObject {
         }
 
         if containsAlias && !containsCurrent {
-            newMembers.append(GroupMember(id: currentUser.id, name: currentUser.name))
+            newMembers.append(
+                GroupMember(
+                    id: currentUser.id,
+                    name: currentUser.name,
+                    profileImageUrl: currentUser.profileImageUrl,
+                    profileColorHex: currentUser.profileColorHex,
+                    isCurrentUser: true
+                )
+            )
             containsCurrent = true
             seenIds.insert(currentUser.id)
         }
@@ -1489,12 +1826,12 @@ final class AppStore: ObservableObject {
     }
 
     private func synthesizedGroupName(for members: [GroupMember], isDirect: Bool, expenses: [Expense]) -> String {
-        // Use isCurrentUserMemberId to correctly identify current user including linked member ID
-        if isDirect, let other = members.first(where: { !isCurrentUserMemberId($0.id) }) {
+        // Use isMe to correctly identify current user including linked member ID
+        if isDirect, let other = members.first(where: { !isMe($0.id) }) {
             return other.name
         }
 
-        let otherMembers = members.filter { !isCurrentUserMemberId($0.id) }
+        let otherMembers = members.filter { !isMe($0.id) }
         if !otherMembers.isEmpty {
             if otherMembers.count == 1 {
                 return otherMembers[0].name
@@ -1530,10 +1867,38 @@ final class AppStore: ObservableObject {
         return tokensMatchCurrentUser(tokens)
     }
 
+    var confirmedFriendMembers: [GroupMember] {
+        let overrides = friendNameOverrides()
+        return friends
+            .filter { !isCurrentUserFriend($0) }
+            .map { friend in
+                let name = sanitizedFriendName(friend, overrides: overrides)
+                var member = GroupMember(
+                    id: friend.memberId,
+                    name: name,
+                    accountFriendMemberId: friend.memberId
+                )
+                member.profileColorHex = friend.profileColorHex
+                member.profileImageUrl = friend.profileImageUrl
+                return member
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     var friendMembers: [GroupMember] {
         let overrides = friendNameOverrides()
-        var seen: Set<UUID> = []
+        var seenIdentities: [UUID] = []
+        var seenGroupMemberNames: Set<String> = []
         var results: [GroupMember] = []
+
+        func hasSeenIdentity(_ memberId: UUID) -> Bool {
+            seenIdentities.contains { areSamePerson($0, memberId) }
+        }
+
+        func markSeenIdentity(_ memberId: UUID) {
+            guard !hasSeenIdentity(memberId) else { return }
+            seenIdentities.append(memberId)
+        }
         
         // Build lookups from the Convex-synced friends array for metadata
         // Primary key: memberId (most reliable for linked friends)
@@ -1553,7 +1918,8 @@ final class AppStore: ObservableObject {
         // First, derive friends from actual group members (which have correct UUIDs matching expenses)
         for group in groups {
             for member in group.members where !isCurrentUser(member) {
-                guard seen.insert(member.id).inserted else { continue }
+                guard !hasSeenIdentity(member.id) else { continue }
+                markSeenIdentity(member.id)
                 
                 // Look up AccountFriend metadata - prioritize memberId, fall back to name or nickname
                 let memberNameKey = member.name.lowercased().trimmingCharacters(in: .whitespaces)
@@ -1564,12 +1930,32 @@ final class AppStore: ObservableObject {
                 if let friendData = friendData {
                     // Enrich with AccountFriend data (profile color, linking status, etc.)
                     let name = sanitizedFriendName(friendData, overrides: overrides)
-                    var enrichedMember = GroupMember(id: member.id, name: name)
+                    var enrichedMember = GroupMember(
+                        id: member.id,
+                        name: name,
+                        accountFriendMemberId: friendData.memberId
+                    )
                     enrichedMember.profileColorHex = friendData.profileColorHex ?? member.profileColorHex
                     results.append(enrichedMember)
+
+                    // Track group member names so we can avoid showing duplicate friend records
+                    // that only differ by memberId (common after imports).
+                    let originalKey = normalizedName(member.name)
+                    if !originalKey.isEmpty {
+                        seenGroupMemberNames.insert(originalKey)
+                    }
+                    let enrichedKey = normalizedName(name)
+                    if !enrichedKey.isEmpty {
+                        seenGroupMemberNames.insert(enrichedKey)
+                    }
                 } else {
                     // No metadata found - use group member as-is with its existing profile color
                     results.append(member)
+
+                    let key = normalizedName(member.name)
+                    if !key.isEmpty {
+                        seenGroupMemberNames.insert(key)
+                    }
                 }
             }
         }
@@ -1577,10 +1963,30 @@ final class AppStore: ObservableObject {
         // Second, include friends from the friends array that don't exist in any group
         // (e.g., friends synced from Convex that haven't been added to a group yet)
         for friend in friends where !isCurrentUserFriend(friend) {
-            guard seen.insert(friend.memberId).inserted else { continue }
-            
+            guard !hasSeenIdentity(friend.memberId) else { continue }
+            markSeenIdentity(friend.memberId)
+
+            // If a friend record has the same name as a group member but a different memberId,
+            // prefer the group member ID (it matches groups/expenses) to avoid duplicate entries.
+            if friend.hasLinkedAccount != true {
+                let friendNameKey = normalizedName(friend.name)
+                if !friendNameKey.isEmpty && seenGroupMemberNames.contains(friendNameKey) {
+                    continue
+                }
+                if let nickname = friend.nickname {
+                    let nickKey = normalizedName(nickname)
+                    if !nickKey.isEmpty && seenGroupMemberNames.contains(nickKey) {
+                        continue
+                    }
+                }
+            }
+
             let name = sanitizedFriendName(friend, overrides: overrides)
-            var member = GroupMember(id: friend.memberId, name: name)
+            var member = GroupMember(
+                id: friend.memberId,
+                name: name,
+                accountFriendMemberId: friend.memberId
+            )
             member.profileColorHex = friend.profileColorHex
             results.append(member)
         }
@@ -1656,7 +2062,7 @@ final class AppStore: ObservableObject {
         // For direct groups, show the other person's name
         if isDirectGroup(group) {
             // Find the other member (not the current user)
-            if let otherMember = group.members.first(where: { !isCurrentUserMemberId($0.id) }) {
+            if let otherMember = group.members.first(where: { !isMe($0.id) }) {
                 // Check if we have a nickname preference for this friend
                 if let friend = friends.first(where: { $0.id == otherMember.id }) {
                     // If friend has nickname and user prefers nicknames, use nickname
@@ -1872,8 +2278,8 @@ final class AppStore: ObservableObject {
         }
         
         // If friend is NOT linked, but has same name as user... 
-        // We should be careful. "Angan" might be "Angan" (me) or "Angan" (other).
-        // But if I Added a friend named "Angan", it's likely me if I am "Angan".
+        // We should be careful: a friend may have the same name as the current user.
+        // If the friend name equals the current user's display name, it is likely a self-reference.
         if !friend.hasLinkedAccount {
              return friendName == normalizedName(account.displayName)
         }
@@ -1903,84 +2309,35 @@ final class AppStore: ObservableObject {
                 name = "Participant"
             }
             
+            let linkedMetadata = linkedAccountMetadata(for: memberId)
+
             return ExpenseParticipant(
                 memberId: memberId,
                 name: name,
-                linkedAccountId: linkedAccountId(for: memberId),
-                linkedAccountEmail: linkedEmail(for: memberId)
+                linkedAccountId: linkedMetadata.id,
+                linkedAccountEmail: linkedMetadata.email
             )
         }
     }
 
-    private func derivedFriendsFromGroups() -> [AccountFriend] {
-        var seen: Set<UUID> = []
-        var results: [AccountFriend] = []
-
-        for group in groups {
-            for member in group.members where !isCurrentUser(member) {
-                if seen.insert(member.id).inserted {
-                    results.append(AccountFriend(
-                        memberId: member.id,
-                        name: member.name,
-                        nickname: nil,
-                        hasLinkedAccount: false,
-                        linkedAccountId: nil,
-                        linkedAccountEmail: nil
-                    ))
-                }
-            }
+    private func linkedAccountMetadata(for memberId: UUID) -> (id: String?, email: String?) {
+        if let account = session?.account, isMe(memberId) {
+            return (account.id, normalizedEmail(account.email))
         }
 
-        return results
-    }
-
-    private func mergeFriends(remote: [AccountFriend], derived: [AccountFriend]) -> [AccountFriend] {
-        var combined: [UUID: AccountFriend] = [:]
-
-        for friend in derived {
-            guard !isCurrentUserFriend(friend) else { continue }
-            combined[friend.memberId] = friend
+        guard let friend = friends.first(where: { areSamePerson($0.memberId, memberId) }) else {
+            return (nil, nil)
         }
 
-        for friend in remote {
-            guard !isCurrentUserFriend(friend) else { continue }
-            if var existing = combined[friend.memberId] {
-                existing.hasLinkedAccount = friend.hasLinkedAccount
-                existing.linkedAccountEmail = friend.linkedAccountEmail
-                existing.linkedAccountId = friend.linkedAccountId
-                combined[friend.memberId] = existing
-            } else if friend.hasLinkedAccount {
-                combined[friend.memberId] = friend
-            }
-        }
+        let linkedId = friend.linkedAccountId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let linkedEmail = friend.linkedAccountEmail?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
 
-        return combined.values.sorted { lhs, rhs in
-            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-        }
-    }
-
-    private func linkedAccountId(for memberId: UUID) -> String? {
-        if let account = session?.account {
-            if memberId == currentUser.id {
-                return account.id
-            }
-            if account.linkedMemberId == memberId {
-                return account.id
-            }
-        }
-        return nil
-    }
-
-    private func linkedEmail(for memberId: UUID) -> String? {
-        if let account = session?.account {
-            if memberId == currentUser.id {
-                return account.email.lowercased()
-            }
-            if account.linkedMemberId == memberId {
-                return account.email.lowercased()
-            }
-        }
-        return nil
+        return (
+            linkedId?.isEmpty == true ? nil : linkedId,
+            linkedEmail?.isEmpty == true ? nil : linkedEmail
+        )
     }
     
     func settleExpenseForCurrentUser(_ expense: Expense) {
@@ -2105,6 +2462,8 @@ final class AppStore: ObservableObject {
         groups.removeAll()
         expenses.removeAll()
         friends.removeAll()
+        pendingExpenseUpsertIds.removeAll()
+        pendingExpenseDeleteIds.removeAll()
         persistCurrentState()
         Task {
             if !groupIds.isEmpty {
@@ -2180,7 +2539,7 @@ final class AppStore: ObservableObject {
         }
         
         // Also check if the target member is the current user's linked member ID
-        if let linkedMemberId = session.account.linkedMemberId, friend.id == linkedMemberId {
+        if let linkedMemberId = session.account.linkedMemberId, areSamePerson(friend.id, linkedMemberId) {
             throw PayBackError.linkSelfNotAllowed
         }
         
@@ -2210,7 +2569,7 @@ final class AppStore: ObservableObject {
         // Check for existing pending request for this member
         let hasPendingRequest = await MainActor.run {
             outgoingLinkRequests.contains { request in
-                request.targetMemberId == friend.id && request.status == .pending
+                areSamePerson(request.targetMemberId, friend.id) && request.status == .pending
             }
         }
         
@@ -2296,13 +2655,10 @@ final class AppStore: ObservableObject {
         let result = try await retryPolicy.execute {
             try await self.linkRequestService.acceptLinkRequest(request.id)
         }
-        
-        // Link the account (includes its own retry logic)
-        try await linkAccount(
-            memberId: result.linkedMemberId,
-            accountId: result.linkedAccountId,
-            accountEmail: result.linkedAccountEmail
-        )
+
+        await applyLinkAcceptResult(result)
+        await reconcileAfterNetworkRecovery()
+        await loadRemoteData()
         
         // Remove from incoming requests
         await MainActor.run {
@@ -2412,25 +2768,34 @@ final class AppStore: ObservableObject {
         let result = try await retryPolicy.execute {
             try await self.inviteLinkService.claimInviteToken(tokenId)
         }
-        
-        // Link the account (includes its own retry logic)
-        try await linkAccount(
-            memberId: result.linkedMemberId,
-            accountId: result.linkedAccountId,
-            accountEmail: result.linkedAccountEmail
-        )
+
+        await applyLinkAcceptResult(result)
+        await reconcileAfterNetworkRecovery()
         
         // 🚀 CRITICAL FIX: Fetch new data (groups/expenses) that we now have access to!
         // The cloud services have been updated to rely on RLS, so fetching now will return
         // the shared groups/expenses associated with this new link.
         await loadRemoteData()
     }
+
+    @MainActor
+    private func applyLinkAcceptResult(_ result: LinkAcceptResult) {
+        guard let currentSession = self.session else { return }
+        var updatedAccount = currentSession.account
+        updatedAccount.linkedMemberId = result.canonicalMemberId
+
+        let mergedAliases = Set(updatedAccount.equivalentMemberIds + result.aliasMemberIds)
+        updatedAccount.equivalentMemberIds = Array(mergedAliases)
+        self.session = UserSession(account: updatedAccount)
+    }
     
     /// Generates an expense preview for a member
     func generateExpensePreview(forMemberId memberId: UUID) -> ExpensePreview {
         // Find all unsettled expenses involving this member
         let memberExpenses = expenses.filter { expense in
-            !expense.isSettled && (expense.involvedMemberIds.contains(memberId) || expense.paidByMemberId == memberId)
+            !expense.isSettled &&
+            (expense.involvedMemberIds.contains(where: { areSamePerson($0, memberId) }) ||
+             areSamePerson(expense.paidByMemberId, memberId))
         }
         
         // Separate personal (direct) and group expenses
@@ -2451,13 +2816,13 @@ final class AppStore: ObservableObject {
         // Calculate total balance for this member
         var totalBalance: Double = 0.0
         for expense in memberExpenses {
-            if expense.paidByMemberId == memberId {
+            if areSamePerson(expense.paidByMemberId, memberId) {
                 // They paid, so others owe them
                 let othersOwe = expense.splits
-                    .filter { $0.memberId != memberId }
+                    .filter { !areSamePerson($0.memberId, memberId) }
                     .reduce(0.0) { $0 + $1.amount }
                 totalBalance += othersOwe
-            } else if let split = expense.split(for: memberId) {
+            } else if let split = expense.splits.first(where: { areSamePerson($0.memberId, memberId) }) {
                 // They owe someone
                 totalBalance -= split.amount
             }
@@ -2485,12 +2850,39 @@ final class AppStore: ObservableObject {
         guard session != nil else {
             throw PayBackError.authSessionMissing
         }
+
+        let normalizedNickname: String? = await MainActor.run {
+            let cleaned = nickname?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard var cleaned, !cleaned.isEmpty else { return nil }
+
+            if cleaned == "\"\"" || cleaned == "''" {
+                return nil
+            }
+
+            if cleaned.count >= 2 {
+                let first = cleaned.first
+                let last = cleaned.last
+                if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                    cleaned.removeFirst()
+                    cleaned.removeLast()
+                    cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+
+            guard !cleaned.isEmpty else { return nil }
+            if let friend = friends.first(where: { $0.memberId == memberId }) {
+                if cleaned.caseInsensitiveCompare(friend.name.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame {
+                    return nil
+                }
+            }
+            return cleaned
+        }
         
         // Update nickname in local state
         await MainActor.run {
             if let index = friends.firstIndex(where: { $0.memberId == memberId }) {
                 var updatedFriend = friends[index]
-                updatedFriend.nickname = nickname
+                updatedFriend.nickname = normalizedNickname
                 friends[index] = updatedFriend
             }
         }
@@ -2502,6 +2894,48 @@ final class AppStore: ObservableObject {
         
         let currentFriends = await MainActor.run { friends }
         try await accountService.syncFriends(accountEmail: session.account.email, friends: currentFriends)
+    }
+    
+    /// Updates the preferNickname flag for a friend
+    func updateFriendPreferNickname(memberId: UUID, prefer: Bool) async throws {
+        guard session != nil else {
+            throw PayBackError.authSessionMissing
+        }
+        
+        // Update preference in local state
+        await MainActor.run {
+            if let index = friends.firstIndex(where: { $0.memberId == memberId }) {
+                var updatedFriend = friends[index]
+                updatedFriend.preferNickname = prefer
+                friends[index] = updatedFriend
+            }
+        }
+        
+        // Sync to Convex
+        guard let session = session else {
+            throw PayBackError.authSessionMissing
+        }
+        
+        let currentFriends = await MainActor.run { friends }
+        try await accountService.syncFriends(accountEmail: session.account.email, friends: currentFriends)
+    }
+    
+    /// Merges an unlinked friend into a linked friend
+    func mergeFriend(unlinkedMemberId: UUID, into targetMemberId: UUID) async throws {
+        guard session != nil else {
+            throw PayBackError.authSessionMissing
+        }
+        
+        // Optimistically remove the unlinked friend from local state to reflect merge
+        await MainActor.run {
+            friends.removeAll { $0.memberId == unlinkedMemberId }
+        }
+        
+        // Call backend to merge
+        try await accountService.mergeMemberIds(from: unlinkedMemberId, to: targetMemberId)
+        
+        // Force a data reload to get the updated state (merged expenses, etc)
+        await loadRemoteData()
     }
     
     // MARK: - Account Linking Helpers
@@ -2607,7 +3041,8 @@ final class AppStore: ObservableObject {
                 nickname: nil,
                 hasLinkedAccount: true,
                 linkedAccountId: linkedAccountId,
-                linkedAccountEmail: linkedAccountEmail
+                linkedAccountEmail: linkedAccountEmail,
+                status: "friend"
             )
             friends.append(newFriend)
         }
@@ -2736,9 +3171,9 @@ final class AppStore: ObservableObject {
             await MainActor.run {
                 if self.friends != reconciledFriends {
                     #if DEBUG
-                    print("[AppStore] Reconciliation updated \(reconciledFriends.count) friends")
+                    print("[AppStore] Reconciliation updated \(reconciledFriends.count) friends (before dedupe)")
                     #endif
-                    self.friends = reconciledFriends
+                    self.processFriendsUpdate(reconciledFriends)
                 }
             }
             
@@ -2818,13 +3253,101 @@ final class AppStore: ObservableObject {
         
         // Perform reconciliation
         await reconcileLinkState()
+        await startSessionMonitoring()
     }
-    
+
+    // MARK: - Direct Expense Target Resolution
+
+    /// Canonical explicit friends that can be selected in the "+" add-expense picker.
+    ///
+    /// This intentionally excludes group-only identities that leaked into `friends`
+    /// from legacy/state drift paths, while preserving explicit friend rows.
+    var selectableDirectExpenseFriends: [AccountFriend] {
+        var seenIdentityIds: [UUID] = []
+        var selectable: [AccountFriend] = []
+
+        func hasSeenIdentity(_ memberId: UUID) -> Bool {
+            seenIdentityIds.contains { areSamePerson($0, memberId) }
+        }
+
+        for friend in friends where !isCurrentUserFriend(friend) {
+            guard isSelectableDirectExpenseFriend(friend) else { continue }
+            guard !hasSeenIdentity(friend.memberId) else { continue }
+            seenIdentityIds.append(friend.memberId)
+            selectable.append(friend)
+        }
+
+        return selectable.sorted {
+            $0.displayName(showRealNames: true)
+                .localizedCaseInsensitiveCompare($1.displayName(showRealNames: true)) == .orderedAscending
+        }
+    }
+
+    /// Whether a friend row should be selectable as a direct-expense counterparty.
+    ///
+    /// Rules:
+    /// - confirmed/accepted friendships are selectable
+    /// - linked-account friendships are selectable unless explicitly pending/rejected
+    /// - legacy unlinked rows with no status are selectable only when they are not
+    ///   group-only members (or already have an established direct group)
+    func isSelectableDirectExpenseFriend(_ friend: AccountFriend) -> Bool {
+        let status = normalizedFriendStatus(friend.status)
+        let blockedStatuses = Set(["rejected", "pending", "request_sent", "request_received"])
+        if let status, blockedStatuses.contains(status) {
+            return false
+        }
+
+        if let status, status == "friend" || status == "accepted" {
+            return true
+        }
+
+        if friend.hasLinkedAccount {
+            return true
+        }
+
+        // Unknown non-empty statuses should not be selectable.
+        guard status == nil else { return false }
+
+        // Legacy status-less rows should not surface if they only exist due to
+        // non-direct group participation (e.g. shared-group participants).
+        if hasDirectGroupWithFriend(memberId: friend.memberId) {
+            return true
+        }
+        return !appearsInAnyNonDirectGroup(memberId: friend.memberId)
+    }
+
     // MARK: - Friend Status Visibility Helpers
+
+    private func normalizedFriendStatus(_ status: String?) -> String? {
+        guard let raw = status?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+              !raw.isEmpty
+        else {
+            return nil
+        }
+        return raw
+    }
+
+    private func hasDirectGroupWithFriend(memberId: UUID) -> Bool {
+        groups.contains { group in
+            guard isDirectGroup(group) else { return false }
+            let hasCurrentUser = group.members.contains { isCurrentUser($0) }
+            let hasFriend = group.members.contains { areSamePerson($0.id, memberId) }
+            return hasCurrentUser && hasFriend
+        }
+    }
+
+    private func appearsInAnyNonDirectGroup(memberId: UUID) -> Bool {
+        groups.contains { group in
+            guard !isDirectGroup(group) else { return false }
+            return group.members.contains { areSamePerson($0.id, memberId) }
+        }
+    }
     
     /// Checks if a friend has a linked account
     func friendHasLinkedAccount(_ friend: GroupMember) -> Bool {
-        guard let accountFriend = friends.first(where: { $0.memberId == friend.id }) else {
+        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
             return false
         }
         return accountFriend.hasLinkedAccount
@@ -2832,7 +3355,7 @@ final class AppStore: ObservableObject {
     
     /// Gets the linked account email for a friend
     func linkedAccountEmail(for friend: GroupMember) -> String? {
-        guard let accountFriend = friends.first(where: { $0.memberId == friend.id }) else {
+        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
             return nil
         }
         return accountFriend.linkedAccountEmail
@@ -2840,7 +3363,7 @@ final class AppStore: ObservableObject {
     
     /// Gets the linked account ID for a friend
     func linkedAccountId(for friend: GroupMember) -> String? {
-        guard let accountFriend = friends.first(where: { $0.memberId == friend.id }) else {
+        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
             return nil
         }
         return accountFriend.linkedAccountId
@@ -2851,7 +3374,7 @@ final class AppStore: ObservableObject {
     /// Checks if a member ID is already linked to an account
     /// This prevents linking the same person (member ID) to multiple accounts
     func isMemberAlreadyLinked(_ memberId: UUID) -> Bool {
-        guard let friend = friends.first(where: { $0.memberId == memberId }) else {
+        guard let friend = friends.first(where: { areSamePerson($0.memberId, memberId) }) else {
             return false
         }
         return friend.hasLinkedAccount

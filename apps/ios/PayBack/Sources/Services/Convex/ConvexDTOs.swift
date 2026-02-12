@@ -20,9 +20,56 @@ struct ConvexExpenseDTO: Decodable, Sendable {
     let participants: [ConvexParticipantDTO]?
     let subexpenses: [ConvexSubexpenseDTO]?
     
+    init(
+        id: String,
+        group_id: String,
+        description: String,
+        date: Double,
+        total_amount: Double,
+        paid_by_member_id: String,
+        involved_member_ids: [String],
+        splits: [ConvexSplitDTO],
+        is_settled: Bool,
+        owner_email: String?,
+        owner_account_id: String?,
+        participant_member_ids: [String]?,
+        participants: [ConvexParticipantDTO]?,
+        subexpenses: [ConvexSubexpenseDTO]?
+    ) {
+        self.id = id
+        self.group_id = group_id
+        self.description = description
+        self.date = date
+        self.total_amount = total_amount
+        self.paid_by_member_id = paid_by_member_id
+        self.involved_member_ids = involved_member_ids
+        self.splits = splits
+        self.is_settled = is_settled
+        self.owner_email = owner_email
+        self.owner_account_id = owner_account_id
+        self.participant_member_ids = participant_member_ids
+        self.participants = participants
+        self.subexpenses = subexpenses
+    }
+    
     /// Maps Convex DTO to domain Expense model
     func toExpense() -> Expense {
-        Expense(
+        func buildParticipantNamesMap() -> [UUID: String]? {
+            guard let participants = participants, !participants.isEmpty else { return nil }
+            var map: [UUID: String] = [:]
+            for p in participants {
+                guard let memberId = UUID(uuidString: p.member_id) else { continue }
+                let trimmedName = p.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedName.isEmpty {
+                    map[memberId] = trimmedName
+                }
+            }
+            return map.isEmpty ? nil : map
+        }
+        
+        let participantNames = buildParticipantNamesMap()
+        
+        return Expense(
             id: UUID(uuidString: id) ?? UUID(),
             groupId: UUID(uuidString: group_id) ?? UUID(),
             description: description,
@@ -32,6 +79,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
             involvedMemberIds: involved_member_ids.compactMap { UUID(uuidString: $0) },
             splits: splits.map { $0.toExpenseSplit() },
             isSettled: is_settled,
+            participantNames: participantNames,
             subexpenses: subexpenses?.map { $0.toSubexpense() }
         )
     }
@@ -62,6 +110,13 @@ struct ConvexParticipantDTO: Decodable, Sendable {
     let linked_account_id: String?
     let linked_account_email: String?
     
+    init(member_id: String, name: String, linked_account_id: String?, linked_account_email: String?) {
+        self.member_id = member_id
+        self.name = name
+        self.linked_account_id = linked_account_id
+        self.linked_account_email = linked_account_email
+    }
+    
     /// Maps to domain ExpenseParticipant
     func toExpenseParticipant() -> ExpenseParticipant {
         ExpenseParticipant(
@@ -89,14 +144,27 @@ struct ConvexSubexpenseDTO: Decodable, Sendable {
 
 // MARK: - Group DTOs
 
+/// Internal DTO for Convex paginated groups response
+struct ConvexPaginatedGroupsDTO: Decodable, Sendable {
+    let items: [ConvexGroupDTO]
+    let nextCursor: String?
+}
+
+/// Internal DTO for Convex paginated expenses response
+struct ConvexPaginatedExpensesDTO: Decodable, Sendable {
+    let items: [ConvexExpenseDTO]
+    let nextCursor: String?
+}
+
 /// Internal DTO for Convex group data
 struct ConvexGroupDTO: Decodable, Sendable {
-    let id: String
+    let id: String    // UUID string
     let name: String
     let created_at: Double
     let members: [ConvexGroupMemberDTO]
     let is_direct: Bool?
     let is_payback_generated_mock_data: Bool?
+    var _id: String? = nil // Convex document ID (e.g., "jd7..." format)
     
     /// Maps Convex DTO to domain SpendingGroup
     func toSpendingGroup() -> SpendingGroup? {
@@ -122,6 +190,21 @@ struct ConvexGroupMemberDTO: Decodable, Sendable {
     let name: String
     let profile_image_url: String?
     let profile_avatar_color: String?
+    let is_current_user: Bool?
+
+    init(
+        id: String,
+        name: String,
+        profile_image_url: String?,
+        profile_avatar_color: String?,
+        is_current_user: Bool? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.profile_image_url = profile_image_url
+        self.profile_avatar_color = profile_avatar_color
+        self.is_current_user = is_current_user
+    }
     
     /// Maps to domain GroupMember
     func toGroupMember() -> GroupMember? {
@@ -130,7 +213,8 @@ struct ConvexGroupMemberDTO: Decodable, Sendable {
             id: id,
             name: name,
             profileImageUrl: profile_image_url,
-            profileColorHex: profile_avatar_color
+            profileColorHex: profile_avatar_color,
+            isCurrentUser: is_current_user
         )
     }
 }
@@ -143,26 +227,106 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
     let name: String
     let nickname: String?
     let original_name: String?
+    let status: String?
     let has_linked_account: Bool?
     let linked_account_id: String?
     let linked_account_email: String?
+    let linked_member_id: String?
+    let alias_member_ids: [String]?
     let profile_image_url: String?
     let profile_avatar_color: String?
+    
+    init(
+        member_id: String,
+        name: String,
+        nickname: String?,
+        original_name: String?,
+        status: String? = nil,
+        has_linked_account: Bool?,
+        linked_account_id: String?,
+        linked_account_email: String?,
+        linked_member_id: String? = nil,
+        alias_member_ids: [String]? = nil,
+        profile_image_url: String?,
+        profile_avatar_color: String?
+    ) {
+        self.member_id = member_id
+        self.name = name
+        self.nickname = nickname
+        self.original_name = original_name
+        self.status = status
+        self.has_linked_account = has_linked_account
+        self.linked_account_id = linked_account_id
+        self.linked_account_email = linked_account_email
+        self.linked_member_id = linked_member_id
+        self.alias_member_ids = alias_member_ids
+        self.profile_image_url = profile_image_url
+        self.profile_avatar_color = profile_avatar_color
+    }
+
+    init(
+        member_id: String,
+        name: String,
+        nickname: String?,
+        original_name: String?,
+        status: String? = nil,
+        has_linked_account: Bool?,
+        linked_account_id: String?,
+        linked_account_email: String?,
+        profile_image_url: String?,
+        profile_avatar_color: String?
+    ) {
+        self.init(
+            member_id: member_id,
+            name: name,
+            nickname: nickname,
+            original_name: original_name,
+            status: status,
+            has_linked_account: has_linked_account,
+            linked_account_id: linked_account_id,
+            linked_account_email: linked_account_email,
+            linked_member_id: nil,
+            alias_member_ids: nil,
+            profile_image_url: profile_image_url,
+            profile_avatar_color: profile_avatar_color
+        )
+    }
     
     /// Maps to domain AccountFriend
     func toAccountFriend() -> AccountFriend? {
         guard let memberId = UUID(uuidString: member_id) else { return nil }
+        let safeName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown" : name
+        let safeNickname = nickname?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let safeStatus = status?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let safeLinkedAccountId = linked_account_id?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let safeLinkedAccountEmail = linked_account_email?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .nilIfEmpty
+        var identityAliases = alias_member_ids?.compactMap { UUID(uuidString: $0) } ?? []
+        if let linkedMemberId = linked_member_id.flatMap({ UUID(uuidString: $0) }) {
+            identityAliases.append(linkedMemberId)
+        }
+        let dedupedAliases = Array(Set(identityAliases))
         return AccountFriend(
             memberId: memberId,
-            name: name,
-            nickname: nickname,
+            name: safeName,
+            nickname: safeNickname,
             originalName: original_name,
             hasLinkedAccount: has_linked_account ?? false,
-            linkedAccountId: linked_account_id,
-            linkedAccountEmail: linked_account_email,
+            linkedAccountId: safeLinkedAccountId,
+            linkedAccountEmail: safeLinkedAccountEmail,
             profileImageUrl: profile_image_url,
-            profileColorHex: profile_avatar_color
+            profileColorHex: profile_avatar_color,
+            status: safeStatus,
+            aliasMemberIds: dedupedAliases.isEmpty ? nil : dedupedAliases
         )
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 
@@ -282,8 +446,35 @@ struct ConvexExpensePreviewDTO: Decodable, Sendable {
 
 /// Internal DTO for link accept result
 struct ConvexLinkAcceptResultDTO: Decodable, Sendable {
-    let linked_member_id: String
+    let contract_version: Int?
+    let target_member_id: String?
+    let canonical_member_id: String?
+    let alias_member_ids: [String]?
     let linked_account_id: String
     let linked_account_email: String
+    private let _linked_member_id: String?
+    private let member_id: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case contract_version
+        case target_member_id
+        case canonical_member_id
+        case alias_member_ids
+        case linked_account_id
+        case linked_account_email
+        case _linked_member_id = "linked_member_id"
+        case member_id
+    }
+    
+    var linked_member_id: String {
+        return canonical_member_id ?? member_id ?? _linked_member_id ?? ""
+    }
+    
+    var resolved_target_member_id: String {
+        return target_member_id ?? linked_member_id
+    }
+    
+    var resolved_contract_version: Int {
+        return contract_version ?? 1
+    }
 }
-

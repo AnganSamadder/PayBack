@@ -298,12 +298,12 @@ final class DomainModelsExtendedTests: XCTestCase {
         let account = UserAccount(
             id: "user-123",
             email: "test@example.com",
-            displayName: "Test User"
+            displayName: "Example User"
         )
         
         XCTAssertEqual(account.id, "user-123")
         XCTAssertEqual(account.email, "test@example.com")
-        XCTAssertEqual(account.displayName, "Test User")
+        XCTAssertEqual(account.displayName, "Example User")
     }
     
     func testUserAccount_identifiable_usesId() {
@@ -354,7 +354,7 @@ final class DomainModelsExtendedTests: XCTestCase {
         let account = UserAccount(
             id: "user-123",
             email: "test@example.com",
-            displayName: "Test User",
+            displayName: "Example User",
             profileImageUrl: "http://test.com/me.jpg",
             profileColorHex: "#FFFFFF"
         )
