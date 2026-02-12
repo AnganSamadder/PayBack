@@ -1,6 +1,8 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
+import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
+import { normalizeMemberId } from "./identity";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -51,28 +53,6 @@ export const create = mutation({
           updated_at: Date.now()
         });
 
-        // Automatically add all group members as friends
-        for (const member of args.members) {
-          const existingFriend = await ctx.db
-            .query("account_friends")
-            .withIndex("by_account_email_and_member_id", (q) =>
-              q.eq("account_email", user.email).eq("member_id", member.id)
-            )
-            .unique();
-
-          if (!existingFriend) {
-            await ctx.db.insert("account_friends", {
-              account_email: user.email,
-              member_id: member.id,
-              name: member.name,
-              profile_avatar_color: member.profile_avatar_color ?? getRandomAvatarColor(),
-              profile_image_url: member.profile_image_url,
-              has_linked_account: false,
-              updated_at: Date.now()
-            });
-          }
-        }
-
         return existing._id;
       }
     }
@@ -83,37 +63,11 @@ export const create = mutation({
       members: args.members,
       owner_email: user.email,
       owner_account_id: user.id, // Auth provider ID
+      owner_id: user._id,
       is_direct: args.is_direct ?? false,
       created_at: Date.now(),
       updated_at: Date.now()
     });
-
-    // Automatically add all group members as friends
-    for (const member of args.members) {
-      // Logic for "Self": If this member IS the current user (e.g. flagged by client), skip adding as friend.
-      if (member.is_current_user) {
-        continue;
-      }
-
-      const existingFriend = await ctx.db
-        .query("account_friends")
-        .withIndex("by_account_email_and_member_id", (q) =>
-          q.eq("account_email", user.email).eq("member_id", member.id)
-        )
-        .unique();
-
-      if (!existingFriend) {
-        await ctx.db.insert("account_friends", {
-          account_email: user.email,
-          member_id: member.id,
-          name: member.name,
-          profile_avatar_color: member.profile_avatar_color ?? getRandomAvatarColor(),
-          profile_image_url: member.profile_image_url,
-          has_linked_account: false,
-          updated_at: Date.now()
-        });
-      }
-    }
 
     return groupId;
   }
@@ -137,14 +91,19 @@ export const list = query({
       .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
       .collect();
 
-    // Check by membership (if user has a linked member ID)
+    // Check by membership (using canonical member_id + aliases)
     let groupsByMembership: any[] = [];
-    if (user.linked_member_id) {
-      const allGroups = await ctx.db.query("groups").collect();
-      groupsByMembership = allGroups.filter((g) =>
-        g.members.some((m) => m.id === user.linked_member_id)
-      );
-    }
+    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      user.member_id ?? user.id
+    );
+    const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+    const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
+
+    const allGroups = await ctx.db.query("groups").collect();
+    groupsByMembership = allGroups.filter((g) =>
+      g.members.some((m: any) => membershipIds.has(normalizeMemberId(m.id)))
+    );
 
     // Merge results
     const groupMap = new Map();
@@ -154,6 +113,24 @@ export const list = query({
 
     return Array.from(groupMap.values());
   }
+});
+
+export const listPaginated = query({
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    // Reusing list logic for consistency, but mocking pagination structure
+    // Ideally this should use real pagination, but list() merges multiple sources.
+    // For now, returning all items as a single page is safe and correct.
+    const allItems = await list(ctx, {});
+    
+    return {
+      items: allItems,
+      nextCursor: null,
+    };
+  },
 });
 
 export const get = query({
@@ -171,10 +148,17 @@ export const get = query({
 
     // Auth check
     if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
-      if (user.linked_member_id && group.members.some((m) => m.id === user.linked_member_id)) {
-        return group;
-      }
-      return null;
+        const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+          ctx.db,
+          user.member_id ?? user.id
+        );
+        const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+        const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
+
+        if (group.members.some((m: any) => membershipIds.has(normalizeMemberId(m.id)))) {
+            return group;
+        }
+        return null;
     }
 
     return group;
@@ -236,7 +220,19 @@ export const clearAllForUser = mutation({
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
-    // Get all groups owned by this user
+    // Resolve all member IDs that represent this user so we can leave shared groups too.
+    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      user.member_id ?? user.id
+    );
+    const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+    const membershipIds = new Set([
+      normalizeMemberId(canonicalMemberId),
+      ...equivalentIds.map((id) => normalizeMemberId(id)),
+      ...(user.alias_member_ids || []).map((id: string) => normalizeMemberId(id)),
+    ]);
+
+    // 1) Delete groups owned by the current user.
     const ownedGroups = await ctx.db
       .query("groups")
       .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
@@ -248,15 +244,90 @@ export const clearAllForUser = mutation({
       .collect();
 
     // Merge and dedupe
-    const allGroupIds = new Set<string>();
-    ownedGroups.forEach((g) => allGroupIds.add(g._id));
-    byEmail.forEach((g) => allGroupIds.add(g._id));
+    const ownedGroupIdSet = new Set<string>();
+    ownedGroups.forEach((g) => ownedGroupIdSet.add(g._id));
+    byEmail.forEach((g) => ownedGroupIdSet.add(g._id));
 
-    // Delete all
-    for (const _id of allGroupIds) {
+    // Delete owned
+    for (const _id of ownedGroupIdSet) {
       await ctx.db.delete(_id as any);
     }
 
-    return null;
+    // 2) Leave any remaining shared groups where this user is still a member.
+    // Note: Inefficient full scan, but acceptable for "nuclear" infrequent op.
+    const allGroups = await ctx.db.query("groups").collect();
+    let sharedGroupsUpdated = 0;
+    let emptySharedGroupsDeleted = 0;
+
+    for (const group of allGroups) {
+      if (ownedGroupIdSet.has(group._id)) continue;
+
+      const hasViewerMembership = group.members.some((member: any) =>
+        membershipIds.has(normalizeMemberId(member.id))
+      );
+      if (!hasViewerMembership) continue;
+
+      const remainingMembers = group.members.filter(
+        (member: any) => !membershipIds.has(normalizeMemberId(member.id))
+      );
+
+      if (remainingMembers.length === 0) {
+        await ctx.db.delete(group._id);
+        emptySharedGroupsDeleted += 1;
+        continue;
+      }
+
+      await ctx.db.patch(group._id, {
+        members: remainingMembers,
+        updated_at: Date.now(),
+      });
+      sharedGroupsUpdated += 1;
+    }
+
+    return {
+      deleted_owned_groups: ownedGroupIdSet.size,
+      left_shared_groups: sharedGroupsUpdated,
+      deleted_empty_shared_groups: emptySharedGroupsDeleted,
+    };
+  }
+});
+
+export const leaveGroup = mutation({
+  args: { id: v.string() },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+
+    const group = await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", args.id))
+      .unique();
+
+    if (!group) throw new Error("Group not found");
+
+    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      user.member_id ?? user.id
+    );
+    const aliases = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+    const membershipIds = new Set([canonicalMemberId, ...aliases]);
+
+    const isMember = group.members.some(
+      (m: any) => membershipIds.has(normalizeMemberId(m.id))
+    );
+    if (!isMember) throw new Error("You are not a member of this group");
+
+    const normalizedNewMembers = group.members.filter(
+      (m: any) => !membershipIds.has(normalizeMemberId(m.id))
+    );
+
+    if (normalizedNewMembers.length === 0) {
+        await ctx.db.delete(group._id);
+    } else {
+        await ctx.db.patch(group._id, { 
+            members: normalizedNewMembers,
+            updated_at: Date.now()
+        });
+    }
   }
 });
