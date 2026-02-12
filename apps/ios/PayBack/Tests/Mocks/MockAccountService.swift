@@ -104,6 +104,10 @@ actor MockAccountServiceForAppStore: AccountService {
         if shouldFail { throw PayBackError.networkUnavailable }
         return imageUrl
     }
+
+    func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws {
+        if shouldFail { throw PayBackError.networkUnavailable }
+    }
     
     func uploadProfileImage(_ data: Data) async throws -> String {
         if shouldFail { throw PayBackError.networkUnavailable }

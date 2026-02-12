@@ -255,6 +255,7 @@ actor MockBulkImportEdgeCaseAccountService: AccountService {
     func fetchFriends(accountEmail: String) async throws -> [AccountFriend] { [] }
     func updateFriendLinkStatus(accountEmail: String, memberId: UUID, linkedAccountId: String, linkedAccountEmail: String) async throws {}
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? { nil }
+    func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws {}
     func uploadProfileImage(_ data: Data) async throws -> String { "" }
     func checkAuthentication() async throws -> Bool { true }
     func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {}

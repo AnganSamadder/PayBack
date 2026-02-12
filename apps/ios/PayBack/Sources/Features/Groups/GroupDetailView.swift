@@ -196,7 +196,11 @@ struct GroupDetailView: View {
     }
 
     private func expenseRow(_ exp: Expense) -> some View {
-        let mySettled = exp.isSettled(for: store.currentUser.id)
+        let otherSplits = exp.splits.filter { !isMe($0.memberId) }
+        let allOthersSettled = !otherSplits.isEmpty && otherSplits.allSatisfy(\.isSettled)
+        let mySettled = isMe(exp.paidByMemberId)
+            ? allOthersSettled
+            : exp.isSettled(for: store.currentUser.id)
 
         return HStack {
             VStack(alignment: .leading) {
@@ -227,8 +231,6 @@ struct GroupDetailView: View {
 
                 // "Who owes" subtitle
                 if isMe(exp.paidByMemberId) {
-                    let otherSplits = exp.splits.filter { !isMe($0.memberId) }
-                    let allOthersSettled = !otherSplits.isEmpty && otherSplits.allSatisfy(\.isSettled)
                     let totalLent = otherSplits.filter { !$0.isSettled }.reduce(0.0) { $0 + $1.amount }
 
                     if allOthersSettled {

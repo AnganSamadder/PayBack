@@ -1284,9 +1284,9 @@ final class AppStoreTests: XCTestCase {
     func testClaimInviteToken_LinksAccount() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // Manually set session and add account to avoid async race condition in completeAuthentication
+        sut.session = UserSession(account: account)
+        await mockAccountService.addAccount(account)
         
         let tokenId = UUID()
         let memberId = UUID()
