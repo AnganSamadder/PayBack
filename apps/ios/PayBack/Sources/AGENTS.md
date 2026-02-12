@@ -32,6 +32,7 @@ Sources/
 ## GOTCHAS
 - **God Object**: `AppStore.swift` is massive (>1300 lines). Modify with care.
 - **CI Flag**: `PAYBACK_CI_NO_CONVEX` mocks out the backend in CI.
+- **Convex Env Routing**: Build setting `PAYBACK_CONVEX_ENV` is source of truth (`Debug/Internal=development`, `Release=production`).
 - **Auth**: Two-step process: Clerk (Identity) -> Convex (Session).
 - **Concurrency**: `MainActor` usage is critical for UI updates from sync.
 
