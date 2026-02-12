@@ -183,7 +183,8 @@ struct GroupDetailView: View {
         .alert("Leave Group?", isPresented: $showLeaveConfirmation) {
             Button("Leave", role: .destructive) {
                 store.leaveGroup(groupId)
-                onBack()
+                // onBack() is triggered automatically when group becomes nil
+                // (see the else branch: Color.clear.onAppear { onBack() })
             }
             Button("Cancel", role: .cancel) { }
         } message: {
@@ -295,10 +296,15 @@ struct GroupDetailView: View {
     private var hasUnsettledExpenses: Bool {
         let expenses = store.expenses(in: groupId)
         return expenses.contains { exp in
-            if let split = exp.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
+            // I owe someone: unsettled split in an expense I didn't pay
+            if !isMe(exp.paidByMemberId),
+               let split = exp.splits.first(where: { isMe($0.memberId) }),
+               !split.isSettled {
                 return true
             }
-            if isMe(exp.paidByMemberId) && !exp.isSettled {
+            // Someone owes me: I paid and others still have unsettled splits
+            if isMe(exp.paidByMemberId),
+               exp.splits.contains(where: { !isMe($0.memberId) && !$0.isSettled }) {
                 return true
             }
             return false
