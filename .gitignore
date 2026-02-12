@@ -145,7 +145,6 @@ apps/web/dist/
 *.xcworkspace
 
 # Xcode/SwiftPM local checkouts (Xcode-managed, generated locally)
-Packages/
 LocalPackages/
 
 # Local agent artifacts
