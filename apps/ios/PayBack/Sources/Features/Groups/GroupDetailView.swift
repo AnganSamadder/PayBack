@@ -194,13 +194,18 @@ struct GroupDetailView: View {
     }
 
     private func expenseRow(_ exp: Expense) -> some View {
-        HStack {
+        let mySettled = exp.isSettled(for: store.currentUser.id)
+
+        return HStack {
             VStack(alignment: .leading) {
                 HStack(spacing: 8) {
-                    Text(exp.description).font(.headline)
-                    
+                    Text(exp.description)
+                        .font(.headline)
+                        .foregroundStyle(mySettled ? .secondary : .primary)
+                        .strikethrough(mySettled)
+
                     // Settlement status indicator - green if current user settled
-                    if exp.isSettled(for: store.currentUser.id) {
+                    if mySettled {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 14))
                             .foregroundStyle(.green)
@@ -216,8 +221,34 @@ struct GroupDetailView: View {
             VStack(alignment: .trailing) {
                 Text(exp.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                     .font(.headline)
-                
-                if !exp.isSettled && exp.settledSplits.count > 0 {
+                    .foregroundStyle(mySettled ? .secondary : .primary)
+
+                // "Who owes" subtitle
+                if isMe(exp.paidByMemberId) {
+                    let otherSplits = exp.splits.filter { !isMe($0.memberId) }
+                    let allOthersSettled = !otherSplits.isEmpty && otherSplits.allSatisfy(\.isSettled)
+                    let totalLent = otherSplits.filter { !$0.isSettled }.reduce(0.0) { $0 + $1.amount }
+
+                    if allOthersSettled {
+                        Text("Settled \(currency(otherSplits.reduce(0.0) { $0 + $1.amount }))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if totalLent > 0 {
+                        Text("You lent \(currency(totalLent))")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                } else if let mySplit = exp.splits.first(where: { isMe($0.memberId) }) {
+                    if mySplit.isSettled {
+                        Text("You paid \(currency(mySplit.amount))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("You owe \(currency(mySplit.amount))")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                } else if !exp.isSettled && exp.settledSplits.count > 0 {
                     Text("\(exp.settledSplits.count)/\(exp.splits.count) settled")
                         .font(.caption)
                         .foregroundStyle(AppTheme.settlementText)

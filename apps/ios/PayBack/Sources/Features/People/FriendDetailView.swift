@@ -1236,16 +1236,34 @@ struct DirectExpenseCard: View {
         store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
+    private var friendSplit: ExpenseSplit? {
+        expense.splits.first(where: { isFriend($0.memberId) })
+    }
+
+    private var mySplit: ExpenseSplit? {
+        expense.splits.first(where: { isMe($0.memberId) })
+    }
+
+    private var isRelevantSplitSettled: Bool {
+        if isMe(expense.paidByMemberId) {
+            return friendSplit?.isSettled ?? false
+        } else {
+            return mySplit?.isSettled ?? false
+        }
+    }
+
     var body: some View {
         let content = VStack(spacing: AppMetrics.FriendDetail.expenseCardInternalSpacing) {
             HStack {
                 GroupIcon(name: expense.description)
                     .frame(width: AppMetrics.FriendDetail.expenseIconSize, height: AppMetrics.FriendDetail.expenseIconSize)
+                    .opacity(isRelevantSplitSettled ? 0.6 : 1.0)
 
                 VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.expenseTextSpacing) {
                     Text(expense.description)
                         .font(.system(.body, design: .rounded, weight: .medium))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
+                        .strikethrough(isRelevantSplitSettled)
 
                     Text(expense.date, style: .date)
                         .font(.system(.caption, design: .rounded))
@@ -1257,37 +1275,37 @@ struct DirectExpenseCard: View {
                 VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.expenseAmountSpacing) {
                     Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                         .font(.system(.body, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
 
                     if isMe(expense.paidByMemberId) {
-                        if let friendSplit = expense.splits.first(where: { isFriend($0.memberId) }) {
-                            if friendSplit.isSettled {
+                        if let split = friendSplit {
+                            if split.isSettled {
                                 HStack(spacing: 4) {
-                                    Text("You paid \(currency(friendSplit.amount))")
+                                    Text("\(friend.name) paid \(currency(split.amount))")
                                         .font(.system(.caption, design: .rounded, weight: .medium))
-                                        .foregroundStyle(.green)
+                                        .foregroundStyle(.secondary)
                                     Image(systemName: "checkmark.circle.fill")
                                         .font(.system(size: 12))
                                         .foregroundStyle(.green)
                                 }
                             } else {
-                                Text("\(friend.name) owes \(currency(friendSplit.amount))")
+                                Text("\(friend.name) owes \(currency(split.amount))")
                                     .font(.system(.caption, design: .rounded, weight: .medium))
                                     .foregroundStyle(.green)
                             }
                         }
-                    } else if let userSplit = expense.splits.first(where: { isMe($0.memberId) }) {
-                        if userSplit.isSettled {
+                    } else if let split = mySplit {
+                        if split.isSettled {
                             HStack(spacing: 4) {
-                                Text("\(friend.name) paid \(currencyPositive(userSplit.amount))")
+                                Text("You paid \(currencyPositive(split.amount))")
                                     .font(.system(.caption, design: .rounded, weight: .medium))
-                                    .foregroundStyle(.green)
+                                    .foregroundStyle(.secondary)
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 12))
                                     .foregroundStyle(.green)
                             }
                         } else {
-                            Text("You owe \(currencyPositive(userSplit.amount))")
+                            Text("You owe \(currencyPositive(split.amount))")
                                 .font(.system(.caption, design: .rounded, weight: .medium))
                                 .foregroundStyle(.red)
                         }
@@ -1393,15 +1411,33 @@ struct GroupExpenseRow: View {
         store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
+    private var friendSplit: ExpenseSplit? {
+        expense.splits.first(where: { isFriend($0.memberId) })
+    }
+
+    private var mySplit: ExpenseSplit? {
+        expense.splits.first(where: { isMe($0.memberId) })
+    }
+
+    private var isRelevantSplitSettled: Bool {
+        if isMe(expense.paidByMemberId) {
+            return friendSplit?.isSettled ?? false
+        } else {
+            return mySplit?.isSettled ?? false
+        }
+    }
+
     var body: some View {
         HStack(spacing: AppMetrics.FriendDetail.groupExpenseRowSpacing) {
             GroupIcon(name: expense.description)
                 .frame(width: AppMetrics.FriendDetail.groupExpenseIconSize, height: AppMetrics.FriendDetail.groupExpenseIconSize)
+                .opacity(isRelevantSplitSettled ? 0.6 : 1.0)
 
             VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.groupExpenseTextSpacing) {
                 Text(expense.description)
                     .font(.system(.body, design: .rounded, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
+                    .strikethrough(isRelevantSplitSettled)
 
                 Text(expense.date, style: .date)
                     .font(.system(.caption, design: .rounded))
@@ -1413,37 +1449,41 @@ struct GroupExpenseRow: View {
             VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.groupExpenseAmountSpacing) {
                 Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                     .font(.system(.body, design: .rounded, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
 
                 // Show the relationship between current user and friend
                 if isMe(expense.paidByMemberId) {
-                    // Current user paid - friend owes current user
-                    if let friendSplit = expense.splits.first(where: { isFriend($0.memberId) }) {
-                        HStack(spacing: 4) {
-                            Text("\(friend.name) owes \(currency(friendSplit.amount))")
-                                .font(.system(.caption, design: .rounded, weight: .medium))
-                                .foregroundStyle(.green)
-                            
-                            if friendSplit.isSettled {
+                    if let split = friendSplit {
+                        if split.isSettled {
+                            HStack(spacing: 4) {
+                                Text("\(friend.name) paid \(currency(split.amount))")
+                                    .font(.system(.caption, design: .rounded, weight: .medium))
+                                    .foregroundStyle(.secondary)
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 12))
                                     .foregroundStyle(.green)
                             }
+                        } else {
+                            Text("\(friend.name) owes \(currency(split.amount))")
+                                .font(.system(.caption, design: .rounded, weight: .medium))
+                                .foregroundStyle(.green)
                         }
                     }
                 } else if isFriend(expense.paidByMemberId) {
-                    // Friend paid - current user owes friend
-                    if let userSplit = expense.splits.first(where: { isMe($0.memberId) }) {
-                        HStack(spacing: 4) {
-                            Text("You owe \(currencyPositive(userSplit.amount))")
-                                .font(.system(.caption, design: .rounded, weight: .medium))
-                                .foregroundStyle(.red)
-                            
-                            if userSplit.isSettled {
+                    if let split = mySplit {
+                        if split.isSettled {
+                            HStack(spacing: 4) {
+                                Text("You paid \(currencyPositive(split.amount))")
+                                    .font(.system(.caption, design: .rounded, weight: .medium))
+                                    .foregroundStyle(.secondary)
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 12))
                                     .foregroundStyle(.green)
                             }
+                        } else {
+                            Text("You owe \(currencyPositive(split.amount))")
+                                .font(.system(.caption, design: .rounded, weight: .medium))
+                                .foregroundStyle(.red)
                         }
                     }
                 }
