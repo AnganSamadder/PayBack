@@ -309,3 +309,12 @@ Required behavior:
 2. Group-derived people (`friendMembers`) can be used for identity resolution and group workflows, but not as canonical friend list UI.
 
 If this boundary blurs, friend-of-friend participants (e.g., Bob in a shared group) appear as unintended friends.
+
+### CI Compile Guard for Convex Types (iOS)
+`PAYBACK_CI_NO_CONVEX` can compile out concrete Convex service types (e.g., `ConvexAccountService`).
+
+Required behavior:
+1. `AppStore` and other core state/services must call `AccountService` protocol APIs directly.
+2. Do not use unconditional casts/references to concrete Convex classes unless wrapped in `#if !PAYBACK_CI_NO_CONVEX`.
+
+If violated, Xcode Cloud can fail with compile errors like `Cannot find type 'ConvexAccountService' in scope`.

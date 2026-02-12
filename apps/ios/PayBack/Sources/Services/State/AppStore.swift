@@ -1130,10 +1130,7 @@ final class AppStore: ObservableObject {
     }
     
     func resolveLinkedAccountsForImport(_ memberIds: [UUID]) async throws -> [UUID: (String, String)] {
-        if let convexService = accountService as? ConvexAccountService {
-            return try await convexService.resolveLinkedAccountsForMemberIds(memberIds)
-        }
-        return [:]
+        try await accountService.resolveLinkedAccountsForMemberIds(memberIds)
     }
     
     func syncFriendsToCloud() async {
