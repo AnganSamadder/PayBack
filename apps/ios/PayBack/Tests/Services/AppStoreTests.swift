@@ -105,6 +105,31 @@ final class AppStoreTests: XCTestCase {
         XCTAssertTrue(sut.groups.isEmpty)
         XCTAssertTrue(sut.expenses.isEmpty)
     }
+
+    func testMigrateLegacyDisplaySettingsIfNeeded_updateFails_keepsDefaultsForRetry() async throws {
+        let suiteName = "AppStoreTests.DisplayMigration.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected UserDefaults suite")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(true, forKey: "preferNicknames")
+        defaults.set(true, forKey: "preferWholeNames")
+
+        sut.session = UserSession(
+            account: UserAccount(id: "test-id", email: "test@example.com", displayName: "Example User")
+        )
+        await mockAccountService.setShouldFail(true)
+
+        sut.migrateLegacyDisplaySettingsIfNeeded(defaults: defaults)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertNotNil(defaults.object(forKey: "preferNicknames"))
+        XCTAssertNotNil(defaults.object(forKey: "preferWholeNames"))
+        XCTAssertEqual(defaults.bool(forKey: "preferNicknames"), true)
+        XCTAssertEqual(defaults.bool(forKey: "preferWholeNames"), true)
+    }
     
     // MARK: - Group Management Tests
     

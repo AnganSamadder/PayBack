@@ -126,6 +126,35 @@ final class AppStore: ObservableObject {
         defaults.removeObject(forKey: "showRealNames")
     }
 
+    internal func migrateLegacyDisplaySettingsIfNeeded(defaults: UserDefaults = .standard) {
+        if defaults.object(forKey: "preferNicknames") != nil {
+            let migratedNicknames = defaults.bool(forKey: "preferNicknames")
+            let migratedWholeNames = defaults.bool(forKey: "preferWholeNames")
+            
+            print("[AppStore] Applying migrated display settings: nick=\(migratedNicknames), whole=\(migratedWholeNames)")
+            
+            if var account = self.session?.account {
+                account.preferNicknames = migratedNicknames
+                account.preferWholeNames = migratedWholeNames
+                self.session = UserSession(account: account)
+            }
+            self.persistCurrentState()
+            
+            Task {
+                do {
+                    try await self.accountService.updateSettings(preferNicknames: migratedNicknames, preferWholeNames: migratedWholeNames)
+                    await MainActor.run {
+                        defaults.removeObject(forKey: "preferNicknames")
+                        defaults.removeObject(forKey: "preferWholeNames")
+                        print("[AppStore] Migration sync confirmed, keys cleaned up.")
+                    }
+                } catch {
+                    print("[AppStore] Migration sync failed, keeping keys for retry: \(error)")
+                }
+            }
+        }
+    }
+
     /// Runs off the main actor to avoid blocking UI startup
     func checkSession() async {
         AppConfig.markTiming("AppStore.checkSession started")
@@ -205,18 +234,7 @@ final class AppStore: ObservableObject {
                 await finishLogin(account: account)
                 
                 await MainActor.run {
-                    let defaults = UserDefaults.standard
-                    if defaults.object(forKey: "preferNicknames") != nil {
-                        let migratedNicknames = defaults.bool(forKey: "preferNicknames")
-                        let migratedWholeNames = defaults.bool(forKey: "preferWholeNames")
-                        
-                        print("[AppStore] Applying migrated display settings: nick=\(migratedNicknames), whole=\(migratedWholeNames)")
-                        
-                        self.updateAccountSettings(preferNicknames: migratedNicknames, preferWholeNames: migratedWholeNames)
-                        
-                        defaults.removeObject(forKey: "preferNicknames")
-                        defaults.removeObject(forKey: "preferWholeNames")
-                    }
+                    self.migrateLegacyDisplaySettingsIfNeeded()
                 }
                 
             } catch {
