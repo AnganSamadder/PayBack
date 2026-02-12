@@ -63,6 +63,7 @@ xcodebuild -scheme PayBack -destination "platform=iOS Simulator,name=iPhone 15"
 - **Linting**: Zero warnings policy (`FAIL_ON_WARNINGS=1`).
 - **Runtime**: `bun` / `bunx` preferred over `npm`.
 - **Monorepo**: Turborepo for task orchestration, Bun workspaces for dependency management.
+- **Comments**: Minimalist approach. Only explain _why_ something is done if it's not obvious from the code. Avoid "what" comments (e.g., "// Loop through items").
 
 ## NOTES
 

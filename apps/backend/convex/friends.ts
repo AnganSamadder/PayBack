@@ -59,7 +59,20 @@ export const list = query({
       if (!linkedAccount && friend.linked_account_id) {
         linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id);
       }
+      // linked_member_id is on account_friends, not accounts.
+      // If we only have linked_member_id, we need to find the account that has this member_id.
       if (!linkedAccount && friend.linked_member_id) {
+        // This assumes findAccountByMemberId queries 'accounts' by 'member_id'
+        linkedAccount = await findAccountByMemberId(ctx.db, friend.linked_member_id);
+      }
+
+      if (!linkedAccount && friend.linked_account_id) {
+        linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id);
+      }
+      // linked_member_id is on account_friends, not accounts.
+      // If we only have linked_member_id, we need to find the account that has this member_id.
+      if (!linkedAccount && friend.linked_member_id) {
+        // This assumes findAccountByMemberId queries 'accounts' by 'member_id'
         linkedAccount = await findAccountByMemberId(ctx.db, friend.linked_member_id);
       }
 

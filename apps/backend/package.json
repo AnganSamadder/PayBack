@@ -15,7 +15,8 @@
     "clean": "rm -rf node_modules .turbo"
   },
   "devDependencies": {
-    "@payback/config-eslint": "workspace:*"
+    "@payback/config-eslint": "workspace:*",
+    "convex-test": "^0.0.41"
   },
   "dependencies": {
     "convex": "^1.31.3"

@@ -32,9 +32,9 @@ export const createMemberAliasesFromClaimedTokens = mutation({
         .filter((q) => q.eq(q.field("id"), token.claimed_by))
         .first();
 
-      if (!claimantAccount?.linked_member_id) continue;
+      if (!claimantAccount?.member_id) continue;
 
-      const canonicalId = claimantAccount.linked_member_id;
+      const canonicalId = claimantAccount.member_id;
       const aliasId = token.target_member_id;
 
       if (canonicalId === aliasId) continue;
@@ -141,7 +141,7 @@ export const backfillFriendsFromGroups = mutation({
 
       for (const member of group.members) {
         // Skip if member is self
-        if (ownerAccount && ownerAccount.linked_member_id === member.id) {
+        if (ownerAccount && ownerAccount.member_id === member.id) {
           continue;
         }
 
@@ -180,8 +180,8 @@ export const fixLinkedMemberIds = mutation({
     let fixed = 0;
 
     for (const account of accounts) {
-      // Skip if already has a linked_member_id
-      if (account.linked_member_id) continue;
+      // Skip if already has a member_id
+      if (account.member_id) continue;
 
       // Find groups owned by this account
       const groups = await ctx.db
@@ -197,10 +197,10 @@ export const fixLinkedMemberIds = mutation({
 
         if (matchingMember) {
           await ctx.db.patch(account._id, {
-            linked_member_id: matchingMember.id,
+            member_id: matchingMember.id,
             updated_at: Date.now()
           });
-          console.log(`Fixed linked_member_id for ${account.email}: ${matchingMember.id}`);
+          console.log(`Fixed member_id for ${account.email}: ${matchingMember.id}`);
           fixed++;
           break;
         }
@@ -222,7 +222,7 @@ export const fixExpenseMemberIds = mutation({
     let expensesFixed = 0;
 
     for (const account of accounts) {
-      if (!account.linked_member_id) continue;
+      if (!account.member_id) continue;
 
       // Get all groups owned by this account
       const groups = await ctx.db
@@ -253,30 +253,28 @@ export const fixExpenseMemberIds = mutation({
 
         // Fix paid_by_member_id if it's not the linked_member_id but is in knownMemberIds
         // OR if it matches none of the group members (orphaned ID)
-        if (expense.paid_by_member_id !== account.linked_member_id) {
+        if (expense.paid_by_member_id !== account.member_id) {
           // Check if it was the user who paid (name-based matching in participants)
           const userParticipant = expense.participants?.find(
             (p: any) => p.name.toLowerCase() === account.display_name.toLowerCase()
           );
 
-          if (userParticipant && userParticipant.member_id !== account.linked_member_id) {
+          if (userParticipant && userParticipant.member_id !== account.member_id) {
             // This expense's participant is the user, update the member ID
-            patches.paid_by_member_id = account.linked_member_id;
+            patches.paid_by_member_id = account.member_id;
             patches.involved_member_ids = expense.involved_member_ids.map((id: string) =>
-              id === expense.paid_by_member_id ? account.linked_member_id : id
+              id === expense.paid_by_member_id ? account.member_id : id
             );
             patches.splits = expense.splits.map((s: any) => ({
               ...s,
-              member_id:
-                s.member_id === expense.paid_by_member_id ? account.linked_member_id : s.member_id
+              member_id: s.member_id === expense.paid_by_member_id ? account.member_id : s.member_id
             }));
             patches.participants = expense.participants.map((p: any) => ({
               ...p,
-              member_id:
-                p.member_id === expense.paid_by_member_id ? account.linked_member_id : p.member_id
+              member_id: p.member_id === expense.paid_by_member_id ? account.member_id : p.member_id
             }));
             patches.participant_member_ids = expense.participant_member_ids.map((id: string) =>
-              id === expense.paid_by_member_id ? account.linked_member_id : id
+              id === expense.paid_by_member_id ? account.member_id : id
             );
             needsPatch = true;
           }
@@ -411,14 +409,14 @@ export const clearLinkedMemberId = mutation({
     }
 
     await ctx.db.patch(user._id, {
-      linked_member_id: undefined,
+      member_id: undefined,
       updated_at: Date.now()
     });
 
     return {
       success: true,
       email: args.email,
-      previousLinkedMemberId: user.linked_member_id
+      previousLinkedMemberId: user.member_id
     };
   }
 });
@@ -442,10 +440,10 @@ export const setLinkedMemberId = mutation({
       return { success: false, error: "User not found" };
     }
 
-    const previousId = user.linked_member_id;
+    const previousId = user.member_id;
 
     await ctx.db.patch(user._id, {
-      linked_member_id: args.linked_member_id,
+      member_id: args.linked_member_id,
       updated_at: Date.now()
     });
 
@@ -517,9 +515,9 @@ export const backfillParticipantEmailsAdvanced = mutation({
     const memberIdToEmail = new Map<string, string>();
 
     for (const account of accounts) {
-      if (account.linked_member_id) {
-        memberIdToEmail.set(account.linked_member_id, account.email);
-        console.log(`Member ${account.linked_member_id} -> ${account.email}`);
+      if (account.member_id) {
+        memberIdToEmail.set(account.member_id, account.email);
+        console.log(`Member ${account.member_id} -> ${account.email}`);
       }
     }
 
