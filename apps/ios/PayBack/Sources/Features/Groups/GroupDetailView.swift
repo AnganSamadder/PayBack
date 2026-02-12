@@ -2,10 +2,8 @@ import SwiftUI
 
 struct GroupDetailView: View {
     @EnvironmentObject var store: AppStore
-    @AppStorage("showRealNames") private var showRealNames: Bool = true
     @Environment(\.dismiss) private var dismiss
     let groupId: UUID
-    let onBack: (() -> Void)?
     let onMemberTap: (GroupMember) -> Void
     let onExpenseTap: (Expense) -> Void
     @State private var showAddExpense = false
@@ -19,6 +17,9 @@ struct GroupDetailView: View {
     @State private var showMergeSheet = false
     @State private var showMergeErrorAlert = false
     @State private var mergeErrorMessage = ""
+
+    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
+    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
     
     // Get the live group from store to ensure updates are reflected
     private var group: SpendingGroup? {
@@ -27,22 +28,16 @@ struct GroupDetailView: View {
 
     init(
         group: SpendingGroup,
-        onBack: (() -> Void)? = nil,
         onMemberTap: @escaping (GroupMember) -> Void = { _ in },
         onExpenseTap: @escaping (Expense) -> Void = { _ in }
     ) {
         self.groupId = group.id
-        self.onBack = onBack
         self.onMemberTap = onMemberTap
         self.onExpenseTap = onExpenseTap
     }
 
     private func handleBack() {
-        if let onBack {
-            onBack()
-        } else {
-            dismiss()
-        }
+        dismiss()
     }
     
     var body: some View {
@@ -152,13 +147,22 @@ struct GroupDetailView: View {
     }
 
     private func expenseRow(_ exp: Expense) -> some View {
-        HStack {
+        let otherSplits = exp.splits.filter { !isMe($0.memberId) }
+        let allOthersSettled = !otherSplits.isEmpty && otherSplits.allSatisfy(\.isSettled)
+        let mySettled = isMe(exp.paidByMemberId)
+            ? allOthersSettled
+            : exp.isSettled(for: store.currentUser.id)
+
+        return HStack {
             VStack(alignment: .leading) {
                 HStack(spacing: 8) {
-                    Text(exp.description).font(.headline)
-                    
+                    Text(exp.description)
+                        .font(.headline)
+                        .foregroundStyle(mySettled ? .secondary : .primary)
+                        .strikethrough(mySettled)
+
                     // Settlement status indicator - green if current user settled
-                    if exp.isSettled(for: store.currentUser.id) {
+                    if mySettled {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 14))
                             .foregroundStyle(.green)
@@ -174,8 +178,32 @@ struct GroupDetailView: View {
             VStack(alignment: .trailing) {
                 Text(exp.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                     .font(.headline)
-                
-                if !exp.isSettled && exp.settledSplits.count > 0 {
+                    .foregroundStyle(mySettled ? .secondary : .primary)
+
+                // "Who owes" subtitle
+                if isMe(exp.paidByMemberId) {
+                    let totalLent = otherSplits.filter { !$0.isSettled }.reduce(0.0) { $0 + $1.amount }
+
+                    if allOthersSettled {
+                        Text("Settled \(currency(otherSplits.reduce(0.0) { $0 + $1.amount }))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if totalLent > 0 {
+                        Text("You lent \(currency(totalLent))")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                } else if let mySplit = exp.splits.first(where: { isMe($0.memberId) }) {
+                    if mySplit.isSettled {
+                        Text("You paid \(currency(mySplit.amount))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("You owe \(currency(mySplit.amount))")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                } else if !exp.isSettled && exp.settledSplits.count > 0 {
                     Text("\(exp.settledSplits.count)/\(exp.splits.count) settled")
                         .font(.caption)
                         .foregroundStyle(AppTheme.settlementText)
@@ -293,7 +321,7 @@ struct GroupDetailView: View {
 
         // Find the AccountFriend for this member (check both primary and remapped IDs)
         if let accountFriend = store.friends.first(where: { isMemberMatch($0.memberId, member) }) {
-            return accountFriend.displayName(showRealNames: showRealNames)
+            return accountFriend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return member.name
     }
@@ -306,7 +334,7 @@ struct GroupDetailView: View {
 
         // Find the AccountFriend for this member (check both primary and remapped IDs)
         if let accountFriend = store.friends.first(where: { isMemberMatch($0.memberId, member) }) {
-            return accountFriend.secondaryDisplayName(showRealNames: showRealNames)
+            return accountFriend.secondaryDisplayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return nil
     }
@@ -621,60 +649,62 @@ private struct GroupIconView: View {
 // MARK: - Settle Confirmation View
 private struct SettleConfirmationView: View {
     @EnvironmentObject var store: AppStore
-    @AppStorage("showRealNames") private var showRealNames: Bool = true
     let group: SpendingGroup
     let selectedExpenseIds: Set<UUID>
     let selectedExpenses: [Expense]
     let paymentRecipients: [(member: GroupMember, amount: Double)]
     let onConfirm: () -> Void
     let onCancel: () -> Void
+
+    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
+    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
     
     private func memberName(for id: UUID, in expense: Expense) -> String {
         // Current user always shows their name
         if id == store.currentUser.id {
             return store.currentUser.name
         }
-        
+
         // Try to find in friends list first (respects display preference)
         if let friend = store.friends.first(where: { $0.memberId == id }) {
-            return friend.displayName(showRealNames: showRealNames)
+            return friend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
-        
+
         // Try from the group members
         if let member = group.members.first(where: { $0.id == id }) {
             return member.name
         }
-        
+
         // Try from cached participantNames in the expense
         if let cachedName = expense.participantNames?[id] {
             return cachedName
         }
-        
+
         return "Unknown"
     }
-    
+
     private func recipientDisplayName(_ member: GroupMember) -> String {
         // Current user always shows their name
         if store.isCurrentUser(member) {
             return member.name
         }
-        
+
         // Find the AccountFriend for this member
         if let accountFriend = store.friends.first(where: { $0.memberId == member.id }) {
-            return accountFriend.displayName(showRealNames: showRealNames)
+            return accountFriend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return member.name
     }
-    
+
     private func recipientSecondaryName(_ member: GroupMember) -> String? {
         // Current user has no secondary name
         if store.isCurrentUser(member) {
             return nil
         }
-        
+
         // Find the AccountFriend for this member
         if let accountFriend = store.friends.first(where: { $0.memberId == member.id }) {
-            return accountFriend.secondaryDisplayName(showRealNames: showRealNames)
+            return accountFriend.secondaryDisplayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return nil
     }

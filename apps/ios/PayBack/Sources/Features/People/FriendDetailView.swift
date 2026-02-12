@@ -18,6 +18,7 @@ struct FriendDetailView: View {
     @State private var isEditingNickname = false
     @State private var nicknameText = ""
     @State private var preferNickname = false
+    @State private var displayPreferenceSelection: String? = nil
     @State private var isSavingNickname = false
     @State private var showMergeSheet = false
     @State private var showDeleteConfirmation = false
@@ -34,6 +35,9 @@ struct FriendDetailView: View {
         
         var id: String { rawValue }
     }
+
+    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
+    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
     
     private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
@@ -149,6 +153,14 @@ struct FriendDetailView: View {
     
     private var isFriend: Bool {
         accountFriend != nil
+    }
+    
+    private var availableTabs: [FriendDetailTab] {
+        if isFriend {
+            return FriendDetailTab.allCases
+        } else {
+            return [.groups]
+        }
     }
     
     private var unlinkedFriends: [AccountFriend] {
@@ -459,25 +471,25 @@ struct FriendDetailView: View {
                     .font(.system(.body, design: .rounded))
                 
                 if isLinked {
-                    Toggle("Prefer Nickname", isOn: $preferNickname)
-                        .font(.system(.body, design: .rounded))
-                        .tint(AppTheme.brand)
-                        .disabled(!(accountFriend?.hasValidNickname ?? false))
-                        .opacity((accountFriend?.hasValidNickname ?? false) ? 1.0 : 0.5)
-                        .onChange(of: preferNickname) { oldValue, newValue in
-                            if newValue && nicknameText.isEmpty {
-                                if let original = accountFriend?.originalNickname, !original.isEmpty {
-                                    nicknameText = original
-                                }
-                            }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Display Preference")
+                            .font(.system(.subheadline, design: .rounded, weight: .medium))
+                            .foregroundStyle(.secondary)
+
+                        Picker("Display Preference", selection: $displayPreferenceSelection) {
+                            Text("Default").tag(Optional<String>.none)
+                            Text("Nickname").tag(Optional<String>.some("nickname"))
+                            Text("Real Name").tag(Optional<String>.some("real_name"))
                         }
+                        .pickerStyle(.segmented)
+                    }
                 }
                 
                 if currentNickname != nil {
                     Button(action: {
                         Haptics.selection()
                         Task {
-                            await saveNickname(nil, preferNickname: false)
+                            await saveNickname(nil, preferNickname: false, displayPreference: nil)
                         }
                     }) {
                         HStack(spacing: 8) {
@@ -521,7 +533,7 @@ struct FriendDetailView: View {
                         Haptics.selection()
                         Task {
                             let trimmed = nicknameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                            await saveNickname(trimmed.isEmpty ? nil : trimmed, preferNickname: preferNickname)
+                            await saveNickname(trimmed.isEmpty ? nil : trimmed, preferNickname: preferNickname, displayPreference: displayPreferenceSelection)
                         }
                     }
                     .disabled(isSavingNickname)
@@ -588,7 +600,7 @@ struct FriendDetailView: View {
         return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
     }
     
-    private func saveNickname(_ nickname: String?, preferNickname: Bool) async {
+    private func saveNickname(_ nickname: String?, preferNickname: Bool, displayPreference: String? = nil) async {
         isSavingNickname = true
 
         let normalizedNickname: String? = {
@@ -620,6 +632,7 @@ struct FriendDetailView: View {
         do {
             try await store.updateFriendNickname(memberId: friend.id, nickname: normalizedNickname)
             try await store.updateFriendPreferNickname(memberId: friend.id, prefer: preferNickname)
+            try await store.updateFriendDisplayPreference(memberId: friend.id, preference: displayPreference)
             
             await MainActor.run {
                 // Trigger success haptic
@@ -702,8 +715,19 @@ struct FriendDetailView: View {
                     .environmentObject(store)
             }
         }
+        .onAppear {
+            if isFriend {
+                selectedTab = .direct
+            } else {
+                selectedTab = .groups
+            }
+        }
         .onChange(of: friend.id) { oldValue, newValue in
-            selectedTab = .direct
+            if isFriend {
+                selectedTab = .direct
+            } else {
+                selectedTab = .groups
+            }
         }
         .sheet(isPresented: $showShareSheet) {
             if let inviteLink = inviteLinkToShare {
@@ -842,38 +866,13 @@ struct FriendDetailView: View {
                 
                 // Name display with nickname support
                 VStack(spacing: 4) {
-                    if isLinked {
-                        if let currentNickname = currentNickname {
-                            if accountFriend?.preferNickname == true {
-                                // Prefer Nickname: Show nickname big, real name small
-                                Text(currentNickname)
-                                    .font(.system(.title2, design: .rounded, weight: .bold))
-                                    .foregroundStyle(.primary)
-                                
-                                Text(friend.name)
-                                    .font(.system(.subheadline, design: .rounded, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                // Default: Show real name big, nickname small
-                                Text(friend.name)
-                                    .font(.system(.title2, design: .rounded, weight: .bold))
-                                    .foregroundStyle(.primary)
-                                
-                                Text("aka \"\(currentNickname)\"")
-                                    .font(.system(.subheadline, design: .rounded, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                            }
-                        } else {
-                            // Linked but no nickname: Show real name
-                            Text(friend.name)
-                                .font(.system(.title2, design: .rounded, weight: .bold))
-                                .foregroundStyle(.primary)
-                        }
-                    } else {
-                        // Unlinked: Show name (which is nickname/local name)
-                        Text(displayName)
-                            .font(.system(.title2, design: .rounded, weight: .bold))
-                            .foregroundStyle(.primary)
+                    Text(accountFriend?.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames) ?? friend.name)
+                        .font(.system(.title2, design: .rounded, weight: .bold))
+                        .foregroundStyle(.primary)
+                    if let secondary = accountFriend?.secondaryDisplayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames) {
+                        Text(secondary)
+                            .font(.system(.subheadline, design: .rounded, weight: .medium))
+                            .foregroundStyle(.secondary)
                     }
                     
                     // Additional info: Original name (what you called them before linking)
@@ -902,6 +901,7 @@ struct FriendDetailView: View {
                     Haptics.selection()
                     nicknameText = currentNickname ?? ""
                     preferNickname = accountFriend?.preferNickname ?? false
+                    displayPreferenceSelection = accountFriend?.displayPreference
                     isEditingNickname = true
                 }) {
                     HStack(spacing: 4) {
@@ -1028,7 +1028,7 @@ struct FriendDetailView: View {
     
     private var tabSelector: some View {
         HStack(spacing: 8) {
-            ForEach(FriendDetailTab.allCases) { tab in
+            ForEach(availableTabs) { tab in
                 Button(action: {
                     Haptics.selection()
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
@@ -1238,16 +1238,34 @@ struct DirectExpenseCard: View {
         store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
+    private var friendSplit: ExpenseSplit? {
+        expense.splits.first(where: { isFriend($0.memberId) })
+    }
+
+    private var mySplit: ExpenseSplit? {
+        expense.splits.first(where: { isMe($0.memberId) })
+    }
+
+    private var isRelevantSplitSettled: Bool {
+        if isMe(expense.paidByMemberId) {
+            return friendSplit?.isSettled ?? false
+        } else {
+            return mySplit?.isSettled ?? false
+        }
+    }
+
     var body: some View {
         let content = VStack(spacing: AppMetrics.FriendDetail.expenseCardInternalSpacing) {
             HStack {
                 GroupIcon(name: expense.description)
                     .frame(width: AppMetrics.FriendDetail.expenseIconSize, height: AppMetrics.FriendDetail.expenseIconSize)
+                    .opacity(isRelevantSplitSettled ? 0.6 : 1.0)
 
                 VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.expenseTextSpacing) {
                     Text(expense.description)
                         .font(.system(.body, design: .rounded, weight: .medium))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
+                        .strikethrough(isRelevantSplitSettled)
 
                     Text(expense.date, style: .date)
                         .font(.system(.caption, design: .rounded))
@@ -1259,37 +1277,37 @@ struct DirectExpenseCard: View {
                 VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.expenseAmountSpacing) {
                     Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                         .font(.system(.body, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
 
                     if isMe(expense.paidByMemberId) {
-                        if let friendSplit = expense.splits.first(where: { isFriend($0.memberId) }) {
-                            if friendSplit.isSettled {
+                        if let split = friendSplit {
+                            if split.isSettled {
                                 HStack(spacing: 4) {
-                                    Text("You paid \(currency(friendSplit.amount))")
+                                    Text("\(friend.name) paid \(currency(split.amount))")
                                         .font(.system(.caption, design: .rounded, weight: .medium))
-                                        .foregroundStyle(.green)
+                                        .foregroundStyle(.secondary)
                                     Image(systemName: "checkmark.circle.fill")
                                         .font(.system(size: 12))
                                         .foregroundStyle(.green)
                                 }
                             } else {
-                                Text("\(friend.name) owes \(currency(friendSplit.amount))")
+                                Text("\(friend.name) owes \(currency(split.amount))")
                                     .font(.system(.caption, design: .rounded, weight: .medium))
                                     .foregroundStyle(.green)
                             }
                         }
-                    } else if let userSplit = expense.splits.first(where: { isMe($0.memberId) }) {
-                        if userSplit.isSettled {
+                    } else if let split = mySplit {
+                        if split.isSettled {
                             HStack(spacing: 4) {
-                                Text("\(friend.name) paid \(currencyPositive(userSplit.amount))")
+                                Text("You paid \(currencyPositive(split.amount))")
                                     .font(.system(.caption, design: .rounded, weight: .medium))
-                                    .foregroundStyle(.green)
+                                    .foregroundStyle(.secondary)
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 12))
                                     .foregroundStyle(.green)
                             }
                         } else {
-                            Text("You owe \(currencyPositive(userSplit.amount))")
+                            Text("You owe \(currencyPositive(split.amount))")
                                 .font(.system(.caption, design: .rounded, weight: .medium))
                                 .foregroundStyle(.red)
                         }
@@ -1395,15 +1413,33 @@ struct GroupExpenseRow: View {
         store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
+    private var friendSplit: ExpenseSplit? {
+        expense.splits.first(where: { isFriend($0.memberId) })
+    }
+
+    private var mySplit: ExpenseSplit? {
+        expense.splits.first(where: { isMe($0.memberId) })
+    }
+
+    private var isRelevantSplitSettled: Bool {
+        if isMe(expense.paidByMemberId) {
+            return friendSplit?.isSettled ?? false
+        } else {
+            return mySplit?.isSettled ?? false
+        }
+    }
+
     var body: some View {
         HStack(spacing: AppMetrics.FriendDetail.groupExpenseRowSpacing) {
             GroupIcon(name: expense.description)
                 .frame(width: AppMetrics.FriendDetail.groupExpenseIconSize, height: AppMetrics.FriendDetail.groupExpenseIconSize)
+                .opacity(isRelevantSplitSettled ? 0.6 : 1.0)
 
             VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.groupExpenseTextSpacing) {
                 Text(expense.description)
                     .font(.system(.body, design: .rounded, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
+                    .strikethrough(isRelevantSplitSettled)
 
                 Text(expense.date, style: .date)
                     .font(.system(.caption, design: .rounded))
@@ -1415,37 +1451,41 @@ struct GroupExpenseRow: View {
             VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.groupExpenseAmountSpacing) {
                 Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                     .font(.system(.body, design: .rounded, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
 
                 // Show the relationship between current user and friend
                 if isMe(expense.paidByMemberId) {
-                    // Current user paid - friend owes current user
-                    if let friendSplit = expense.splits.first(where: { isFriend($0.memberId) }) {
-                        HStack(spacing: 4) {
-                            Text("\(friend.name) owes \(currency(friendSplit.amount))")
-                                .font(.system(.caption, design: .rounded, weight: .medium))
-                                .foregroundStyle(.green)
-                            
-                            if friendSplit.isSettled {
+                    if let split = friendSplit {
+                        if split.isSettled {
+                            HStack(spacing: 4) {
+                                Text("\(friend.name) paid \(currency(split.amount))")
+                                    .font(.system(.caption, design: .rounded, weight: .medium))
+                                    .foregroundStyle(.secondary)
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 12))
                                     .foregroundStyle(.green)
                             }
+                        } else {
+                            Text("\(friend.name) owes \(currency(split.amount))")
+                                .font(.system(.caption, design: .rounded, weight: .medium))
+                                .foregroundStyle(.green)
                         }
                     }
                 } else if isFriend(expense.paidByMemberId) {
-                    // Friend paid - current user owes friend
-                    if let userSplit = expense.splits.first(where: { isMe($0.memberId) }) {
-                        HStack(spacing: 4) {
-                            Text("You owe \(currencyPositive(userSplit.amount))")
-                                .font(.system(.caption, design: .rounded, weight: .medium))
-                                .foregroundStyle(.red)
-                            
-                            if userSplit.isSettled {
+                    if let split = mySplit {
+                        if split.isSettled {
+                            HStack(spacing: 4) {
+                                Text("You paid \(currencyPositive(split.amount))")
+                                    .font(.system(.caption, design: .rounded, weight: .medium))
+                                    .foregroundStyle(.secondary)
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 12))
                                     .foregroundStyle(.green)
                             }
+                        } else {
+                            Text("You owe \(currencyPositive(split.amount))")
+                                .font(.system(.caption, design: .rounded, weight: .medium))
+                                .foregroundStyle(.red)
                         }
                     }
                 }

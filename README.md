@@ -39,11 +39,16 @@ npx convex deploy
 
 ### Environment URLs
 
-The app automatically selects the correct Convex URL:
-- **Debug builds**: Uses development Convex deployment
-- **Release builds**: Uses production Convex deployment
+The app automatically selects the correct Convex deployment using build config + scheme:
+- **Debug config**: development Convex deployment (local runs)
+- **Internal config**: development Convex deployment (internal testing archives)
+- **Release config**: production Convex deployment (external TestFlight + App Store)
 
-No environment variables are required for the iOS app itself - URLs are configured in `AppConfig.swift`.
+Scheme mapping:
+- `PayBackInternal` archives with `Internal`
+- `PayBack` archives with `Release`
+
+No runtime env vars are required for iOS app routing; `PAYBACK_CONVEX_ENV` is baked into `Info.plist` at build time.
 
 ## Authentication
 

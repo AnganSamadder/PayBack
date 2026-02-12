@@ -38,3 +38,7 @@ npx convex deploy
 For CI/XcodeCloud deployment, set these environment variables:
 - `CONVEX_DEPLOY_KEY`: Convex deploy key (secret)
 - `CONVEX_DEPLOY_ON_CI=1`: Safety switch to enable deploy from CI
+
+For iOS app runtime database selection in Xcode Cloud:
+- Internal testing workflow should build/archive scheme `PayBackInternal` (development Convex DB).
+- External TestFlight / App Store workflow should build/archive scheme `PayBack` (production Convex DB).

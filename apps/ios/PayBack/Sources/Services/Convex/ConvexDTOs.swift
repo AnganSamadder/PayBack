@@ -227,6 +227,9 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
     let name: String
     let nickname: String?
     let original_name: String?
+    let first_name: String?
+    let last_name: String?
+    let display_preference: String?
     let status: String?
     let has_linked_account: Bool?
     let linked_account_id: String?
@@ -235,12 +238,15 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
     let alias_member_ids: [String]?
     let profile_image_url: String?
     let profile_avatar_color: String?
-    
+
     init(
         member_id: String,
         name: String,
         nickname: String?,
         original_name: String?,
+        first_name: String? = nil,
+        last_name: String? = nil,
+        display_preference: String? = nil,
         status: String? = nil,
         has_linked_account: Bool?,
         linked_account_id: String?,
@@ -254,6 +260,9 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
         self.name = name
         self.nickname = nickname
         self.original_name = original_name
+        self.first_name = first_name
+        self.last_name = last_name
+        self.display_preference = display_preference
         self.status = status
         self.has_linked_account = has_linked_account
         self.linked_account_id = linked_account_id
@@ -291,7 +300,7 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
             profile_avatar_color: profile_avatar_color
         )
     }
-    
+
     /// Maps to domain AccountFriend
     func toAccountFriend() -> AccountFriend? {
         guard let memberId = UUID(uuidString: member_id) else { return nil }
@@ -303,6 +312,9 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .nilIfEmpty
+        let safeFirstName = first_name?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let safeLastName = last_name?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let safeDisplayPreference = display_preference?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         var identityAliases = alias_member_ids?.compactMap { UUID(uuidString: $0) } ?? []
         if let linkedMemberId = linked_member_id.flatMap({ UUID(uuidString: $0) }) {
             identityAliases.append(linkedMemberId)
@@ -313,6 +325,9 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
             name: safeName,
             nickname: safeNickname,
             originalName: original_name,
+            firstName: safeFirstName,
+            lastName: safeLastName,
+            displayPreference: safeDisplayPreference,
             hasLinkedAccount: has_linked_account ?? false,
             linkedAccountId: safeLinkedAccountId,
             linkedAccountEmail: safeLinkedAccountEmail,
@@ -335,15 +350,37 @@ struct ConvexUserAccountDTO: Decodable, Sendable {
     let id: String
     let email: String
     let display_name: String?
+    let first_name: String?
+    let last_name: String?
     let profile_image_url: String?
     let profile_avatar_color: String?
-    
+
+    init(
+        id: String,
+        email: String,
+        display_name: String?,
+        first_name: String? = nil,
+        last_name: String? = nil,
+        profile_image_url: String?,
+        profile_avatar_color: String?
+    ) {
+        self.id = id
+        self.email = email
+        self.display_name = display_name
+        self.first_name = first_name
+        self.last_name = last_name
+        self.profile_image_url = profile_image_url
+        self.profile_avatar_color = profile_avatar_color
+    }
+
     /// Maps to domain UserAccount
     func toUserAccount() -> UserAccount {
         UserAccount(
             id: id,
             email: email,
             displayName: display_name ?? email,
+            firstName: first_name,
+            lastName: last_name,
             profileImageUrl: profile_image_url,
             profileColorHex: profile_avatar_color
         )

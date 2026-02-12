@@ -49,6 +49,49 @@ final class ConvexConfigTests: XCTestCase {
     func testConvexConfig_deploymentUrl_matchesCurrent() {
         XCTAssertEqual(ConvexConfig.deploymentUrl, ConvexConfig.current.url)
     }
+
+    func testConvexConfig_bundleDeclaresExplicitEnvironment() {
+        let rawValue = Bundle.main.object(forInfoDictionaryKey: "PAYBACK_CONVEX_ENV") as? String
+        XCTAssertNotNil(rawValue, "PAYBACK_CONVEX_ENV must be set in build settings")
+    }
+
+    func testConvexConfig_currentMatchesBundleEnvironmentWhenPresent() {
+        guard let rawValue = Bundle.main.object(forInfoDictionaryKey: "PAYBACK_CONVEX_ENV") as? String else {
+            XCTFail("PAYBACK_CONVEX_ENV missing from bundle")
+            return
+        }
+
+        switch rawValue.lowercased() {
+        case "development":
+            XCTAssertEqual(ConvexConfig.current, .development)
+        case "production":
+            XCTAssertEqual(ConvexConfig.current, .production)
+        default:
+            XCTFail("Unexpected PAYBACK_CONVEX_ENV value: \(rawValue)")
+        }
+    }
+
+    func testAppConfig_resolveConvexEnvironment_prefersExplicitValue() {
+        XCTAssertEqual(
+            AppConfig.resolveConvexEnvironment(rawValue: "development", fallbackIsDebugBuild: false),
+            .development
+        )
+        XCTAssertEqual(
+            AppConfig.resolveConvexEnvironment(rawValue: "production", fallbackIsDebugBuild: true),
+            .production
+        )
+    }
+
+    func testAppConfig_resolveConvexEnvironment_usesFallbackForInvalidValue() {
+        XCTAssertEqual(
+            AppConfig.resolveConvexEnvironment(rawValue: "invalid", fallbackIsDebugBuild: true),
+            .development
+        )
+        XCTAssertEqual(
+            AppConfig.resolveConvexEnvironment(rawValue: nil, fallbackIsDebugBuild: false),
+            .production
+        )
+    }
     
     #if DEBUG
     func testConvexConfig_current_isDevelopmentInDebug() {

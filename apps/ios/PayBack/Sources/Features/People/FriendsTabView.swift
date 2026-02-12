@@ -140,7 +140,6 @@ struct FriendsTabView: View {
 
 private struct FriendsList: View {
     @EnvironmentObject var store: AppStore
-    @AppStorage("showRealNames") private var showRealNames: Bool = true
     @AppStorage("friendsSortOrder") private var sortOrder: SortOrder = .alphabetical
     @AppStorage("friendsSortAscending") private var isAscending: Bool = true
     @State private var friendToDelete: GroupMember?
@@ -158,6 +157,9 @@ private struct FriendsList: View {
             }
         }
     }
+
+    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
+    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
     
     var body: some View {
         Group {
@@ -358,15 +360,15 @@ private struct FriendsList: View {
     private func friendDisplayName(_ friend: GroupMember) -> String {
         // Find the AccountFriend for this member using identity equivalence.
         if let accountFriend = store.friends.first(where: { store.areSamePerson($0.memberId, friend.id) }) {
-            return accountFriend.displayName(showRealNames: showRealNames)
+            return accountFriend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return friend.name
     }
-    
+
     private func friendSecondaryName(_ friend: GroupMember) -> String? {
         // Find the AccountFriend for this member using identity equivalence.
         if let accountFriend = store.friends.first(where: { store.areSamePerson($0.memberId, friend.id) }) {
-            return accountFriend.secondaryDisplayName(showRealNames: showRealNames)
+            return accountFriend.secondaryDisplayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return nil
     }

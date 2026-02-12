@@ -20,8 +20,8 @@ enum ConvexEnvironment {
 /// Helper struct to access the current Convex configuration.
 struct ConvexConfig {
     /// The current environment, determined by AppConfig
-    /// - DEBUG builds → development
-    /// - Release/CI builds → production
+    /// - Debug/Internal configs → development
+    /// - Release config → production
     static var current: ConvexEnvironment {
         AppConfig.environment
     }
