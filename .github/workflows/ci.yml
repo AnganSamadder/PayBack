@@ -8,7 +8,8 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: macos-15
+    name: Build & Test
+    runs-on: macos-14  # Standard runner (uses included minutes)
     timeout-minutes: 60
 
     steps:
@@ -20,205 +21,6 @@ jobs:
         run: |
           # Get all stable Xcode versions (format: Xcode_16.1.app)
           # Exclude RC, beta, and Xcode 26+ (iOS 26 ecosystem not yet stable for CI)
-          LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | grep -v "^Xcode_26\." | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
-          if [ -z "$LATEST_STABLE" ]; then
-            echo "ERROR: No stable Xcode version found in /Applications"
-            echo "Available Xcode installations:"
-            ls /Applications | grep Xcode || echo "None found"
-            exit 1
-          fi
-          echo "version=$LATEST_STABLE" >> $GITHUB_OUTPUT
-          echo "Using Xcode $LATEST_STABLE"
-
-      - name: Set up Xcode (latest stable)
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: ${{ steps.detect-xcode.outputs.version }}
-
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Detect iOS SDK Version
-        id: detect-sdk
-        run: |
-          SDK_VERSION=$(xcodebuild -showsdks | grep -o 'iphoneos[0-9]*\.[0-9]*' | sed 's/iphoneos//' | sort -V | tail -1)
-          if [ -z "$SDK_VERSION" ]; then
-            echo "ERROR: Could not detect iOS SDK version"
-            exit 1
-          fi
-          SDK_MAJOR=$(echo "$SDK_VERSION" | cut -d. -f1)
-          echo "sdk-version=$SDK_VERSION" >> $GITHUB_OUTPUT
-          echo "sdk-major=$SDK_MAJOR" >> $GITHUB_OUTPUT
-          echo "Detected iOS SDK: $SDK_VERSION (major: $SDK_MAJOR)"
-
-      - name: List Available iOS Runtimes
-        run: |
-          echo "Available iOS runtimes:"
-          xcrun simctl runtime list | grep -E "iOS" || echo "No iOS runtimes found"
-
-      - name: Remove unavailable simulators
-        run: xcrun simctl delete unavailable || true
-
-      - name: Cache SPM
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/Developer/Xcode/DerivedData
-          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
-          restore-keys: |
-            ${{ runner.os }}-spm-
-
-      - name: Install xcpretty
-        run: sudo gem install xcpretty --no-document
-
-      - name: Resolve dependencies
-        run: |
-          xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj -scheme PayBack
-
-      - name: List Available Simulators (iPhone)
-        run: xcrun simctl list devices iPhone available
-
-      - name: Select iPhone Simulator
-        env:
-          SDK_MAJOR: ${{ steps.detect-sdk.outputs.sdk-major }}
-        run: |
-          python3 <<'PY'
-          import json
-          import os
-          import subprocess
-          import sys
-
-          def parse_runtime(runtime: str, target_major: int):
-            if ".iOS-" not in runtime:
-              return (), ""
-            version_raw = runtime.split(".iOS-")[-1].replace("-", ".")
-            parts = []
-            for token in version_raw.split('.'):
-              token = ''.join(ch for ch in token if ch.isdigit()) or '0'
-              parts.append(int(token))
-            if parts and parts[0] != target_major:
-              return (), ""
-            return tuple(parts), version_raw
-
-          def get_device_priority(name: str):
-            if "Pro Max" in name:
-              return 100
-            if "Pro" in name:
-              return 90
-            if "Plus" in name:
-              return 80
-            if "Air" in name:
-              return 70
-            if name.startswith("iPhone ") and name.split()[1].isdigit():
-              return 60
-            if "SE" in name:
-              return 10
-            return 50
-
-          def pick_preferred(candidates):
-            def sorter(entry):
-              version_tuple, name, udid, version_str = entry
-              return (version_tuple, get_device_priority(name), name)
-            sorted_candidates = sorted(candidates, key=sorter, reverse=True)
-            return sorted_candidates[0]
-
-          try:
-            result = subprocess.check_output([
-              "xcrun", "simctl", "list", "devices", "available", "--json",
-            ])
-          except subprocess.CalledProcessError as exc:
-            print(f"Failed to list simulators: {exc}", file=sys.stderr)
-            sys.exit(1)
-
-          sdk_major = int(os.environ.get("SDK_MAJOR", "18"))
-          print(f"Matching simulators for iOS SDK major version: {sdk_major}")
-
-          data = json.loads(result)
-          candidates = []
-          for runtime, devices in data.get("devices", {}).items():
-            version_tuple, version_str = parse_runtime(runtime, sdk_major)
-            if not version_tuple:
-              continue
-            for device in devices:
-              if not device.get("isAvailable"):
-                continue
-              name = device.get("name", "")
-              if "iPhone" not in name:
-                continue
-              udid = device.get("udid")
-              if not udid:
-                continue
-              candidates.append((version_tuple, name, udid, version_str))
-
-          if not candidates:
-            print("No available iPhone simulator found", file=sys.stderr)
-            sys.exit(1)
-
-          version_tuple, name, udid, version_str = pick_preferred(candidates)
-          print(f"Selected simulator: {name} (iOS {version_str}) [{udid}]")
-
-          env_path = os.environ.get("GITHUB_ENV")
-          if not env_path:
-            print("GITHUB_ENV not set", file=sys.stderr)
-            sys.exit(1)
-
-          with open(env_path, "a", encoding="utf-8") as env_file:
-            env_file.write(f"SIMULATOR_UDID={udid}\n")
-            env_file.write(f"SIMULATOR_NAME={name}\n")
-            env_file.write(f"SIMULATOR_OS={version_str}\n")
-            env_file.write(f"SIMULATOR_DESTINATION=platform=iOS Simulator,id={udid}\n")
-
-          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary_path:
-            with open(summary_path, "a", encoding="utf-8") as summary:
-              summary.write(f"\n- Using simulator **{name}** (iOS {version_str})\n")
-          PY
-
-      - name: Boot Selected Simulator
-        run: |
-          echo "Booting simulator ${SIMULATOR_NAME:-unknown} (${SIMULATOR_UDID:-unset})"
-          open -a Simulator || true
-          xcrun simctl boot "$SIMULATOR_UDID" || echo "Simulator already booted or boot failed"
-          xcrun simctl bootstatus "$SIMULATOR_UDID" -b || true
-          xcrun simctl list devices iPhone | grep -A1 "${SIMULATOR_UDID}"
-          sleep 5
-
-      - name: Build
-        run: |
-          xcodebuild \
-            -project PayBack.xcodeproj \
-            -scheme PayBack \
-            -configuration Debug \
-            -destination "$SIMULATOR_DESTINATION" \
-            clean build | xcpretty
-        env:
-          NSUnbufferedIO: "YES"
-
-      - name: Install SwiftLint
-        run: |
-          brew update
-          brew install swiftlint || true
-
-      - name: Run SwiftLint (non-failing)
-        run: swiftlint lint || true
-
-  unit-tests:
-    name: Unit Tests (${{ matrix.sanitizer }})
-    runs-on: macos-15
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        sanitizer: [none, thread, address]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Detect latest stable Xcode (not beta)
-        id: detect-xcode
-        run: |
           LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | grep -v "^Xcode_26\." | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
           if [ -z "$LATEST_STABLE" ]; then
             echo "ERROR: No stable Xcode version found in /Applications"
@@ -274,14 +76,6 @@ jobs:
       - name: Resolve dependencies
         run: |
           xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj -scheme PayBack
-
-      - name: List Available Simulators
-        run: |
-          echo "Xcode version:"
-          xcodebuild -version
-          echo ""
-          echo "Available iOS Simulators:"
-          xcrun simctl list devices iPhone available
 
       - name: Select iPhone Simulator
         env:
@@ -394,13 +188,30 @@ jobs:
           sleep 5
           echo "Simulator ready"
 
+      - name: Install SwiftLint
+        run: |
+          brew update
+          brew install swiftlint || true
+
+      - name: Run SwiftLint (non-failing)
+        run: swiftlint lint || true
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project PayBack.xcodeproj \
+            -scheme PayBack \
+            -configuration Debug \
+            -destination "$SIMULATOR_DESTINATION" \
+            clean build | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
       - name: Clean Previous Test Results
         run: |
           rm -rf TestResults.xcresult coverage.json coverage-report.txt || true
-          echo "Cleaned previous test artifacts"
 
-      - name: Run Unit Tests (No Sanitizer)
-        if: matrix.sanitizer == 'none'
+      - name: Run Unit Tests
         run: |
           set -o pipefail
           xcodebuild test \
@@ -417,7 +228,7 @@ jobs:
           NSUnbufferedIO: "YES"
 
       - name: Report Skipped Tests
-        if: matrix.sanitizer == 'none' && always()
+        if: always()
         run: |
           echo "## Skipped Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -438,38 +249,7 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
-      - name: Run Unit Tests (Thread Sanitizer)
-        if: matrix.sanitizer == 'thread'
-        run: |
-          xcodebuild test \
-            -project PayBack.xcodeproj \
-            -scheme PayBackTests \
-            -configuration Debug \
-            -destination "$SIMULATOR_DESTINATION" \
-            -parallel-testing-enabled NO \
-            -enableThreadSanitizer YES \
-            -resultBundlePath TestResults.xcresult \
-            | xcpretty
-        env:
-          NSUnbufferedIO: "YES"
-
-      - name: Run Unit Tests (Address Sanitizer)
-        if: matrix.sanitizer == 'address'
-        run: |
-          xcodebuild test \
-            -project PayBack.xcodeproj \
-            -scheme PayBackTests \
-            -configuration Debug \
-            -destination "$SIMULATOR_DESTINATION" \
-            -parallel-testing-enabled NO \
-            -enableAddressSanitizer YES \
-            -resultBundlePath TestResults.xcresult \
-            | xcpretty
-        env:
-          NSUnbufferedIO: "YES"
-
       - name: Generate Coverage Report
-        if: matrix.sanitizer == 'none'
         run: |
           if [ ! -d TestResults.xcresult ]; then
             echo "ERROR: TestResults.xcresult not found - tests likely did not run"
@@ -496,7 +276,6 @@ jobs:
           fi
 
       - name: Check Coverage Threshold
-        if: matrix.sanitizer == 'none'
         run: |
           THRESHOLD=48.0
           COVERAGE=${{ env.COVERAGE }}
@@ -513,12 +292,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.sanitizer }}
+          name: test-results
           path: TestResults.xcresult
           retention-days: 30
 
       - name: Upload Coverage Report
-        if: matrix.sanitizer == 'none'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report

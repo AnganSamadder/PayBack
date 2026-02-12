@@ -3,6 +3,8 @@ import PhotosUI
 
 struct ProfileView: View {
     @EnvironmentObject var store: AppStore
+    @Binding var path: [ProfileRoute]
+    var rootResetToken: UUID = UUID()
     @State private var showLogoutConfirmation = false
     @State private var showSettings = false
     @State private var showImportExport = false
@@ -18,7 +20,7 @@ struct ProfileView: View {
     @State private var showUploadError = false
     
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 32) {
                     // Profile header with avatar and user info
@@ -38,6 +40,7 @@ struct ProfileView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 32)
             }
+            .id(rootResetToken)
             .background(AppTheme.background.ignoresSafeArea())
             .safeAreaInset(edge: .top) {
                 VStack(spacing: 0) {
