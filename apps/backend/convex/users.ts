@@ -25,23 +25,23 @@ export const store = mutation({
       // For now, we just return the existing user's ID
       // We could patch the display_name if it changed
       if (user.display_name !== identity.name && identity.name) {
-          await ctx.db.patch(user._id, { display_name: identity.name, updated_at: Date.now() });
+        await ctx.db.patch(user._id, { display_name: identity.name, updated_at: Date.now() });
       }
       return user._id;
     }
 
     // Create new user
     const newUserId = await ctx.db.insert("accounts", {
-        id: identity.subject, // Using Clerk ID as our specific ID field if useful, or just reliance on _id
-        email: identity.email!,
-        display_name: identity.name || identity.email!.split("@")[0] || "User",
-        profile_avatar_color: getRandomAvatarColor(),
-        created_at: Date.now(),
-        updated_at: Date.now(),
+      id: identity.subject, // Using Clerk ID as our specific ID field if useful, or just reliance on _id
+      email: identity.email!,
+      display_name: identity.name || identity.email!.split("@")[0] || "User",
+      profile_avatar_color: getRandomAvatarColor(),
+      created_at: Date.now(),
+      updated_at: Date.now()
     });
 
     return newUserId;
-  },
+  }
 });
 
 /**
@@ -52,7 +52,7 @@ export const isAuthenticated = query({
   args: {},
   handler: async (ctx) => {
     return (await ctx.auth.getUserIdentity()) !== null;
-  },
+  }
 });
 
 /**
@@ -72,7 +72,7 @@ export const viewer = query({
       .unique();
 
     return user;
-  },
+  }
 });
 
 /**
@@ -98,11 +98,11 @@ export const updateLinkedMemberId = mutation({
 
     await ctx.db.patch(user._id, {
       linked_member_id: args.linked_member_id,
-      updated_at: Date.now(),
+      updated_at: Date.now()
     });
 
     return user._id;
-  },
+  }
 });
 
 /**
@@ -117,7 +117,7 @@ export const generateUploadUrl = action({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Unauthenticated");
     return await ctx.storage.generateUploadUrl();
-  },
+  }
 });
 
 /**
@@ -127,7 +127,7 @@ export const updateProfile = mutation({
   args: {
     profile_avatar_color: v.optional(v.string()),
     profile_image_url: v.optional(v.string()),
-    storage_id: v.optional(v.id("_storage")),
+    storage_id: v.optional(v.id("_storage"))
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -141,8 +141,9 @@ export const updateProfile = mutation({
     if (!user) throw new Error("User not found");
 
     const patches: any = { updated_at: Date.now() };
-    if (args.profile_avatar_color !== undefined) patches.profile_avatar_color = args.profile_avatar_color;
-    
+    if (args.profile_avatar_color !== undefined)
+      patches.profile_avatar_color = args.profile_avatar_color;
+
     // Handle storage ID to URL conversion
     if (args.storage_id) {
       const url = await ctx.storage.getUrl(args.storage_id);
@@ -165,12 +166,14 @@ export const updateProfile = mutation({
 
     for (const friend of friendsToUpdate) {
       const friendPatches: any = { updated_at: Date.now() };
-      if (args.profile_avatar_color !== undefined) friendPatches.profile_avatar_color = args.profile_avatar_color;
+      if (args.profile_avatar_color !== undefined)
+        friendPatches.profile_avatar_color = args.profile_avatar_color;
       // Use the resolved URL (from storage or direct arg)
-      if (patches.profile_image_url !== undefined) friendPatches.profile_image_url = patches.profile_image_url;
+      if (patches.profile_image_url !== undefined)
+        friendPatches.profile_image_url = patches.profile_image_url;
       await ctx.db.patch(friend._id, friendPatches);
     }
-    
+
     return patches.profile_image_url;
-  },
+  }
 });

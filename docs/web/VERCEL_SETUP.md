@@ -26,6 +26,7 @@
 ## Analytics
 
 Vercel Analytics is integrated in `apps/web/src/main.tsx` and events are emitted for:
+
 - variant page views
 - variant switch clicks
 - TestFlight CTA clicks

@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type"
 };
 
 serve(async (req: Request) => {
@@ -23,12 +23,12 @@ serve(async (req: Request) => {
     let token = url.searchParams.get("token");
 
     if (!token && req.method === "POST") {
-        try {
-            const body = await req.json();
-            token = body.token;
-        } catch (e) {
-            // ignore JSON parse error, token might be null
-        }
+      try {
+        const body = await req.json();
+        token = body.token;
+      } catch (e) {
+        // ignore JSON parse error, token might be null
+      }
     }
 
     if (!token) {
@@ -46,11 +46,11 @@ serve(async (req: Request) => {
     if (!tokens || tokens.length === 0) throw new Error("Invalid token");
 
     const inviteToken = tokens[0];
-    
+
     // Check expiry/claimed
     // Note: Clients handle this logic too, but good to enforce here.
     // However, for valid token but expired, we might still want to return data with error flag?
-    // Let's just return the data and let client decide validation status, 
+    // Let's just return the data and let client decide validation status,
     // OR enforce here. Enforcing here is safer.
     if (new Date(inviteToken.expires_at) <= new Date()) throw new Error("Invite link has expired");
     if (inviteToken.claimed_by) throw new Error("Invite link already claimed");
@@ -69,30 +69,32 @@ serve(async (req: Request) => {
     // 3. Fetch Groups for names and type (direct vs group)
     // We need group IDs from expenses
     const groupIds = [...new Set(expenses.map((e: any) => e.group_id))];
-    
+
     let groups: any[] = [];
     if (groupIds.length > 0) {
-        const { data: groupData, error: groupError } = await supabaseClient
-            .from("groups") // Table name check: usually 'groups' or 'spending_groups'?
-            // In schema.sql it is 'groups'.
-            .select("id, name, is_direct")
-            .in("id", groupIds);
-        if (groupError) throw groupError;
-        groups = groupData;
+      const { data: groupData, error: groupError } = await supabaseClient
+        .from("groups") // Table name check: usually 'groups' or 'spending_groups'?
+        // In schema.sql it is 'groups'.
+        .select("id, name, is_direct")
+        .in("id", groupIds);
+      if (groupError) throw groupError;
+      groups = groupData;
     }
 
-    return new Response(JSON.stringify({
+    return new Response(
+      JSON.stringify({
         token: inviteToken,
         expenses: expenses,
         groups: groups
-    }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-
+      }),
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      }
+    );
   } catch (error: any) {
     return new Response(JSON.stringify({ error: error.message }), {
       status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
     });
   }
 });

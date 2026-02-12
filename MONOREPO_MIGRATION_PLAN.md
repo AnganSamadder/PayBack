@@ -17,6 +17,7 @@ Add Vercel deployment config (monorepo app-dir mode), basic Vercel Analytics, an
 Use ANY skills that could be useful for this work. Suggested skills based on scope:
 
 ### Core Built-in Skills
+
 - **Discovery & Planning:** `find-skills`, `brainstorming`, `writing-plans`, `avoid-feature-creep`
 - **Frontend/Design Work:** `frontend-design`, `ui-ux-pro-max`, `frontend-ui-ux`, `web-design-guidelines`
 - **Convex Backend:** `convex`, `convex-functions`, `convex-best-practices`, `convex-testing`, `convex-schema-validator`
@@ -28,39 +29,47 @@ Use ANY skills that could be useful for this work. Suggested skills based on sco
 ### External Skills (Optional - Install via `npx skills add <owner/repo@skill>`)
 
 **Monorepo & Turborepo:**
+
 - `ovachiever/droid-tings@monorepo-management`
 - `mindrally/skills@turborepo`
 - `secondsky/claude-skills@turborepo`
 - `timelessco/recollect@turborepo`
 
 **Vite & Tailwind v4:**
+
 - `jezweb/claude-skills@tailwind-v4-shadcn`
 - `existential-birds/beagle@tailwind-v4`
 - `igorwarzocha/opencode-workflows@vite-shadcn-tailwind4`
 
 **TanStack Router:**
+
 - `jezweb/claude-skills@tanstack-router`
 - `deckardger/tanstack-agent-skills@tanstack-router-best-practices`
 - `secondsky/claude-skills@tanstack-router`
 
 **Accessibility (WCAG AA compliance):**
+
 - `mindrally/skills@accessibility-a11y`
 - `webflow/webflow-skills@accessibility-audit`
 - `supercent-io/skills-template@web-accessibility`
 
 **Vercel Deployment:**
+
 - `sickn33/antigravity-awesome-skills@vercel-deployment`
 - `bobmatnyc/claude-mpm-skills@vercel-deployments-builds`
 
 **CI/CD & GitHub Actions:**
+
 - `bobmatnyc/claude-mpm-skills@github-actions`
 - `wshobson/agents@monorepo-management`
 
 **E2E Testing (Playwright):**
+
 - `bobmatnyc/claude-mpm-skills@playwright-e2e-testing`
 - `alinaqi/claude-bootstrap@playwright-testing`
 
 **Bun Package Manager:**
+
 - `lammesen/skills@bun-expert`
 - `secondsky/claude-skills@bun-package-manager`
 
@@ -98,21 +107,25 @@ Use ANY skills that could be useful for this work. Suggested skills based on sco
 - Tailwind v4 setup uses Vite plugin and CSS-first theme tokens; no legacy Tailwind config dependency required unless needed for advanced plugin behavior.
 
 **Route structure:**
+
 - `/` serves Variant 1.
 - `/v1` ... `/v10` are explicit route URLs.
 - Fixed bottom-right numeric switcher (1..10) navigates routes with near-instant crossfade.
 
 **Variant switching behavior:**
+
 - Route change updates URL immediately.
 - Preload variant route chunks on idle to avoid visible loading.
 - Persist last selected variant in localStorage; root still renders Variant 1 for canonical entry.
 
 **Content structure common to each variant:**
+
 - Header CTA, hero CTA, footer CTA with text "Try PayBack on iPhone".
 - Product story sections: hero, key features, trust/social signal block, final CTA, minimal footer links.
 - Use stylized mock UI cards (not real screenshots in this phase).
 
 **CTA config:**
+
 - `VITE_TESTFLIGHT_URL` required env variable.
 - If missing, show controlled fallback state and warning in console.
 
@@ -124,20 +137,21 @@ Variants v6-v10 are high-liberty creative explorations.
 
 **Variant directions:**
 
-| Route | Direction | Theme Group |
-|-------|-----------|-------------|
-| `/v1` | Liquid Glass Ledger | App-vibe |
-| `/v2` | Swiss Precision Finance | App-vibe |
-| `/v3` | Story-Driven Expense Journey | App-vibe |
-| `/v4` | Trust & Authority Cards | App-vibe |
-| `/v5` | Minimal Teal Editorial | App-vibe |
-| `/v6` | Memphis Pop Playground | Free-creative |
-| `/v7` | Neo-Brutalist Receipt Board | Free-creative |
-| `/v8` | Retro-Futurist Neon Terminal | Free-creative |
-| `/v9` | E-Ink Paper Calm | Free-creative |
-| `/v10` | Kinetic Typography Motion | Free-creative |
+| Route  | Direction                    | Theme Group   |
+| ------ | ---------------------------- | ------------- |
+| `/v1`  | Liquid Glass Ledger          | App-vibe      |
+| `/v2`  | Swiss Precision Finance      | App-vibe      |
+| `/v3`  | Story-Driven Expense Journey | App-vibe      |
+| `/v4`  | Trust & Authority Cards      | App-vibe      |
+| `/v5`  | Minimal Teal Editorial       | App-vibe      |
+| `/v6`  | Memphis Pop Playground       | Free-creative |
+| `/v7`  | Neo-Brutalist Receipt Board  | Free-creative |
+| `/v8`  | Retro-Futurist Neon Terminal | Free-creative |
+| `/v9`  | E-Ink Paper Calm             | Free-creative |
+| `/v10` | Kinetic Typography Motion    | Free-creative |
 
 **Uniqueness guardrails:**
+
 - No shared layout skeleton across more than one variant.
 - No repeated font pairing across variants.
 - Distinct background system per variant (mesh, texture, geometry, paper, etc.).
@@ -167,49 +181,62 @@ Variants v6-v10 are high-liberty creative explorations.
 ## Public APIs / Interfaces / Types Changes
 
 **New env interface:**
+
 - `VITE_TESTFLIGHT_URL` in `.env.example`.
 
 **New route contract:**
+
 - `/`, `/v1`.../`/v10` as public landing URLs.
 
 **New workspace scripts:**
+
 - Root `dev`, `build`, `lint`, `typecheck`, `test`, `test:e2e`, `ci` via Turbo.
 
 **Backend path contract:**
+
 - Convex functions path relocated to `/Users/angansamadder/Code/PayBack/apps/backend/convex` with root `convex.json` indirection.
 
 **New shared token interface:**
+
 - `/Users/angansamadder/Code/PayBack/packages/design-tokens` exports web token constants (including PayBack theme tokens used by variants 1-5).
 
 ## Test Cases and Scenarios
 
 **Monorepo integrity:**
+
 - `bun install`, `bun turbo run lint typecheck test build` succeeds.
 
 **Backend relocation:**
+
 - Convex dev/codegen/deploy commands resolve with new functions path.
 - iOS prebuild script references updated Convex paths correctly.
 
 **Route UX:**
+
 - All routes `/v1`.../`/v10` render and switch from dock without full-page reload.
 - URL updates correctly on every switch.
 - LocalStorage persistence restores last variant in switcher state.
 
 **CTA correctness:**
+
 - All variant CTAs resolve to `VITE_TESTFLIGHT_URL`.
 
 **Accessibility:**
+
 - Keyboard access for dock buttons.
 - Focus-visible states and landmarks.
 - Contrast checks for all variants (AA-critical).
 
 **E2E smoke:**
+
 - Playwright visits all 10 routes, validates CTA visibility and switcher behavior.
 
 **Analytics:**
+
 - Vercel Analytics pageview and click events emitted on route/CTA interactions.
 
 **Regression safety:**
+
 - Existing iOS local CI script and GitHub Actions jobs continue passing.
 
 ## iOS Relocation (Plan-Only Deliverable)

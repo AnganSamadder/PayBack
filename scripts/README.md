@@ -37,5 +37,6 @@ bun run --filter @payback/backend deploy
 ```
 
 For CI/XcodeCloud deployment, set:
+
 - `CONVEX_DEPLOY_KEY`: Convex deploy key (secret)
 - `CONVEX_DEPLOY_ON_CI=1`: safety switch enabling deploy from CI

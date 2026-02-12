@@ -3,7 +3,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 // CORS headers for public access
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type"
 };
 
 serve(async (req: Request) => {
@@ -16,18 +16,18 @@ serve(async (req: Request) => {
   const token = url.searchParams.get("token");
 
   if (!token) {
-    return new Response("Missing token parameter", { 
+    return new Response("Missing token parameter", {
       status: 400,
-      headers: corsHeaders,
+      headers: corsHeaders
     });
   }
 
   // Validate token format (UUID)
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(token)) {
-    return new Response("Invalid token format", { 
+    return new Response("Invalid token format", {
       status: 400,
-      headers: corsHeaders,
+      headers: corsHeaders
     });
   }
 
@@ -39,7 +39,7 @@ serve(async (req: Request) => {
     status: 302,
     headers: {
       ...corsHeaders,
-      "Location": deepLink,
-    },
+      Location: deepLink
+    }
   });
 });

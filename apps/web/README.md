@@ -1,6 +1,7 @@
 # PayBack Web Landing
 
 Landing page implementation for PayBack using:
+
 - React + TanStack Router
 - Vite
 - Tailwind CSS v4

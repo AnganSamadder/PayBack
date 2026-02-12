@@ -11,6 +11,7 @@ This workspace is intentionally a scaffold shell for future Android implementati
 ## Future intent
 
 A full Android app (likely Jetpack Compose) can be added under `apps/android/PayBack` with:
+
 - independent Gradle build pipeline
 - optional shared API/domain contracts from `packages/*`
 - coordinated CI job alongside iOS, backend, and web checks

@@ -24,7 +24,7 @@ export const list = query({
       .collect();
 
     return friends;
-  },
+  }
 });
 
 /**
@@ -37,7 +37,7 @@ export const upsert = mutation({
     nickname: v.optional(v.string()),
     has_linked_account: v.boolean(),
     linked_account_id: v.optional(v.string()),
-    linked_account_email: v.optional(v.string()),
+    linked_account_email: v.optional(v.string())
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -57,7 +57,7 @@ export const upsert = mutation({
         has_linked_account: args.has_linked_account,
         linked_account_id: args.linked_account_id,
         linked_account_email: args.linked_account_email,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
       return existing._id;
     } else {
@@ -70,10 +70,10 @@ export const upsert = mutation({
         has_linked_account: args.has_linked_account,
         linked_account_id: args.linked_account_id,
         linked_account_email: args.linked_account_email,
-        updated_at: Date.now(),
+        updated_at: Date.now()
       });
     }
-  },
+  }
 });
 
 /**
@@ -94,5 +94,5 @@ export const clearAllForUser = mutation({
       await ctx.db.delete(friend._id);
     }
     return null;
-  },
+  }
 });

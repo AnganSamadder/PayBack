@@ -1,4 +1,3 @@
-
 // Hex codes matching SwiftUI system colors
 export const AVATAR_COLORS = [
   "#007AFF", // Blue
@@ -10,7 +9,7 @@ export const AVATAR_COLORS = [
   "#5856D6", // Indigo
   "#30B0C7", // Teal
   "#32ADE6", // Cyan
-  "#00C7BE", // Mint
+  "#00C7BE" // Mint
 ];
 
 export function getRandomAvatarColor(): string {
