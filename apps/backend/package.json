@@ -8,9 +8,11 @@
     "deploy": "bunx convex deploy",
     "codegen": "bunx convex dev --once",
     "lint": "eslint \"convex/**/*.ts\" \"tests/**/*.ts\"",
+    "lint:fix": "eslint \"convex/**/*.ts\" \"tests/**/*.ts\" --fix",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "build": "echo \"Backend build handled by Convex CLI\""
+    "build": "echo \"Backend build handled by Convex CLI\"",
+    "clean": "rm -rf node_modules .turbo"
   },
   "devDependencies": {
     "@payback/config-eslint": "workspace:*"

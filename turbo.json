@@ -6,50 +6,46 @@
       "persistent": true
     },
     "build": {
-      "dependsOn": [
-        "^build"
+      "dependsOn": ["^build"],
+      "inputs": [
+        "src/**",
+        "convex/**",
+        "public/**",
+        "index.html",
+        "vite.config.*",
+        "tsconfig*.json",
+        "package.json"
       ],
-      "outputs": [
-        "dist/**",
-        "build/**",
-        ".turbo/**"
-      ]
+      "outputs": ["dist/**", "build/**"]
     },
     "lint": {
-      "dependsOn": [
-        "^lint"
-      ],
+      "inputs": ["src/**", "convex/**", "tests/**", "eslint.config.*", "package.json"],
       "outputs": []
     },
+    "lint:fix": {
+      "inputs": ["src/**", "convex/**", "tests/**", "eslint.config.*", "package.json"],
+      "cache": false
+    },
     "typecheck": {
-      "dependsOn": [
-        "^typecheck"
-      ],
+      "inputs": ["src/**", "convex/**", "tests/**", "tsconfig*.json", "package.json"],
       "outputs": []
     },
     "test": {
-      "dependsOn": [
-        "^test"
-      ],
-      "outputs": []
+      "inputs": ["src/**", "convex/**", "tests/**", "vitest.config.*", "package.json"],
+      "outputs": [],
+      "env": ["CI"]
     },
     "test:e2e": {
-      "dependsOn": [
-        "build"
-      ],
-      "outputs": [
-        "playwright-report/**",
-        "test-results/**"
-      ]
+      "dependsOn": ["build"],
+      "outputs": ["playwright-report/**", "test-results/**"],
+      "cache": false
     },
-    "ci": {
-      "dependsOn": [
-        "lint",
-        "typecheck",
-        "test",
-        "build"
-      ],
-      "outputs": []
+    "clean": {
+      "cache": false
+    },
+    "deploy": {
+      "dependsOn": ["build"],
+      "cache": false
     }
   }
 }

@@ -5,7 +5,9 @@
   "scripts": {
     "build": "echo \"Android scaffold only: no Gradle app yet\"",
     "lint": "echo \"Android scaffold only\"",
+    "lint:fix": "echo \"Android scaffold only\"",
     "typecheck": "echo \"Android scaffold only\"",
-    "test": "echo \"Android scaffold only\""
+    "test": "echo \"Android scaffold only\"",
+    "clean": "echo \"Android scaffold only\""
   }
 }

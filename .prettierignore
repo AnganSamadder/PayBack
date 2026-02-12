@@ -1,0 +1,23 @@
+node_modules/
+dist/
+build/
+.turbo/
+.vercel/
+
+# iOS / Xcode
+apps/ios/
+*.xcodeproj/
+DerivedData/
+
+# Generated code
+apps/backend/convex/_generated/
+
+# Lock files
+bun.lock
+
+# Coverage & test artifacts
+coverage/
+*.xcresult
+TestResults.xcresult
+playwright-report/
+test-results/
