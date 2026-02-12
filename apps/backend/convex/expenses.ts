@@ -142,7 +142,7 @@ export const create = mutation({
         return linkedAccountCache.get(cacheKey) ?? null;
       }
 
-      let linkedAccount = null;
+      let linkedAccount: any = null;
       if (emailKey) {
         linkedAccount = await ctx.db
           .query("accounts")
@@ -287,7 +287,7 @@ export const create = mutation({
 
         // Must resolve to an existing friend identity (member_id, linked_member_id, or aliases).
         const matchingFriend = ownerFriendIdentityRows.find(
-          ({ friend, identityIds }) =>
+          ({ friend, identityIds }: any) =>
             isEligibleDirectFriendRecord(friend) && intersects(identityIds, memberEquivalentIds)
         );
 
@@ -305,7 +305,7 @@ export const create = mutation({
           const normalizedGroupMemberName = normalizePersonName(groupMember?.name);
           if (normalizedGroupMemberName) {
             const byNameMatches = ownerFriendIdentityRows.filter(
-              ({ friend }) =>
+              ({ friend }: any) =>
                 isEligibleDirectFriendRecord(friend) &&
                 normalizePersonName(friend.name) === normalizedGroupMemberName
             );

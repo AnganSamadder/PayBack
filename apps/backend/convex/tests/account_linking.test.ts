@@ -186,7 +186,8 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
   const expenseRefetch = await t.run(async (ctx) => {
     return await ctx.db.get(expenseId);
   });
-  expect(expenseRefetch.is_settled).toBe(true);
+  expect(expenseRefetch).toBeDefined();
+  expect(expenseRefetch!.is_settled).toBe(true);
 });
 
 test("friends:list dedupes linked identity rows and preserves enriched aliases", async () => {

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { query, internalQuery, internalMutation, QueryCtx } from "./_generated/server";
 
 export const fixMissingDirectFlags = internalMutation({

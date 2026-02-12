@@ -28,7 +28,7 @@ export const repairAlias = mutation({
       return { success: false, message: "No ghost expenses found" };
     }
 
-    let idB = null;
+    let idB: string | null = null;
     for (const expense of ghostExpenses) {
       const matchingParticipant = expense.participants.find(
         (p) => p.linked_account_email === deletedUserEmail

@@ -387,12 +387,8 @@ export const removeLegacyFields = internalMutation({
     const accounts = await ctx.db.query("accounts").collect();
     let patched = 0;
     for (const acc of accounts) {
-      if (
-        (acc as any).linked_member_id !== undefined ||
-        (acc as any).equivalent_member_ids !== undefined
-      ) {
+      if ((acc as any).equivalent_member_ids !== undefined) {
         await ctx.db.patch(acc._id, {
-          linked_member_id: undefined,
           equivalent_member_ids: undefined
         });
         patched++;
