@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ExpenseDetailView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject var store: AppStore
     let expense: Expense
 
     @State private var showSettleSheet = false
