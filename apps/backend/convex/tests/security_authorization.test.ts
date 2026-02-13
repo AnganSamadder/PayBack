@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
+import { modules } from "./setup";
 
 function identity(email: string, subject: string) {
   return {
@@ -18,7 +19,7 @@ function identity(email: string, subject: string) {
 
 describe("Security Authorization", () => {
   test("aliases.mergeMemberIds does not trust forged accountEmail", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
       await ctx.db.insert("accounts", {
@@ -51,7 +52,7 @@ describe("Security Authorization", () => {
   });
 
   test("aliases.mergeUnlinkedFriends does not allow forged accountEmail", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
       await ctx.db.insert("accounts", {
@@ -98,7 +99,7 @@ describe("Security Authorization", () => {
   });
 
   test("cleanup.deleteLinkedFriend does not allow forged accountEmail", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
       await ctx.db.insert("accounts", {
@@ -147,7 +148,7 @@ describe("Security Authorization", () => {
   });
 
   test("cleanup.deleteUnlinkedFriend does not allow forged accountEmail", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
       await ctx.db.insert("accounts", {
@@ -194,7 +195,7 @@ describe("Security Authorization", () => {
   });
 
   test("admin.hardDeleteUser requires admin authorization", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     process.env.ADMIN_EMAILS = "admin@test.com";
 
@@ -230,7 +231,7 @@ describe("Security Authorization", () => {
   });
 
   test("friend_requests uses auth account id for linked_account_id", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
       await ctx.db.insert("accounts", {

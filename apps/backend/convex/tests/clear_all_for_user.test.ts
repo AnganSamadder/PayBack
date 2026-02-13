@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
+import { modules } from "./setup";
 
 function identityFor(email: string, subject: string) {
   return {
@@ -18,7 +19,7 @@ function identityFor(email: string, subject: string) {
 
 describe("clearAllForUser", () => {
   test("groups.clearAllForUser removes owned groups and leaves shared groups", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
     const now = Date.now();
 
     const ownerAId = await t.run(async (ctx) => {
@@ -93,7 +94,7 @@ describe("clearAllForUser", () => {
   });
 
   test("expenses.clearAllForUser removes owned expenses and viewer visibility rows", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
     const now = Date.now();
 
     const ownerId = await t.run(async (ctx) => {

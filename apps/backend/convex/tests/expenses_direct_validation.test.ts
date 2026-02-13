@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
+import { modules } from "./setup";
 
 function identityFor(email: string, subject: string) {
   return {
@@ -54,7 +55,7 @@ function buildDirectExpenseArgs(args: {
 }
 
 test("expenses:create allows direct expense when involved member is an alias of a linked friend", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   const ownerDocId = await t.run(async (ctx) => {
@@ -126,7 +127,7 @@ test("expenses:create allows direct expense when involved member is an alias of 
 });
 
 test("expenses:create allows direct expense for legacy friend rows without explicit status", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   const ownerDocId = await t.run(async (ctx) => {
@@ -182,7 +183,7 @@ test("expenses:create allows direct expense for legacy friend rows without expli
 });
 
 test("expenses:create allows direct expense when friend is linked via linked_member_id fallback", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   const ownerDocId = await t.run(async (ctx) => {
@@ -250,7 +251,7 @@ test("expenses:create allows direct expense when friend is linked via linked_mem
 });
 
 test("expenses:create allows direct expense when linked account carries legacy alias_member_ids", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   const ownerDocId = await t.run(async (ctx) => {
@@ -317,7 +318,7 @@ test("expenses:create allows direct expense when linked account carries legacy a
 });
 
 test("expenses:create allows direct expense when legacy friend row has no linked fields but member_id is in account alias_member_ids", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   const ownerDocId = await t.run(async (ctx) => {
@@ -383,7 +384,7 @@ test("expenses:create allows direct expense when legacy friend row has no linked
 });
 
 test("expenses:create allows direct expense when legacy friend status is an empty string", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   const ownerDocId = await t.run(async (ctx) => {
@@ -440,7 +441,7 @@ test("expenses:create allows direct expense when legacy friend status is an empt
 });
 
 test("expenses:create allows direct expense when linked_account_id stores account document id", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   const ownerDocId = await t.run(async (ctx) => {
@@ -509,7 +510,7 @@ test("expenses:create allows direct expense when linked_account_id stores accoun
 });
 
 test("expenses:create allows direct expense for legacy name-only friend rows and resolves participant email from member id", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   const ownerDocId = await t.run(async (ctx) => {
@@ -580,7 +581,7 @@ test("expenses:create allows direct expense for legacy name-only friend rows and
 });
 
 test("expenses:create allows direct expense for valid 1:1 direct group even when friend rows are missing", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   const ownerDocId = await t.run(async (ctx) => {
@@ -641,7 +642,7 @@ test("expenses:create allows direct expense for valid 1:1 direct group even when
 });
 
 test("expenses:create rejects direct expense when involved member is not a friend", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   const ownerDocId = await t.run(async (ctx) => {

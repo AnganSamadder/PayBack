@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { expect, test, describe } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
+import { modules } from "./setup";
 
 function adminIdentity() {
   return {
@@ -18,7 +19,7 @@ function adminIdentity() {
 
 describe("Hard Delete Cleanup", () => {
   test("friends.list returns unlinked state when linked account is manually deleted", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     const userAId = await t.run(async (ctx) => {
       return await ctx.db.insert("accounts", {
@@ -83,7 +84,7 @@ describe("Hard Delete Cleanup", () => {
   });
 
   test("friends.list validates linked_member_id when linked_account_email is missing", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
       await ctx.db.insert("accounts", {
@@ -143,7 +144,7 @@ describe("Hard Delete Cleanup", () => {
   });
 
   test("performHardDelete removes friend records from other users lists", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
       await ctx.db.insert("accounts", {
@@ -218,7 +219,7 @@ describe("Hard Delete Cleanup", () => {
   });
 
   test("cleanup finds orphans via by_linked_member_id index", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
       await ctx.db.insert("accounts", {
@@ -254,7 +255,7 @@ describe("Hard Delete Cleanup", () => {
   });
 
   test("no ghost duplicates after hard delete - friend record is fully removed", async () => {
-    const t = convexTest(schema);
+    const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
       await ctx.db.insert("accounts", {

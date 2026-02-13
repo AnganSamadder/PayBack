@@ -2,9 +2,10 @@ import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
+import { modules } from "./setup";
 
 test("import_robustness: handles aliases and id mismatches", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
 
   const ownerEmail = "rio.angan@example.com";
   const canonicalFriendId = "1C7FA1FC-REAL";
@@ -105,7 +106,7 @@ test("import_robustness: handles aliases and id mismatches", async () => {
 });
 
 test("import_robustness: does not dedupe by name-only when id mismatches", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const ownerEmail = "rio.angan@example.com";
   const existingId = "EXISTING_ID";
   const importId = "IMPORT_ID"; // Completely different, no alias
