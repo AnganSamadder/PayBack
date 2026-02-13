@@ -2512,7 +2512,7 @@ final class AppStore: ObservableObject {
             try? await groupCloudService.upsertGroup(directGroup)
         }
         scheduleFriendSync()
-        return g
+        return directGroup
     }
 
     // MARK: - Debug helpers
