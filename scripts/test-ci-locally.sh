@@ -395,49 +395,16 @@ if [ "$XCODECLOUD_MODE" = true ]; then
     -parallel-testing-enabled YES \
     -resultBundlePath TestResults.xcresult"
 else
-	# Standard mode: build-for-testing then test-without-building (matches CI)
-	echo "Building for testing..."
-	echo ""
-
-	BUILD_CMD="xcodebuild build-for-testing \
-    -project PayBack.xcodeproj \
-    -scheme PayBack \
-    -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
-    $SANITIZER_FLAGS"
-
-	set +e
-	if [ "$XCPRETTY_AVAILABLE" = true ]; then
-		eval "$BUILD_CMD" 2>&1 | tee build_output.log | xcpretty --color --simple
-		BUILD_EXIT_CODE=${PIPESTATUS[0]}
-	else
-		eval "$BUILD_CMD" 2>&1 | tee build_output.log
-		BUILD_EXIT_CODE=${PIPESTATUS[0]}
-	fi
-	set -e
-
-	if [ $BUILD_EXIT_CODE -ne 0 ]; then
-		echo -e "${RED}✗ Build failed${NC}"
-
-		WARNING_COUNT=$(grep -c "warning:" build_output.log 2>/dev/null || echo "0")
-		if [ "$WARNING_COUNT" -gt 0 ]; then
-			echo ""
-			echo -e "${YELLOW}Found $WARNING_COUNT warning(s):${NC}"
-			grep "warning:" build_output.log | head -20 | sed 's/^/  /'
-		fi
-
-		exit 1
-	fi
-
-	echo -e "${GREEN}✓ Build succeeded${NC}"
-	echo ""
-	echo "Running tests..."
+	# Standard mode: single xcodebuild test command (matches CI)
+	echo "Running all tests..."
 	echo "This may take 2-5 minutes depending on your machine..."
 	echo ""
 
-	TEST_CMD="xcodebuild test-without-building \
+	TEST_CMD="xcodebuild test \
     -project PayBack.xcodeproj \
     -scheme PayBack \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
+    $SANITIZER_FLAGS \
     -parallel-testing-enabled YES \
     -resultBundlePath TestResults.xcresult"
 fi

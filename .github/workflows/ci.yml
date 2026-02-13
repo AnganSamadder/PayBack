@@ -387,7 +387,7 @@ jobs:
         include:
           - sanitizer: none
             run_on_pr: true
-            timeout: 45
+            timeout: 60
           - sanitizer: thread
             run_on_pr: false
             timeout: 45
@@ -602,20 +602,6 @@ jobs:
             echo "coverage_flag=-enableCodeCoverage YES" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build for Testing
-        if: matrix.run_on_pr == true || github.event_name == 'push'
-        run: |
-          xcodebuild build-for-testing \
-            -project PayBack.xcodeproj \
-            -scheme PayBackTests \
-            -configuration Debug \
-            -destination "$SIMULATOR_DESTINATION" \
-            ${{ steps.test-flags.outputs.sanitizer_flag }} \
-            ${{ steps.test-flags.outputs.coverage_flag }} \
-            | xcpretty
-        env:
-          NSUnbufferedIO: "YES"
-
       - name: Clean Previous Test Results
         if: matrix.run_on_pr == true || github.event_name == 'push'
         run: |
@@ -625,12 +611,15 @@ jobs:
         if: matrix.run_on_pr == true || github.event_name == 'push'
         run: |
           set -o pipefail
-          xcodebuild test-without-building \
+          xcodebuild test \
             -project PayBack.xcodeproj \
             -scheme PayBackTests \
+            -configuration Debug \
             -destination "$SIMULATOR_DESTINATION" \
             -parallel-testing-enabled YES \
             -resultBundlePath TestResults.xcresult \
+            ${{ steps.test-flags.outputs.sanitizer_flag }} \
+            ${{ steps.test-flags.outputs.coverage_flag }} \
             | tee test-output.txt \
             | xcpretty
         env:
