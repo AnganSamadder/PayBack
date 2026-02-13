@@ -8,7 +8,7 @@ struct RetryPolicy {
     let multiplier: Double
 
     private let sleeper: @Sendable (TimeInterval) async throws -> Void
-    
+
     init(
         maxAttempts: Int = 3,
         baseDelay: TimeInterval = 1.0,
@@ -29,52 +29,52 @@ struct RetryPolicy {
         let normalizedBaseDelay = max(0.0, baseDelay)
         let normalizedMaxDelay = max(normalizedBaseDelay, maxDelay)
         let normalizedMultiplier = multiplier <= 0 ? 1.0 : multiplier
-        
+
         self.maxAttempts = normalizedMaxAttempts
         self.baseDelay = normalizedBaseDelay
         self.maxDelay = normalizedMaxDelay
         self.multiplier = normalizedMultiplier
         self.sleeper = sleeper
     }
-    
+
     /// Executes an async operation with exponential backoff retry logic
     /// - Parameter operation: The async operation to retry
     /// - Returns: The result of the operation
     /// - Throws: The last error encountered if all retries fail
     func execute<T>(_ operation: @escaping () async throws -> T) async throws -> T {
         var lastError: Error?
-        
+
         for attempt in 0..<maxAttempts {
             do {
                 return try await operation()
             } catch {
                 lastError = error
-                
+
                 // Check if error is retryable
                 guard isRetryable(error) else {
                     throw error
                 }
-                
+
                 // Don't delay after the last attempt
                 guard attempt < maxAttempts - 1 else {
                     break
                 }
-                
+
                 // Calculate delay with exponential backoff
                 let delay = min(baseDelay * pow(multiplier, Double(attempt)), maxDelay)
-                
+
                 #if DEBUG
                 print("[RetryPolicy] Attempt \(attempt + 1) failed: \(error.localizedDescription). Retrying in \(delay)s...")
                 #endif
-                
+
                 try await sleeper(delay)
             }
         }
-        
+
         // If we get here, all retries failed
         throw lastError ?? PayBackError.networkUnavailable
     }
-    
+
     /// Determines if an error is retryable
     private func isRetryable(_ error: Error) -> Bool {
         // Check for PayBackError types
@@ -84,15 +84,15 @@ struct RetryPolicy {
                 return true
             case .underlying:
                 // Check inner error for network issues if needed, but usually PayBackError wraps them
-                return false 
+                return false
             default:
                 return false
             }
         }
-        
+
         // Check for NSError network-related errors
         let nsError = error as NSError
-        
+
         // URLError domain
         if nsError.domain == NSURLErrorDomain {
             switch nsError.code {
@@ -107,7 +107,7 @@ struct RetryPolicy {
                 return false
             }
         }
-        
+
         return false
     }
 }
@@ -120,7 +120,7 @@ extension RetryPolicy {
         maxDelay: 10.0,
         multiplier: 2.0
     )
-    
+
     static let startup = RetryPolicy(
         maxAttempts: 3,
         baseDelay: 0.5,

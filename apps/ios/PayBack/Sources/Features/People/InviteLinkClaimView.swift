@@ -3,9 +3,9 @@ import SwiftUI
 struct InviteLinkClaimView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
-    
+
     let tokenId: UUID
-    
+
     @State private var validation: InviteTokenValidation?
     @State private var isLoading = true
     @State private var isProcessing = false
@@ -15,17 +15,17 @@ struct InviteLinkClaimView: View {
     @State private var successScale: CGFloat = 0.5
     @State private var successOpacity: Double = 0
     @State private var subscriptionTask: Task<Void, Never>?
-    
+
     // Merge Flow State
     @State private var showMergeSheet = false
     @State private var potentialMatches: [AccountFriend] = []
     @State private var justClaimedToken: InviteToken?
     @State private var mergedFriendName: String?
-    
+
     private var needsAuthentication: Bool {
         store.session == nil
     }
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -81,7 +81,7 @@ struct InviteLinkClaimView: View {
                                 .listRowBackground(Color.clear)
                                 .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
                         }
-                        
+
                         Section("Potential Match") {
                             ForEach(potentialMatches, id: \.memberId) { friend in
                                 Button {
@@ -97,9 +97,9 @@ struct InviteLinkClaimView: View {
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
                                         }
-                                        
+
                                         Spacer()
-                                        
+
                                         if let count = expenseCountFor(friend) {
                                             VStack(alignment: .trailing) {
                                                 Text("\(count)")
@@ -109,7 +109,7 @@ struct InviteLinkClaimView: View {
                                                     .foregroundStyle(.secondary)
                                             }
                                         }
-                                        
+
                                         Image(systemName: "arrow.merge")
                                             .foregroundStyle(AppTheme.brand)
                                     }
@@ -117,7 +117,7 @@ struct InviteLinkClaimView: View {
                                 }
                             }
                         }
-                        
+
                         Section {
                             Button("No, Keep Separate") {
                                 completeWithoutMerge()
@@ -132,25 +132,25 @@ struct InviteLinkClaimView: View {
             }
         }
     }
-    
+
     // MARK: - Authentication Required View
-    
+
     @ViewBuilder
     private var authenticationRequiredView: some View {
         VStack(spacing: 20) {
             Image(systemName: "person.crop.circle.badge.exclamationmark")
                 .font(.system(size: 60))
                 .foregroundStyle(AppTheme.brand)
-            
+
             Text("Sign In Required")
                 .font(.title2)
                 .fontWeight(.bold)
-            
+
             Text("You need to sign in to claim this invite link")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            
+
             Button(action: {
                 // The user will need to sign in through the main app flow
                 dismiss()
@@ -171,15 +171,15 @@ struct InviteLinkClaimView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
     }
-    
+
     // MARK: - Loading View
-    
+
     @ViewBuilder
     private var loadingView: some View {
         VStack(spacing: 16) {
             ProgressView()
                 .scaleEffect(1.5)
-            
+
             Text("Validating invite link...")
                 .font(.headline)
                 .foregroundStyle(.secondary)
@@ -187,32 +187,32 @@ struct InviteLinkClaimView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 60)
     }
-    
+
     // MARK: - Valid Token View
-    
+
     @ViewBuilder
     private func validTokenView(token: InviteToken, preview: ExpensePreview?) -> some View {
         VStack(spacing: 24) {
             // Sender info section
             senderInfoSection(token: token)
-            
+
             // Name confirmation prompt
             nameConfirmationSection(token: token)
-            
+
             // Expense preview
             if let preview = preview {
                 expensePreviewSection(token: token, preview: preview)
             }
-            
+
             // Action buttons (only show if not processing or successful)
             if !showSuccess {
                 actionButtons
             }
         }
     }
-    
+
     // MARK: - Sender Info Section
-    
+
     @ViewBuilder
     private func senderInfoSection(token: InviteToken) -> some View {
         VStack(spacing: 16) {
@@ -222,16 +222,16 @@ struct InviteLinkClaimView: View {
                 size: 80,
                 imageUrl: token.creatorProfileImageUrl
             )
-            
+
             VStack(spacing: 4) {
                 Text("Invite from")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                
+
                 // Show name if available, fallback to email
                 Text(token.creatorName ?? token.creatorEmail)
                     .font(.headline)
-                
+
                 // Show email as subtitle if we have a name
                 if token.creatorName != nil {
                     Text(token.creatorEmail)
@@ -246,9 +246,9 @@ struct InviteLinkClaimView: View {
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 2)
     }
-    
+
     // MARK: - Name Confirmation Section
-    
+
     @ViewBuilder
     private func nameConfirmationSection(token: InviteToken) -> some View {
         VStack(spacing: 12) {
@@ -256,16 +256,16 @@ struct InviteLinkClaimView: View {
                 Image(systemName: "person.fill.questionmark")
                     .font(.title2)
                     .foregroundStyle(AppTheme.brand)
-                
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Are you \(token.targetMemberName)?")
                         .font(.headline)
-                    
+
                     Text("This person has been tracking expenses with someone named \"\(token.targetMemberName)\"")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                
+
                 Spacer()
             }
             .padding()
@@ -273,9 +273,9 @@ struct InviteLinkClaimView: View {
             .cornerRadius(12)
         }
     }
-    
+
     // MARK: - Expense Preview Section
-    
+
     @ViewBuilder
     private func expensePreviewSection(token: InviteToken, preview: ExpensePreview) -> some View {
         VStack(spacing: 16) {
@@ -283,15 +283,15 @@ struct InviteLinkClaimView: View {
             VStack(spacing: 8) {
                 Text("Expense History")
                     .font(.headline)
-                
+
                 Text("Here's what will be linked to your account")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            
+
             // Balance card
             balanceCard(balance: preview.totalBalance)
-            
+
             // Expense and group counts
             HStack(spacing: 16) {
                 expenseCountCard(
@@ -299,21 +299,21 @@ struct InviteLinkClaimView: View {
                     label: "Expenses",
                     icon: "dollarsign.circle"
                 )
-                
+
                 expenseCountCard(
                     count: preview.groupNames.count,
                     label: "Groups",
                     icon: "person.3"
                 )
             }
-            
+
             // Friends section (Direct Groups)
             if !preview.personalExpenses.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Friends")
                         .font(.subheadline)
                         .fontWeight(.semibold)
-                    
+
                     // Show the target member (friend in direct group)
                     HStack(spacing: 12) {
                         AvatarView(name: token.targetMemberName, size: 32)
@@ -327,19 +327,19 @@ struct InviteLinkClaimView: View {
                 .background(Color(.systemGray6))
                 .cornerRadius(12)
             }
-            
+
             // Groups section (Multi-person groups only - exclude direct groups)
             let multiPersonGroups = preview.groupNames.filter { groupName in
                 // Exclude direct groups (typically named after the friend)
                 groupName.lowercased().trimmingCharacters(in: .whitespaces) != token.targetMemberName.lowercased().trimmingCharacters(in: .whitespaces)
             }
-            
+
             if !multiPersonGroups.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Groups")
                         .font(.subheadline)
                         .fontWeight(.semibold)
-                    
+
                     ForEach(multiPersonGroups, id: \.self) { groupName in
                         HStack {
                             Image(systemName: "person.3.fill")
@@ -358,14 +358,14 @@ struct InviteLinkClaimView: View {
             }
         }
     }
-    
+
     @ViewBuilder
     private func balanceCard(balance: Double) -> some View {
         VStack(spacing: 8) {
             Text("Total Balance")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            
+
             Text(formatBalance(balance))
                 .font(.system(size: 32, weight: .bold, design: .rounded))
                 .foregroundStyle(balanceColor(balance))
@@ -376,18 +376,18 @@ struct InviteLinkClaimView: View {
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 2)
     }
-    
+
     @ViewBuilder
     private func expenseCountCard(count: Int, label: String, icon: String) -> some View {
         VStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.title2)
                 .foregroundStyle(AppTheme.brand)
-            
+
             Text("\(count)")
                 .font(.title2)
                 .fontWeight(.bold)
-            
+
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -397,25 +397,25 @@ struct InviteLinkClaimView: View {
         .background(Color(.systemGray6))
         .cornerRadius(12)
     }
-    
+
     // MARK: - Error View
-    
+
     @ViewBuilder
     private func errorView(message: String) -> some View {
         VStack(spacing: 20) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 60))
                 .foregroundStyle(.red)
-            
+
             Text("Invalid Invite Link")
                 .font(.title2)
                 .fontWeight(.bold)
-            
+
             Text(message)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            
+
             if let errorSuggestion = getRecoverySuggestion(for: message) {
                 Text(errorSuggestion)
                     .font(.caption)
@@ -427,9 +427,9 @@ struct InviteLinkClaimView: View {
         .frame(maxWidth: .infinity)
         .padding()
     }
-    
+
     // MARK: - Error Section
-    
+
     @ViewBuilder
     private func errorSection(message: String) -> some View {
         HStack {
@@ -443,9 +443,9 @@ struct InviteLinkClaimView: View {
         .background(Color.red.opacity(0.1))
         .cornerRadius(12)
     }
-    
+
     // MARK: - Success Section
-    
+
     @ViewBuilder
     private var successSection: some View {
         VStack(spacing: 12) {
@@ -454,12 +454,12 @@ struct InviteLinkClaimView: View {
                 .foregroundStyle(.green)
                 .scaleEffect(successScale)
                 .opacity(successOpacity)
-            
+
             Text(mergedFriendName != nil ? "Merged with \(mergedFriendName!)" : "Invite Claimed!")
                 .font(.title3)
                 .fontWeight(.semibold)
                 .opacity(successOpacity)
-            
+
             Text(mergedFriendName != nil ? "Your transaction history has been combined." : "Your account has been linked successfully")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -476,16 +476,16 @@ struct InviteLinkClaimView: View {
             }
         }
     }
-    
+
     // MARK: - Action Buttons
-    
+
     @ViewBuilder
     private var actionButtons: some View {
         VStack(spacing: 12) {
             Button(action: {
                 // Trigger selection haptic
                 Haptics.selection()
-                
+
                 Task {
                     await claimToken()
                 }
@@ -509,11 +509,11 @@ struct InviteLinkClaimView: View {
             .disabled(isProcessing)
             .scaleEffect(isProcessing ? 0.98 : 1.0)
             .animation(AppAnimation.quick, value: isProcessing)
-            
+
             Button(action: {
                 // Trigger selection haptic
                 Haptics.selection()
-                
+
                 dismiss()
             }) {
                 HStack {
@@ -532,14 +532,14 @@ struct InviteLinkClaimView: View {
             .animation(AppAnimation.quick, value: isProcessing)
         }
     }
-    
+
     // MARK: - Helper Methods
-    
+
     /// Subscribe to live updates for the invite validation
     private func subscribeToValidation() async {
         isLoading = true
         errorMessage = nil
-        
+
         subscriptionTask = Task {
             do {
                 for try await result in store.subscribeToInviteValidation(tokenId) {
@@ -560,18 +560,18 @@ struct InviteLinkClaimView: View {
                 }
             }
         }
-        
+
         await subscriptionTask?.value
     }
-    
+
     /// One-shot validation (kept for backward compatibility)
     private func validateToken() async {
         isLoading = true
         errorMessage = nil
-        
+
         do {
             let result = try await store.validateInviteToken(tokenId)
-            
+
             await MainActor.run {
                 validation = result
                 isLoading = false
@@ -588,34 +588,34 @@ struct InviteLinkClaimView: View {
             }
         }
     }
-    
+
     private func claimToken() async {
         isProcessing = true
         errorMessage = nil
-        
+
         // Capture token before claiming
         let token = validation?.token
-        
+
         do {
             try await store.claimInviteToken(tokenId)
-            
+
             // Check for potential matches
             let matches = checkForSimilarFriends(token: token)
-            
+
             await MainActor.run {
                 isProcessing = false
-                
+
                 // Mark claim as succeeded FIRST to prevent error view from showing
                 claimSucceeded = true
-                
+
                 // Cancel the subscription to prevent it from receiving "claimed" status
                 // which would show as an error alongside the success message
                 subscriptionTask?.cancel()
                 subscriptionTask = nil
-                
+
                 // Trigger success haptic
                 Haptics.notify(.success)
-                
+
                 if !matches.isEmpty {
                     // Show merge sheet
                     potentialMatches = matches
@@ -626,7 +626,7 @@ struct InviteLinkClaimView: View {
                     withAnimation(AppAnimation.springy) {
                         showSuccess = true
                     }
-                    
+
                     // Dismiss after a delay
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                         dismiss()
@@ -636,7 +636,7 @@ struct InviteLinkClaimView: View {
         } catch {
             await MainActor.run {
                 isProcessing = false
-                
+
                 // Set the validation to invalid to hide the expense preview
                 // and show the error view instead
                 validation = InviteTokenValidation(
@@ -645,28 +645,28 @@ struct InviteLinkClaimView: View {
                     expensePreview: nil,
                     errorMessage: error.localizedDescription
                 )
-                
+
                 // Trigger error haptic
                 Haptics.notify(.error)
             }
         }
     }
-    
+
     private func formatBalance(_ balance: Double) -> String {
         if abs(balance) < 0.01 {
             return "$0.00"
         }
-        
+
         let currencyCode = Locale.current.currency?.identifier ?? "USD"
         let formatted = abs(balance).formatted(.currency(code: currencyCode))
-        
+
         if balance >= 0 {
             return "You're owed \(formatted)"
         } else {
             return "You owe \(formatted)"
         }
     }
-    
+
     private func balanceColor(_ balance: Double) -> Color {
         if balance > 0.01 {
             return .green
@@ -676,7 +676,7 @@ struct InviteLinkClaimView: View {
             return .secondary
         }
     }
-    
+
     private func getRecoverySuggestion(for errorMessage: String) -> String? {
         if errorMessage.contains("expired") {
             return "Ask the sender to generate a new invite link."
@@ -687,12 +687,12 @@ struct InviteLinkClaimView: View {
         }
         return nil
     }
-    
+
     // MARK: - Merge Logic Helpers
-    
+
     private func checkForSimilarFriends(token: InviteToken?) -> [AccountFriend] {
         guard let token = token, let creatorName = token.creatorName else { return [] }
-        
+
         // Find unlinked friends with similar names
         return store.friends.filter { friend in
             !friend.hasLinkedAccount &&
@@ -700,18 +700,18 @@ struct InviteLinkClaimView: View {
              creatorName.localizedCaseInsensitiveContains(friend.name))
         }
     }
-    
+
     private func expenseCountFor(_ friend: AccountFriend) -> Int? {
-        let count = store.expenses.filter { 
-            $0.involvedMemberIds.contains(friend.memberId) || 
-            $0.paidByMemberId == friend.memberId 
+        let count = store.expenses.filter {
+            $0.involvedMemberIds.contains(friend.memberId) ||
+            $0.paidByMemberId == friend.memberId
         }.count
         return count > 0 ? count : nil
     }
-    
+
     private func mergeWithFriend(_ friend: AccountFriend) async {
         guard let token = justClaimedToken else { return }
-        
+
         // Find the linked creator friend to merge INTO
         // We look for a friend that is linked to the token creator's ID
         if let creatorFriend = store.friends.first(where: { $0.linkedAccountId == token.creatorId }) {
@@ -736,7 +736,7 @@ struct InviteLinkClaimView: View {
             }
         }
     }
-    
+
     private func completeWithMerge() {
         showMergeSheet = false
         // Show success with animation
@@ -747,7 +747,7 @@ struct InviteLinkClaimView: View {
             dismiss()
         }
     }
-    
+
     private func completeWithoutMerge() {
         showMergeSheet = false
         // Show success with animation

@@ -322,7 +322,7 @@ final class ExpenseValidationTests: XCTestCase {
         XCTAssertEqual(split.amount, 20.0)
 
         // When
-        split.amount = split.amount * 2
+        split.amount *= 2
 
         // Then
         XCTAssertEqual(split.amount, 40.0)

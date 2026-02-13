@@ -4,7 +4,7 @@ import Foundation
 actor LinkStateReconciliation {
     private var lastReconciliationDate: Date?
     private let minimumReconciliationInterval: TimeInterval = 300 // 5 minutes
-    
+
     /// Reconciles link state for all friends
     /// - Parameters:
     ///   - localFriends: Current local friend list
@@ -15,28 +15,28 @@ actor LinkStateReconciliation {
         remoteFriends: [AccountFriend]
     ) -> [AccountFriend] {
         var reconciled: [UUID: AccountFriend] = [:]
-        
+
         // Start with local friends
         for friend in localFriends {
             reconciled[friend.memberId] = friend
         }
-        
+
         // Update with remote data (remote is source of truth for link status)
         for remoteFriend in remoteFriends {
             if var localFriend = reconciled[remoteFriend.memberId] {
                 // Check for inconsistencies
-                let hasInconsistency = 
+                let hasInconsistency =
                     localFriend.hasLinkedAccount != remoteFriend.hasLinkedAccount ||
                     localFriend.linkedAccountId != remoteFriend.linkedAccountId ||
                     localFriend.linkedAccountEmail != remoteFriend.linkedAccountEmail
-                
+
                 if hasInconsistency {
                     #if DEBUG
                     print("[Reconciliation] Detected inconsistency for member \(remoteFriend.memberId)")
                     print("  Local: linked=\(localFriend.hasLinkedAccount), id=\(localFriend.linkedAccountId ?? "nil")")
                     print("  Remote: linked=\(remoteFriend.hasLinkedAccount), id=\(remoteFriend.linkedAccountId ?? "nil")")
                     #endif
-                    
+
                     // Remote is source of truth - update local with remote data
                     localFriend.hasLinkedAccount = remoteFriend.hasLinkedAccount
                     localFriend.linkedAccountId = remoteFriend.linkedAccountId
@@ -48,28 +48,28 @@ actor LinkStateReconciliation {
                 reconciled[remoteFriend.memberId] = remoteFriend
             }
         }
-        
+
         lastReconciliationDate = Date()
-        
+
         return Array(reconciled.values).sorted { lhs, rhs in
             lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
-    
+
     /// Checks if reconciliation should be performed based on time interval
     func shouldReconcile() -> Bool {
         guard let lastDate = lastReconciliationDate else {
             return true
         }
-        
+
         return Date().timeIntervalSince(lastDate) >= minimumReconciliationInterval
     }
-    
+
     /// Forces reconciliation on next check
     func invalidate() {
         lastReconciliationDate = nil
     }
-    
+
     /// Validates that a linking operation completed successfully
     /// - Parameters:
     ///   - memberId: The member ID that was linked
@@ -84,10 +84,10 @@ actor LinkStateReconciliation {
         guard let friend = friends.first(where: { $0.memberId == memberId }) else {
             return false
         }
-        
+
         let isValid = friend.hasLinkedAccount &&
                      friend.linkedAccountId == accountId
-        
+
         #if DEBUG
         if !isValid {
             print("[Reconciliation] Validation failed for member \(memberId)")
@@ -95,7 +95,7 @@ actor LinkStateReconciliation {
             print("  Actual: linked=\(friend.hasLinkedAccount), accountId=\(friend.linkedAccountId ?? "nil")")
         }
         #endif
-        
+
         return isValid
     }
 }
@@ -109,7 +109,7 @@ actor LinkFailureTracker {
     /// races between recordFailure and markResolved.
     private var recentlyResolved: [UUID: Date] = [:]
     private let suppressionWindow: TimeInterval = 5 // seconds
-    
+
     struct LinkFailureRecord {
         let memberId: UUID
         let accountId: String
@@ -118,7 +118,7 @@ actor LinkFailureTracker {
         let failureReason: String
         var retryCount: Int
     }
-    
+
     /// Records a partial link failure
     func recordFailure(
         memberId: UUID,
@@ -132,7 +132,7 @@ actor LinkFailureTracker {
            Date().timeIntervalSince(resolvedAt) < suppressionWindow {
             return
         }
-        
+
         if var existing = failedOperations[memberId] {
             existing.retryCount += 1
             failedOperations[memberId] = existing
@@ -146,32 +146,32 @@ actor LinkFailureTracker {
                 retryCount: 1
             )
         }
-        
+
         #if DEBUG
         print("[LinkFailure] Recorded failure for member \(memberId): \(reason)")
         #endif
     }
-    
+
     /// Retrieves pending failed operations
     func getPendingFailures() -> [LinkFailureRecord] {
         // Clean up old records
         let cutoffDate = Date().addingTimeInterval(-maxRetentionTime)
         failedOperations = failedOperations.filter { $0.value.failureDate > cutoffDate }
         recentlyResolved = recentlyResolved.filter { $0.value > cutoffDate }
-        
+
         return Array(failedOperations.values)
     }
-    
+
     /// Marks a failure as resolved
     func markResolved(memberId: UUID) {
         failedOperations.removeValue(forKey: memberId)
         recentlyResolved[memberId] = Date()
-        
+
         #if DEBUG
         print("[LinkFailure] Marked failure as resolved for member \(memberId)")
         #endif
     }
-    
+
     /// Clears all failure records
     func clearAll() {
         failedOperations.removeAll()

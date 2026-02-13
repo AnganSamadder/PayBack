@@ -13,7 +13,7 @@ struct ExpenseDetailView: View {
     init(expense: Expense) {
         self.expense = expense
     }
-    
+
     var body: some View {
         ZStack {
             ScrollView(showsIndicators: false) {
@@ -195,18 +195,18 @@ struct ExpenseDetailView: View {
         if let friend = store.friends.first(where: { $0.memberId == id }) {
             return friend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
-        
+
         // Try from the group members
         if let group = store.group(by: expense.groupId),
            let member = group.members.first(where: { $0.id == id }) {
             return member.name
         }
-        
+
         // Try from cached participantNames in the expense
         if let cachedName = expense.participantNames?[id] {
             return cachedName
         }
-        
+
         return "Unknown"
     }
 
@@ -222,15 +222,15 @@ struct PaymentDetailRow: View {
     let title: String
     let value: String
     let isHighlighted: Bool
-    
+
     var body: some View {
         HStack {
             Text(title)
                 .font(.system(.body, design: .rounded))
                 .foregroundStyle(isHighlighted ? .primary : .secondary)
-            
+
             Spacer()
-            
+
             Text(value)
                 .font(.system(.body, design: .rounded, weight: isHighlighted ? .semibold : .regular))
                 .foregroundStyle(isHighlighted ? AppTheme.brand : .primary)
@@ -249,7 +249,7 @@ struct PaymentDetailRow: View {
 enum SettleMethod: String, CaseIterable {
     case markAsPaid = "Mark as Paid"
     case deleteExpense = "Delete Expense"
-    
+
     var description: String {
         switch self {
         case .markAsPaid:
@@ -258,7 +258,7 @@ enum SettleMethod: String, CaseIterable {
             return "Remove this expense from your records"
         }
     }
-    
+
     var icon: String {
         switch self {
         case .markAsPaid:
@@ -267,7 +267,7 @@ enum SettleMethod: String, CaseIterable {
             return "trash.fill"
         }
     }
-    
+
     var color: Color {
         switch self {
         case .markAsPaid:
@@ -285,7 +285,7 @@ struct SettleExpenseSheet: View {
     @Environment(\.dismiss) private var dismiss
     let expense: Expense
     @Binding var settleMethod: SettleMethod
-    
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
@@ -294,17 +294,17 @@ struct SettleExpenseSheet: View {
                     Image(systemName: settleMethod.icon)
                         .font(.system(size: 48))
                         .foregroundStyle(settleMethod.color)
-                    
+
                     Text("Settle Expense")
                         .font(.system(.title2, design: .rounded, weight: .bold))
-                    
+
                     Text(expense.description)
                         .font(.system(.body, design: .rounded))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
                 .padding(.top, 24)
-                
+
                 // Settle method picker
                 VStack(spacing: 12) {
                     ForEach(SettleMethod.allCases, id: \.self) { method in
@@ -313,19 +313,19 @@ struct SettleExpenseSheet: View {
                                 Image(systemName: method.icon)
                                     .foregroundStyle(method.color)
                                     .frame(width: 24)
-                                
+
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(method.rawValue)
                                         .font(.system(.body, design: .rounded, weight: .medium))
                                         .foregroundStyle(.primary)
-                                    
+
                                     Text(method.description)
                                         .font(.system(.caption, design: .rounded))
                                         .foregroundStyle(.secondary)
                                 }
-                                
+
                                 Spacer()
-                                
+
                                 if settleMethod == method {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundStyle(method.color)
@@ -345,9 +345,9 @@ struct SettleExpenseSheet: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                
+
                 Spacer()
-                
+
                 // Action button
                 Button(action: settleExpense) {
                     Text("Settle Expense")
@@ -371,7 +371,7 @@ struct SettleExpenseSheet: View {
             }
         }
     }
-    
+
     private func settleExpense() {
         switch settleMethod {
         case .markAsPaid:

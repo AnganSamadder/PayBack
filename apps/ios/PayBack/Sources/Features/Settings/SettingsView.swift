@@ -6,23 +6,23 @@ struct SettingsView: View {
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
-    
+
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 24) {
                     // Display section
                     displaySection
-                    
+
                     // Account section
                     accountSection
-                    
+
                     // Data section
                     dataSection
-                    
+
                     // About section
                     aboutSection
-                    
+
                     Spacer(minLength: 40)
                 }
                 .padding(.horizontal, 20)
@@ -41,16 +41,16 @@ struct SettingsView: View {
             }
         }
     }
-    
+
     // MARK: - Display Section
-    
+
     private var displaySection: some View {
         VStack(spacing: 16) {
             Text("Display")
                 .font(.system(.headline, design: .rounded, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             VStack(spacing: 0) {
                 // Prefer Nicknames toggle
                 Toggle(isOn: Binding(
@@ -100,16 +100,16 @@ struct SettingsView: View {
             )
         }
     }
-    
+
     // MARK: - Account Section
-    
+
     private var accountSection: some View {
         VStack(spacing: 16) {
             Text("Account")
                 .font(.system(.headline, design: .rounded, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             VStack(spacing: 12) {
                 // Display name row
                 SettingsRow(
@@ -117,7 +117,7 @@ struct SettingsView: View {
                     label: "Name",
                     value: store.currentUser.name
                 )
-                
+
                 // Email row
                 if let account = store.session?.account {
                     SettingsRow(
@@ -126,10 +126,10 @@ struct SettingsView: View {
                         value: account.email
                     )
                 }
-                
+
                 Divider()
                     .padding(.vertical, 4)
-                
+
                 NavigationLink {
                     DeleteAccountView()
                 } label: {
@@ -142,13 +142,13 @@ struct SettingsView: View {
                                 Circle()
                                     .fill(Color.red.opacity(0.1))
                             )
-                        
+
                         Text("Delete Account")
                             .font(.system(.body, design: .rounded, weight: .medium))
                             .foregroundStyle(.red)
-                        
+
                         Spacer()
-                        
+
                         Image(systemName: "chevron.right")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(.tertiary)
@@ -165,16 +165,16 @@ struct SettingsView: View {
             )
         }
     }
-    
+
     // MARK: - Data Section
-    
+
     private var dataSection: some View {
         VStack(spacing: 16) {
             Text("Data Management")
                 .font(.system(.headline, design: .rounded, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             VStack(spacing: 0) {
                 // Merge Friends
                 NavigationLink {
@@ -189,19 +189,19 @@ struct SettingsView: View {
                                 Circle()
                                     .fill(AppTheme.brand.opacity(0.1))
                             )
-                        
+
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Merge Friends")
                                 .font(.system(.body, design: .rounded, weight: .medium))
                                 .foregroundStyle(.primary)
-                            
+
                             Text("Combine two unlinked friends into one")
                                 .font(.system(.caption, design: .rounded, weight: .medium))
                                 .foregroundStyle(.secondary)
                         }
-                        
+
                         Spacer()
-                        
+
                         Image(systemName: "chevron.right")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(.tertiary)
@@ -220,16 +220,16 @@ struct SettingsView: View {
             )
         }
     }
-    
+
     // MARK: - About Section
-    
+
     private var aboutSection: some View {
         VStack(spacing: 16) {
             Text("About")
                 .font(.system(.headline, design: .rounded, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             VStack(spacing: 12) {
                 // App version
                 SettingsRow(
@@ -246,9 +246,9 @@ struct SettingsView: View {
             )
         }
     }
-    
+
     // MARK: - Helper Properties
-    
+
     private var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
@@ -262,7 +262,7 @@ private struct SettingsRow: View {
     let icon: String
     let label: String
     let value: String
-    
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
@@ -273,17 +273,17 @@ private struct SettingsRow: View {
                     Circle()
                         .fill(AppTheme.brand.opacity(0.1))
                 )
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                     .font(.system(.caption, design: .rounded, weight: .medium))
                     .foregroundStyle(.secondary)
-                
+
                 Text(value)
                     .font(.system(.body, design: .rounded, weight: .medium))
                     .foregroundStyle(.primary)
             }
-            
+
             Spacer()
         }
     }

@@ -84,7 +84,7 @@ struct LoginView: View {
                         color: .yellow,
                         text: errorMessage
                     )
-                    
+
                     // Show resend confirmation button when email is unconfirmed
                     if showResendConfirmation {
                         Button(action: onResendConfirmation) {

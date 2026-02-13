@@ -86,7 +86,7 @@ actor ConvexAccountService: AccountService {
     }
 
     // MARK: - Friend Sync
-    
+
     private struct FriendArg: Codable, ConvexEncodable {
         let member_id: String
         let name: String
@@ -190,7 +190,7 @@ actor ConvexAccountService: AccountService {
         }
         return []
     }
-    
+
     func updateFriendLinkStatus(
         accountEmail: String,
         memberId: UUID,
@@ -199,11 +199,11 @@ actor ConvexAccountService: AccountService {
     ) async throws {
         let currentFriends = try await fetchFriends(accountEmail: accountEmail)
         guard var friend = currentFriends.first(where: { $0.memberId == memberId }) else { return }
-        
+
         friend.hasLinkedAccount = true
         friend.linkedAccountId = linkedAccountId
         friend.linkedAccountEmail = linkedAccountEmail
-        
+
         let args: [String: ConvexEncodable?] = [
             "member_id": friend.memberId.uuidString,
             "name": friend.name,
@@ -212,25 +212,25 @@ actor ConvexAccountService: AccountService {
             "linked_account_id": linkedAccountId,
             "linked_account_email": linkedAccountEmail
         ]
-        
+
         _ = try await client.mutation("friends:upsert", with: args)
-        
+
         if let idx = cachedFriends.firstIndex(where: { $0.memberId == memberId }) {
             cachedFriends[idx] = friend
         }
     }
-    
+
     func updateLinkedMember(accountId: String, memberId: UUID?) async throws {
         guard let memberId = memberId else { return }
         let args: [String: ConvexEncodable?] = ["member_id": memberId.uuidString]
         _ = try await client.mutation("users:updateLinkedMemberId", with: args)
     }
-    
+
     func clearFriends() async throws {
         _ = try await client.mutation("friends:clearAllForUser", with: [:])
         cachedFriends = []
     }
-    
+
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
         let args: [String: ConvexEncodable?] = [
             "profile_avatar_color": colorHex,
@@ -247,7 +247,7 @@ actor ConvexAccountService: AccountService {
         ]
         _ = try await client.mutation("users:updateSettings", with: args)
     }
-    
+
     private struct UploadResponse: Decodable {
         let storageId: String
     }
@@ -257,16 +257,16 @@ actor ConvexAccountService: AccountService {
         guard let uploadUrl = URL(string: urlString) else {
              throw PayBackError.underlying(message: "Failed to generate upload URL")
         }
-        
+
         var request = URLRequest(url: uploadUrl)
         request.httpMethod = "POST"
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type") 
-        
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+
         let (responseData, response) = try await URLSession.shared.upload(for: request, from: data)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
              throw PayBackError.underlying(message: "Upload failed: \((response as? HTTPURLResponse)?.statusCode ?? -1)")
         }
-        
+
         let uploadResponse = try JSONDecoder().decode(UploadResponse.self, from: responseData)
         return try await updateProfileWithStorageId(uploadResponse.storageId)
     }
@@ -277,14 +277,14 @@ actor ConvexAccountService: AccountService {
          let baseUrl = ConvexConfig.deploymentUrl
          return "\(baseUrl)/api/storage/\(storageId)"
     }
-    
+
     func checkAuthentication() async throws -> Bool {
         for try await isAuth in client.subscribe(to: "users:isAuthenticated", yielding: Bool.self).values {
             return isAuth
         }
         return false
     }
-    
+
     func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
         let args: [String: ConvexEncodable?] = [
             "sourceId": sourceId.uuidString,
@@ -302,11 +302,11 @@ actor ConvexAccountService: AccountService {
         let args: [String: ConvexEncodable?] = ["friendMemberId": memberId.uuidString]
         _ = try await client.mutation("cleanup:deleteUnlinkedFriend", with: args)
     }
-    
+
     func selfDeleteAccount() async throws {
         _ = try await client.mutation("cleanup:selfDeleteAccount", with: [:])
     }
-    
+
     /// Monitors the current user's session status in real-time
     /// Returns a stream of UserAccount? (nil if deleted/unauthenticated)
     nonisolated func monitorSession() -> AsyncStream<UserAccount?> {
@@ -321,7 +321,7 @@ actor ConvexAccountService: AccountService {
                             continuation.yield(nil)
                             continue
                         }
-                        
+
                         let account = UserAccount(
                             id: dto.id,
                             email: dto.email,
@@ -342,7 +342,7 @@ actor ConvexAccountService: AccountService {
                     continuation.yield(nil)
                 }
             }
-            
+
             continuation.onTermination = { _ in
                 task.cancel()
             }
@@ -414,7 +414,7 @@ actor ConvexAccountService: AccountService {
         ]
         _ = try await client.mutation("aliases:mergeUnlinkedFriends", with: convexArgs)
     }
-    
+
     func validateAccountIds(_ ids: [String]) async throws -> Set<String> {
         let idsArray: [ConvexEncodable?] = ids
         let args: [String: ConvexEncodable?] = ["ids": idsArray]
@@ -423,18 +423,18 @@ actor ConvexAccountService: AccountService {
         }
         return Set()
     }
-    
+
     func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
         let memberIdStrings = memberIds.map { $0.uuidString }
         let memberIdsArray: [ConvexEncodable?] = memberIdStrings
         let args: [String: ConvexEncodable?] = ["memberIds": memberIdsArray]
-        
+
         struct ResolveResult: Decodable {
             let member_id: String
             let account_id: String
             let email: String
         }
-        
+
         for try await results in client.subscribe(to: "users:resolveLinkedAccountsForMemberIds", with: args, yielding: [ResolveResult].self).values {
             var mapping: [UUID: (String, String)] = [:]
             for result in results {
@@ -457,7 +457,7 @@ actor ConvexAccountService: AccountService {
             "groups": groups,
             "expenses": expenses
         ]
-        
+
         do {
             // convex/bulkImport.ts exports `bulkImport`, so the public function name is `bulkImport:bulkImport`.
             return try await client.mutation("bulkImport:bulkImport", with: args)

@@ -6,7 +6,7 @@ public struct NavigationHeader: View {
     let title: String
     let onBack: () -> Void
     let showBackButton: Bool
-    
+
     public init(
         title: String,
         showBackButton: Bool = true,
@@ -16,7 +16,7 @@ public struct NavigationHeader: View {
         self.showBackButton = showBackButton
         self.onBack = onBack
     }
-    
+
     public var body: some View {
         HStack {
             if showBackButton {
@@ -40,15 +40,15 @@ public struct NavigationHeader: View {
                 }
                 .opacity(0)
             }
-            
+
             Spacer()
-            
+
             Text(title)
                 .font(.system(size: AppMetrics.Navigation.headerTitleFontSize, weight: AppMetrics.Navigation.headerTitleFontWeight, design: .rounded))
                 .foregroundStyle(AppTheme.navigationHeaderText)
-            
+
             Spacer()
-            
+
             // Invisible spacer to balance the back button
             HStack(spacing: AppMetrics.Navigation.headerIconSpacing) {
                 Image(systemName: "chevron.left")
@@ -70,7 +70,7 @@ public struct NavigationHeaderModifier: ViewModifier {
     let title: String
     let showBackButton: Bool
     let onBack: () -> Void
-    
+
     public func body(content: Content) -> some View {
         content
             .safeAreaInset(edge: .top) {
@@ -114,7 +114,7 @@ public struct NavigationHeaderWithAction: View {
     let rightAction: (() -> Void)?
     let rightActionTitle: String?
     let rightActionIcon: String?
-    
+
     public init(
         title: String,
         showBackButton: Bool = true,
@@ -130,7 +130,7 @@ public struct NavigationHeaderWithAction: View {
         self.rightActionTitle = rightActionTitle
         self.rightActionIcon = rightActionIcon
     }
-    
+
     public var body: some View {
         HStack {
             if showBackButton {
@@ -154,15 +154,15 @@ public struct NavigationHeaderWithAction: View {
                 }
                 .opacity(0)
             }
-            
+
             Spacer()
-            
+
             Text(title)
                 .font(.system(size: AppMetrics.Navigation.headerTitleFontSize, weight: AppMetrics.Navigation.headerTitleFontWeight, design: .rounded))
                 .foregroundStyle(AppTheme.navigationHeaderText)
-            
+
             Spacer()
-            
+
             if let rightAction = rightAction {
                 Button(action: rightAction) {
                     HStack(spacing: AppMetrics.Navigation.headerIconSpacing) {
@@ -204,7 +204,7 @@ public struct NavigationHeaderWithActionModifier: ViewModifier {
     let rightAction: (() -> Void)?
     let rightActionTitle: String?
     let rightActionIcon: String?
-    
+
     public func body(content: Content) -> some View {
         content
             .safeAreaInset(edge: .top) {

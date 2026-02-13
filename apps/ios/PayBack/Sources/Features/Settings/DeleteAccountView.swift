@@ -6,11 +6,11 @@ struct DeleteAccountView: View {
     @State private var confirmText = ""
     @State private var isDeleting = false
     @Environment(\.dismiss) private var dismiss
-    
+
     var canDelete: Bool {
         confirmText.uppercased() == "DELETE"
     }
-    
+
     var body: some View {
         Form {
             Section {
@@ -22,11 +22,11 @@ struct DeleteAccountView: View {
                     Text("• Keep your expenses visible to others")
                 }
             }
-            
+
             Section {
                 TextField("Type DELETE to confirm", text: $confirmText)
                     .textInputAutocapitalization(.characters)
-                
+
                 Button("Delete My Account") {
                     showFirstConfirmation = true
                 }
@@ -44,7 +44,7 @@ struct DeleteAccountView: View {
             Text("This action cannot be undone.")
         }
     }
-    
+
     private func deleteAccount() async {
         isDeleting = true
         await store.selfDeleteAccount()

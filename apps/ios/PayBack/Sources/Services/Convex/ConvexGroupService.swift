@@ -18,7 +18,7 @@ final class ConvexGroupService: GroupCloudService, Sendable {
         let is_direct: Bool?
         let is_payback_generated_mock_data: Bool?
     }
-    
+
     private struct GroupMemberDTO: Decodable {
         let id: String
         let name: String
@@ -33,7 +33,7 @@ final class ConvexGroupService: GroupCloudService, Sendable {
              return result.compactMap { dto in
                  guard let id = UUID(uuidString: dto.id),
                        let createdAt = Date(timeIntervalSince1970: dto.created_at / 1000) as Date? else { return nil }
-                 
+
                   let members = dto.members.compactMap { mDto -> GroupMember? in
                       guard let mId = UUID(uuidString: mDto.id) else { return nil }
                       return GroupMember(
@@ -44,7 +44,7 @@ final class ConvexGroupService: GroupCloudService, Sendable {
                           isCurrentUser: mDto.is_current_user
                       )
                   }
-                 
+
                  return SpendingGroup(
                      id: id,
                      name: dto.name,
@@ -63,7 +63,7 @@ final class ConvexGroupService: GroupCloudService, Sendable {
             "cursor": cursor,
             "limit": limit
         ]
-        
+
         for try await result in client.subscribe(to: "groups:listPaginated", with: args, yielding: ConvexPaginatedGroupsDTO.self).values {
             let groups = result.items.compactMap { $0.toSpendingGroup() }
             return (groups, result.nextCursor)
@@ -78,7 +78,7 @@ final class ConvexGroupService: GroupCloudService, Sendable {
     func upsertDebugGroup(_ group: SpendingGroup) async throws {
          try await createGroup(group)
     }
-    
+
     private struct GroupMemberArg: Codable, ConvexEncodable {
         let id: String
         let name: String
@@ -86,25 +86,25 @@ final class ConvexGroupService: GroupCloudService, Sendable {
         let profile_avatar_color: String?
         let is_current_user: Bool?
     }
-    
+
     private func createGroup(_ group: SpendingGroup) async throws {
-         let membersArgs: [ConvexEncodable?] = group.members.map { 
+         let membersArgs: [ConvexEncodable?] = group.members.map {
              GroupMemberArg(
                  id: $0.id.uuidString,
                  name: $0.name,
                  profile_image_url: $0.profileImageUrl,
                  profile_avatar_color: $0.profileColorHex,
                  is_current_user: $0.isMe
-             ) 
+             )
          }
-         
+
          let args: [String: ConvexEncodable?] = [
             "id": group.id.uuidString, // Send client UUID for deduplication
             "name": group.name,
             "members": membersArgs,
             "is_direct": group.isDirect ?? false
          ]
-         
+
          _ = try await client.mutation("groups:create", with: args)
     }
 
@@ -118,7 +118,7 @@ final class ConvexGroupService: GroupCloudService, Sendable {
         // Use clearAllForUser which deletes all groups owned by user
         _ = try await client.mutation("groups:clearAllForUser", with: [:])
     }
-    
+
     func clearAllData() async throws {
         _ = try await client.mutation("groups:clearAllForUser", with: [:])
     }

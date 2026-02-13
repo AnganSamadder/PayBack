@@ -23,14 +23,14 @@ struct GroupMember: Identifiable, Codable, Hashable, Sendable {
         self.isCurrentUser = isCurrentUser
         self.accountFriendMemberId = accountFriendMemberId
     }
-    
+
     // Helper to safely check if this is the current user
     var isMe: Bool { isCurrentUser ?? false }
-    
+
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
-    
+
     static func == (lhs: GroupMember, rhs: GroupMember) -> Bool {
         lhs.id == rhs.id
     }
@@ -61,12 +61,12 @@ struct SpendingGroup: Identifiable, Codable, Hashable, Sendable {
         self.isDirect = isDirect
         self.isDebug = isDebug
     }
-    
+
     // Equality based on ID only (entity identity)
     static func == (lhs: SpendingGroup, rhs: SpendingGroup) -> Bool {
         lhs.id == rhs.id
     }
-    
+
     // Hash based on ID only
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
@@ -92,7 +92,7 @@ public struct Subexpense: Codable, Identifiable, Equatable, Hashable, Sendable {
     public let id: UUID
     public var amount: Double
     // No label needed as per requirements
-    
+
     public init(id: UUID = UUID(), amount: Double) {
         self.id = id
         self.amount = amount
@@ -116,7 +116,7 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, groupId, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug, subexpenses
     }
-    
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -135,7 +135,7 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         // subexpenses is optional - decode if present, otherwise nil
         subexpenses = try container.decodeIfPresent([Subexpense].self, forKey: .subexpenses)
     }
-    
+
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
@@ -188,32 +188,32 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         self.isDebug = isDebug
         self.subexpenses = subexpenses
     }
-    
+
     // Computed property to check if all splits are settled
     var allSplitsSettled: Bool {
         splits.allSatisfy { $0.isSettled }
     }
-    
+
     // Computed property to get unsettled splits
     var unsettledSplits: [ExpenseSplit] {
         splits.filter { !$0.isSettled }
     }
-    
+
     // Computed property to get settled splits
     var settledSplits: [ExpenseSplit] {
         splits.filter { $0.isSettled }
     }
-    
+
     // Check if a specific member's split is settled
     func isSettled(for memberId: UUID) -> Bool {
         splits.first { $0.memberId == memberId }?.isSettled ?? false
     }
-    
+
     // Get split for a specific member
     func split(for memberId: UUID) -> ExpenseSplit? {
         splits.first { $0.memberId == memberId }
     }
-    
+
     // Check if expense has subexpenses breakdown
     var hasSubexpenses: Bool {
         guard let subs = subexpenses else { return false }

@@ -7,7 +7,7 @@ struct FriendsTabView: View {
     var rootResetToken: UUID = UUID()
     @State private var showAddFriend = false
     @State private var showLinkRequests = false
-    
+
     var body: some View {
         NavigationStack(path: $path) {
             homeContent
@@ -45,7 +45,7 @@ struct FriendsTabView: View {
             .toolbar(path.isEmpty ? .hidden : .visible, for: .navigationBar)
         }
     }
-    
+
     @ViewBuilder
     private var homeContent: some View {
         ZStack(alignment: .topLeading) {
@@ -66,7 +66,7 @@ struct FriendsTabView: View {
                         }
 
                     Spacer()
-                    
+
                     // Link requests button with badge
                     Button(action: {
                         showLinkRequests = true
@@ -76,7 +76,7 @@ struct FriendsTabView: View {
                                 .font(.headline)
                                 .foregroundStyle(AppTheme.brand)
                                 .frame(width: AppMetrics.smallIconButtonSize, height: AppMetrics.smallIconButtonSize)
-                            
+
                             // Badge for pending requests
                             if pendingRequestCount > 0 {
                                 Text("\(pendingRequestCount)")
@@ -90,7 +90,7 @@ struct FriendsTabView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Link Requests")
-                    
+
                     Button(action: {
                         showAddFriend = true
                     }) {
@@ -123,14 +123,14 @@ struct FriendsTabView: View {
             try? await store.fetchLinkRequests()
         }
     }
-    
+
     private func handleDoubleTap() {
         // Double-tap on Friends title switches to Groups tab
         withAnimation(.easeInOut(duration: 0.3)) {
             selectedRootTab = RootTab.groups.rawValue
         }
     }
-    
+
     private var pendingRequestCount: Int {
         store.incomingLinkRequests.filter { $0.status == .pending }.count
     }
@@ -145,11 +145,11 @@ private struct FriendsList: View {
     @State private var friendToDelete: GroupMember?
     @State private var showDeleteConfirmation = false
     let onFriendSelected: (GroupMember) -> Void
-    
+
     enum SortOrder: String, CaseIterable {
         case alphabetical = "A-Z"
         case balance = "Balance"
-        
+
         var displayName: String {
             switch self {
             case .alphabetical: return "Name"
@@ -160,7 +160,7 @@ private struct FriendsList: View {
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
-    
+
     var body: some View {
         Group {
             if sortedFriends.isEmpty {
@@ -180,7 +180,7 @@ private struct FriendsList: View {
                     Text("Sort by:")
                         .font(.system(.footnote, design: .rounded, weight: .medium))
                         .foregroundStyle(.secondary)
-                    
+
                     // Sort type buttons
                     HStack(spacing: 4) {
                         ForEach(SortOrder.allCases, id: \.self) { order in
@@ -204,9 +204,9 @@ private struct FriendsList: View {
                             .buttonStyle(.plain)
                         }
                     }
-                    
+
                     Spacer()
-                    
+
                     // Separate ascending/descending button
                     Button(action: {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -221,7 +221,7 @@ private struct FriendsList: View {
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 12)
-                
+
                 List {
                     ForEach(sortedFriends) { friend in
                         Button(action: {
@@ -287,19 +287,19 @@ private struct FriendsList: View {
             let balance = calculateBalanceForSorting(for: friend)
             let isLinked = store.friendHasLinkedAccount(friend)
             var message = ""
-            
+
             if isLinked {
                 message = "Remove \(friendDisplayName(friend)) as a friend? Their account will remain, but your 1:1 expenses will be deleted."
             } else {
                 message = "Delete \(friendDisplayName(friend))? This will remove them from all your groups and expenses."
             }
-            
+
             if abs(balance) > 0.01 {
                 let currencyCode = Locale.current.currency?.identifier ?? "USD"
                 let formattedAmount = abs(balance).formatted(.currency(code: currencyCode))
                 message += "\n\n⚠️ You have unsettled expenses totaling \(formattedAmount). Deleting will remove these."
             }
-            
+
             return Text(message)
         }
     }
@@ -309,7 +309,7 @@ private struct FriendsList: View {
         let friends = store.confirmedFriendMembers
             .filter { !store.isCurrentUser($0) }
             .filter { $0.id != store.currentUser.id }
-        
+
         switch sortOrder {
         case .alphabetical:
             return friends.sorted { friend1, friend2 in
@@ -321,7 +321,7 @@ private struct FriendsList: View {
             let friendsWithBalances = friends.map { friend in
                 (friend: friend, balance: calculateBalanceForSorting(for: friend))
             }
-            
+
             return friendsWithBalances.sorted { pair1, pair2 in
                 let balance1 = pair1.balance
                 let balance2 = pair2.balance
@@ -329,15 +329,15 @@ private struct FriendsList: View {
             }.map { $0.friend }
         }
     }
-    
+
     private func calculateBalanceForSorting(for friend: GroupMember) -> Double {
         // Use the same calculation as BalanceView for consistency and performance
         var totalBalance: Double = 0
-        
+
         for group in store.groups {
             if group.members.contains(where: { isFriend($0.id, for: friend) }) {
                 let groupExpenses = store.expenses(in: group.id)
-                
+
                 for exp in groupExpenses where !exp.isSettled {
                     if isMe(exp.paidByMemberId) {
                         // Current user paid, check if friend owes anything
@@ -353,10 +353,10 @@ private struct FriendsList: View {
                 }
             }
         }
-        
+
         return totalBalance
     }
-    
+
     private func friendDisplayName(_ friend: GroupMember) -> String {
         // Find the AccountFriend for this member using identity equivalence.
         if let accountFriend = store.friends.first(where: { store.areSamePerson($0.memberId, friend.id) }) {

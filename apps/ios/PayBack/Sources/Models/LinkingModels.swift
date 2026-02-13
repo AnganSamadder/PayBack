@@ -14,7 +14,7 @@ public struct LinkRequest: Identifiable, Codable, Hashable, Sendable {
     public var status: LinkRequestStatus
     public var expiresAt: Date
     public var rejectedAt: Date? // Track when request was rejected
-    
+
     public init(id: UUID, requesterId: String, requesterEmail: String, requesterName: String, recipientEmail: String, targetMemberId: UUID, targetMemberName: String, createdAt: Date, status: LinkRequestStatus, expiresAt: Date, rejectedAt: Date?) {
         self.id = id
         self.requesterId = requesterId
@@ -63,10 +63,10 @@ public struct LinkAcceptResult: Sendable {
     public let contractVersion: Int
     public let linkedAccountId: String
     public let linkedAccountEmail: String
-    
+
     // Backward-compatible accessors for older call sites.
     public var linkedMemberId: UUID { canonicalMemberId }
-    
+
     public init(
         targetMemberId: UUID,
         canonicalMemberId: UUID,
@@ -82,7 +82,7 @@ public struct LinkAcceptResult: Sendable {
         self.linkedAccountId = linkedAccountId
         self.linkedAccountEmail = linkedAccountEmail
     }
-    
+
     public init(linkedMemberId: UUID, linkedAccountId: String, linkedAccountEmail: String) {
         self.targetMemberId = linkedMemberId
         self.canonicalMemberId = linkedMemberId
