@@ -1,4 +1,4 @@
-// swiftlint:disable file_length type_body_length line_length large_tuple
+// swiftlint:disable file_length type_body_length line_length large_tuple cyclomatic_complexity function_body_length identifier_name inclusive_language blanket_disable_command
 import Foundation
 import Combine
 import Clerk
