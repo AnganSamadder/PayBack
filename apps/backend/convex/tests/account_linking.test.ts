@@ -2,9 +2,10 @@ import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
+import { modules } from "./setup";
 
 test("comprehensive: group expenses, settlements, and linking", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
 
   // 1. Setup User A (The Payer/Owner)
   const userA = await t.run(async (ctx) => {
@@ -191,7 +192,7 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
 });
 
 test("friends:list dedupes linked identity rows and preserves enriched aliases", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
 
   await t.run(async (ctx) => {
     await ctx.db.insert("accounts", {
@@ -258,7 +259,7 @@ test("friends:list dedupes linked identity rows and preserves enriched aliases",
 });
 
 test("friends:upsert preserves existing linked metadata on stale unlinked client sync", async () => {
-  const t = convexTest(schema);
+  const t = convexTest(schema, modules);
   const now = Date.now();
 
   await t.run(async (ctx) => {
