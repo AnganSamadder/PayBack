@@ -437,10 +437,8 @@ final class AppStoreLinkingTests: XCTestCase {
     // MARK: - Claim Invite Token Tests
 
     func testClaimInviteToken_SuccessfullyClaimsToken() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let tokenId = UUID()
         let memberId = UUID()
@@ -452,37 +450,29 @@ final class AppStoreLinkingTests: XCTestCase {
             creatorEmail: "creator@example.com"
         )
 
-        // When
         try await sut.claimInviteToken(tokenId)
 
-        // Then
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertTrue(true)
     }
 
     func testClaimInviteToken_HandlesInvalidToken() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let invalidTokenId = UUID()
 
-        // When/Then - should throw for invalid token
         await XCTAssertThrowsError(
             try await sut.claimInviteToken(invalidTokenId)
         )
     }
 
     func testClaimInviteToken_HandlesExpiredToken() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let tokenId = UUID()
 
-        // When/Then - should throw for invalid/expired token
         await XCTAssertThrowsError(
             try await sut.claimInviteToken(tokenId)
         )
