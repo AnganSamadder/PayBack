@@ -377,19 +377,37 @@ jobs:
   ios-tests:
     name: iOS Tests (${{ matrix.sanitizer }})
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.timeout }}
     needs: [quality-gate]
     if: "!contains(github.event.pull_request.title, '[skip-ios]')"
     strategy:
       fail-fast: false
       matrix:
         sanitizer: [none, thread, address]
+        include:
+          - sanitizer: none
+            run_on_pr: true
+            timeout: 25
+          - sanitizer: thread
+            run_on_pr: false
+            timeout: 45
+          - sanitizer: address
+            run_on_pr: false
+            timeout: 45
 
     steps:
+      - name: Skip sanitizer jobs on PRs
+        if: matrix.run_on_pr == false && github.event_name == 'pull_request'
+        run: |
+          echo "Skipping ${{ matrix.sanitizer }} sanitizer — only runs on pushes to main"
+          exit 0
+
       - name: Checkout
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         uses: actions/checkout@v4
 
       - name: Detect latest stable Xcode (not beta)
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         id: detect-xcode
         run: |
           LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | grep -v "^Xcode_26\." | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
@@ -403,14 +421,17 @@ jobs:
           echo "Using Xcode $LATEST_STABLE"
 
       - name: Set up Xcode
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: ${{ steps.detect-xcode.outputs.version }}
 
       - name: Show Xcode version
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         run: xcodebuild -version
 
       - name: Detect iOS SDK Version
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         id: detect-sdk
         run: |
           SDK_VERSION=$(xcodebuild -showsdks | grep -o 'iphoneos[0-9]*\.[0-9]*' | sed 's/iphoneos//' | sort -V | tail -1)
@@ -424,14 +445,17 @@ jobs:
           echo "Detected iOS SDK: $SDK_VERSION (major: $SDK_MAJOR)"
 
       - name: List Available iOS Runtimes
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         run: |
           echo "Available iOS runtimes:"
           xcrun simctl runtime list | grep -E "iOS" || echo "No iOS runtimes found"
 
       - name: Remove unavailable simulators
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         run: xcrun simctl delete unavailable || true
 
       - name: Cache SPM
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         uses: actions/cache@v4
         with:
           path: |
@@ -442,13 +466,16 @@ jobs:
             ${{ runner.os }}-spm-
 
       - name: Install xcpretty
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         run: sudo gem install xcpretty --no-document
 
       - name: Resolve dependencies
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         run: |
           xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj -scheme PayBack
 
       - name: Select iPhone Simulator
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         env:
           SDK_MAJOR: ${{ steps.detect-sdk.outputs.sdk-major }}
         run: |
@@ -545,6 +572,7 @@ jobs:
           PY
 
       - name: Boot Selected Simulator
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         run: |
           set -e
           if [ -z "$SIMULATOR_UDID" ]; then
@@ -559,39 +587,49 @@ jobs:
           sleep 5
           echo "Simulator ready"
 
-      - name: Install SwiftLint
+      - name: Compute Test Flags
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        id: test-flags
         run: |
-          brew update
-          brew install swiftlint || true
+          if [ "${{ matrix.sanitizer }}" = "thread" ]; then
+            echo "sanitizer_flag=-enableThreadSanitizer YES" >> $GITHUB_OUTPUT
+            echo "coverage_flag=" >> $GITHUB_OUTPUT
+          elif [ "${{ matrix.sanitizer }}" = "address" ]; then
+            echo "sanitizer_flag=-enableAddressSanitizer YES" >> $GITHUB_OUTPUT
+            echo "coverage_flag=" >> $GITHUB_OUTPUT
+          else
+            echo "sanitizer_flag=" >> $GITHUB_OUTPUT
+            echo "coverage_flag=-enableCodeCoverage YES" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Run SwiftLint (non-failing)
-        run: swiftlint lint || true
-
-      - name: Build
+      - name: Build for Testing
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         run: |
-          xcodebuild \
-            -project PayBack.xcodeproj \
-            -scheme PayBack \
-            -configuration Debug \
-            -destination "$SIMULATOR_DESTINATION" \
-            clean build | xcpretty
-        env:
-          NSUnbufferedIO: "YES"
-
-      - name: Clean Previous Test Results
-        run: |
-          rm -rf TestResults.xcresult coverage.json coverage-report.txt || true
-
-      - name: Run Unit Tests
-        run: |
-          set -o pipefail
-          xcodebuild test \
+          xcodebuild build-for-testing \
             -project PayBack.xcodeproj \
             -scheme PayBackTests \
             -configuration Debug \
             -destination "$SIMULATOR_DESTINATION" \
-            -parallel-testing-enabled NO \
-            -enableCodeCoverage YES \
+            ${{ steps.test-flags.outputs.sanitizer_flag }} \
+            ${{ steps.test-flags.outputs.coverage_flag }} \
+            | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Clean Previous Test Results
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: |
+          rm -rf TestResults.xcresult coverage.json coverage-report.txt || true
+
+      - name: Run Unit Tests
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project PayBack.xcodeproj \
+            -scheme PayBackTests \
+            -destination "$SIMULATOR_DESTINATION" \
+            -parallel-testing-enabled YES \
             -resultBundlePath TestResults.xcresult \
             | tee test-output.txt \
             | xcpretty
@@ -599,7 +637,7 @@ jobs:
           NSUnbufferedIO: "YES"
 
       - name: Report Skipped Tests
-        if: always()
+        if: always() && (matrix.run_on_pr == true || github.event_name == 'push')
         run: |
           echo "## Skipped Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -621,6 +659,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Generate Coverage Report
+        if: matrix.sanitizer == 'none' && (matrix.run_on_pr == true || github.event_name == 'push')
         run: |
           if [ ! -d TestResults.xcresult ]; then
             echo "ERROR: TestResults.xcresult not found - tests likely did not run"
@@ -647,6 +686,7 @@ jobs:
           fi
 
       - name: Check Coverage Threshold
+        if: matrix.sanitizer == 'none' && (matrix.run_on_pr == true || github.event_name == 'push')
         run: |
           THRESHOLD=48.0
           COVERAGE=${{ env.COVERAGE }}
@@ -660,7 +700,7 @@ jobs:
           fi
 
       - name: Upload Test Results
-        if: always()
+        if: always() && (matrix.run_on_pr == true || github.event_name == 'push')
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ matrix.sanitizer }}-${{ github.run_attempt }}
@@ -668,7 +708,7 @@ jobs:
           retention-days: 30
 
       - name: Upload Coverage Report
-        if: matrix.sanitizer == 'none'
+        if: matrix.sanitizer == 'none' && (matrix.run_on_pr == true || github.event_name == 'push')
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report-${{ github.run_attempt }}

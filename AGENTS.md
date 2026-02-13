@@ -57,6 +57,26 @@ bun run ci             # Full local CI pipeline
 xcodebuild -scheme PayBack -destination "platform=iOS Simulator,name=iPhone 15"
 ```
 
+## LOCAL SANITIZER TESTING
+
+Run sanitizers locally before pushing to catch thread-safety and memory bugs early. CI only runs sanitizers on merges to `main`, so local runs are the first line of defense.
+
+```bash
+# Thread Sanitizer (catches data races)
+SANITIZER=thread ./scripts/test-ci-locally.sh
+
+# Address Sanitizer (catches memory errors: use-after-free, buffer overflow)
+SANITIZER=address ./scripts/test-ci-locally.sh
+
+# Standard run with coverage (what PRs run)
+./scripts/test-ci-locally.sh
+```
+
+**When to sanitize:**
+- Always run `SANITIZER=thread` before pushing changes to concurrency code (`async/await`, actors, `@State`, `@Published`)
+- Always run `SANITIZER=address` before pushing changes to data structures, collections, or any manual memory management
+- Run both before any PR that touches `AppStore`, `Services/`, or `Concurrency/` code
+
 ## CONVENTIONS
 
 - **Commits**: Conventional Commits (`feat:`, `fix:`). Single line.
