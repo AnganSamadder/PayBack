@@ -16,7 +16,8 @@
   },
   "devDependencies": {
     "@payback/config-eslint": "workspace:*",
-    "convex-test": "^0.0.41"
+    "convex-test": "^0.0.41",
+    "vite": "^6.2.0"
   },
   "dependencies": {
     "convex": "^1.31.3"
