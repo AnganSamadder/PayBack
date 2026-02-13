@@ -663,14 +663,15 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-${{ matrix.sanitizer }}-${{ github.run_attempt }}
           path: TestResults.xcresult
           retention-days: 30
 
       - name: Upload Coverage Report
+        if: matrix.sanitizer == 'none'
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-report-${{ github.run_attempt }}
           path: |
             coverage.json
             coverage-report.txt
