@@ -385,7 +385,7 @@ export const removeLegacyFields = internalMutation({
   args: {},
   handler: async (ctx) => {
     const accounts = await ctx.db.query("accounts").collect();
-    let patched = 0;
+    const patched = 0;
     for (const acc of accounts) {
       if ((acc as any).equivalent_member_ids !== undefined) {
         // Since equivalent_member_ids is not in the schema, we can't patch it to undefined.
