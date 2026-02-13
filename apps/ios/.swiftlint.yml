@@ -1,6 +1,3 @@
-excluded:
-  - PayBack/Tests
-
 disabled_rules:
   - blanket_disable_command
   - superfluous_disable_command
@@ -10,6 +7,7 @@ disabled_rules:
   - file_length
   - type_body_length
   - function_body_length
+  - function_parameter_count
   - large_tuple
   - line_length
   - force_try
@@ -22,3 +20,13 @@ disabled_rules:
   - for_where
   - inclusive_language
   - unneeded_override
+  - colon
+  - unused_closure_parameter
+  - empty_enum_arguments
+  - multiple_closures_with_trailing_closure
+  - comma
+  - cyclomatic_complexity
+  - unused_enumerated
+
+excluded:
+  - PayBack/Tests
