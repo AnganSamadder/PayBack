@@ -448,6 +448,7 @@ final class DataExportServiceTests: XCTestCase {
         let filename = DataExportService.suggestedFilename()
 
         // Should match pattern: PayBack_Export_YYYY-MM-DD_HHmmss.csv
+        // swiftlint:disable:next force_try
         let regex = try! NSRegularExpression(pattern: "PayBack_Export_\\d{4}-\\d{2}-\\d{2}_\\d{6}\\.csv")
         let range = NSRange(filename.startIndex..., in: filename)
         XCTAssertNotNil(regex.firstMatch(in: filename, range: range))
