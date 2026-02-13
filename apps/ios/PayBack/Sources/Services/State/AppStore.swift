@@ -1,3 +1,4 @@
+// swiftlint:disable file_length type_body_length
 import Foundation
 import Combine
 import Clerk
@@ -2511,11 +2512,11 @@ final class AppStore: ObservableObject {
         }
         
         // Otherwise create one
-        let g = SpendingGroup(name: friend.name, members: [currentUser, friend], isDirect: true)
-        groups.append(g)
+        let directGroup = SpendingGroup(name: friend.name, members: [currentUser, friend], isDirect: true)
+        groups.append(directGroup)
         persistCurrentState()
-        Task { [g] in
-            try? await groupCloudService.upsertGroup(g)
+        Task { [directGroup] in
+            try? await groupCloudService.upsertGroup(directGroup)
         }
         scheduleFriendSync()
         return g
