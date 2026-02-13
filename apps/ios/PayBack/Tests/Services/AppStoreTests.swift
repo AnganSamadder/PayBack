@@ -149,8 +149,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let friend = GroupMember(name: "Alice")
 
@@ -166,8 +165,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Test", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
@@ -184,8 +182,7 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let tokenId = UUID()
         let memberId = UUID()
@@ -268,7 +265,6 @@ final class AppStoreTests: XCTestCase {
     }
 
     func testLinkedAccountEmail_ReturnsEmailForLinkedFriend() async throws {
-        // Given
         let memberId = UUID()
         let email = "alice@example.com"
         let linkedFriend = AccountFriend(
@@ -282,8 +278,7 @@ final class AppStoreTests: XCTestCase {
 
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
         sut.addGroup(name: "Test", memberNames: ["Alice"])
@@ -291,15 +286,12 @@ final class AppStoreTests: XCTestCase {
 
         let friend = GroupMember(id: memberId, name: "Alice")
 
-        // When
         let linkedEmail = sut.linkedAccountEmail(for: friend)
 
-        // Then
-        XCTAssertNil(linkedEmail) // Not yet synced to local state
+        XCTAssertNil(linkedEmail)
     }
 
     func testIsAccountEmailAlreadyLinked_ReturnsTrueForLinkedEmail() async throws {
-        // Given
         let email = "alice@example.com"
         let linkedFriend = AccountFriend(
             memberId: UUID(),
@@ -312,8 +304,7 @@ final class AppStoreTests: XCTestCase {
 
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
         sut.addGroup(name: "Test", memberNames: ["Alice"])

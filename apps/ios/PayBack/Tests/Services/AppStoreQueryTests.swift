@@ -172,10 +172,8 @@ final class AppStoreQueryTests: XCTestCase {
     // MARK: - Friend Status Tests
 
     func testFriendHasLinkedAccount_ReturnsTrueForLinkedFriend() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
@@ -192,18 +190,14 @@ final class AppStoreQueryTests: XCTestCase {
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        // When
         let hasLinked = sut.friendHasLinkedAccount(alice)
 
-        // Then
-        XCTAssertFalse(hasLinked) // Not yet synced to local state
+        XCTAssertTrue(hasLinked)
     }
 
     func testLinkedAccountEmail_ReturnsEmailForLinkedFriend() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
@@ -220,18 +214,14 @@ final class AppStoreQueryTests: XCTestCase {
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        // When
         let email = sut.linkedAccountEmail(for: alice)
 
-        // Then
-        XCTAssertNil(email) // Not yet synced to local state
+        XCTAssertEqual(email, "alice@example.com")
     }
 
     func testLinkedAccountId_ReturnsIdForLinkedFriend() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
@@ -258,46 +248,36 @@ final class AppStoreQueryTests: XCTestCase {
     // MARK: - Update Friend Nickname Tests
 
     func testUpdateFriendNickname_UpdatesNickname() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
 
-        // When
         try await sut.updateFriendNickname(memberId: alice.id, nickname: "Ally")
 
-        // Then
         try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertTrue(true) // Completes without error
+        XCTAssertTrue(true)
     }
 
     func testUpdateFriendNickname_ClearsNickname() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
 
-        // When
         try await sut.updateFriendNickname(memberId: alice.id, nickname: nil)
 
-        // Then
         try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertTrue(true) // Completes without error
+        XCTAssertTrue(true)
     }
 
     // MARK: - Duplicate Prevention Tests
 
     func testIsAccountEmailAlreadyLinked_ReturnsTrueForLinkedEmail() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let linkedFriend = AccountFriend(
             memberId: UUID(),
@@ -311,18 +291,14 @@ final class AppStoreQueryTests: XCTestCase {
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        // When
         let isLinked = sut.isAccountEmailAlreadyLinked(email: "alice@example.com")
 
-        // Then
-        XCTAssertFalse(isLinked) // Not yet synced to local state
+        XCTAssertTrue(isLinked)
     }
 
     func testIsAccountEmailAlreadyLinked_IsCaseInsensitive() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let linkedFriend = AccountFriend(
             memberId: UUID(),
@@ -336,20 +312,16 @@ final class AppStoreQueryTests: XCTestCase {
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        // When
         let isLinked = sut.isAccountEmailAlreadyLinked(email: "ALICE@EXAMPLE.COM")
 
-        // Then
-        XCTAssertFalse(isLinked) // Not yet synced to local state
+        XCTAssertTrue(isLinked)
     }
 
     // MARK: - Generate Invite Link Tests
 
     func testGenerateInviteLink_CreatesInviteLink() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
@@ -365,16 +337,11 @@ final class AppStoreQueryTests: XCTestCase {
     func testGenerateInviteLink_SucceedsForUnlinkedFriend() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
-
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
 
-        // When - generate invite link for unlinked friend
         let inviteLink = try await sut.generateInviteLink(forFriend: alice)
 
-        // Then
         XCTAssertNotNil(inviteLink)
         XCTAssertEqual(inviteLink.token.targetMemberId, alice.id)
     }
@@ -382,10 +349,8 @@ final class AppStoreQueryTests: XCTestCase {
     // MARK: - Cancel Link Request Tests
 
     func testCancelLinkRequest_RemovesFromOutgoing() async throws {
-        // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         await mockLinkRequestService.setUserEmail(account.email)
         await mockLinkRequestService.setRequesterDetails(id: account.id, name: account.displayName)
