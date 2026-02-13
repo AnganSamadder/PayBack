@@ -27,6 +27,15 @@ disabled_rules:
   - comma
   - cyclomatic_complexity
   - unused_enumerated
+  - type_name
+  - syntactic_sugar
+  - nesting
+  - opening_brace
+  - unneeded_synthesized_initializer
+  - operator_usage_whitespace
+  - private_over_fileprivate
+  - redundant_void_return
+  - weak_delegate
 
 excluded:
   - PayBack/Tests
