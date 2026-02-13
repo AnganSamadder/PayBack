@@ -30,6 +30,7 @@
     "deploy:backend": "turbo deploy --filter=@payback/backend"
   },
   "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
     "@eslint/js": "^9.21.0",
     "@types/node": "^22.13.10",
     "eslint": "^9.21.0",
