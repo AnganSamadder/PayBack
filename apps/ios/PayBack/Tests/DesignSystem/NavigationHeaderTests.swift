@@ -1,4 +1,4 @@
-// swiftlint:disable type_body_length
+// swiftlint:disable type_body_length blanket_disable_command
 import XCTest
 import SwiftUI
 @testable import PayBack

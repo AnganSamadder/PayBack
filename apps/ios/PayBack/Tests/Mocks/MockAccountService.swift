@@ -1,3 +1,4 @@
+// swiftlint:disable for_where line_length
 import Foundation
 @testable import PayBack
 

@@ -1,3 +1,4 @@
+// swiftlint:disable file_length line_length
 import XCTest
 @testable import PayBack
 

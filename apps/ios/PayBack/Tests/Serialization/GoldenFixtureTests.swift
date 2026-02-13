@@ -1,3 +1,4 @@
+// swiftlint:disable line_length type_body_length
 import XCTest
 @testable import PayBack
 

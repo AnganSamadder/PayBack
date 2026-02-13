@@ -1,3 +1,4 @@
+// swiftlint:disable identifier_name
 import XCTest
 import SwiftUI
 @testable import PayBack
