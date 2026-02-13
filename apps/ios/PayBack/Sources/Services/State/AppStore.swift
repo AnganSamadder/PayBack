@@ -551,104 +551,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
         Task {
             try? await completeAuthenticationAndWait(email: email, name: name)
         }
-        /*
-        // Create initial account object
-        _ = UserAccount(
-            id: id,
-            email: email,
-            displayName: name ?? "User"
-        )
-        // Wrapp in UserSession (assuming it exists and takes account) or just use account
-        // Since we don't know UserSession structure perfectly, let's look at how it was used: session.account
-        // We might need to construct it. If UserSession is Clerk specific, we should use UserAccount directly.
-        // For now, let's rely on finding/creating the account via service first.
-
-        // Clear any stale local cache before syncing from Convex
-        persistence.clear()
-
-        Task {
-            // 1. Ensure backend has this user (Convex users:store)
-            // The AccountService (Convex) createAccount calls 'users:store'.
-            do {
-                // NEW: Authenticate Convex with the new Clerk session
-                // This ensures ConvexClient switches to the new user before we try to create account or load data
-                await Dependencies.authenticateConvex()
-
-                // Robust wait for server-side authentication
-                // This polls "users:isAuthenticated" until true
-                try await waitForServerAuthentication()
-
-                let syncedAccount = try await accountService.createAccount(email: email, displayName: name ?? "User")
-                print("[AuthDebug] Account creation/sync successful")
-
-
-
-                await MainActor.run {
-                     self.session = UserSession(account: syncedAccount)
-                     self.applyDisplayName(syncedAccount.displayName)
-                }
-
-                let updatedAccount = await ensureCurrentUserIdentity(for: syncedAccount)
-                await MainActor.run {
-                    self.session = UserSession(account: updatedAccount)
-                }
-                await loadRemoteData()
-                await reconcileLinkState()
-        await startSessionMonitoring()
-
-        */
     }
 
     /// Async variant for testing - awaits authentication completion
     func completeAuthenticationAndWait(email: String, name: String?) async throws {
         _ = try await performConvexAuthAndSetup(email: email, name: name, allowCreation: true)
-    }
-        /*
-        // Create initial account object
-        _ = UserAccount(
-            id: id,
-            email: email,
-            displayName: name ?? "User"
-        )
-        // Wrapp in UserSession (assuming it exists and takes account) or just use account
-        // Since we don't know UserSession structure perfectly, let's look at how it was used: session.account
-        // We might need to construct it. If UserSession is Clerk specific, we should use UserAccount directly.
-        // For now, let's rely on finding/creating the account via service first.
-
-        // Clear any stale local cache before syncing from Convex
-        persistence.clear()
-
-        Task {
-            // 1. Ensure backend has this user (Convex users:store)
-            // The AccountService (Convex) createAccount calls 'users:store'.
-            do {
-                // NEW: Authenticate Convex with the new Clerk session
-                // This ensures ConvexClient switches to the new user before we try to create account or load data
-                await Dependencies.authenticateConvex()
-
-                // Robust wait for server-side authentication
-                // This polls "users:isAuthenticated" until true
-                try await waitForServerAuthentication()
-
-                let syncedAccount = try await accountService.createAccount(email: email, displayName: name ?? "User")
-                print("[AuthDebug] Account creation/sync successful")
-
-
-
-                await MainActor.run {
-                     self.session = UserSession(account: syncedAccount)
-                     self.applyDisplayName(syncedAccount.displayName)
-                }
-
-                let updatedAccount = await ensureCurrentUserIdentity(for: syncedAccount)
-                await MainActor.run {
-                    self.session = UserSession(account: updatedAccount)
-                }
-                await loadRemoteData()
-                await reconcileLinkState()
-        await startSessionMonitoring()
-
-        */
     }
 
     /// Polls the server until authentication is confirmed or timeout
