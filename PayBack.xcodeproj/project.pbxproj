@@ -23,7 +23,6 @@
 		05FC7341930C6BEA09DBED7E /* InviteLinkService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230D91E194DB7716254085D4 /* InviteLinkService.swift */; };
 		06504D6552D9996303DFB7DE /* ClerkAuthProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EFE8F2047EEAF11D31E4F1B /* ClerkAuthProviderTests.swift */; };
 		06FDA5FAB7F7A66F89196E96 /* DetailContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49D7C53DAB1E7F54FE02BDCC /* DetailContainer.swift */; };
-		0862C8717F1D60B24B7C533F /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = B3CB16DCDDEC82F38E1BD4BC /* AGENTS.md */; };
 		08B6124CF7B24C12E829973E /* LinkStateReconciliation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77507FA5CDA078A4C28D6662 /* LinkStateReconciliation.swift */; };
 		08E75B7EA653D2318E102100 /* LinkStateReconciliation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77507FA5CDA078A4C28D6662 /* LinkStateReconciliation.swift */; };
 		092ECBB74BA30E73ADCF65FB /* ReconciliationPerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CC45A098C92F0A8A972BC76 /* ReconciliationPerformanceTests.swift */; };
@@ -449,7 +448,6 @@
 		FC871AD9DC74AB8F9FD404A5 /* DetailContainerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55512C199A3314C244C0B764 /* DetailContainerTests.swift */; };
 		FC8A6FA1183C1103F5921B61 /* LoginViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3121780D688F8F76B749362 /* LoginViewTests.swift */; };
 		FCD5B9994C5004A7B1C6745F /* metrics_template.csv in Resources */ = {isa = PBXBuildFile; fileRef = AFAED94382E80DC702F256BE /* metrics_template.csv */; };
-		FD8FDBD2729680E5B7BAF0BD /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = B3CB16DCDDEC82F38E1BD4BC /* AGENTS.md */; };
 		FDBFD5E402895544622A0466 /* variant-c-sanitized.csv in Resources */ = {isa = PBXBuildFile; fileRef = 4C2BABFEFDD4208B43319CC3 /* variant-c-sanitized.csv */; };
 		FE7E65971621DE649D1871DA /* TabRoutes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD4892D8BC1B4E4FFDD80610 /* TabRoutes.swift */; };
 		FE816E78B4034314531CA64E /* DeleteAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96ED2CA5C94A388ACF29A228 /* DeleteAccountView.swift */; };
@@ -1536,7 +1534,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0862C8717F1D60B24B7C533F /* AGENTS.md in Resources */,
 				C66D284501244934B6E4EF10 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1565,7 +1562,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				FD8FDBD2729680E5B7BAF0BD /* AGENTS.md in Resources */,
 				E90F9ADFBFEB198A26967189 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1581,14 +1577,14 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/convex/schema.ts",
-				"$(SRCROOT)/convex/auth.config.ts",
-				"$(SRCROOT)/convex/expenses.ts",
-				"$(SRCROOT)/convex/friends.ts",
-				"$(SRCROOT)/convex/groups.ts",
-				"$(SRCROOT)/convex/inviteTokens.ts",
-				"$(SRCROOT)/convex/linkRequests.ts",
-				"$(SRCROOT)/convex/users.ts",
+				"$(SRCROOT)/apps/backend/convex/schema.ts",
+				"$(SRCROOT)/apps/backend/convex/auth.config.ts",
+				"$(SRCROOT)/apps/backend/convex/expenses.ts",
+				"$(SRCROOT)/apps/backend/convex/friends.ts",
+				"$(SRCROOT)/apps/backend/convex/groups.ts",
+				"$(SRCROOT)/apps/backend/convex/inviteTokens.ts",
+				"$(SRCROOT)/apps/backend/convex/linkRequests.ts",
+				"$(SRCROOT)/apps/backend/convex/users.ts",
 			);
 			name = "Convex Backend Sync";
 			outputFileListPaths = (
@@ -1598,7 +1594,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\n\n# Safety check: only deploy when explicitly enabled\nif [ \"${CONVEX_DEPLOY_ON_CI:-}\" != \"1\" ]; then\n  echo \"Convex deploy disabled (CONVEX_DEPLOY_ON_CI != 1). Skipping.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\n# Guardrail: never deploy backend from non-production app configs.\n# Internal/Debug app builds should not push server changes.\nif [ \"${CONFIGURATION:-}\" != \"Release\" ]; then\n  echo \"Convex deploy skipped for CONFIGURATION=${CONFIGURATION:-unset} (only Release deploys backend).\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\n# Verify deploy key is available\nif [ -z \"${CONVEX_DEPLOY_KEY:-}\" ]; then\n  echo \"warning: CONVEX_DEPLOY_KEY not set. Skipping Convex deploy.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\nexport PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"\n\n# Try to find npx via nvm (local dev) or Homebrew (XcodeCloud)\nexport NVM_DIR=\"$HOME/.nvm\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\nelif [ -d \"$NVM_DIR/versions/node\" ]; then\n  LATEST_NODE=$(ls -rd \"$NVM_DIR/versions/node\"/v* 2>/dev/null | head -n 1)\n  if [ -n \"$LATEST_NODE\" ]; then\n    export PATH=\"$LATEST_NODE/bin:$PATH\"\n  fi\nfi\n\nif command -v npx >/dev/null 2>&1; then\n  echo \"Deploying Convex backend...\"\n  npx convex deploy -y --cmd 'echo \"Backend deploy successful\"'\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\nelse\n  echo \"error: npx not found in PATH. Cannot deploy Convex backend.\"\n  echo \"PATH: $PATH\"\n  exit 1\nfi\n";
+			shellScript = "set -euo pipefail\n\n# Safety check: only deploy when explicitly enabled\nif [ \"${CONVEX_DEPLOY_ON_CI:-}\" != \"1\" ]; then\n  echo \"Convex deploy disabled (CONVEX_DEPLOY_ON_CI != 1). Skipping.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\n# Guardrail: never deploy backend from non-production app configs.\n# Internal/Debug app builds should not push server changes.\nif [ \"${CONFIGURATION:-}\" != \"Release\" ]; then\n  echo \"Convex deploy skipped for CONFIGURATION=${CONFIGURATION:-unset} (only Release deploys backend).\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\n# Verify deploy key is available\nif [ -z \"${CONVEX_DEPLOY_KEY:-}\" ]; then\n  echo \"warning: CONVEX_DEPLOY_KEY not set. Skipping Convex deploy.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\nexport PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"\n\n# Try to find bunx/npx via nvm (local dev) or Homebrew (XcodeCloud)\nexport NVM_DIR=\"$HOME/.nvm\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\nelif [ -d \"$NVM_DIR/versions/node\" ]; then\n  LATEST_NODE=$(ls -rd \"$NVM_DIR/versions/node\"/v* 2>/dev/null | head -n 1)\n  if [ -n \"$LATEST_NODE\" ]; then\n    export PATH=\"$LATEST_NODE/bin:$PATH\"\n  fi\nfi\n\nif command -v bunx >/dev/null 2>&1; then\n  echo \"Deploying Convex backend...\"\n  bunx convex deploy -y --cmd 'echo \"Backend deploy successful\"'\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\nelif command -v npx >/dev/null 2>&1; then\n  echo \"Deploying Convex backend...\"\n  npx convex deploy -y --cmd 'echo \\\"Backend deploy successful\\\"'\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\nelse\n  echo \"error: bunx and npx not found in PATH. Cannot deploy Convex backend.\"\n  echo \"PATH: $PATH\"\n  exit 1\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

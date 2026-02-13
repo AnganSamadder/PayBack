@@ -95,6 +95,7 @@ final class AppStoreTests: XCTestCase {
             rejectedAt: nil
         )
 
+        await mockLinkRequestService.setUserEmail(account.email)
         await mockLinkRequestService.addIncomingRequest(request)
         try await sut.fetchLinkRequests()
         XCTAssertEqual(sut.incomingLinkRequests.count, 1)
