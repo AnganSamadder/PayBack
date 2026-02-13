@@ -238,8 +238,8 @@ final class Dependencies: Sendable {
         stateLock.lock()
         convexClient = nil
         _syncManager = nil
-        stateLock.unlock()
         current = Dependencies()
+        stateLock.unlock()
     }
 }
 
