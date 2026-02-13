@@ -73,6 +73,7 @@ SANITIZER=address ./scripts/test-ci-locally.sh
 ```
 
 **When to sanitize:**
+
 - Always run `SANITIZER=thread` before pushing changes to concurrency code (`async/await`, actors, `@State`, `@Published`)
 - Always run `SANITIZER=address` before pushing changes to data structures, collections, or any manual memory management
 - Run both before any PR that touches `AppStore`, `Services/`, or `Concurrency/` code
