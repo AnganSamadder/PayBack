@@ -3,22 +3,22 @@ import XCTest
 
 /// Additional AppStore tests focusing on balance calculations and more edge cases
 final class AppStoreBalanceExtendedTests: XCTestCase {
-    
+
     var store: AppStore!
-    
+
     override func setUp() {
         super.setUp()
         Dependencies.reset()
         store = AppStore(skipClerkInit: true)
     }
-    
+
     override func tearDown() {
         Dependencies.reset()
         super.tearDown()
     }
-    
+
     // MARK: - Balance Calculation Tests
-    
+
     func testNetBalance_CurrentUserPaid_PositiveBalance() {
         // Create a group with two members
         let friendId = UUID()
@@ -29,7 +29,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             createdAt: Date()
         )
         store.addExistingGroup(group)
-        
+
         // Current user paid $100, split equally
         let expense = Expense(
             id: UUID(),
@@ -46,12 +46,12 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             isSettled: false
         )
         store.addExpense(expense)
-        
+
         // Friend owes current user $50
         let balance = store.netBalance(for: group)
         XCTAssertEqual(balance, 50.0, accuracy: 0.01)
     }
-    
+
     func testNetBalance_FriendPaid_NegativeBalance() {
         let friendId = UUID()
         let group = SpendingGroup(
@@ -61,7 +61,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             createdAt: Date()
         )
         store.addExistingGroup(group)
-        
+
         // Friend paid $100, split equally
         let expense = Expense(
             id: UUID(),
@@ -78,12 +78,12 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             isSettled: false
         )
         store.addExpense(expense)
-        
+
         // Current user owes friend $50
         let balance = store.netBalance(for: group)
         XCTAssertEqual(balance, -50.0, accuracy: 0.01)
     }
-    
+
     func testNetBalance_SettledExpense_NoBalance() {
         let friendId = UUID()
         let group = SpendingGroup(
@@ -93,7 +93,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             createdAt: Date()
         )
         store.addExistingGroup(group)
-        
+
         // All splits are settled
         let expense = Expense(
             id: UUID(),
@@ -110,15 +110,15 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             isSettled: true
         )
         store.addExpense(expense)
-        
+
         let balance = store.netBalance(for: group)
         XCTAssertEqual(balance, 0.0, accuracy: 0.01)
     }
-    
+
     func testOverallNetBalance_MultipleGroups() {
         let friend1Id = UUID()
         let friend2Id = UUID()
-        
+
         // Group 1: friend owes $30
         let group1 = SpendingGroup(
             id: UUID(),
@@ -127,7 +127,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             createdAt: Date()
         )
         store.addExistingGroup(group1)
-        
+
         let expense1 = Expense(
             id: UUID(),
             groupId: group1.id,
@@ -143,7 +143,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             isSettled: false
         )
         store.addExpense(expense1)
-        
+
         // Group 2: current user owes $20
         let group2 = SpendingGroup(
             id: UUID(),
@@ -152,7 +152,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             createdAt: Date()
         )
         store.addExistingGroup(group2)
-        
+
         let expense2 = Expense(
             id: UUID(),
             groupId: group2.id,
@@ -168,14 +168,14 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             isSettled: false
         )
         store.addExpense(expense2)
-        
+
         // Overall: owed $30, owe $20 = net $10 owed to us
         let overall = store.overallNetBalance()
         XCTAssertEqual(overall, 10.0, accuracy: 0.01)
     }
-    
+
     // MARK: - Delete Operations Tests
-    
+
     func testDeleteGroups_RemovesFromStore() {
         let group = SpendingGroup(
             id: UUID(),
@@ -184,14 +184,14 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             createdAt: Date()
         )
         store.addExistingGroup(group)
-        
+
         XCTAssertTrue(store.groups.contains { $0.id == group.id })
-        
+
         store.deleteGroups(at: IndexSet(integer: store.groups.firstIndex(where: { $0.id == group.id })!))
-        
+
         XCTAssertFalse(store.groups.contains { $0.id == group.id })
     }
-    
+
     func testDeleteExpenses_RemovesFromStore() {
         let group = SpendingGroup(
             id: UUID(),
@@ -200,7 +200,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             createdAt: Date()
         )
         store.addExistingGroup(group)
-        
+
         let expense = Expense(
             id: UUID(),
             groupId: group.id,
@@ -213,36 +213,36 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             isSettled: false
         )
         store.addExpense(expense)
-        
+
         XCTAssertTrue(store.expenses.contains { $0.id == expense.id })
-        
+
         store.deleteExpenses(groupId: group.id, at: IndexSet(integer: 0))
-        
+
         XCTAssertFalse(store.expenses.contains { $0.id == expense.id })
     }
-    
+
     // MARK: - Friend Display Name Tests
-    
+
     func testFriendMembers_ContainsAllFriends() {
         let friend1 = AccountFriend(memberId: UUID(), name: "Friend 1", hasLinkedAccount: false)
         let friend2 = AccountFriend(memberId: UUID(), name: "Friend 2", hasLinkedAccount: false)
-        
+
         store.addImportedFriend(friend1)
         store.addImportedFriend(friend2)
-        
+
         // Friends should be in the friends array
         XCTAssertTrue(store.friends.contains { $0.name == "Friend 1" })
         XCTAssertTrue(store.friends.contains { $0.name == "Friend 2" })
     }
-    
+
     // MARK: - Expense Filtering Tests
-    
+
     func testExpensesForGroup_ReturnsOnlyGroupExpenses() {
         let group1 = SpendingGroup(id: UUID(), name: "G1", members: [store.currentUser], createdAt: Date())
         let group2 = SpendingGroup(id: UUID(), name: "G2", members: [store.currentUser], createdAt: Date())
         store.addExistingGroup(group1)
         store.addExistingGroup(group2)
-        
+
         let expense1 = Expense(
             id: UUID(), groupId: group1.id, description: "E1", date: Date(),
             totalAmount: 10, paidByMemberId: store.currentUser.id,
@@ -253,17 +253,17 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             totalAmount: 20, paidByMemberId: store.currentUser.id,
             involvedMemberIds: [], splits: [], isSettled: false
         )
-        
+
         store.addExpense(expense1)
         store.addExpense(expense2)
-        
+
         let group1Expenses = store.expenses.filter { $0.groupId == group1.id }
         XCTAssertEqual(group1Expenses.count, 1)
         XCTAssertEqual(group1Expenses.first?.description, "E1")
     }
-    
+
     // MARK: - Concurrency Tests
-    
+
     func testConcurrentExpenseOperations_NoDataCorruption() async {
         let group = SpendingGroup(
             id: UUID(),
@@ -272,7 +272,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
             createdAt: Date()
         )
         store.addExistingGroup(group)
-        
+
         await withTaskGroup(of: Void.self) { taskGroup in
             for i in 0..<20 {
                 taskGroup.addTask { @MainActor in
@@ -291,7 +291,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
                 }
             }
         }
-        
+
         XCTAssertEqual(store.expenses.filter { $0.groupId == group.id }.count, 20)
     }
 }

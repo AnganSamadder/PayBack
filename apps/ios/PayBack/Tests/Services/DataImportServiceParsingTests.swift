@@ -3,78 +3,78 @@ import XCTest
 
 /// Extended tests for DataImportService parsing edge cases
 final class DataImportServiceParsingTests: XCTestCase {
-    
+
     // MARK: - ImportSummary Tests
-    
+
     func testImportSummary_description_allComponents() {
         let summary = ImportSummary(friendsAdded: 2, groupsAdded: 3, expensesAdded: 5)
         XCTAssertEqual(summary.description, "Added 2 friends, 3 groups, 5 expenses")
     }
-    
+
     func testImportSummary_description_singularForms() {
         let summary = ImportSummary(friendsAdded: 1, groupsAdded: 1, expensesAdded: 1)
         XCTAssertEqual(summary.description, "Added 1 friend, 1 group, 1 expense")
     }
-    
+
     func testImportSummary_description_noData() {
         let summary = ImportSummary(friendsAdded: 0, groupsAdded: 0, expensesAdded: 0)
         XCTAssertEqual(summary.description, "No new data imported")
     }
-    
+
     func testImportSummary_description_onlyFriends() {
         let summary = ImportSummary(friendsAdded: 5, groupsAdded: 0, expensesAdded: 0)
         XCTAssertEqual(summary.description, "Added 5 friends")
     }
-    
+
     func testImportSummary_description_onlyGroups() {
         let summary = ImportSummary(friendsAdded: 0, groupsAdded: 3, expensesAdded: 0)
         XCTAssertEqual(summary.description, "Added 3 groups")
     }
-    
+
     func testImportSummary_description_onlyExpenses() {
         let summary = ImportSummary(friendsAdded: 0, groupsAdded: 0, expensesAdded: 10)
         XCTAssertEqual(summary.description, "Added 10 expenses")
     }
-    
+
     func testImportSummary_description_friendsAndGroups() {
         let summary = ImportSummary(friendsAdded: 2, groupsAdded: 3, expensesAdded: 0)
         XCTAssertEqual(summary.description, "Added 2 friends, 3 groups")
     }
-    
+
     func testImportSummary_description_friendsAndExpenses() {
         let summary = ImportSummary(friendsAdded: 2, groupsAdded: 0, expensesAdded: 5)
         XCTAssertEqual(summary.description, "Added 2 friends, 5 expenses")
     }
-    
+
     func testImportSummary_description_groupsAndExpenses() {
         let summary = ImportSummary(friendsAdded: 0, groupsAdded: 3, expensesAdded: 5)
         XCTAssertEqual(summary.description, "Added 3 groups, 5 expenses")
     }
-    
+
     func testImportSummary_totalItems() {
         let summary = ImportSummary(friendsAdded: 2, groupsAdded: 3, expensesAdded: 5)
         XCTAssertEqual(summary.totalItems, 10)
     }
-    
+
     func testImportSummary_totalItems_zero() {
         let summary = ImportSummary(friendsAdded: 0, groupsAdded: 0, expensesAdded: 0)
         XCTAssertEqual(summary.totalItems, 0)
     }
-    
+
     // MARK: - Import Error Tests
-    
+
     func testImportError_invalidFormat_description() {
         let error = ImportError.invalidFormat
         XCTAssertEqual(error.errorDescription, "The data format is not compatible with PayBack")
     }
-    
+
     func testImportError_parsingFailed_description() {
         let error = ImportError.parsingFailed("Missing required field")
         XCTAssertEqual(error.errorDescription, "Failed to parse data: Missing required field")
     }
-    
+
     // MARK: - Validate Format Tests
-    
+
     func testValidateFormat_validExport_returnsTrue() {
         let validExport = """
         ===PAYBACK_EXPORT===
@@ -83,7 +83,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         """
         XCTAssertTrue(DataImportService.validateFormat(validExport))
     }
-    
+
     func testValidateFormat_legacyV1Header_returnsTrue() {
         let legacyExport = """
         ===PAYBACK_EXPORT_V1===
@@ -92,7 +92,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         """
         XCTAssertTrue(DataImportService.validateFormat(legacyExport))
     }
-    
+
     func testValidateFormat_missingHeader_returnsFalse() {
         let noHeader = """
         EXPORTED_AT: 2024-01-15T10:00:00Z
@@ -100,7 +100,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         """
         XCTAssertFalse(DataImportService.validateFormat(noHeader))
     }
-    
+
     func testValidateFormat_missingEndMarker_returnsFalse() {
         let noEnd = """
         ===PAYBACK_EXPORT===
@@ -108,22 +108,22 @@ final class DataImportServiceParsingTests: XCTestCase {
         """
         XCTAssertFalse(DataImportService.validateFormat(noEnd))
     }
-    
+
     func testValidateFormat_emptyString_returnsFalse() {
         XCTAssertFalse(DataImportService.validateFormat(""))
     }
-    
+
     func testValidateFormat_whitespaceAroundContent_returnsTrue() {
         let withWhitespace = """
-        
+
            ===PAYBACK_EXPORT===
         EXPORTED_AT: 2024-01-15T10:00:00Z
         ===END_PAYBACK_EXPORT===
-           
+
         """
         XCTAssertTrue(DataImportService.validateFormat(withWhitespace))
     }
-    
+
     func testValidateFormat_wrongHeader_returnsFalse() {
         let wrongHeader = """
         ===WRONG_HEADER===
@@ -132,15 +132,15 @@ final class DataImportServiceParsingTests: XCTestCase {
         """
         XCTAssertFalse(DataImportService.validateFormat(wrongHeader))
     }
-    
+
     // MARK: - Parse Export Tests
-    
+
     func testParseExport_invalidFormat_throwsError() {
         XCTAssertThrowsError(try DataImportService.parseExport("invalid")) { error in
             XCTAssertTrue(error is ImportError)
         }
     }
-    
+
     func testParseExport_minimalValidExport_succeeds() throws {
         let minimalExport = """
         ===PAYBACK_EXPORT===
@@ -152,7 +152,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertTrue(data.friends.isEmpty)
         XCTAssertTrue(data.groups.isEmpty)
     }
-    
+
     func testParseExport_withExportedAt_parsesDate() throws {
         let export = """
         ===PAYBACK_EXPORT===
@@ -162,7 +162,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         let data = try DataImportService.parseExport(export)
         XCTAssertNotNil(data.exportedAt)
     }
-    
+
     func testParseExport_withAccountEmail_parsesEmail() throws {
         let export = """
         ===PAYBACK_EXPORT===
@@ -172,7 +172,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         let data = try DataImportService.parseExport(export)
         XCTAssertEqual(data.accountEmail, "test@example.com")
     }
-    
+
     func testParseExport_withCurrentUserInfo_parsesUserData() throws {
         let userId = UUID()
         let export = """
@@ -185,7 +185,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(data.currentUserId, userId)
         XCTAssertEqual(data.currentUserName, "John Doe")
     }
-    
+
     func testParseExport_skipsComments() throws {
         let export = """
         ===PAYBACK_EXPORT===
@@ -197,19 +197,19 @@ final class DataImportServiceParsingTests: XCTestCase {
         let data = try DataImportService.parseExport(export)
         XCTAssertEqual(data.accountEmail, "test@example.com")
     }
-    
+
     func testParseExport_skipsEmptyLines() throws {
         let export = """
         ===PAYBACK_EXPORT===
-        
+
         ACCOUNT_EMAIL: test@example.com
-        
+
         ===END_PAYBACK_EXPORT===
         """
         let data = try DataImportService.parseExport(export)
         XCTAssertEqual(data.accountEmail, "test@example.com")
     }
-    
+
     func testParseExport_friendsSection_parsesFriends() throws {
         let friendId = UUID()
         let export = """
@@ -224,7 +224,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(data.friends.first?.nickname, "Ali")
         XCTAssertTrue(data.friends.first?.hasLinkedAccount ?? false)
     }
-    
+
     func testParseExport_friendsSection_handlesEmptyNickname() throws {
         let friendId = UUID()
         let export = """
@@ -239,7 +239,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertNil(data.friends.first?.nickname)
         XCTAssertFalse(data.friends.first?.hasLinkedAccount ?? true)
     }
-    
+
     func testParseExport_groupsSection_parsesGroups() throws {
         let groupId = UUID()
         let export = """
@@ -254,7 +254,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertFalse(data.groups.first?.isDirect ?? true)
         XCTAssertEqual(data.groups.first?.memberCount, 3)
     }
-    
+
     func testParseExport_groupMembersSection_parsesMembers() throws {
         let groupId = UUID()
         let memberId = UUID()
@@ -268,7 +268,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(data.groupMembers.count, 1)
         XCTAssertEqual(data.groupMembers.first?.memberName, "Alice")
     }
-    
+
     func testParseExport_expensesSection_parsesExpenses() throws {
         let expenseId = UUID()
         let groupId = UUID()
@@ -284,7 +284,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(data.expenses.first?.description, "Dinner")
         XCTAssertEqual(data.expenses.first!.totalAmount, 100.50, accuracy: 0.01)
     }
-    
+
     func testParseExport_expenseSplitsSection_parsesSplits() throws {
         let expenseId = UUID()
         let splitId = UUID()
@@ -299,7 +299,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(data.expenseSplits.count, 1)
         XCTAssertEqual(data.expenseSplits.first!.amount, 50.0, accuracy: 0.01)
     }
-    
+
     func testParseExport_expenseInvolvedMembersSection() throws {
         let expenseId = UUID()
         let memberId = UUID()
@@ -313,7 +313,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(data.expenseInvolvedMembers.count, 1)
         XCTAssertEqual(data.expenseInvolvedMembers.first?.memberId, memberId)
     }
-    
+
     func testParseExport_participantNamesSection() throws {
         let expenseId = UUID()
         let memberId = UUID()
@@ -327,7 +327,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(data.participantNames.count, 1)
         XCTAssertEqual(data.participantNames.first?.name, "Alice")
     }
-    
+
     func testParseExport_subexpensesSection() throws {
         let expenseId = UUID()
         let subId = UUID()
@@ -341,7 +341,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(data.expenseSubexpenses.count, 1)
         XCTAssertEqual(data.expenseSubexpenses.first!.amount, 25.0, accuracy: 0.01)
     }
-    
+
     func testParseExport_unknownSection_ignoredGracefully() throws {
         let export = """
         ===PAYBACK_EXPORT===
@@ -352,7 +352,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         let data = try DataImportService.parseExport(export)
         XCTAssertNotNil(data) // Should not throw
     }
-    
+
     func testParseExport_invalidFriendData_skipped() throws {
         let export = """
         ===PAYBACK_EXPORT===
@@ -363,7 +363,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         let data = try DataImportService.parseExport(export)
         XCTAssertTrue(data.friends.isEmpty) // Invalid friend skipped
     }
-    
+
     func testParseExport_quotedCSVValues() throws {
         let friendId = UUID()
         let export = """
@@ -376,9 +376,9 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(data.friends.count, 1)
         XCTAssertEqual(data.friends.first?.name, "Alice, Jr.")
     }
-    
+
     // MARK: - ParsedExportData Tests
-    
+
     func testParsedExportData_defaultValues() {
         let data = ParsedExportData()
         XCTAssertNil(data.exportedAt)
@@ -389,9 +389,9 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertTrue(data.groups.isEmpty)
         XCTAssertTrue(data.expenses.isEmpty)
     }
-    
+
     // MARK: - Parsed Types Tests
-    
+
     func testParsedFriend_initialization() {
         let friendId = UUID()
         let friend = ParsedFriend(
@@ -409,7 +409,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(friend.nickname, "Ali")
         XCTAssertTrue(friend.hasLinkedAccount)
     }
-    
+
     func testParsedGroup_initialization() {
         let groupId = UUID()
         let now = Date()
@@ -427,7 +427,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertTrue(group.isDebug)
         XCTAssertEqual(group.memberCount, 3)
     }
-    
+
     func testParsedExpense_initialization() {
         let id = UUID()
         let groupId = UUID()
@@ -447,7 +447,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(expense.description, "Dinner")
         XCTAssertEqual(expense.totalAmount, 100.50, accuracy: 0.01)
     }
-    
+
     func testParsedGroupMember_initialization() {
         let groupId = UUID()
         let memberId = UUID()
@@ -462,7 +462,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(member.memberId, memberId)
         XCTAssertEqual(member.memberName, "Alice")
     }
-    
+
     func testParsedExpenseSplit_initialization() {
         let expenseId = UUID()
         let splitId = UUID()
@@ -478,7 +478,7 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertEqual(split.amount, 50.0, accuracy: 0.01)
         XCTAssertTrue(split.isSettled)
     }
-    
+
     func testParsedSubexpense_initialization() {
         let expenseId = UUID()
         let subId = UUID()

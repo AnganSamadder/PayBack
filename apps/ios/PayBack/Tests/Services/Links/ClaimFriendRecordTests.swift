@@ -3,9 +3,9 @@ import XCTest
 
 /// Tests for friend record creation during claim process
 final class ClaimFriendRecordTests: XCTestCase {
-    
+
     // MARK: - Friend Record Properties
-    
+
     func testAccountFriend_LinkedAccountProperties() {
         // Given: A friend record with linked account info
         let friend = AccountFriend(
@@ -19,7 +19,7 @@ final class ClaimFriendRecordTests: XCTestCase {
             profileImageUrl: nil,
             profileColorHex: "#FF5733"
         )
-        
+
         // Then: All linked properties should be accessible
         XCTAssertTrue(friend.hasLinkedAccount)
         XCTAssertEqual(friend.linkedAccountId, "acc-12345")
@@ -27,7 +27,7 @@ final class ClaimFriendRecordTests: XCTestCase {
         XCTAssertEqual(friend.name, "Example Person")
         XCTAssertEqual(friend.originalName, "testss")
     }
-    
+
     func testAccountFriend_UnlinkedAccountProperties() {
         // Given: An unlinked friend record
         let friend = AccountFriend(
@@ -41,14 +41,14 @@ final class ClaimFriendRecordTests: XCTestCase {
             profileImageUrl: nil,
             profileColorHex: "#33FF57"
         )
-        
+
         // Then: Linked properties should be nil
         XCTAssertFalse(friend.hasLinkedAccount)
         XCTAssertNil(friend.linkedAccountId)
         XCTAssertNil(friend.linkedAccountEmail)
         XCTAssertNil(friend.originalName)
     }
-    
+
     // MARK: - Display Name Logic (New API)
 
     func testAccountFriend_DisplayName_DefaultFirstName() {
@@ -164,14 +164,14 @@ final class ClaimFriendRecordTests: XCTestCase {
         let secondaryName = friend.secondaryDisplayName(preferNicknames: true, preferWholeNames: false)
         XCTAssertEqual(secondaryName, "John")
     }
-    
+
     // MARK: - Claimant Friend Record Scenarios
-    
+
     func testClaimantShouldHaveFriendRecord_ForCreator() {
         // Scenario: When B claims A's invite, B should have a friend record for A
-        
+
         let creatorMemberId = UUID()
-        
+
         // Simulating the friend record that should be created
         let friendRecordForClaimant = AccountFriend(
             memberId: creatorMemberId,
@@ -184,18 +184,18 @@ final class ClaimFriendRecordTests: XCTestCase {
             profileImageUrl: nil,
             profileColorHex: nil
         )
-        
+
         // Then: The record should point to the creator
         XCTAssertEqual(friendRecordForClaimant.memberId, creatorMemberId)
         XCTAssertTrue(friendRecordForClaimant.hasLinkedAccount)
         XCTAssertEqual(friendRecordForClaimant.linkedAccountEmail, "creator@example.com")
     }
-    
+
     func testCreatorShouldHaveFriendRecord_ForClaimant() {
         // Scenario: When B claims A's invite, A should have a friend record for B
-        
+
         let claimantMemberId = UUID()
-        
+
         // Simulating the friend record update for creator
         let friendRecordForCreator = AccountFriend(
             memberId: claimantMemberId,
@@ -208,15 +208,15 @@ final class ClaimFriendRecordTests: XCTestCase {
             profileImageUrl: nil,
             profileColorHex: nil
         )
-        
+
         // Then: The record should be updated
         XCTAssertTrue(friendRecordForCreator.hasLinkedAccount)
         XCTAssertEqual(friendRecordForCreator.name, "Claimant's Real Name")
         XCTAssertEqual(friendRecordForCreator.originalName, "testss")
     }
-    
+
     // MARK: - Edge Cases
-    
+
     func testAccountFriend_EmptyNickname_TreatedAsNil() {
         let friend = AccountFriend(
             memberId: UUID(),
@@ -229,12 +229,12 @@ final class ClaimFriendRecordTests: XCTestCase {
             profileImageUrl: nil,
             profileColorHex: nil
         )
-        
+
         // Empty nickname should be treated as no nickname
         XCTAssertEqual(friend.displayName(preferNicknames: true, preferWholeNames: false), "Example User")
         XCTAssertNil(friend.secondaryDisplayName(preferNicknames: false, preferWholeNames: false))
     }
-    
+
     func testAccountFriend_Hashable() {
         let memberId = UUID()
         let friend1 = AccountFriend(
@@ -259,11 +259,11 @@ final class ClaimFriendRecordTests: XCTestCase {
             profileImageUrl: nil,
             profileColorHex: nil
         )
-        
+
         // Same memberId should produce same hash
         XCTAssertEqual(friend1.id, friend2.id)
     }
-    
+
     func testAccountFriend_IdIsMemberId() {
         let memberId = UUID()
         let friend = AccountFriend(
@@ -277,7 +277,7 @@ final class ClaimFriendRecordTests: XCTestCase {
             profileImageUrl: nil,
             profileColorHex: nil
         )
-        
+
         XCTAssertEqual(friend.id, memberId)
     }
 }

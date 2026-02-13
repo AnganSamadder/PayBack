@@ -4,7 +4,7 @@ import XCTest
 /// Base test case class for PayBack unit tests
 /// This file serves as the entry point for the test target
 class PayBackTests: XCTestCase {
-    
+
     override func setUpWithError() throws {
         // Put setup code here. This method is called before the invocation of each test method in the class.
     }

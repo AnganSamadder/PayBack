@@ -7,7 +7,7 @@ import SwiftUI
 // Temporarily disabled to unblock other test execution
 
 final class SwipeBackModifierTests: XCTestCase {
-    
+
     func testPlaceholder() {
         // Placeholder test to keep the file valid
         XCTAssertTrue(true)

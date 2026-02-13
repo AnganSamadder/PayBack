@@ -10,9 +10,9 @@ import XCTest
 ///
 /// Related Requirements: R15, R35, R40
 final class ActorIsolationTests: XCTestCase {
-    
+
     // MARK: - Test LinkStateReconciliation concurrent access
-    
+
     /// Tests that LinkStateReconciliation actor properly serializes concurrent access
     /// and maintains consistent state when multiple reconciliation operations run
     /// simultaneously. This test performs 100 concurrent reconciliations with varying
@@ -25,7 +25,7 @@ final class ActorIsolationTests: XCTestCase {
         // Arrange
         let reconciliation = LinkStateReconciliation()
         let iterationCount = 100
-        
+
         // Create test data
         let baseFriends = (0..<10).map { i in
             AccountFriend(
@@ -34,7 +34,7 @@ final class ActorIsolationTests: XCTestCase {
                 hasLinkedAccount: false
             )
         }
-        
+
         // Act - perform concurrent reconciliations
         await withTaskGroup(of: Void.self) { group in
             for i in 0..<iterationCount {
@@ -54,11 +54,11 @@ final class ActorIsolationTests: XCTestCase {
                 }
             }
         }
-        
+
         // Assert - verify final state is consistent
         let shouldReconcile = await reconciliation.shouldReconcile()
         XCTAssertFalse(shouldReconcile, "Should have recorded a reconciliation")
-        
+
         // Verify we can still perform operations without crashes
         let finalResult = await reconciliation.reconcile(
             localFriends: baseFriends,
@@ -66,12 +66,12 @@ final class ActorIsolationTests: XCTestCase {
         )
         XCTAssertEqual(finalResult.count, baseFriends.count)
     }
-    
+
     func test_linkStateReconciliation_concurrentShouldReconcile_noDataRaces() async {
         // Arrange
         let reconciliation = LinkStateReconciliation()
         let iterationCount = 100
-        
+
         // Act - perform concurrent shouldReconcile checks
         await withTaskGroup(of: Bool.self) { group in
             for _ in 0..<iterationCount {
@@ -79,23 +79,23 @@ final class ActorIsolationTests: XCTestCase {
                     await reconciliation.shouldReconcile()
                 }
             }
-            
+
             // Collect all results (ensures all tasks complete)
             var results: [Bool] = []
             for await result in group {
                 results.append(result)
             }
-            
+
             // Assert - all operations completed without crashes
             XCTAssertEqual(results.count, iterationCount)
         }
     }
-    
+
     func test_linkStateReconciliation_concurrentInvalidate_noDataRaces() async {
         // Arrange
         let reconciliation = LinkStateReconciliation()
         let iterationCount = 50
-        
+
         // Act - perform concurrent invalidations and reconciliations
         await withTaskGroup(of: Void.self) { group in
             for i in 0..<iterationCount {
@@ -111,27 +111,27 @@ final class ActorIsolationTests: XCTestCase {
                 }
             }
         }
-        
+
         // Assert - verify state is accessible (no crashes from data races)
         // The actual value depends on the order of concurrent operations
         let shouldReconcile = await reconciliation.shouldReconcile()
         // Just verify we can read the value without crashing
         XCTAssertNotNil(shouldReconcile)
     }
-    
+
     func test_linkStateReconciliation_mixedConcurrentOperations_stateConsistent() async {
         // Arrange
         let reconciliation = LinkStateReconciliation()
         let memberId = UUID()
         let accountId = "test-account"
-        
+
         let testFriend = AccountFriend(
             memberId: memberId,
             name: "Test Friend",
             hasLinkedAccount: true,
             linkedAccountId: accountId
         )
-        
+
         // Act - perform mixed concurrent operations
         await withTaskGroup(of: Void.self) { group in
             // Reconcile operations
@@ -143,14 +143,14 @@ final class ActorIsolationTests: XCTestCase {
                     )
                 }
             }
-            
+
             // shouldReconcile checks
             for _ in 0..<20 {
                 group.addTask {
                     _ = await reconciliation.shouldReconcile()
                 }
             }
-            
+
             // validateLinkCompletion checks
             for _ in 0..<20 {
                 group.addTask {
@@ -161,7 +161,7 @@ final class ActorIsolationTests: XCTestCase {
                     )
                 }
             }
-            
+
             // invalidate operations
             for _ in 0..<20 {
                 group.addTask {
@@ -169,7 +169,7 @@ final class ActorIsolationTests: XCTestCase {
                 }
             }
         }
-        
+
         // Assert - verify we can still perform operations
         let finalResult = await reconciliation.reconcile(
             localFriends: [testFriend],
@@ -177,14 +177,14 @@ final class ActorIsolationTests: XCTestCase {
         )
         XCTAssertEqual(finalResult.count, 1)
     }
-    
+
     // MARK: - Test LinkFailureTracker concurrent access
-    
+
     func test_linkFailureTracker_concurrentRecordFailure_noDataRaces() async {
         // Arrange
         let tracker = LinkFailureTracker()
         let memberIds = (0..<10).map { _ in UUID() }
-        
+
         // Act - record failures concurrently
         await withTaskGroup(of: Void.self) { group in
             for (index, memberId) in memberIds.enumerated() {
@@ -198,18 +198,18 @@ final class ActorIsolationTests: XCTestCase {
                 }
             }
         }
-        
+
         // Assert - verify all failures were recorded
         let failures = await tracker.getPendingFailures()
         XCTAssertEqual(failures.count, memberIds.count)
     }
-    
+
     func test_linkFailureTracker_concurrentRetryIncrement_countsCorrectly() async {
         // Arrange
         let tracker = LinkFailureTracker()
         let memberId = UUID()
         let retryCount = 50
-        
+
         // Act - record same failure multiple times concurrently
         await withTaskGroup(of: Void.self) { group in
             for i in 0..<retryCount {
@@ -223,7 +223,7 @@ final class ActorIsolationTests: XCTestCase {
                 }
             }
         }
-        
+
         // Assert - verify retry count incremented correctly
         let failures = await tracker.getPendingFailures()
         XCTAssertEqual(failures.count, 1, "Should have one failure record")
@@ -232,12 +232,12 @@ final class ActorIsolationTests: XCTestCase {
             XCTAssertEqual(failure.retryCount, retryCount)
         }
     }
-    
+
     func test_linkFailureTracker_concurrentMarkResolved_noDataRaces() async {
         // Arrange
         let tracker = LinkFailureTracker()
         let memberIds = (0..<20).map { _ in UUID() }
-        
+
         // Record failures first
         for (index, memberId) in memberIds.enumerated() {
             await tracker.recordFailure(
@@ -247,7 +247,7 @@ final class ActorIsolationTests: XCTestCase {
                 reason: "Test failure"
             )
         }
-        
+
         // Act - mark half as resolved concurrently
         await withTaskGroup(of: Void.self) { group in
             for memberId in memberIds.prefix(10) {
@@ -256,17 +256,17 @@ final class ActorIsolationTests: XCTestCase {
                 }
             }
         }
-        
+
         // Assert - verify correct number remain
         let remainingFailures = await tracker.getPendingFailures()
         XCTAssertEqual(remainingFailures.count, 10)
     }
-    
+
     func test_linkFailureTracker_concurrentGetAndClear_noDataRaces() async {
         // Arrange
         let tracker = LinkFailureTracker()
         let memberIds = (0..<10).map { _ in UUID() }
-        
+
         // Record failures
         for (index, memberId) in memberIds.enumerated() {
             await tracker.recordFailure(
@@ -276,7 +276,7 @@ final class ActorIsolationTests: XCTestCase {
                 reason: "Test failure"
             )
         }
-        
+
         // Act - perform concurrent gets and clears
         await withTaskGroup(of: Int.self) { group in
             // Multiple getPendingFailures calls
@@ -286,33 +286,33 @@ final class ActorIsolationTests: XCTestCase {
                     return failures.count
                 }
             }
-            
+
             // One clearAll call
             group.addTask {
                 await tracker.clearAll()
                 return 0
             }
-            
+
             // Collect results
             var counts: [Int] = []
             for await count in group {
                 counts.append(count)
             }
-            
+
             // Assert - operations completed without crashes
             XCTAssertEqual(counts.count, 21)
         }
-        
+
         // Verify final state
         let finalFailures = await tracker.getPendingFailures()
         XCTAssertEqual(finalFailures.count, 0, "All failures should be cleared")
     }
-    
+
     func test_linkFailureTracker_mixedConcurrentOperations_stateConsistent() async {
         // Arrange
         let tracker = LinkFailureTracker()
         let memberIds = (0..<30).map { _ in UUID() }
-        
+
         // Act - perform mixed operations concurrently
         await withTaskGroup(of: Void.self) { group in
             // Record failures
@@ -326,14 +326,14 @@ final class ActorIsolationTests: XCTestCase {
                     )
                 }
             }
-            
+
             // Get pending failures
             for _ in 0..<10 {
                 group.addTask {
                     _ = await tracker.getPendingFailures()
                 }
             }
-            
+
             // Mark some as resolved
             for memberId in memberIds.prefix(10) {
                 group.addTask {
@@ -341,20 +341,20 @@ final class ActorIsolationTests: XCTestCase {
                 }
             }
         }
-        
+
         // Assert - verify consistent state
         let finalFailures = await tracker.getPendingFailures()
         // Due to concurrency, we might have a small variance (+/- 1)
         XCTAssertTrue(finalFailures.count >= 19 && finalFailures.count <= 21, "Should have approximately 20 unresolved failures, got \(finalFailures.count)")
     }
-    
+
     // MARK: - Test actor state serialization
-    
+
     func test_actorStateSerialization_sequentialAccess_maintainsOrder() async {
         // Arrange
         let reconciliation = LinkStateReconciliation()
         var results: [[AccountFriend]] = []
-        
+
         let friends = (0..<5).map { i in
             AccountFriend(
                 memberId: UUID(),
@@ -362,7 +362,7 @@ final class ActorIsolationTests: XCTestCase {
                 hasLinkedAccount: false
             )
         }
-        
+
         // Act - perform sequential reconciliations
         for i in 0..<10 {
             let updatedFriends = friends.map { friend in
@@ -373,21 +373,21 @@ final class ActorIsolationTests: XCTestCase {
                     linkedAccountId: i % 2 == 0 ? "account-\(i)" : nil
                 )
             }
-            
+
             let result = await reconciliation.reconcile(
                 localFriends: updatedFriends,
                 remoteFriends: friends
             )
             results.append(result)
         }
-        
+
         // Assert - verify all operations completed in order
         XCTAssertEqual(results.count, 10)
         for result in results {
             XCTAssertEqual(result.count, friends.count)
         }
     }
-    
+
     func test_actorStateSerialization_parallelThenSequential_consistent() async {
         // Arrange
         let reconciliation = LinkStateReconciliation()
@@ -396,7 +396,7 @@ final class ActorIsolationTests: XCTestCase {
             name: "Test Friend",
             hasLinkedAccount: false
         )
-        
+
         // Act - parallel operations followed by sequential
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<50 {
@@ -408,7 +408,7 @@ final class ActorIsolationTests: XCTestCase {
                 }
             }
         }
-        
+
         // Sequential operations after parallel
         for _ in 0..<10 {
             let result = await reconciliation.reconcile(
@@ -417,7 +417,7 @@ final class ActorIsolationTests: XCTestCase {
             )
             XCTAssertEqual(result.count, 1)
         }
-        
+
         // Assert - verify state is consistent
         let shouldReconcile = await reconciliation.shouldReconcile()
         XCTAssertFalse(shouldReconcile)

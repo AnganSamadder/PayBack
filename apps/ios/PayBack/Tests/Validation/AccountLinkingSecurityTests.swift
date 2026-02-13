@@ -11,24 +11,24 @@ import XCTest
 ///
 /// Related Requirements: R14, R37
 final class AccountLinkingSecurityTests: XCTestCase {
-    
+
     var inviteLinkService: MockInviteLinkService!
     var linkRequestService: MockLinkRequestService!
-    
+
     override func setUp() {
         super.setUp()
         inviteLinkService = MockInviteLinkService()
         linkRequestService = MockLinkRequestService()
     }
-    
+
     override func tearDown() {
         inviteLinkService = nil
         linkRequestService = nil
         super.tearDown()
     }
-    
+
     // MARK: - Self Claim Prevention Tests (R14)
-    
+
     func testSelfClaimShowsError() async throws {
         // Arrange - Create a service where creator and claimer are the same
         let selfClaimService = MockInviteLinkServiceForTests(
@@ -37,13 +37,13 @@ final class AccountLinkingSecurityTests: XCTestCase {
             claimerId: "user-1",
             claimerEmail: "same@example.com"
         )
-        
+
         let targetMemberId = UUID()
         let inviteLink = try await selfClaimService.generateInviteLink(
             targetMemberId: targetMemberId,
             targetMemberName: "Bob"
         )
-        
+
         // Act & Assert
         do {
             _ = try await selfClaimService.claimInviteToken(inviteLink.token.id)
@@ -54,9 +54,9 @@ final class AccountLinkingSecurityTests: XCTestCase {
             XCTFail("Expected linkSelfNotAllowed but got \(error)")
         }
     }
-    
+
     // MARK: - Cross-Linking Prevention Tests
-    
+
     func testCrossLinkShowsAlreadyLinkedError() async throws {
         // Arrange
         let targetMemberId = UUID()
@@ -78,9 +78,9 @@ final class AccountLinkingSecurityTests: XCTestCase {
             XCTFail("Expected linkAlreadyClaimed but got \(error)")
         }
     }
-    
+
     // MARK: - Nickname Validation Tests
-    
+
     func testNicknameValidationRejectsMatchingRealName() async throws {
         // Arrange
         let targetMemberId = UUID()
@@ -96,9 +96,9 @@ final class AccountLinkingSecurityTests: XCTestCase {
         // Assert
         XCTAssertEqual(request.targetMemberName, realName)
     }
-    
+
     // MARK: - DTO Mapping Tests
-    
+
     func testMemberIdDTOMapping() async throws {
         // Arrange
         let targetMemberId = UUID()
@@ -106,10 +106,10 @@ final class AccountLinkingSecurityTests: XCTestCase {
             targetMemberId: targetMemberId,
             targetMemberName: "Bob"
         )
-        
+
         // Act
         let result = try await inviteLinkService.claimInviteToken(inviteLink.token.id)
-        
+
         // Assert
         XCTAssertEqual(result.linkedMemberId, targetMemberId, "Member ID should be correctly mapped from token")
     }

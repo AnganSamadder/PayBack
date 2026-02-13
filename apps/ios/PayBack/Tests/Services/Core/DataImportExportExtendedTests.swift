@@ -2,9 +2,9 @@ import XCTest
 @testable import PayBack
 
 final class DataImportExportExtendedTests: XCTestCase {
-    
+
     var store: AppStore!
-    
+
     @MainActor
     override func setUp() async throws {
         store = AppStore(skipClerkInit: true)
@@ -17,9 +17,9 @@ final class DataImportExportExtendedTests: XCTestCase {
         )
         store.currentUser = currentUser
     }
-    
+
     // MARK: - Export Tests
-    
+
     func testExportIncludesProfileFields() {
         // Given
         let friendId = UUID()
@@ -33,7 +33,7 @@ final class DataImportExportExtendedTests: XCTestCase {
             profileImageUrl: "https://example.com/image.png",
             profileColorHex: "#FF5733"
         )
-        
+
         // When
         let exportText = DataExportService.exportAllData(
             groups: [],
@@ -42,15 +42,15 @@ final class DataImportExportExtendedTests: XCTestCase {
             currentUser: store.currentUser,
             accountEmail: "test@example.com"
         )
-        
+
         // Then
         XCTAssertTrue(exportText.contains("Friend 1"), "Export should contain friend name")
         XCTAssertTrue(exportText.contains("https://example.com/image.png"), "Export should contain profile image URL")
         XCTAssertTrue(exportText.contains("#FF5733"), "Export should contain profile color hex")
     }
-    
+
     // MARK: - Import Parsing Tests
-    
+
     @MainActor
     func testImportParsesProfileFields() async {
         // Given - valid export format with profile fields
@@ -61,17 +61,17 @@ final class DataImportExportExtendedTests: XCTestCase {
         ACCOUNT_EMAIL: test@example.com
         CURRENT_USER_ID: \(store.currentUser.id.uuidString)
         CURRENT_USER_NAME: Example User
-        
+
         [FRIENDS]
         # member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email,profile_image_url,profile_avatar_color
         \(friendId.uuidString),Imported Friend,,false,,,https://example.com/imported.png,#00FF00
-        
+
         ===END_PAYBACK_EXPORT===
         """
-        
+
         // When - import should succeed or return valid result
         let result = await DataImportService.importData(from: exportText, into: store)
-        
+
         // Then - verify format was parsed correctly (not incompatible)
         switch result {
         case .success:
@@ -87,9 +87,9 @@ final class DataImportExportExtendedTests: XCTestCase {
             XCTFail("Should not be incompatible format: \(msg)")
         }
     }
-    
+
     // MARK: - Conflict Detection Tests
-    
+
     @MainActor
     func testImportDetectsConflicts() async {
         // Given: An existing friend
@@ -105,7 +105,7 @@ final class DataImportExportExtendedTests: XCTestCase {
             profileColorHex: nil
         )
         store.friends = [existingFriend]
-        
+
         let importId = UUID()
         let exportText = """
         ===PAYBACK_EXPORT===
@@ -113,17 +113,17 @@ final class DataImportExportExtendedTests: XCTestCase {
         ACCOUNT_EMAIL: test@example.com
         CURRENT_USER_ID: \(store.currentUser.id.uuidString)
         CURRENT_USER_NAME: Example User
-        
+
         [FRIENDS]
         # member_id,name...
         \(importId.uuidString),Duplicate Name,,false,,,https://example.com/new.png,#FF0000
-        
+
         ===END_PAYBACK_EXPORT===
         """
-        
+
         // When
         let result = await DataImportService.importData(from: exportText, into: store)
-        
+
         // Then - should detect conflict or handle gracefully
         switch result {
         case .needsResolution(let conflicts):
@@ -139,15 +139,15 @@ final class DataImportExportExtendedTests: XCTestCase {
             XCTFail("Should not be incompatible format: \(msg)")
         }
     }
-    
+
     // MARK: - Conflict Resolution Tests
-    
+
     @MainActor
     func testImportWithCreateNewResolution() async {
         // Given: Conflict setup
         let existingId = UUID()
         store.friends = [AccountFriend(memberId: existingId, name: "Conflict", nickname: nil, hasLinkedAccount: false, linkedAccountId: nil, linkedAccountEmail: nil, profileImageUrl: nil, profileColorHex: nil)]
-        
+
         let importId = UUID()
         let exportText = """
         ===PAYBACK_EXPORT===
@@ -155,18 +155,18 @@ final class DataImportExportExtendedTests: XCTestCase {
         ACCOUNT_EMAIL: test@example.com
         CURRENT_USER_ID: \(store.currentUser.id.uuidString)
         CURRENT_USER_NAME: Example User
-        
+
         [FRIENDS]
         # member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email,profile_image_url,profile_avatar_color
         \(importId.uuidString),Conflict,,false,,,new_url,#123456
-        
+
         ===END_PAYBACK_EXPORT===
         """
-        
+
         // When: Resolve as Create New
         let resolutions: [UUID: ImportResolution] = [importId: .createNew]
         let result = await DataImportService.importData(from: exportText, into: store, resolutions: resolutions)
-        
+
         // Then: Should accept the resolution or handle gracefully
         switch result {
         case .success, .needsResolution, .partialSuccess:
@@ -176,13 +176,13 @@ final class DataImportExportExtendedTests: XCTestCase {
             XCTFail("Unexpected incompatible format: \(msg)")
         }
     }
-    
+
     @MainActor
     func testImportWithLinkToExistingResolution() async {
         // Given: Conflict setup
         let existingId = UUID()
         store.friends = [AccountFriend(memberId: existingId, name: "Conflict", nickname: nil, hasLinkedAccount: false, linkedAccountId: nil, linkedAccountEmail: nil, profileImageUrl: nil, profileColorHex: nil)]
-        
+
         let importId = UUID()
         let exportText = """
         ===PAYBACK_EXPORT===
@@ -190,18 +190,18 @@ final class DataImportExportExtendedTests: XCTestCase {
         ACCOUNT_EMAIL: test@example.com
         CURRENT_USER_ID: \(store.currentUser.id.uuidString)
         CURRENT_USER_NAME: Example User
-        
+
         [FRIENDS]
         # member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email,profile_image_url,profile_avatar_color
         \(importId.uuidString),Conflict,,false,,,new_url,#123456
-        
+
         ===END_PAYBACK_EXPORT===
         """
-        
+
         // When: Resolve as Link to Existing
         let resolutions: [UUID: ImportResolution] = [importId: .linkToExisting(existingId)]
         let result = await DataImportService.importData(from: exportText, into: store, resolutions: resolutions)
-        
+
         // Then: Should accept the resolution or handle gracefully
         switch result {
         case .success, .needsResolution, .partialSuccess:

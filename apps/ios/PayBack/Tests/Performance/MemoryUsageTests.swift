@@ -11,9 +11,9 @@ import XCTest
 ///
 /// Related Requirements: R20
 final class MemoryUsageTests: XCTestCase {
-    
+
     // MARK: - Retry Policy Memory Tests
-    
+
     /// Test that retry operations don't leak memory
     ///
     /// This test validates that the retry policy properly releases resources
@@ -21,12 +21,12 @@ final class MemoryUsageTests: XCTestCase {
     func test_retryPolicy_noMemoryLeaks() async {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             let policy = RetryPolicy(maxAttempts: 3, baseDelay: 0.01)
-            
+
             let expectation = self.expectation(description: "retry-operations")
-            
+
             Task {
                 // Perform 100 retry operations
                 for _ in 0..<100 {
@@ -36,23 +36,23 @@ final class MemoryUsageTests: XCTestCase {
                 }
                 expectation.fulfill()
             }
-            
+
             wait(for: [expectation], timeout: 10.0)
         }
-        
+
         // Memory should return to baseline after operations complete
     }
-    
+
     /// Test memory usage with failing retry operations
     func test_retryPolicy_failingOperations_noMemoryLeaks() async {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             let policy = RetryPolicy(maxAttempts: 3, baseDelay: 0.01)
-            
+
             let expectation = self.expectation(description: "failing-retries")
-            
+
             Task {
                 // Perform operations that fail and retry
                 for _ in 0..<50 {
@@ -62,18 +62,18 @@ final class MemoryUsageTests: XCTestCase {
                 }
                 expectation.fulfill()
             }
-            
+
             wait(for: [expectation], timeout: 10.0)
         }
     }
-    
+
     // MARK: - Large Data Structure Memory Tests
-    
+
     /// Test memory usage when creating large expense lists
     func test_largeExpenseList_memoryUsageReasonable() {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             // Create 1000 expenses with splits
             let expenses = (0..<1000).map { i in
@@ -86,7 +86,7 @@ final class MemoryUsageTests: XCTestCase {
                         isSettled: false
                     )
                 }
-                
+
                 return Expense(
                     id: UUID(),
                     groupId: UUID(),
@@ -99,17 +99,17 @@ final class MemoryUsageTests: XCTestCase {
                     isSettled: false
                 )
             }
-            
+
             // Use the expenses to prevent optimization
             _ = expenses.count
         }
     }
-    
+
     /// Test memory usage when creating large friend lists
     func test_largeFriendList_memoryUsageReasonable() {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             // Create 1000 friends
             let friends = (0..<1000).map { i in
@@ -121,17 +121,17 @@ final class MemoryUsageTests: XCTestCase {
                     linkedAccountEmail: i % 2 == 0 ? "friend\(i)@example.com" : nil
                 )
             }
-            
+
             // Use the friends to prevent optimization
             _ = friends.count
         }
     }
-    
+
     /// Test memory usage during split calculations
     func test_splitCalculations_memoryUsageReasonable() {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             // Perform 1000 split calculations
             for _ in 0..<1000 {
@@ -140,15 +140,15 @@ final class MemoryUsageTests: XCTestCase {
             }
         }
     }
-    
+
     /// Test memory usage during reconciliation
     func test_reconciliation_memoryUsageReasonable() async {
         let options = XCTMeasureOptions()
         options.iterationCount = 3
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             let reconciliation = LinkStateReconciliation()
-            
+
             let friends = (0..<500).map { i in
                 AccountFriend(
                     memberId: UUID(),
@@ -156,9 +156,9 @@ final class MemoryUsageTests: XCTestCase {
                     hasLinkedAccount: false
                 )
             }
-            
+
             let expectation = self.expectation(description: "reconcile-memory")
-            
+
             Task {
                 // Perform multiple reconciliations
                 for _ in 0..<10 {
@@ -169,21 +169,21 @@ final class MemoryUsageTests: XCTestCase {
                 }
                 expectation.fulfill()
             }
-            
+
             wait(for: [expectation], timeout: 10.0)
         }
     }
-    
+
     // MARK: - Concurrent Operations Memory Tests
-    
+
     /// Test memory usage with concurrent split calculations
     func test_concurrentSplitCalculations_noMemoryLeaks() async {
         let options = XCTMeasureOptions()
         options.iterationCount = 3
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             let expectation = self.expectation(description: "concurrent-splits")
-            
+
             Task {
                 await withTaskGroup(of: Void.self) { group in
                     for _ in 0..<100 {
@@ -195,19 +195,19 @@ final class MemoryUsageTests: XCTestCase {
                 }
                 expectation.fulfill()
             }
-            
+
             wait(for: [expectation], timeout: 10.0)
         }
     }
-    
+
     /// Test memory usage with concurrent reconciliations
     func test_concurrentReconciliations_noMemoryLeaks() async {
         let options = XCTMeasureOptions()
         options.iterationCount = 3
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             let reconciliation = LinkStateReconciliation()
-            
+
             let friends = (0..<100).map { i in
                 AccountFriend(
                     memberId: UUID(),
@@ -215,9 +215,9 @@ final class MemoryUsageTests: XCTestCase {
                     hasLinkedAccount: false
                 )
             }
-            
+
             let expectation = self.expectation(description: "concurrent-reconcile")
-            
+
             Task {
                 await withTaskGroup(of: Void.self) { group in
                     for _ in 0..<20 {
@@ -231,18 +231,18 @@ final class MemoryUsageTests: XCTestCase {
                 }
                 expectation.fulfill()
             }
-            
+
             wait(for: [expectation], timeout: 10.0)
         }
     }
-    
+
     // MARK: - String and Collection Memory Tests
-    
+
     /// Test memory usage with large string operations
     func test_stringOperations_memoryUsageReasonable() {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             // Create and manipulate strings
             for i in 0..<1000 {
@@ -252,12 +252,12 @@ final class MemoryUsageTests: XCTestCase {
             }
         }
     }
-    
+
     /// Test memory usage with UUID operations
     func test_uuidOperations_memoryUsageReasonable() {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             // Create and sort UUIDs
             let uuids = (0..<1000).map { _ in UUID() }
@@ -265,36 +265,36 @@ final class MemoryUsageTests: XCTestCase {
             _ = sorted.count
         }
     }
-    
+
     /// Test memory usage with dictionary operations
     func test_dictionaryOperations_memoryUsageReasonable() {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             // Create and manipulate dictionaries
             var memberAmounts: [UUID: Double] = [:]
-            
+
             for _ in 0..<1000 {
                 let memberId = UUID()
                 memberAmounts[memberId] = Double.random(in: 0...100)
             }
-            
+
             _ = memberAmounts.values.reduce(0, +)
         }
     }
-    
+
     // MARK: - Codable Memory Tests
-    
+
     /// Test memory usage during JSON encoding/decoding
     func test_jsonCodable_memoryUsageReasonable() throws {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             let encoder = JSONEncoder()
             let decoder = JSONDecoder()
-            
+
             // Create and encode/decode expenses
             for i in 0..<100 {
                 let memberIds = (0..<10).map { _ in UUID() }
@@ -306,7 +306,7 @@ final class MemoryUsageTests: XCTestCase {
                         isSettled: false
                     )
                 }
-                
+
                 let expense = Expense(
                     id: UUID(),
                     groupId: UUID(),
@@ -318,26 +318,26 @@ final class MemoryUsageTests: XCTestCase {
                     splits: splits,
                     isSettled: false
                 )
-                
+
                 if let data = try? encoder.encode(expense) {
                     _ = try? decoder.decode(Expense.self, from: data)
                 }
             }
         }
     }
-    
+
     // MARK: - Builder Pattern Memory Tests
-    
+
     /// Test memory usage with ExpenseBuilder
     func test_expenseBuilder_memoryUsageReasonable() {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             // Create expenses using builder pattern
             for i in 0..<1000 {
                 let memberIds = (0..<10).map { _ in UUID() }
-                
+
                 _ = ExpenseBuilder()
                     .withDescription("Expense \(i)")
                     .withTotalAmount(100.0)
@@ -347,19 +347,19 @@ final class MemoryUsageTests: XCTestCase {
             }
         }
     }
-    
+
     // MARK: - Cleanup and Deallocation Tests
-    
+
     /// Test that large structures are properly deallocated
     func test_largeStructures_properDeallocation() {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
-        
+
         measure(metrics: [XCTMemoryMetric()], options: options) {
             autoreleasepool {
                 // Create large structures in autoreleasepool
                 var expenses: [Expense] = []
-                
+
                 for i in 0..<1000 {
                     let memberIds = (0..<10).map { _ in UUID() }
                     let splits = memberIds.map { memberId in
@@ -370,7 +370,7 @@ final class MemoryUsageTests: XCTestCase {
                             isSettled: false
                         )
                     }
-                    
+
                     let expense = Expense(
                         id: UUID(),
                         groupId: UUID(),
@@ -382,14 +382,14 @@ final class MemoryUsageTests: XCTestCase {
                         splits: splits,
                         isSettled: false
                     )
-                    
+
                     expenses.append(expense)
                 }
-                
+
                 // Clear the array
                 expenses.removeAll()
             }
-            
+
             // Memory should be released after autoreleasepool
         }
     }
