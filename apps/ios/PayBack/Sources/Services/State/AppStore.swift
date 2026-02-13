@@ -1,4 +1,4 @@
-// swiftlint:disable file_length type_body_length
+// swiftlint:disable file_length type_body_length line_length large_tuple
 import Foundation
 import Combine
 import Clerk
@@ -1175,8 +1175,6 @@ final class AppStore: ObservableObject {
             group.members.contains { $0.id == currentUser.id }
         }
     }
-
-    /// Removes a member from a group and deletes all expenses involving that member from that group only.
 
     // MARK: - Friend Management
 
