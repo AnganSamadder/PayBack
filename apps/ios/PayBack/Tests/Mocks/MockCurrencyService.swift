@@ -3,23 +3,47 @@ import Foundation
 
 /// Mock implementation of CurrencyServiceProtocol for testing without network calls.
 /// Provides realistic exchange rate data that behaves like a real currency API.
-@MainActor
-final class MockCurrencyService: CurrencyServiceProtocol {
+final class MockCurrencyService: CurrencyServiceProtocol, @unchecked Sendable {
+
+    // MARK: - Thread Safety
+
+    private let lock = NSLock()
 
     // MARK: - Configuration
 
     /// Simulated network delay (default: 0 for fast tests)
-    var networkDelay: TimeInterval = 0
+    var networkDelay: TimeInterval {
+        get { lock.lock(); defer { lock.unlock() }; return _networkDelay }
+        set { lock.lock(); _networkDelay = newValue; lock.unlock() }
+    }
+    private var _networkDelay: TimeInterval = 0
 
     /// When true, the next fetchRates call will throw the configured error
-    var shouldThrowError = false
+    var shouldThrowError: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _shouldThrowError }
+        set { lock.lock(); _shouldThrowError = newValue; lock.unlock() }
+    }
+    private var _shouldThrowError = false
 
     /// Error to throw when shouldThrowError is true
-    var errorToThrow: Error = CurrencyServiceError.invalidBase
+    var errorToThrow: Error {
+        get { lock.lock(); defer { lock.unlock() }; return _errorToThrow }
+        set { lock.lock(); _errorToThrow = newValue; lock.unlock() }
+    }
+    private var _errorToThrow: Error = CurrencyServiceError.invalidBase
 
     /// Track calls for verification in tests
-    private(set) var fetchRatesCallCount = 0
-    private(set) var lastRequestedBase: String?
+    private(set) var fetchRatesCallCount: Int {
+        get { lock.lock(); defer { lock.unlock() }; return _fetchRatesCallCount }
+        set { lock.lock(); _fetchRatesCallCount = newValue; lock.unlock() }
+    }
+    private var _fetchRatesCallCount = 0
+
+    private(set) var lastRequestedBase: String? {
+        get { lock.lock(); defer { lock.unlock() }; return _lastRequestedBase }
+        set { lock.lock(); _lastRequestedBase = newValue; lock.unlock() }
+    }
+    private var _lastRequestedBase: String?
 
     // MARK: - Realistic Exchange Rates
 
@@ -49,17 +73,16 @@ final class MockCurrencyService: CurrencyServiceProtocol {
 
     // MARK: - CurrencyServiceProtocol
 
-    nonisolated func fetchRates(base: String) async throws -> [String: Double] {
-        // Access mutable state on the main actor
-        let (delay, shouldThrow, error) = await MainActor.run {
-            let d = networkDelay
-            let s = shouldThrowError
-            let e = errorToThrow
-            fetchRatesCallCount += 1
-            lastRequestedBase = base
-            if shouldThrowError { shouldThrowError = false }
-            return (d, s, e)
-        }
+    func fetchRates(base: String) async throws -> [String: Double] {
+        // Snapshot mutable state under lock
+        lock.lock()
+        let delay = _networkDelay
+        let shouldThrow = _shouldThrowError
+        let error = _errorToThrow
+        _fetchRatesCallCount += 1
+        _lastRequestedBase = base
+        if _shouldThrowError { _shouldThrowError = false }
+        lock.unlock()
 
         // Simulate network delay if configured
         if delay > 0 {
@@ -94,16 +117,20 @@ final class MockCurrencyService: CurrencyServiceProtocol {
 
     /// Reset all tracking and configuration
     func reset() {
-        fetchRatesCallCount = 0
-        lastRequestedBase = nil
-        shouldThrowError = false
-        networkDelay = 0
-        errorToThrow = CurrencyServiceError.invalidBase
+        lock.lock()
+        _fetchRatesCallCount = 0
+        _lastRequestedBase = nil
+        _shouldThrowError = false
+        _networkDelay = 0
+        _errorToThrow = CurrencyServiceError.invalidBase
+        lock.unlock()
     }
 
     /// Configure the mock to throw an error on the next call
     func throwErrorOnNextCall(_ error: Error) {
-        shouldThrowError = true
-        errorToThrow = error
+        lock.lock()
+        _shouldThrowError = true
+        _errorToThrow = error
+        lock.unlock()
     }
 }
