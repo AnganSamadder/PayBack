@@ -25,7 +25,7 @@ enum PhoneAuthServiceError: LocalizedError, Equatable {
             return error.localizedDescription
         }
     }
-    
+
     static func == (lhs: PhoneAuthServiceError, rhs: PhoneAuthServiceError) -> Bool {
         switch (lhs, rhs) {
         case (.configurationMissing, .configurationMissing),

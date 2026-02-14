@@ -6,12 +6,12 @@ struct LinkRequestListView: View {
     @State private var selectedTab: RequestTab = .pending
     @State private var selectedRequest: LinkRequest?
     @State private var showDetail = false
-    
+
     enum RequestTab: String, CaseIterable {
         case pending = "Pending"
         case previous = "Previous"
     }
-    
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -26,7 +26,7 @@ struct LinkRequestListView: View {
                 .onChange(of: selectedTab) { _, _ in
                     Haptics.selection()
                 }
-                
+
                 // Content based on selected tab
                 if selectedTab == .pending {
                     pendingRequestsList
@@ -65,22 +65,22 @@ struct LinkRequestListView: View {
             }
         }
     }
-    
+
     @ViewBuilder
     private var pendingRequestsList: some View {
         let pendingRequests = store.incomingLinkRequests.filter { $0.status == .pending }
-        
+
         if pendingRequests.isEmpty {
             ScrollView {
                 VStack(spacing: 16) {
                     Image(systemName: "link.circle")
                         .font(.system(size: 60))
                         .foregroundStyle(.secondary)
-                    
+
                     Text("No Pending Requests")
                         .font(.title3)
                         .fontWeight(.semibold)
-                    
+
                     Text("When someone sends you a link request, it will appear here")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -105,22 +105,22 @@ struct LinkRequestListView: View {
             .listStyle(.plain)
         }
     }
-    
+
     @ViewBuilder
     private var previousRequestsList: some View {
         let previousRequests = store.previousLinkRequests
-        
+
         if previousRequests.isEmpty {
             ScrollView {
                 VStack(spacing: 16) {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.system(size: 60))
                         .foregroundStyle(.secondary)
-                    
+
                     Text("No Previous Requests")
                         .font(.title3)
                         .fontWeight(.semibold)
-                    
+
                     Text("Accepted and declined requests will appear here")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -152,7 +152,7 @@ struct LinkRequestListView: View {
 private struct LinkRequestRow: View {
     let request: LinkRequest
     var showStatus: Bool = false
-    
+
     var body: some View {
         HStack(spacing: 12) {
             // Avatar
@@ -160,31 +160,31 @@ private struct LinkRequestRow: View {
                 Circle()
                     .fill(AppTheme.brand.opacity(0.2))
                     .frame(width: 50, height: 50)
-                
+
                 Text(request.requesterName.prefix(1).uppercased())
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(AppTheme.brand)
             }
-            
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(request.requesterName)
                     .font(.headline)
-                
+
                 Text(request.requesterEmail)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                
+
                 Text("Wants to link with: \(request.targetMemberName)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                
+
                 if showStatus {
                     statusBadge
                 }
             }
-            
+
             Spacer()
-            
+
             if !showStatus {
                 Image(systemName: "chevron.right")
                     .font(.caption)
@@ -193,7 +193,7 @@ private struct LinkRequestRow: View {
         }
         .padding(.vertical, 8)
     }
-    
+
     @ViewBuilder
     private var statusBadge: some View {
         HStack(spacing: 4) {
@@ -209,7 +209,7 @@ private struct LinkRequestRow: View {
         .background(statusColor.opacity(0.15))
         .cornerRadius(8)
     }
-    
+
     private var statusIcon: String {
         switch request.status {
         case .accepted:
@@ -222,7 +222,7 @@ private struct LinkRequestRow: View {
             return "clock"
         }
     }
-    
+
     private var statusText: String {
         switch request.status {
         case .accepted:
@@ -235,7 +235,7 @@ private struct LinkRequestRow: View {
             return "Pending"
         }
     }
-    
+
     private var statusColor: Color {
         switch request.status {
         case .accepted:

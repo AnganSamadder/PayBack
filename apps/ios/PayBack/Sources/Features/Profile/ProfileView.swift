@@ -9,7 +9,7 @@ struct ProfileView: View {
     @State private var showSettings = false
     @State private var showImportExport = false
     @State private var profileColor: Color = .blue
-    
+
     // Image Upload State
     @State private var photosSelection: PhotosPickerItem?
     @State private var showCamera = false
@@ -18,23 +18,23 @@ struct ProfileView: View {
     @State private var isUploading = false
     @State private var uploadError: String?
     @State private var showUploadError = false
-    
+
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 32) {
                     // Profile header with avatar and user info
                     profileHeader
-                    
+
                     // Account information section
                     accountInfoSection
-                    
+
                     // Data management section
                     dataManagementSection
-                    
+
                     // Logout button
                     logoutButton
-                    
+
                     Spacer(minLength: 40)
                 }
                 .padding(.horizontal, 20)
@@ -48,9 +48,9 @@ struct ProfileView: View {
                         Text("Profile")
                             .font(.system(size: AppMetrics.headerTitleFontSize, weight: .bold))
                             .foregroundStyle(AppTheme.brand)
-                        
+
                         Spacer()
-                        
+
                         // Settings button
                         Button(action: {
                             showSettings = true
@@ -122,9 +122,9 @@ struct ProfileView: View {
             }
         }
     }
-    
+
     // MARK: - Profile Header
-    
+
     private var profileHeader: some View {
         VStack(spacing: 16) {
             // Avatar
@@ -145,7 +145,7 @@ struct ProfileView: View {
                     }
                 }
             )
-            
+
             // Edit Profile Picture Menu
             Menu {
                 Button {
@@ -153,11 +153,11 @@ struct ProfileView: View {
                 } label: {
                     Label("Take Photo", systemImage: "camera")
                 }
-                
+
                 PhotosPicker(selection: $photosSelection, matching: .images, photoLibrary: .shared()) {
                     Label("Choose from Library", systemImage: "photo.on.rectangle")
                 }
-                
+
                 Button {
                     showFileImporter = true
                 } label: {
@@ -169,7 +169,7 @@ struct ProfileView: View {
                     .foregroundStyle(AppTheme.brand)
             }
             .disabled(isUploading)
-            
+
             // User name
             Text(store.currentUser.name)
                 .font(.system(.title, design: .rounded, weight: .bold))
@@ -183,16 +183,16 @@ struct ProfileView: View {
             }
         }
     }
-    
+
     // MARK: - Account Info Section
-    
+
     private var accountInfoSection: some View {
         VStack(spacing: 16) {
             Text("Account Information")
                 .font(.system(.headline, design: .rounded, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             VStack(spacing: 12) {
                 // Display name row
                 InfoRow(
@@ -200,7 +200,7 @@ struct ProfileView: View {
                     label: "Name",
                     value: store.currentUser.name
                 )
-                
+
                 // Email or phone row
                 if let account = store.session?.account {
                     InfoRow(
@@ -218,9 +218,9 @@ struct ProfileView: View {
             )
         }
     }
-    
+
     // MARK: - Handlers
-    
+
     private func handleFileImport(_ result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
@@ -232,7 +232,7 @@ struct ProfileView: View {
                 return
             }
             defer { url.stopAccessingSecurityScopedResource() }
-            
+
             do {
                 let data = try Data(contentsOf: url)
                 Task {
@@ -247,20 +247,20 @@ struct ProfileView: View {
             showUploadError = true
         }
     }
-    
+
     @MainActor
     private func uploadImage(_ data: Data) async {
         guard !data.isEmpty else { return }
-        
+
         // Basic validation - check max size (e.g. 10MB)
         if data.count > 10 * 1024 * 1024 {
             uploadError = "Image is too large (max 10MB)."
             showUploadError = true
             return
         }
-        
+
         isUploading = true
-        
+
         do {
             try await store.uploadProfileImage(data)
             isUploading = false
@@ -276,18 +276,18 @@ struct ProfileView: View {
             capturedImage = nil
         }
     }
-    
+
     // MARK: - Data Management Section
-    
+
     @State private var showClearDataConfirmation = false
-    
+
     private var dataManagementSection: some View {
         VStack(spacing: 16) {
             Text("Data Management")
                 .font(.system(.headline, design: .rounded, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             VStack(spacing: 12) {
                 // Import/Export button
                 Button(action: {
@@ -302,29 +302,29 @@ struct ProfileView: View {
                                 Circle()
                                     .fill(AppTheme.brand.opacity(0.1))
                             )
-                        
+
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Import & Export Data")
                                 .font(.system(.body, design: .rounded, weight: .medium))
                                 .foregroundStyle(.primary)
-                            
+
                             Text("Backup or transfer your expenses")
                                 .font(.system(.caption, design: .rounded))
                                 .foregroundStyle(.secondary)
                         }
-                        
+
                         Spacer()
-                        
+
                         Image(systemName: "chevron.right")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(.tertiary)
                     }
                 }
                 .buttonStyle(.plain)
-                
+
                 Divider()
                     .padding(.horizontal, 8)
-                
+
                 // Clear All Data button
                 Button(action: {
                     showClearDataConfirmation = true
@@ -338,19 +338,19 @@ struct ProfileView: View {
                                 Circle()
                                     .fill(.red.opacity(0.1))
                             )
-                        
+
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Clear All My Data")
                                 .font(.system(.body, design: .rounded, weight: .medium))
                                 .foregroundStyle(.red)
-                            
+
                             Text("Remove all your expenses, groups & friends")
                                 .font(.system(.caption, design: .rounded))
                                 .foregroundStyle(.secondary)
                         }
-                        
+
                         Spacer()
-                        
+
                         Image(systemName: "chevron.right")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(.tertiary)
@@ -374,9 +374,9 @@ struct ProfileView: View {
             Text("This will delete all your expenses, remove you from groups, and clear your friends list. Other users in shared groups will keep their data. This cannot be undone.")
         }
     }
-    
+
     // MARK: - Logout Button
-    
+
     private var logoutButton: some View {
         Button(action: {
             showLogoutConfirmation = true
@@ -384,7 +384,7 @@ struct ProfileView: View {
             HStack(spacing: 12) {
                 Image(systemName: "rectangle.portrait.and.arrow.right")
                     .font(.system(size: 18, weight: .semibold))
-                
+
                 Text("Log Out")
                     .font(.system(.body, design: .rounded, weight: .semibold))
             }
@@ -398,9 +398,9 @@ struct ProfileView: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     // MARK: - Helper Methods
-    
+
     private func handleLogout() {
         Task {
             await store.signOut()
@@ -414,7 +414,7 @@ private struct InfoRow: View {
     let icon: String
     let label: String
     let value: String
-    
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
@@ -425,17 +425,17 @@ private struct InfoRow: View {
                     Circle()
                         .fill(AppTheme.brand.opacity(0.1))
                 )
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                     .font(.system(.caption, design: .rounded, weight: .medium))
                     .foregroundStyle(.secondary)
-                
+
                 Text(value)
                     .font(.system(.body, design: .rounded, weight: .medium))
                     .foregroundStyle(.primary)
             }
-            
+
             Spacer()
         }
     }

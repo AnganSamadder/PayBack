@@ -23,17 +23,17 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
             "groupId": groupDocId,
             "limit": limit
         ]
-        
+
         if let cursor = cursor {
             args["cursor"] = cursor
         }
-        
+
         for try await result in client.subscribe(to: "expenses:listByGroupPaginated", with: args, yielding: ConvexPaginatedExpensesDTO.self).values {
             return (items: result.items.map { $0.toExpense() }, nextCursor: result.nextCursor)
         }
         return (items: [], nextCursor: nil)
     }
-    
+
     private struct ExpenseDTO: Decodable {
         let id: String
         let group_id: String
@@ -49,25 +49,25 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         let participant_member_ids: [String]
         let participants: [ParticipantDTO]
         let subexpenses: [SubexpenseDTO]?
-        
+
         struct SplitDTO: Decodable {
             let id: String
             let member_id: String
             let amount: Double
             let is_settled: Bool
         }
-        
+
         struct ParticipantDTO: Decodable {
             let member_id: String
             let name: String
             let linked_account_id: String?
             let linked_account_email: String?
         }
-        
+
         struct SubexpenseDTO: Decodable {
             let id: String
             let amount: Double
-            
+
             func toSubexpense() -> Subexpense {
                 Subexpense(
                     id: UUID(uuidString: id) ?? UUID(),
@@ -75,7 +75,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
                 )
             }
         }
-        
+
         func toExpense() -> Expense {
             func buildParticipantNamesMap() -> [UUID: String]? {
                 guard !participants.isEmpty else { return nil }
@@ -89,9 +89,9 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
                 }
                 return map.isEmpty ? nil : map
             }
-            
+
             let participantNames = buildParticipantNamesMap()
-            
+
             return Expense(
                 id: UUID(uuidString: id) ?? UUID(),
                 groupId: UUID(uuidString: group_id) ?? UUID(),
@@ -121,7 +121,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         let amount: Double
         let is_settled: Bool
     }
-    
+
     private struct ParticipantArg: Codable, ConvexEncodable {
         let member_id: String
         let name: String
@@ -135,7 +135,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
     }
 
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
-        let splitArgs: [ConvexEncodable?] = expense.splits.map { 
+        let splitArgs: [ConvexEncodable?] = expense.splits.map {
             SplitArg(
                 id: $0.id.uuidString,
                 member_id: $0.memberId.uuidString,
@@ -143,10 +143,10 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
                 is_settled: $0.isSettled
             )
         }
-        
+
         let participantMemberIds: [ConvexEncodable?] = participants.map { $0.memberId.uuidString }
         let involvedMemberIds: [ConvexEncodable?] = expense.involvedMemberIds.map { $0.uuidString }
-        
+
         let participantArgs: [ConvexEncodable?] = participants.map {
             ParticipantArg(
                 member_id: $0.memberId.uuidString,
@@ -179,7 +179,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         if let subArgs = subexpenseArgs {
             args["subexpenses"] = subArgs
         }
-        
+
         try await client.mutation("expenses:create", with: args)
     }
 
@@ -199,7 +199,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
     func clearLegacyMockExpenses() async throws {
         // No-op
     }
-    
+
     func clearAllData() async throws {
         _ = try await client.mutation("expenses:clearAllForUser", with: [:])
     }

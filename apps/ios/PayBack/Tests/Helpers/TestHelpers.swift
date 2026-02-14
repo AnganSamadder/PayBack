@@ -13,14 +13,14 @@ struct CurrencyInfo: Codable {
 /// Fixture containing currency information for testing
 struct CurrencyFixture: Codable {
     let currencies: [String: CurrencyInfo]
-    
+
     /// Get the number of minor units (decimal places) for a currency
     /// - Parameter currencyCode: The ISO 4217 currency code (e.g., "USD", "JPY")
     /// - Returns: The number of minor units, defaulting to 2 if not found
     func minorUnits(for currencyCode: String) -> Int {
         return currencies[currencyCode]?.minorUnits ?? 2
     }
-    
+
     /// Get the currency symbol for a currency code
     /// - Parameter currencyCode: The ISO 4217 currency code
     /// - Returns: The currency symbol, or the code itself if not found
@@ -46,7 +46,7 @@ func loadCurrencyFixture() throws -> CurrencyFixture {
         withExtension: "json",
         subdirectory: "Fixtures"
     )
-    
+
     // If not found, try without subdirectory (in case Fixtures is a group, not a folder reference)
     if url == nil {
         url = Bundle(for: BundleHelper.self).url(
@@ -54,7 +54,7 @@ func loadCurrencyFixture() throws -> CurrencyFixture {
             withExtension: "json"
         )
     }
-    
+
     guard let fileURL = url else {
         throw NSError(
             domain: "TestHelpers",
@@ -62,7 +62,7 @@ func loadCurrencyFixture() throws -> CurrencyFixture {
             userInfo: [NSLocalizedDescriptionKey: "Could not find currency_minor_units.json fixture"]
         )
     }
-    
+
     let data = try Data(contentsOf: fileURL)
     let decoder = JSONDecoder()
     return try decoder.decode(CurrencyFixture.self, from: data)
@@ -73,11 +73,11 @@ func loadCurrencyFixture() throws -> CurrencyFixture {
 /// A seeded random number generator for reproducible property-based tests
 struct SeededRandomNumberGenerator: RandomNumberGenerator {
     private var state: UInt64
-    
+
     init(seed: UInt64) {
         self.state = seed
     }
-    
+
     mutating func next() -> UInt64 {
         // Linear congruential generator
         state = state &* 6364136223846793005 &+ 1442695040888963407
@@ -92,14 +92,14 @@ struct ExpenseTestCase {
     let totalAmount: Decimal
     let memberCount: Int
     let memberIds: [UUID]
-    
+
     /// Generate a random test case with specified member count
     static func random(memberCount: Int = Int.random(in: 2...20)) -> ExpenseTestCase {
         let amount = Decimal(Double.random(in: 0.01...10000.00))
         let ids = (0..<memberCount).map { _ in UUID() }
         return ExpenseTestCase(totalAmount: amount, memberCount: memberCount, memberIds: ids)
     }
-    
+
     /// Generate a random test case using a seeded random number generator
     static func random<R: RandomNumberGenerator>(
         using rng: inout R,
@@ -123,17 +123,17 @@ struct TestFixtures {
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
         name: "Alice"
     )
-    
+
     static let sampleGroupMember2 = GroupMember(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
         name: "Bob"
     )
-    
+
     static let sampleGroupMember3 = GroupMember(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
         name: "Charlie"
     )
-    
+
     static let sampleGroup = SpendingGroup(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000010")!,
         name: "Test Group",
@@ -141,7 +141,7 @@ struct TestFixtures {
         createdAt: Date(timeIntervalSince1970: 1700000000),
         isDirect: false
     )
-    
+
     static let sampleExpense = Expense(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000100")!,
         groupId: sampleGroup.id,
@@ -206,10 +206,10 @@ func assertDeterministic<T: Equatable>(
         XCTFail("Determinism test requires at least 2 iterations", file: file, line: line)
         return
     }
-    
+
     let results = (0..<iterations).map { _ in operation() }
     let first = results[0]
-    
+
     for (index, result) in results.enumerated().dropFirst() {
         XCTAssertEqual(
             result,
@@ -223,7 +223,7 @@ func assertDeterministic<T: Equatable>(
 
 /// Helper utilities for tests
 struct TestHelpers {
-    
+
     /// Load a JSON fixture from the test bundle
     static func loadFixture<T: Decodable>(
         _ type: T.Type,
@@ -248,7 +248,7 @@ struct TestHelpers {
                 userInfo: [NSLocalizedDescriptionKey: "Fixture file not found"]
             )
         }
-        
+
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         return try decoder.decode(type, from: data)
@@ -272,30 +272,30 @@ struct TestHelpers {
 /// - Returns: Array of ExpenseSplit with deterministic rounding
 func calculateEqualSplits(totalAmount: Decimal, memberIds: [UUID], minorUnits: Int = 2) -> [ExpenseSplit] {
     guard !memberIds.isEmpty else { return [] }
-    
+
     // Convert to minor units (cents for USD) to avoid floating-point issues
     let scale = pow(10 as Decimal, minorUnits)
     let totalMinor = NSDecimalNumber(decimal: totalAmount * scale).int64Value
     let n = Int64(memberIds.count)
-    
+
     // Integer division (truncates toward zero for both positive and negative)
     let base = totalMinor / n
     let remainderValue = totalMinor - base * n
     let remainder = Int(remainderValue)
-    
+
     // Stable, deterministic order (by UUID string, ASCII comparison)
     let sorted = memberIds.sorted { $0.uuidString < $1.uuidString }
-    
+
     return sorted.enumerated().map { i, id in
         var share = base
-        
+
         // Distribute remainder by sign
         if remainder >= 0 && i < remainder {
             share += 1
         } else if remainder <= 0 && i < -remainder {
             share -= 1
         }
-        
+
         let amount = Decimal(share) / scale
         return ExpenseSplit(
             id: UUID(),

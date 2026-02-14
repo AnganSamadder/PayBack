@@ -137,7 +137,7 @@ struct ActivityView: View {
                 .toolbar(path.isEmpty ? .hidden : .visible, for: .navigationBar)
         }
     }
-    
+
     private func clearAllData() {
         // Clear only debug groups and expenses (preserves real data)
         store.clearDebugData()
@@ -347,7 +347,7 @@ struct TabButton: View {
     let title: String
     let isSelected: Bool
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             Text(title)
@@ -386,18 +386,18 @@ struct DashboardView: View {
         self.onFriendTap = onFriendTap
         self.onExpenseTap = onExpenseTap
     }
-    
+
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 24) {
                 // Hero balance card
                 heroSection
-                
+
                 // Groups & Friends Horizontal Scroll
                 if !store.groups.isEmpty {
                     groupsSection
                 }
-                
+
                 // Recent Activity Feed
                 if !store.expenses.isEmpty {
                     recentActivitySection
@@ -410,9 +410,9 @@ struct DashboardView: View {
         }
         .background(AppTheme.background)
     }
-    
+
     // MARK: - Sections
-    
+
     private var heroSection: some View {
         VStack(spacing: 0) {
             // Dynamic gradient background based on balance
@@ -429,13 +429,13 @@ struct DashboardView: View {
                         .foregroundStyle(balanceColor.opacity(0.8))
                         .textCase(.uppercase)
                         .tracking(1)
-                    
+
                     // Balance amount
                     Text(balanceText)
                         .font(.system(size: 48, weight: .bold, design: .rounded))
                         .foregroundStyle(balanceColor)
                         .contentTransition(.numericText(value: calculateOverallNetBalance()))
-                    
+
                     Text(balanceDescription)
                         .font(.system(.caption, design: .rounded))
                         .foregroundStyle(.secondary)
@@ -465,7 +465,7 @@ struct DashboardView: View {
         .shadow(color: AppTheme.brand.opacity(0.05), radius: 20, x: 0, y: 10)
         .padding(.horizontal, 16)
     }
-    
+
     private var groupsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -475,7 +475,7 @@ struct DashboardView: View {
                 Spacer()
             }
             .padding(.horizontal, 20)
-            
+
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 12) {
                     // Filter for active groups (groups with non-current user members)
@@ -497,7 +497,7 @@ struct DashboardView: View {
             }
         }
     }
-    
+
     private var recentActivitySection: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -507,16 +507,16 @@ struct DashboardView: View {
                 Spacer()
             }
             .padding(.horizontal, 20)
-            
+
             LazyVStack(spacing: 0) {
                 let sortedExpenses = store.expenses.sorted(by: { $0.date > $1.date }).prefix(10)
-                
+
                 ForEach(Array(sortedExpenses.enumerated()), id: \.element.id) { index, expense in
                     Button(action: { onExpenseTap(expense) }) {
                         ActivityRow(expense: expense)
                     }
                     .buttonStyle(.plain)
-                    
+
                     if index < sortedExpenses.count - 1 {
                         Divider()
                             .padding(.leading, 76)
@@ -529,17 +529,17 @@ struct DashboardView: View {
             .shadow(color: Color.black.opacity(0.03), radius: 10, x: 0, y: 4)
         }
     }
-    
+
     private var emptyState: some View {
         VStack(spacing: 16) {
             Image(systemName: "list.bullet.clipboard")
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary.opacity(0.3))
-            
+
             Text("No activity yet")
                 .font(.headline)
                 .foregroundStyle(.secondary)
-            
+
             Text("Create a group or add an expense to see it here.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -548,29 +548,29 @@ struct DashboardView: View {
         .padding(.vertical, 40)
         .frame(maxWidth: .infinity)
     }
-    
+
     // MARK: - Helpers
-    
+
     private var balanceText: String {
         let net = calculateOverallNetBalance()
         if abs(net) < 0.0001 { return "Settled Up" }
         return currency(net)
     }
-    
+
     private var balanceColor: Color {
         let net = calculateOverallNetBalance()
         if net > 0.0001 { return .green }
         if net < -0.0001 { return .red }
         return .secondary
     }
-    
+
     private var balanceDescription: String {
         let net = calculateOverallNetBalance()
         if net > 0.0001 { return "You are owed overall" }
         if net < -0.0001 { return "You owe overall" }
         return "Everything is settled"
     }
-    
+
     private var gradientColors: [Color] {
         let net = calculateOverallNetBalance()
         if net > 0.0001 {
@@ -581,12 +581,12 @@ struct DashboardView: View {
             return [AppTheme.brand.opacity(0.15), AppTheme.brand.opacity(0.02)]
         }
     }
-    
+
     private func currency(_ v: Double) -> String {
         let id = Locale.current.currency?.identifier ?? "USD"
         return v.formatted(.currency(code: id))
     }
-    
+
     private func calculateOverallNetBalance() -> Double {
         store.overallNetBalance()
     }
@@ -597,10 +597,10 @@ struct DashboardView: View {
 struct CompactGroupCard: View {
     @EnvironmentObject var store: AppStore
     let group: SpendingGroup
-    
+
     var body: some View {
         let net = calculateNetBalance()
-        
+
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 if group.isDirect == true {
@@ -610,9 +610,9 @@ struct CompactGroupCard: View {
                     GroupIcon(name: store.groupDisplayName(group))
                         .frame(width: 40, height: 40)
                 }
-                
+
                 Spacer()
-                
+
                 if abs(net) > 0.0001 {
                     Text(net > 0 ? "Owed" : "Owe")
                         .font(.system(size: 10, weight: .bold))
@@ -623,13 +623,13 @@ struct CompactGroupCard: View {
                         .clipShape(Capsule())
                 }
             }
-            
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(store.groupDisplayName(group))
                     .font(.system(.subheadline, design: .rounded, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                
+
                 Text(balanceText(net))
                     .font(.system(.caption, design: .rounded, weight: .medium))
                     .foregroundStyle(balanceColor(net))
@@ -641,17 +641,17 @@ struct CompactGroupCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 20))
         .shadow(color: Color.black.opacity(0.04), radius: 8, x: 0, y: 4)
     }
-    
+
     private func calculateNetBalance() -> Double {
         store.netBalance(for: group)
     }
-    
+
     private func balanceText(_ net: Double) -> String {
         if abs(net) < 0.0001 { return "Settled" }
         let id = Locale.current.currency?.identifier ?? "USD"
         return abs(net).formatted(.currency(code: id))
     }
-    
+
     private func balanceColor(_ net: Double) -> Color {
         if net > 0.0001 { return .green }
         if net < -0.0001 { return .red }
@@ -661,31 +661,31 @@ struct CompactGroupCard: View {
 
 struct ActivityRow: View {
     let expense: Expense
-    
+
     var body: some View {
         HStack(spacing: 16) {
             GroupIcon(name: expense.description)
                 .frame(width: 44, height: 44)
                 .opacity(expense.isSettled ? 0.6 : 1.0)
-            
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(expense.description)
                     .font(.system(.body, design: .rounded, weight: .medium))
                     .foregroundStyle(expense.isSettled ? .secondary : .primary)
                     .strikethrough(expense.isSettled)
-                
+
                 Text(expense.date.formatted(date: .abbreviated, time: .omitted))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            
+
             Spacer()
-            
+
             VStack(alignment: .trailing, spacing: 4) {
                 Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                     .font(.system(.callout, design: .rounded, weight: .semibold))
                     .foregroundStyle(expense.isSettled ? .secondary : .primary)
-                
+
                 if expense.isSettled {
                     Text("Settled")
                         .font(.caption2)
@@ -708,7 +708,7 @@ struct HistoryView: View {
 
     var body: some View {
         let userExpenses = store.expensesInvolvingCurrentUser()
-        
+
         if userExpenses.isEmpty {
             EmptyStateView("No activity yet", systemImage: "clock.arrow.circlepath", description: "Add an expense to get started")
                 .padding()

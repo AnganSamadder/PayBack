@@ -14,6 +14,7 @@
 #   CI_FLAVOR: xcodecloud (enables XcodeCloud parity mode)
 #   DERIVED_DATA_PATH: custom DerivedData path (default: ./DerivedDataCI in xcodecloud mode)
 #   FAIL_ON_WARNINGS: 1 (fail if any warnings are detected)
+#   RUN_WEB_E2E: 1 (default) to run web Playwright smoke tests; set to 0 to skip
 
 set -e
 
@@ -31,6 +32,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SANITIZER="${SANITIZER:-none}"
 CI_FLAVOR="${CI_FLAVOR:-github}"
 FAIL_ON_WARNINGS="${FAIL_ON_WARNINGS:-1}"
+RUN_WEB_E2E="${RUN_WEB_E2E:-1}"
 
 # XcodeCloud parity mode settings
 if [ "$CI_FLAVOR" = "xcodecloud" ]; then
@@ -54,9 +56,32 @@ echo ""
 cd "$PROJECT_ROOT"
 
 # =============================================================================
+# Run JS/TS Monorepo Checks
+# =============================================================================
+echo -e "${YELLOW}[1/10] Running monorepo JS checks...${NC}"
+if ! command -v bun &>/dev/null; then
+	echo -e "${RED}✗ Bun is required for monorepo checks. Install with: brew install bun${NC}"
+	exit 1
+fi
+
+bun install >/dev/null
+bun run ci
+
+if [ "$RUN_WEB_E2E" = "1" ]; then
+	echo "Running web e2e smoke tests..."
+	bunx playwright install chromium >/dev/null
+	bun run --filter @payback/web test:e2e
+else
+	echo "Skipping web e2e smoke tests (RUN_WEB_E2E=$RUN_WEB_E2E)"
+fi
+
+echo -e "${GREEN}✓ Monorepo checks passed${NC}"
+echo ""
+
+# =============================================================================
 # Environment Snapshot (helps debug XcodeCloud vs local differences)
 # =============================================================================
-echo -e "${YELLOW}[1/9] Environment Snapshot...${NC}"
+echo -e "${YELLOW}[2/10] Environment Snapshot...${NC}"
 HOST_ARCH=$(uname -m)
 echo "  Host architecture: $HOST_ARCH"
 xcodebuild -version | head -2 | sed 's/^/  /'
@@ -82,7 +107,7 @@ echo ""
 # =============================================================================
 # Clean simulators
 # =============================================================================
-echo -e "${YELLOW}[2/9] Cleaning simulators...${NC}"
+echo -e "${YELLOW}[3/10] Cleaning simulators...${NC}"
 xcrun simctl delete unavailable 2>/dev/null || true
 echo -e "${GREEN}✓ Cleaned${NC}"
 echo ""
@@ -90,7 +115,7 @@ echo ""
 # =============================================================================
 # Check xcpretty
 # =============================================================================
-echo -e "${YELLOW}[3/9] Checking xcpretty...${NC}"
+echo -e "${YELLOW}[4/10] Checking xcpretty...${NC}"
 if ! command -v xcpretty &>/dev/null; then
 	echo "xcpretty not found - output will be raw"
 	echo "Install it with: gem install xcpretty"
@@ -104,7 +129,7 @@ echo ""
 # =============================================================================
 # Generate Xcode project
 # =============================================================================
-echo -e "${YELLOW}[4/9] Generating project...${NC}"
+echo -e "${YELLOW}[5/10] Generating project...${NC}"
 if command -v xcodegen &>/dev/null; then
 	if xcodegen generate >/dev/null 2>&1; then
 		echo -e "${GREEN}✓ Generated${NC}"
@@ -119,7 +144,7 @@ echo ""
 # =============================================================================
 # Resolve dependencies
 # =============================================================================
-echo -e "${YELLOW}[5/9] Resolving dependencies...${NC}"
+echo -e "${YELLOW}[6/10] Resolving dependencies...${NC}"
 
 # Check if gtimeout is available (from coreutils)
 TIMEOUT_CMD=""
@@ -178,7 +203,7 @@ echo ""
 # =============================================================================
 # Select simulator
 # =============================================================================
-echo -e "${YELLOW}[6/9] Selecting iPhone simulator...${NC}"
+echo -e "${YELLOW}[7/10] Selecting iPhone simulator...${NC}"
 SIMULATOR_INFO=$(
 	python3 <<'PY'
 import json
@@ -280,7 +305,7 @@ echo ""
 # =============================================================================
 # Boot simulator
 # =============================================================================
-echo -e "${YELLOW}[7/9] Booting simulator...${NC}"
+echo -e "${YELLOW}[8/10] Booting simulator...${NC}"
 xcrun simctl boot "$SIMULATOR_UDID" 2>/dev/null || echo "Already booted"
 xcrun simctl bootstatus "$SIMULATOR_UDID" -b 2>/dev/null || true
 echo -e "${GREEN}✓ Ready${NC}"
@@ -289,7 +314,7 @@ echo ""
 # =============================================================================
 # Build and Test (XcodeCloud parity or standard)
 # =============================================================================
-echo -e "${YELLOW}[8/9] Running tests (sanitizer: ${SANITIZER}, mode: ${CI_FLAVOR})...${NC}"
+echo -e "${YELLOW}[9/10] Running tests (sanitizer: ${SANITIZER}, mode: ${CI_FLAVOR})...${NC}"
 echo ""
 rm -rf TestResults.xcresult coverage-report.txt coverage.json test_output.log build_output.log 2>/dev/null || true
 
@@ -329,7 +354,7 @@ if [ "$XCODECLOUD_MODE" = true ]; then
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $SANITIZER_FLAGS \
     $DERIVED_DATA_ARG \
-    -parallel-testing-enabled NO"
+    -parallel-testing-enabled YES"
 
 	set +e
 	if [ "$XCPRETTY_AVAILABLE" = true ]; then
@@ -367,10 +392,10 @@ if [ "$XCODECLOUD_MODE" = true ]; then
     -scheme PayBack \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $DERIVED_DATA_ARG \
-    -parallel-testing-enabled NO \
+    -parallel-testing-enabled YES \
     -resultBundlePath TestResults.xcresult"
 else
-	# Standard mode: just run tests
+	# Standard mode: single xcodebuild test command (matches CI)
 	echo "Running all tests..."
 	echo "This may take 2-5 minutes depending on your machine..."
 	echo ""
@@ -380,7 +405,7 @@ else
     -scheme PayBack \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $SANITIZER_FLAGS \
-    -parallel-testing-enabled NO \
+    -parallel-testing-enabled YES \
     -resultBundlePath TestResults.xcresult"
 fi
 
@@ -433,7 +458,7 @@ echo ""
 # =============================================================================
 # Warning Analysis
 # =============================================================================
-echo -e "${YELLOW}[9/9] Analyzing warnings...${NC}"
+echo -e "${YELLOW}[10/10] Analyzing warnings...${NC}"
 
 # Combine build and test logs for warning analysis
 cat build_output.log test_output.log 2>/dev/null >combined_output.log || cp test_output.log combined_output.log 2>/dev/null || true

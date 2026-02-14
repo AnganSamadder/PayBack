@@ -11,19 +11,19 @@ protocol ClockProtocol {
 /// Mock clock implementation for testing time-based logic
 final class MockClock: ClockProtocol {
     private var current: Date
-    
+
     init(startingAt date: Date = Date(timeIntervalSince1970: 1_700_000_000)) {
         self.current = date
     }
-    
+
     func now() -> Date {
         return current
     }
-    
+
     func advance(by interval: TimeInterval) {
         current = current.addingTimeInterval(interval)
     }
-    
+
     func set(to date: Date) {
         current = date
     }

@@ -7,7 +7,7 @@ try {
   // Since we can't easily mock auth in a script without setup, we will just verify the file structure exists for now.
   // Ideally, we would run: npx convex run expenses:create ...
   console.log("Skipping actual mutation execution due to auth constraints in script.");
-  
+
   console.log("Verification Script Placeholder Created.");
   process.exit(0);
 } catch (error) {

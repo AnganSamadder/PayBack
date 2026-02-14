@@ -25,7 +25,7 @@ struct ConvexConfig {
     static var current: ConvexEnvironment {
         AppConfig.environment
     }
-    
+
     /// The current active deployment URL.
     static var deploymentUrl: String {
         current.url

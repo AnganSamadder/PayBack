@@ -38,7 +38,7 @@ struct RootViewWithStore: View {
                         endPoint: .bottomTrailing
                     )
                     .ignoresSafeArea()
-                    
+
                     VStack(spacing: 16) {
                         ProgressView()
                             .progressViewStyle(.circular)
@@ -96,7 +96,7 @@ struct RootViewWithStore: View {
             }
         }
     }
-    
+
     private func handleScenePhaseChange(oldPhase: ScenePhase, newPhase: ScenePhase) {
         AppConfig.markTiming("ScenePhase changed: \(oldPhase) -> \(newPhase)")
         // Trigger reconciliation when app becomes active
@@ -104,31 +104,31 @@ struct RootViewWithStore: View {
             #if DEBUG
             print("[App] App became active - triggering link state reconciliation")
             #endif
-            
+
             Task {
                 await store.reconcileAfterNetworkRecovery()
             }
         }
     }
-    
+
     private func handleNetworkChange(wasConnected: Bool, isConnected: Bool) {
         // Trigger reconciliation when network is restored
         if !wasConnected && isConnected {
             #if DEBUG
             print("[App] Network connection restored - triggering link state reconciliation")
             #endif
-            
+
             Task {
                 await store.reconcileAfterNetworkRecovery()
             }
         }
     }
-    
+
     private func handleDeepLink(_ url: URL) {
         #if DEBUG
         print("[DeepLink] Received URL: \(url.absoluteString)")
         #endif
-        
+
         // Parse the URL: payback://link/claim?token=<uuid>
         guard url.scheme == "payback" else {
             #if DEBUG
@@ -136,21 +136,21 @@ struct RootViewWithStore: View {
             #endif
             return
         }
-        
+
         guard url.host == "link" else {
             #if DEBUG
             print("[DeepLink] Invalid host: \(url.host ?? "nil")")
             #endif
             return
         }
-        
+
         guard url.path == "/claim" else {
             #if DEBUG
             print("[DeepLink] Invalid path: \(url.path)")
             #endif
             return
         }
-        
+
         // Extract token parameter
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let queryItems = components.queryItems,
@@ -161,11 +161,11 @@ struct RootViewWithStore: View {
             #endif
             return
         }
-        
+
         #if DEBUG
         print("[DeepLink] Extracted token: \(tokenId)")
         #endif
-        
+
         // Store the token to be handled by RootView
         pendingInviteToken = tokenId
     }
@@ -175,17 +175,17 @@ struct RootViewWithStore: View {
 class NetworkMonitor: ObservableObject {
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "NetworkMonitor")
-    
+
     @Published var isConnected: Bool = true
     @Published var connectionType: NWInterface.InterfaceType?
-    
+
     init() {
         AppConfig.markTiming("NetworkMonitor init started")
         monitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
                 self?.isConnected = path.status == .satisfied
                 self?.connectionType = path.availableInterfaces.first?.type
-                
+
                 #if DEBUG
                 if path.status == .satisfied && AppConfig.verboseLogging {
                     print("[Network] Connection available: \(path.availableInterfaces.first?.type.debugDescription ?? "unknown")")
@@ -198,7 +198,7 @@ class NetworkMonitor: ObservableObject {
         monitor.start(queue: queue)
         AppConfig.markTiming("NetworkMonitor init completed")
     }
-    
+
     deinit {
         monitor.cancel()
     }
@@ -221,7 +221,7 @@ extension NWInterface.InterfaceType {
 struct PayBackApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var clerk = Clerk.shared
-    
+
     #if !PAYBACK_CI_NO_CONVEX
     let convexClient: ConvexClientWithAuth<ClerkAuthResult>
     #endif
@@ -229,11 +229,11 @@ struct PayBackApp: App {
     init() {
         // Start performance tracking
         AppConfig.markAppStart()
-        
+
         // Log startup configuration
         AppConfig.logStartupInfo()
         AppConfig.markTiming("Configuration logged")
-        
+
         #if !PAYBACK_CI_NO_CONVEX
         let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
         AppConfig.markTiming("ClerkAuthProvider created")
@@ -249,10 +249,10 @@ struct PayBackApp: App {
         #else
         AppConfig.markTiming("Convex disabled for CI")
         #endif
-        
+
         AppAppearance.configure()
         AppConfig.markTiming("Appearance configured")
-        
+
         AppConfig.log("PayBack initialization complete")
     }
 

@@ -1,4 +1,4 @@
-name: iOS CI
+name: CI
 
 on:
   push:
@@ -6,11 +6,181 @@ on:
   pull_request:
     branches: ["main"]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-test:
-    name: Build & Test
-    runs-on: macos-14  # Standard runner (uses included minutes)
-    timeout-minutes: 60
+  # ──────────────────────────────────────────────────────────────
+  # Tier 1 — cheap Ubuntu gate (lint + format + typecheck)
+  # All other jobs depend on this. If it fails, zero macOS minutes are wasted.
+  # ──────────────────────────────────────────────────────────────
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Format check
+        run: bun run format:check
+
+      - name: Typecheck
+        run: bun run typecheck
+
+  # ──────────────────────────────────────────────────────────────
+  # Tier 2a — Linux jobs (cheap, parallel)
+  # ──────────────────────────────────────────────────────────────
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [quality-gate]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test backend
+        run: bun run test:backend
+
+  web-tests:
+    name: Web Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [quality-gate]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test web
+        run: bun run test:web
+
+  web-build:
+    name: Web Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [quality-gate]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build web
+        run: bun run build:web
+
+  web-e2e:
+    name: Web E2E Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [web-build]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright browser
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run Web E2E
+        run: bun run test:e2e
+
+  # ──────────────────────────────────────────────────────────────
+  # Tier 2b — macOS jobs (10x cost, gated behind quality-gate)
+  # Skipped when PR title contains [skip-ios]
+  # ──────────────────────────────────────────────────────────────
+  ios-build:
+    name: iOS Build
+    runs-on: macos-14
+    timeout-minutes: 45
+    needs: [quality-gate]
+    if: "!contains(github.event.pull_request.title, '[skip-ios]')"
 
     steps:
       - name: Checkout
@@ -31,7 +201,7 @@ jobs:
           echo "version=$LATEST_STABLE" >> $GITHUB_OUTPUT
           echo "Using Xcode $LATEST_STABLE"
 
-      - name: Set up Xcode
+      - name: Set up Xcode (latest stable)
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: ${{ steps.detect-xcode.outputs.version }}
@@ -76,6 +246,9 @@ jobs:
       - name: Resolve dependencies
         run: |
           xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj -scheme PayBack
+
+      - name: List Available Simulators (iPhone)
+        run: xcrun simctl list devices iPhone available
 
       - name: Select iPhone Simulator
         env:
@@ -175,6 +348,232 @@ jobs:
 
       - name: Boot Selected Simulator
         run: |
+          echo "Booting simulator ${SIMULATOR_NAME:-unknown} (${SIMULATOR_UDID:-unset})"
+          open -a Simulator || true
+          xcrun simctl boot "$SIMULATOR_UDID" || echo "Simulator already booted or boot failed"
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b || true
+          xcrun simctl list devices iPhone | grep -A1 "${SIMULATOR_UDID}"
+          sleep 5
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project PayBack.xcodeproj \
+            -scheme PayBack \
+            -configuration Debug \
+            -destination "$SIMULATOR_DESTINATION" \
+            clean build | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Install SwiftLint
+        run: |
+          brew update
+          brew install swiftlint || true
+
+      - name: Run SwiftLint (non-failing)
+        run: swiftlint lint || true
+
+  ios-tests:
+    name: iOS Tests (${{ matrix.sanitizer }})
+    runs-on: macos-14
+    timeout-minutes: ${{ matrix.timeout }}
+    needs: [quality-gate]
+    if: "!contains(github.event.pull_request.title, '[skip-ios]')"
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [none, thread, address]
+        include:
+          - sanitizer: none
+            run_on_pr: true
+            timeout: 45
+          - sanitizer: thread
+            run_on_pr: false
+            timeout: 45
+          - sanitizer: address
+            run_on_pr: false
+            timeout: 45
+
+    steps:
+      - name: Skip sanitizer jobs on PRs
+        if: matrix.run_on_pr == false && github.event_name == 'pull_request'
+        run: |
+          echo "Skipping ${{ matrix.sanitizer }} sanitizer — only runs on pushes to main"
+          exit 0
+
+      - name: Checkout
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        uses: actions/checkout@v4
+
+      - name: Detect latest stable Xcode (not beta)
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        id: detect-xcode
+        run: |
+          LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | grep -v "^Xcode_26\." | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
+          if [ -z "$LATEST_STABLE" ]; then
+            echo "ERROR: No stable Xcode version found in /Applications"
+            echo "Available Xcode installations:"
+            ls /Applications | grep Xcode || echo "None found"
+            exit 1
+          fi
+          echo "version=$LATEST_STABLE" >> $GITHUB_OUTPUT
+          echo "Using Xcode $LATEST_STABLE"
+
+      - name: Set up Xcode
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ steps.detect-xcode.outputs.version }}
+
+      - name: Show Xcode version
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: xcodebuild -version
+
+      - name: Detect iOS SDK Version
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        id: detect-sdk
+        run: |
+          SDK_VERSION=$(xcodebuild -showsdks | grep -o 'iphoneos[0-9]*\.[0-9]*' | sed 's/iphoneos//' | sort -V | tail -1)
+          if [ -z "$SDK_VERSION" ]; then
+            echo "ERROR: Could not detect iOS SDK version"
+            exit 1
+          fi
+          SDK_MAJOR=$(echo "$SDK_VERSION" | cut -d. -f1)
+          echo "sdk-version=$SDK_VERSION" >> $GITHUB_OUTPUT
+          echo "sdk-major=$SDK_MAJOR" >> $GITHUB_OUTPUT
+          echo "Detected iOS SDK: $SDK_VERSION (major: $SDK_MAJOR)"
+
+      - name: List Available iOS Runtimes
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: |
+          echo "Available iOS runtimes:"
+          xcrun simctl runtime list | grep -E "iOS" || echo "No iOS runtimes found"
+
+      - name: Remove unavailable simulators
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: xcrun simctl delete unavailable || true
+
+      - name: Cache SPM
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Developer/Xcode/DerivedData
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Install xcpretty
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: sudo gem install xcpretty --no-document
+
+      - name: Resolve dependencies
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: |
+          xcodebuild -resolvePackageDependencies -project PayBack.xcodeproj -scheme PayBack
+
+      - name: Select iPhone Simulator
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        env:
+          SDK_MAJOR: ${{ steps.detect-sdk.outputs.sdk-major }}
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          def parse_runtime(runtime: str, target_major: int):
+            if ".iOS-" not in runtime:
+              return (), ""
+            version_raw = runtime.split(".iOS-")[-1].replace("-", ".")
+            parts = []
+            for token in version_raw.split('.'):
+              token = ''.join(ch for ch in token if ch.isdigit()) or '0'
+              parts.append(int(token))
+            if parts and parts[0] != target_major:
+              return (), ""
+            return tuple(parts), version_raw
+
+          def get_device_priority(name: str):
+            if "Pro Max" in name:
+              return 100
+            if "Pro" in name:
+              return 90
+            if "Plus" in name:
+              return 80
+            if "Air" in name:
+              return 70
+            if name.startswith("iPhone ") and name.split()[1].isdigit():
+              return 60
+            if "SE" in name:
+              return 10
+            return 50
+
+          def pick_preferred(candidates):
+            def sorter(entry):
+              version_tuple, name, udid, version_str = entry
+              return (version_tuple, get_device_priority(name), name)
+            sorted_candidates = sorted(candidates, key=sorter, reverse=True)
+            return sorted_candidates[0]
+
+          try:
+            result = subprocess.check_output([
+              "xcrun", "simctl", "list", "devices", "available", "--json",
+            ])
+          except subprocess.CalledProcessError as exc:
+            print(f"Failed to list simulators: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+          sdk_major = int(os.environ.get("SDK_MAJOR", "18"))
+          print(f"Matching simulators for iOS SDK major version: {sdk_major}")
+
+          data = json.loads(result)
+          candidates = []
+          for runtime, devices in data.get("devices", {}).items():
+            version_tuple, version_str = parse_runtime(runtime, sdk_major)
+            if not version_tuple:
+              continue
+            for device in devices:
+              if not device.get("isAvailable"):
+                continue
+              name = device.get("name", "")
+              if "iPhone" not in name:
+                continue
+              udid = device.get("udid")
+              if not udid:
+                continue
+              candidates.append((version_tuple, name, udid, version_str))
+
+          if not candidates:
+            print("No available iPhone simulator found", file=sys.stderr)
+            sys.exit(1)
+
+          version_tuple, name, udid, version_str = pick_preferred(candidates)
+          print(f"Selected simulator: {name} (iOS {version_str}) [{udid}]")
+
+          env_path = os.environ.get("GITHUB_ENV")
+          if not env_path:
+            print("GITHUB_ENV not set", file=sys.stderr)
+            sys.exit(1)
+
+          with open(env_path, "a", encoding="utf-8") as env_file:
+            env_file.write(f"SIMULATOR_UDID={udid}\n")
+            env_file.write(f"SIMULATOR_NAME={name}\n")
+            env_file.write(f"SIMULATOR_OS={version_str}\n")
+            env_file.write(f"SIMULATOR_DESTINATION=platform=iOS Simulator,id={udid}\n")
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.write(f"\n- Using simulator **{name}** (iOS {version_str})\n")
+          PY
+
+      - name: Boot Selected Simulator
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: |
           set -e
           if [ -z "$SIMULATOR_UDID" ]; then
             echo "ERROR: SIMULATOR_UDID not set"
@@ -188,30 +587,31 @@ jobs:
           sleep 5
           echo "Simulator ready"
 
-      - name: Install SwiftLint
+      - name: Compute Test Flags
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        id: test-flags
         run: |
-          brew update
-          brew install swiftlint || true
-
-      - name: Run SwiftLint (non-failing)
-        run: swiftlint lint || true
-
-      - name: Build
-        run: |
-          xcodebuild \
-            -project PayBack.xcodeproj \
-            -scheme PayBack \
-            -configuration Debug \
-            -destination "$SIMULATOR_DESTINATION" \
-            clean build | xcpretty
-        env:
-          NSUnbufferedIO: "YES"
+          if [ "${{ matrix.sanitizer }}" = "thread" ]; then
+            echo "sanitizer_flag=-enableThreadSanitizer YES" >> $GITHUB_OUTPUT
+            echo "coverage_flag=" >> $GITHUB_OUTPUT
+            echo "parallel_flag=-parallel-testing-enabled YES" >> $GITHUB_OUTPUT
+          elif [ "${{ matrix.sanitizer }}" = "address" ]; then
+            echo "sanitizer_flag=-enableAddressSanitizer YES" >> $GITHUB_OUTPUT
+            echo "coverage_flag=" >> $GITHUB_OUTPUT
+            echo "parallel_flag=-parallel-testing-enabled YES" >> $GITHUB_OUTPUT
+          else
+            echo "sanitizer_flag=" >> $GITHUB_OUTPUT
+            echo "coverage_flag=-enableCodeCoverage YES" >> $GITHUB_OUTPUT
+            echo "parallel_flag=-parallel-testing-enabled YES" >> $GITHUB_OUTPUT
+          fi
 
       - name: Clean Previous Test Results
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         run: |
           rm -rf TestResults.xcresult coverage.json coverage-report.txt || true
 
       - name: Run Unit Tests
+        if: matrix.run_on_pr == true || github.event_name == 'push'
         run: |
           set -o pipefail
           xcodebuild test \
@@ -219,16 +619,16 @@ jobs:
             -scheme PayBackTests \
             -configuration Debug \
             -destination "$SIMULATOR_DESTINATION" \
-            -parallel-testing-enabled NO \
-            -enableCodeCoverage YES \
+            ${{ steps.test-flags.outputs.parallel_flag }} \
             -resultBundlePath TestResults.xcresult \
-            | tee test-output.txt \
-            | xcpretty
+            ${{ steps.test-flags.outputs.sanitizer_flag }} \
+            ${{ steps.test-flags.outputs.coverage_flag }} \
+            2>&1 | tee test-output.txt
         env:
           NSUnbufferedIO: "YES"
 
       - name: Report Skipped Tests
-        if: always()
+        if: always() && (matrix.run_on_pr == true || github.event_name == 'push')
         run: |
           echo "## Skipped Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -250,6 +650,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Generate Coverage Report
+        if: matrix.sanitizer == 'none' && (matrix.run_on_pr == true || github.event_name == 'push')
         run: |
           if [ ! -d TestResults.xcresult ]; then
             echo "ERROR: TestResults.xcresult not found - tests likely did not run"
@@ -260,7 +661,7 @@ jobs:
             echo "Code Coverage: ${COVERAGE}%"
             echo "COVERAGE=${COVERAGE}" >> $GITHUB_ENV
             xcrun xccov view --report TestResults.xcresult > coverage-report.txt
-            
+
             echo "## Code Coverage Report" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Overall Coverage: ${COVERAGE}%**" >> $GITHUB_STEP_SUMMARY
@@ -276,30 +677,32 @@ jobs:
           fi
 
       - name: Check Coverage Threshold
+        if: matrix.sanitizer == 'none' && (matrix.run_on_pr == true || github.event_name == 'push')
         run: |
           THRESHOLD=48.0
           COVERAGE=${{ env.COVERAGE }}
           echo "Coverage: ${COVERAGE}%"
           echo "Threshold: ${THRESHOLD}%"
           if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
-            echo "❌ Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+            echo "Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
             exit 1
           else
-            echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+            echo "Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
           fi
 
       - name: Upload Test Results
-        if: always()
+        if: always() && (matrix.run_on_pr == true || github.event_name == 'push')
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-${{ matrix.sanitizer }}-${{ github.run_attempt }}
           path: TestResults.xcresult
           retention-days: 30
 
       - name: Upload Coverage Report
+        if: matrix.sanitizer == 'none' && (matrix.run_on_pr == true || github.event_name == 'push')
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-report-${{ github.run_attempt }}
           path: |
             coverage.json
             coverage-report.txt

@@ -2,15 +2,15 @@ import Foundation
 
 /// Service responsible for exporting app data to a portable text format
 struct DataExportService {
-    
+
     // MARK: - Export Format Constants
-    
+
     // Simplified header without version number as requested
     private static let headerMarker = "===PAYBACK_EXPORT==="
     private static let endMarker = "===END_PAYBACK_EXPORT==="
-    
+
     // MARK: - Public Methods
-    
+
     /// Exports all app data to a formatted text string
     /// - Parameters:
     ///   - groups: All spending groups
@@ -27,7 +27,7 @@ struct DataExportService {
         accountEmail: String
     ) -> String {
         var lines: [String] = []
-        
+
         // Header
         lines.append(headerMarker)
         lines.append("EXPORTED_AT: \(ISO8601DateFormatter().string(from: Date()))")
@@ -35,7 +35,7 @@ struct DataExportService {
         lines.append("CURRENT_USER_ID: \(currentUser.id.uuidString)")
         lines.append("CURRENT_USER_NAME: \(escapeCSV(currentUser.name))")
         lines.append("")
-        
+
         // Friends section
         lines.append("[FRIENDS]")
         lines.append("# member_id,name,nickname,has_linked_account,linked_account_id,linked_account_email,profile_image_url,profile_avatar_color,status")
@@ -54,7 +54,7 @@ struct DataExportService {
             lines.append(row)
         }
         lines.append("")
-        
+
         // Groups section
         lines.append("[GROUPS]")
         lines.append("# group_id,name,is_direct,is_debug,created_at,member_count")
@@ -70,7 +70,7 @@ struct DataExportService {
             lines.append(row)
         }
         lines.append("")
-        
+
         // Group members section (separate for easier parsing)
         lines.append("[GROUP_MEMBERS]")
         lines.append("# group_id,member_id,member_name,profile_image_url,profile_avatar_color")
@@ -87,7 +87,7 @@ struct DataExportService {
             }
         }
         lines.append("")
-        
+
         // Expenses section
         lines.append("[EXPENSES]")
         lines.append("# expense_id,group_id,description,date,total_amount,paid_by_member_id,is_settled,is_debug")
@@ -105,7 +105,7 @@ struct DataExportService {
             lines.append(row)
         }
         lines.append("")
-        
+
         // Expense involved members section
         lines.append("[EXPENSE_INVOLVED_MEMBERS]")
         lines.append("# expense_id,member_id")
@@ -119,7 +119,7 @@ struct DataExportService {
             }
         }
         lines.append("")
-        
+
         // Expense splits section
         lines.append("[EXPENSE_SPLITS]")
         lines.append("# expense_id,split_id,member_id,amount,is_settled")
@@ -139,7 +139,7 @@ struct DataExportService {
             }
         }
         lines.append("")
-        
+
         // Expense subexpenses section
         lines.append("[EXPENSE_SUBEXPENSES]")
         lines.append("# expense_id,subexpense_id,amount")
@@ -159,7 +159,7 @@ struct DataExportService {
             }
         }
         lines.append("")
-        
+
         // Participant names section (for display name cache)
         lines.append("[PARTICIPANT_NAMES]")
         lines.append("# expense_id,member_id,display_name")
@@ -176,20 +176,20 @@ struct DataExportService {
             }
         }
         lines.append("")
-        
+
         // Footer
         lines.append(endMarker)
-        
+
         return lines.joined(separator: "\n")
     }
-    
+
     /// Converts export text to CSV file data
     /// - Parameter exportText: The formatted export text
     /// - Returns: Data suitable for writing to a .csv file
     static func formatAsCSV(exportText: String) -> Data {
         return exportText.data(using: .utf8) ?? Data()
     }
-    
+
     /// Generates a suggested filename for the export
     /// - Returns: A filename with timestamp
     static func suggestedFilename() -> String {
@@ -198,9 +198,9 @@ struct DataExportService {
         let timestamp = formatter.string(from: Date())
         return "PayBack_Export_\(timestamp).csv"
     }
-    
+
     // MARK: - Private Helpers
-    
+
     /// Escapes special characters for CSV format
     private static func escapeCSV(_ value: String) -> String {
         var escaped = value

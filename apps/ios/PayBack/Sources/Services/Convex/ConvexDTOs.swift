@@ -1,3 +1,4 @@
+// swiftlint:disable identifier_name
 import Foundation
 
 // MARK: - Expense DTOs
@@ -19,7 +20,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
     let participant_member_ids: [String]?
     let participants: [ConvexParticipantDTO]?
     let subexpenses: [ConvexSubexpenseDTO]?
-    
+
     init(
         id: String,
         group_id: String,
@@ -51,7 +52,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
         self.participants = participants
         self.subexpenses = subexpenses
     }
-    
+
     /// Maps Convex DTO to domain Expense model
     func toExpense() -> Expense {
         func buildParticipantNamesMap() -> [UUID: String]? {
@@ -66,9 +67,9 @@ struct ConvexExpenseDTO: Decodable, Sendable {
             }
             return map.isEmpty ? nil : map
         }
-        
+
         let participantNames = buildParticipantNamesMap()
-        
+
         return Expense(
             id: UUID(uuidString: id) ?? UUID(),
             groupId: UUID(uuidString: group_id) ?? UUID(),
@@ -91,7 +92,7 @@ struct ConvexSplitDTO: Decodable, Sendable {
     let member_id: String
     let amount: Double
     let is_settled: Bool
-    
+
     /// Maps to domain ExpenseSplit
     func toExpenseSplit() -> ExpenseSplit {
         ExpenseSplit(
@@ -109,14 +110,14 @@ struct ConvexParticipantDTO: Decodable, Sendable {
     let name: String
     let linked_account_id: String?
     let linked_account_email: String?
-    
+
     init(member_id: String, name: String, linked_account_id: String?, linked_account_email: String?) {
         self.member_id = member_id
         self.name = name
         self.linked_account_id = linked_account_id
         self.linked_account_email = linked_account_email
     }
-    
+
     /// Maps to domain ExpenseParticipant
     func toExpenseParticipant() -> ExpenseParticipant {
         ExpenseParticipant(
@@ -132,7 +133,7 @@ struct ConvexParticipantDTO: Decodable, Sendable {
 struct ConvexSubexpenseDTO: Decodable, Sendable {
     let id: String
     let amount: Double
-    
+
     /// Maps to domain Subexpense
     func toSubexpense() -> Subexpense {
         Subexpense(
@@ -165,14 +166,14 @@ struct ConvexGroupDTO: Decodable, Sendable {
     let is_direct: Bool?
     let is_payback_generated_mock_data: Bool?
     var _id: String? = nil // Convex document ID (e.g., "jd7..." format)
-    
+
     /// Maps Convex DTO to domain SpendingGroup
     func toSpendingGroup() -> SpendingGroup? {
         guard let id = UUID(uuidString: id) else { return nil }
         let createdAt = Date(timeIntervalSince1970: created_at / 1000)
-        
+
         let members = members.compactMap { $0.toGroupMember() }
-        
+
         return SpendingGroup(
             id: id,
             name: name,
@@ -205,7 +206,7 @@ struct ConvexGroupMemberDTO: Decodable, Sendable {
         self.profile_avatar_color = profile_avatar_color
         self.is_current_user = is_current_user
     }
-    
+
     /// Maps to domain GroupMember
     func toGroupMember() -> GroupMember? {
         guard let id = UUID(uuidString: id) else { return nil }
@@ -402,7 +403,7 @@ struct ConvexLinkRequestDTO: Decodable, Sendable {
     let created_at: Double
     let expires_at: Double
     let rejected_at: Double?
-    
+
     /// Maps to domain LinkRequest
     func toLinkRequest() -> LinkRequest? {
         guard let id = UUID(uuidString: id),
@@ -410,7 +411,7 @@ struct ConvexLinkRequestDTO: Decodable, Sendable {
               let status = LinkRequestStatus(rawValue: status) else {
             return nil
         }
-        
+
         return LinkRequest(
             id: id,
             requesterId: requester_id,
@@ -442,14 +443,14 @@ struct ConvexInviteTokenDTO: Decodable, Sendable {
     let expires_at: Double
     let claimed_by: String?
     let claimed_at: Double?
-    
+
     /// Maps to domain InviteToken
     func toInviteToken() -> InviteToken? {
         guard let id = UUID(uuidString: id),
               let targetMemberId = UUID(uuidString: target_member_id) else {
             return nil
         }
-        
+
         return InviteToken(
             id: id,
             creatorId: creator_id,
@@ -491,7 +492,7 @@ struct ConvexLinkAcceptResultDTO: Decodable, Sendable {
     let linked_account_email: String
     private let _linked_member_id: String?
     private let member_id: String?
-    
+
     enum CodingKeys: String, CodingKey {
         case contract_version
         case target_member_id
@@ -502,15 +503,15 @@ struct ConvexLinkAcceptResultDTO: Decodable, Sendable {
         case _linked_member_id = "linked_member_id"
         case member_id
     }
-    
+
     var linked_member_id: String {
         return canonical_member_id ?? member_id ?? _linked_member_id ?? ""
     }
-    
+
     var resolved_target_member_id: String {
         return target_member_id ?? linked_member_id
     }
-    
+
     var resolved_contract_version: Int {
         return contract_version ?? 1
     }

@@ -10,7 +10,7 @@ import Foundation
 public protocol ConvexClientWrapper: Sendable {
     /// Subscribe to a query and get streaming values
     func subscribe<T: Decodable>(to query: String, yielding type: T.Type) -> AsyncThrowingStream<T, Error>
-    
+
     /// Execute a mutation
     func mutation(_ name: String, with args: [String: ConvexEncodable?]) async throws
 }
@@ -20,11 +20,11 @@ public protocol ConvexClientWrapper: Sendable {
 /// Production wrapper that uses the actual ConvexClient
 public final class RealConvexClientWrapper: ConvexClientWrapper, @unchecked Sendable {
     private let client: ConvexClient
-    
+
     public init(client: ConvexClient) {
         self.client = client
     }
-    
+
     public func subscribe<T: Decodable>(to query: String, yielding type: T.Type) -> AsyncThrowingStream<T, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -39,7 +39,7 @@ public final class RealConvexClientWrapper: ConvexClientWrapper, @unchecked Send
             }
         }
     }
-    
+
     public func mutation(_ name: String, with args: [String: ConvexEncodable?]) async throws {
         _ = try await client.mutation(name, with: args) as Any
     }
@@ -50,50 +50,50 @@ public final class RealConvexClientWrapper: ConvexClientWrapper, @unchecked Send
 #if DEBUG
 /// Mock implementation for unit testing
 public final class MockConvexClientWrapper: ConvexClientWrapper, @unchecked Sendable {
-    
+
     // MARK: - Configurable Responses
-    
+
     /// Subscription responses keyed by query name
     public var subscriptionResponses: [String: Any] = [:]
-    
+
     /// Errors to throw for subscriptions
     public var subscriptionErrors: [String: Error] = [:]
-    
+
     /// Errors to throw for mutations
     public var mutationErrors: [String: Error] = [:]
-    
+
     /// Record of mutation calls for verification
     public private(set) var mutationCalls: [(name: String, args: [String: ConvexEncodable?])] = []
-    
+
     /// Record of subscription calls
     public private(set) var subscriptionCalls: [(query: String, type: String)] = []
-    
+
     public init() {}
-    
+
     public func subscribe<T: Decodable>(to query: String, yielding type: T.Type) -> AsyncThrowingStream<T, Error> {
         subscriptionCalls.append((query, String(describing: type)))
-        
+
         return AsyncThrowingStream { continuation in
             if let error = self.subscriptionErrors[query] {
                 continuation.finish(throwing: error)
                 return
             }
-            
+
             if let response = self.subscriptionResponses[query] as? T {
                 continuation.yield(response)
             }
             continuation.finish()
         }
     }
-    
+
     public func mutation(_ name: String, with args: [String: ConvexEncodable?]) async throws {
         mutationCalls.append((name, args))
-        
+
         if let error = mutationErrors[name] {
             throw error
         }
     }
-    
+
     /// Reset all recorded calls
     public func reset() {
         mutationCalls.removeAll()
@@ -107,7 +107,7 @@ public final class MockConvexClientWrapper: ConvexClientWrapper, @unchecked Send
 /// Pure functions for building Convex mutation arguments
 /// Extracted for testability - no SDK dependencies
 enum ExpenseArgumentBuilder {
-    
+
     /// Build split arguments from ExpenseSplits
     static func buildSplitArgs(from splits: [ExpenseSplit]) -> [[String: Any]] {
         splits.map { split in
@@ -119,7 +119,7 @@ enum ExpenseArgumentBuilder {
             ]
         }
     }
-    
+
     /// Build participant arguments from ExpenseParticipants
     static func buildParticipantArgs(from participants: [ExpenseParticipant]) -> [[String: Any?]] {
         participants.map { p in
@@ -131,7 +131,7 @@ enum ExpenseArgumentBuilder {
             ]
         }
     }
-    
+
     /// Build subexpense arguments
     static func buildSubexpenseArgs(from subexpenses: [Subexpense]?) -> [[String: Any]]? {
         subexpenses?.map { sub in
@@ -141,7 +141,7 @@ enum ExpenseArgumentBuilder {
             ]
         }
     }
-    
+
     /// Build complete expense mutation arguments
     static func buildExpenseArgs(
         expense: Expense,
@@ -160,18 +160,18 @@ enum ExpenseArgumentBuilder {
             "participant_member_ids": participants.map { $0.memberId.uuidString },
             "participants": buildParticipantArgs(from: participants)
         ]
-        
+
         if let subArgs = buildSubexpenseArgs(from: expense.subexpenses) {
             args["subexpenses"] = subArgs
         }
-        
+
         return args
     }
-    
+
     /// Validate expense arguments before sending
     static func validateExpenseArgs(_ args: [String: Any?]) -> [String] {
         var errors: [String] = []
-        
+
         if args["id"] == nil {
             errors.append("Missing expense ID")
         }
@@ -184,7 +184,7 @@ enum ExpenseArgumentBuilder {
         if let amount = args["total_amount"] as? Double, amount < 0 {
             errors.append("Negative total amount")
         }
-        
+
         return errors
     }
 }
@@ -195,7 +195,7 @@ enum ExpenseArgumentBuilder {
 
 /// Pure functions for building group mutation arguments
 enum GroupArgumentBuilder {
-    
+
     /// Build member arguments from GroupMembers
     static func buildMemberArgs(from members: [GroupMember]) -> [[String: String]] {
         members.map { member in
@@ -205,7 +205,7 @@ enum GroupArgumentBuilder {
             ]
         }
     }
-    
+
     /// Build complete group mutation arguments
     static func buildGroupArgs(group: SpendingGroup) -> [String: Any?] {
         [
@@ -223,7 +223,7 @@ enum GroupArgumentBuilder {
 
 /// Pure functions for building account mutation arguments
 enum AccountArgumentBuilder {
-    
+
     /// Build friend arguments
     static func buildFriendArgs(from friend: AccountFriend) -> [String: Any?] {
         [
@@ -235,7 +235,7 @@ enum AccountArgumentBuilder {
             "linked_account_email": friend.linkedAccountEmail
         ]
     }
-    
+
     /// Build bulk friend update arguments
     static func buildBulkFriendArgs(from friends: [AccountFriend]) -> [[String: Any?]] {
         friends.map { buildFriendArgs(from: $0) }

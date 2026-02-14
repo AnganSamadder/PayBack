@@ -2,20 +2,20 @@ import SwiftUI
 
 struct ImportResolutionView: View {
     @Environment(\.dismiss) private var dismiss
-    
+
     let conflicts: [ImportConflict]
     let onResolve: ([UUID: ImportResolution]) -> Void
     let onCancel: () -> Void
-    
+
     @State private var resolutions: [UUID: ImportResolution] = [:]
     // Track unique names for "Apply to All" functionality
     @State private var uniqueNames: Set<String> = []
-    
+
     init(conflicts: [ImportConflict], onResolve: @escaping ([UUID: ImportResolution]) -> Void, onCancel: @escaping () -> Void) {
         self.conflicts = conflicts
         self.onResolve = onResolve
         self.onCancel = onCancel
-        
+
         // Initialize with default (Link to Existing)
         var initialResolutions: [UUID: ImportResolution] = [:]
         var names: Set<String> = []
@@ -26,7 +26,7 @@ struct ImportResolutionView: View {
         _resolutions = State(initialValue: initialResolutions)
         _uniqueNames = State(initialValue: names)
     }
-    
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -34,7 +34,7 @@ struct ImportResolutionView: View {
                 VStack(spacing: 8) {
                     Text("Duplicate Friends Found")
                         .font(.system(.headline, design: .rounded, weight: .bold))
-                    
+
                     Text("We found friends in the import that match your existing contacts. Review and link them to avoid duplicates.")
                         .font(.system(.subheadline, design: .rounded))
                         .foregroundStyle(.secondary)
@@ -42,7 +42,7 @@ struct ImportResolutionView: View {
                         .padding(.horizontal)
                 }
                 .padding(.vertical, 24)
-                
+
                 // Conflicts List
                 ScrollView {
                     VStack(spacing: 16) {
@@ -58,11 +58,11 @@ struct ImportResolutionView: View {
                     }
                     .padding()
                 }
-                
+
                 // Footer Actions
                 VStack(spacing: 16) {
                     Divider()
-                    
+
                     Button(action: {
                         onResolve(resolutions)
                     }) {
@@ -91,14 +91,14 @@ struct ImportResolutionView: View {
             .background(AppTheme.background.ignoresSafeArea())
         }
     }
-    
+
     private func binding(for id: UUID) -> Binding<ImportResolution> {
         Binding(
             get: { resolutions[id] ?? .createNew },
             set: { resolutions[id] = $0 }
         )
     }
-    
+
     private func applyToAll(name: String, resolution: ImportResolution) {
         for conflict in conflicts where conflict.importName == name {
             // Need to construct the correct resolution for each specific conflict if it's .linkToExisting
@@ -118,28 +118,28 @@ struct ConflictRow: View {
     let conflict: ImportConflict
     @Binding var resolution: ImportResolution
     let onApplyToAll: (ImportResolution) -> Void
-    
+
     var isLinked: Bool {
         if case .linkToExisting = resolution { return true }
         return false
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Header: Name and Conflict Info
             HStack {
                 Text(conflict.importName)
                     .font(.system(.headline, design: .rounded, weight: .bold))
-                
+
                 Spacer()
-                
+
                 Menu {
                     Button {
                         onApplyToAll(.linkToExisting(conflict.existingFriend.memberId))
                     } label: {
                         Label("Link All '\(conflict.importName)'", systemImage: "link")
                     }
-                    
+
                     Button {
                         onApplyToAll(.createNew)
                     } label: {
@@ -152,7 +152,7 @@ struct ConflictRow: View {
                         .foregroundStyle(AppTheme.brand)
                 }
             }
-            
+
             // Comparison Card
             HStack(spacing: 0) {
                 // Existing Friend Option
@@ -170,11 +170,11 @@ struct ConflictRow: View {
                             Circle()
                                 .stroke(AppTheme.brand, lineWidth: isLinked ? 3 : 0)
                         )
-                        
+
                         Text("Existing")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        
+
                         if isLinked {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(AppTheme.brand)
@@ -190,10 +190,10 @@ struct ConflictRow: View {
                     .background(isLinked ? AppTheme.brand.opacity(0.1) : Color.clear)
                 }
                 .buttonStyle(.plain)
-                
+
                 Divider()
                     .frame(height: 60)
-                
+
                 // New Friend Option
                 Button {
                     resolution = .createNew
@@ -209,11 +209,11 @@ struct ConflictRow: View {
                             Circle()
                                 .stroke(AppTheme.brand, lineWidth: !isLinked ? 3 : 0)
                         )
-                        
+
                         Text("New (Import)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        
+
                         if !isLinked {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(AppTheme.brand)

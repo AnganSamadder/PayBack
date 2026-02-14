@@ -114,6 +114,7 @@ Artifacts/
 
 # Sisyphus
 .sisyphus/
+.sis
 
 # Local build/deploy caches
 .turbo/
@@ -134,15 +135,16 @@ node_modules/
 scripts/node_modules/
 bun.lock
 
-# Local web sandbox artifacts
-apps/web/
+# Monorepo build artifacts
+apps/web/playwright-report/
+apps/web/test-results/
+apps/web/dist/
 
 # XcodeGen
 *.xcodeproj
 *.xcworkspace
 
 # Xcode/SwiftPM local checkouts (Xcode-managed, generated locally)
-Packages/
 LocalPackages/
 
 # Local agent artifacts

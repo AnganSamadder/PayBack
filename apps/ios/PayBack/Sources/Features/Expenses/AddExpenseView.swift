@@ -6,9 +6,9 @@ enum SplitMode: String, CaseIterable, Identifiable {
     case shares = "Shares"
     case itemized = "Receipt"
     case manual = "Manual"
-    
+
     var id: String { rawValue }
-    
+
     var icon: String {
         switch self {
         case .equal: return "equal"
@@ -18,7 +18,7 @@ enum SplitMode: String, CaseIterable, Identifiable {
         case .manual: return "pencil"
         }
     }
-    
+
     var shortLabel: String {
         switch self {
         case .equal: return "="
@@ -46,7 +46,7 @@ struct AddExpenseView: View {
     @State private var mode: SplitMode = .equal
     @State private var percents: [UUID: Double] = [:]
     @State private var manualAmounts: [UUID: Double] = [:]
-    
+
     // Advanced split mode state
     @State private var shares: [UUID: Int] = [:]
     @State private var adjustments: [UUID: Double] = [:]
@@ -55,11 +55,11 @@ struct AddExpenseView: View {
     @State private var itemizedTax: Double = 0
     @State private var itemizedTip: Double = 0
     @State private var autoDistributeTaxTip: Bool = true
-    
+
     // Subexpenses state
     @State private var subexpenses: [Subexpense] = []
     @State private var showSubexpenses: Bool = false
-    
+
     @State private var showNotesSheet: Bool = false
     @State private var showSaveConfirm: Bool = false
 
@@ -133,14 +133,14 @@ struct AddExpenseView: View {
     private func computedSplits() -> [ExpenseSplit] {
         let ids = participants.map(\.id)
         guard !ids.isEmpty, totalAmount > 0 else { return [] }
-        
+
         var baseSplits: [ExpenseSplit]
-        
+
         switch mode {
         case .equal:
             let each = totalAmount / Double(ids.count)
             baseSplits = ids.map { ExpenseSplit(memberId: $0, amount: each) }
-            
+
         case .percent:
             let totalPercent = ids.reduce(0) { $0 + (percents[$1] ?? 0) }
             guard totalPercent > 0 else { return [] }
@@ -148,7 +148,7 @@ struct AddExpenseView: View {
                 let pct = (percents[id] ?? 0) / totalPercent
                 return ExpenseSplit(memberId: id, amount: totalAmount * pct)
             }
-            
+
         case .shares:
             let totalShares = ids.reduce(0) { $0 + (shares[$1] ?? 1) }
             guard totalShares > 0 else { return [] }
@@ -157,24 +157,24 @@ struct AddExpenseView: View {
                 let portion = memberShares / Double(totalShares)
                 return ExpenseSplit(memberId: id, amount: totalAmount * portion)
             }
-            
+
         case .itemized:
             // Always distribute fees proportionally (taxTipsFees = total - itemsSubtotal)
             let userItemsTotal = ids.reduce(0.0) { $0 + (itemizedAmounts[$1] ?? 0) }
             guard userItemsTotal > 0 else { return [] }
-            
+
             // Derived fees = total - sum of item inputs
             let derivedFees = totalAmount - userItemsTotal
-            
+
             baseSplits = ids.map { id in
                 let userItems = itemizedAmounts[id] ?? 0
                 // Always distribute fees proportionally based on user's items
                 let proportion = userItems / userItemsTotal
                 let finalAmount = userItems + (proportion * derivedFees)
-                
+
                 return ExpenseSplit(memberId: id, amount: finalAmount)
             }
-            
+
         case .manual:
             let amounts = ids.map { manualAmounts[$0] ?? 0 }
             let sum = amounts.reduce(0, +)
@@ -185,7 +185,7 @@ struct AddExpenseView: View {
                 return ExpenseSplit(memberId: id, amount: totalAmount * portion)
             }
         }
-        
+
         // Apply adjustments on top of base splits (available for all modes except itemized)
         if mode != .itemized {
             baseSplits = baseSplits.map { split in
@@ -198,7 +198,7 @@ struct AddExpenseView: View {
                 )
             }
         }
-        
+
         return baseSplits
     }
 
@@ -221,7 +221,7 @@ struct AddExpenseView: View {
                 abs(e.totalAmount - totalAmount) < 0.01 &&
                 abs(e.date.timeIntervalSince(date)) < 3600 // within 1 hour
             }
-            
+
             if existing != nil {
                 Haptics.notify(.warning)
                 showExactDupeWarning = true
@@ -247,9 +247,9 @@ struct AddExpenseView: View {
     private func close() {
         if let onClose { onClose() } else { dismiss() }
     }
-    
+
     // MARK: - View Components
-    
+
     private func mainContent(geometry: GeometryProxy) -> some View {
         VStack(spacing: AppMetrics.AddExpense.verticalStackSpacing) {
             // Empty content for now
@@ -258,7 +258,7 @@ struct AddExpenseView: View {
             expensePanel(geometry: geometry)
         }
     }
-    
+
     private func expensePanel(geometry: GeometryProxy) -> some View {
         VStack {
             topBar
@@ -269,7 +269,7 @@ struct AddExpenseView: View {
         .background(AppTheme.addExpenseBackground)
         .cornerRadius(AppMetrics.deviceCornerRadius(for: geometry.safeAreaInsets.top))
     }
-    
+
     private var topBar: some View {
         HStack {
             Button(action: { close() }) {
@@ -289,11 +289,11 @@ struct AddExpenseView: View {
         .padding(.top, 60) // Status bar area
         .padding(.bottom, 20)
     }
-    
+
                  private var mainExpenseContent: some View {
                  VStack(spacing: AppMetrics.AddExpense.verticalStackSpacing) {
                      Spacer()
-                     
+
                      Text("Add Expense")
                          .font(.system(size: AppMetrics.headerTitleFontSize, weight: .bold))
                          .foregroundStyle(AppTheme.addExpenseTextColor)
@@ -337,9 +337,9 @@ struct AddExpenseView: View {
                  .frame(maxWidth: .infinity)
                  .padding(.horizontal)
              }
-    
+
     // MARK: - Gesture Handling
-    
+
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 10)
             .onChanged { value in
@@ -391,19 +391,19 @@ private struct AmountField: View {
     private func updateAmount(_ newValue: String) {
         // Extract only digits
         let digits = newValue.filter { $0.isNumber }
-        
+
         // Convert to integer (cents)
         guard let cents = Int(digits) else {
             displayText = "0.00"
             text = "0"
             return
         }
-        
+
         // Format and update
         displayText = formatCents(cents)
         text = String(format: "%.2f", Double(cents) / 100.0)
     }
-    
+
     private func formatCents(_ cents: Int) -> String {
         let dollars = cents / 100
         let remainingCents = cents % 100
@@ -502,7 +502,7 @@ private struct CenterEntryBubble: View {
                         let firstSub = Subexpense(amount: currentAmount)
                         let secondSub = Subexpense(amount: 0) // Empty slot for next entry
                         subexpenses = [firstSub, secondSub]
-                        
+
                         withAnimation(AppAnimation.springy) {
                             showSubexpenses = true
                         }
@@ -570,7 +570,7 @@ private struct SubexpensesEditor: View {
     @Binding var amountText: String
     let currency: String
     var focusedId: FocusState<UUID?>.Binding
-    
+
     var body: some View {
         VStack(spacing: 8) {
             // Flexible container that grows
@@ -590,7 +590,7 @@ private struct SubexpensesEditor: View {
                                 onNext: {
                                     // Only allow Next if current box has a value
                                     guard sub.amount > 0 else { return }
-                                    
+
                                     // Find current index
                                     if let index = subexpenses.firstIndex(where: { $0.id == sub.id }) {
                                         if index < subexpenses.count - 1 {
@@ -628,18 +628,18 @@ private struct SubexpensesEditor: View {
            // Instead we rely on specific triggers like onSubmit and Focus loss
         }
     }
-    
+
     private func addNewSubexpense(scrollProxy: ScrollViewProxy?, shouldFocus: Bool = true) {
         let newSub = Subexpense(amount: 0)
         withAnimation(AppAnimation.springy) {
             subexpenses.append(newSub)
         }
-        
+
         if shouldFocus {
             // Set focus immediately
             focusedId.wrappedValue = newSub.id
         }
-        
+
         // Scroll to new item after a brief delay to let view update
         if let proxy = scrollProxy {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -649,7 +649,7 @@ private struct SubexpensesEditor: View {
             }
         }
     }
-    
+
     private func ensureEmptySlotAtEnd(scrollProxy: ScrollViewProxy?) {
         if let last = subexpenses.last, last.amount > 0 {
             // Don't focus when adding slot on focus lost - just create the slot
@@ -668,12 +668,12 @@ private struct SubexpenseRow: View {
     let onDelete: () -> Void
     let onNext: () -> Void
     let onFocusLost: () -> Void
-    
+
     // Computed property to check if this row is focused
     private var isThisRowFocused: Bool {
         focusedId.wrappedValue == subexpense.id
     }
-    
+
     var body: some View {
         HStack(spacing: 12) {
             // Amount field - Sleek full width look
@@ -681,7 +681,7 @@ private struct SubexpenseRow: View {
                 Text(CurrencySymbol.symbol(for: currency))
                     .font(.system(.body, design: .rounded))
                     .foregroundStyle(.secondary)
-                
+
                 // Smart Currency Input for Subexpense - using UUID-based focus
                 SmartCurrencyField(
                     amount: $subexpense.amount,
@@ -690,9 +690,9 @@ private struct SubexpenseRow: View {
                     focusedId: focusedId,
                     myId: subexpense.id
                 )
-                
+
                 Spacer()
-                
+
                 // Delete button - sleek and themed
                 if isThisRowFocused || subexpense.amount > 0 {
                     Button(action: onDelete) {
@@ -717,9 +717,9 @@ private struct SubexpenseRow: View {
                     Button("Done") {
                         focusedId.wrappedValue = nil
                     }
-                    
+
                     Spacer()
-                    
+
                     Button("Next") {
                         onNext()
                     }
@@ -965,7 +965,7 @@ private struct SplitDetailView: View {
     @Binding var itemizedTax: Double
     @Binding var itemizedTip: Double
     @Binding var autoDistributeTaxTip: Bool
-    
+
     @State private var showAdjustments: Bool = false
 
     var body: some View {
@@ -977,7 +977,7 @@ private struct SplitDetailView: View {
                         .font(.headline)
                         .foregroundStyle(.primary)
                         .padding(.horizontal, 20)
-                    
+
                     if group.members.count <= 3 {
                         // List layout for 2-3 people
                         VStack(spacing: 8) {
@@ -1022,19 +1022,19 @@ private struct SplitDetailView: View {
                         .padding(.horizontal, 20)
                     }
                 }
-                
+
                 // Split Mode Section
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Split Mode")
                         .font(.headline)
                         .foregroundStyle(.primary)
                         .padding(.horizontal, 20)
-                    
+
                     VStack(spacing: 12) {
                         // Mode Picker with custom selector
                         SplitModeSelector(selectedMode: $mode)
                             .padding(.horizontal, 20)
-                        
+
                         // Split Details
                         VStack(spacing: 8) {
                             switch mode {
@@ -1082,7 +1082,7 @@ private struct ParticipantRow: View {
     let member: GroupMember
     let isSelected: Bool
     let onToggle: (Bool) -> Void
-    
+
     var body: some View {
         Button(action: { onToggle(!isSelected) }) {
             HStack(spacing: 12) {
@@ -1095,14 +1095,14 @@ private struct ParticipantRow: View {
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(isSelected ? .white : .primary)
                     )
-                
+
                 // Name
                 Text(member.name)
                     .font(.body)
                     .foregroundStyle(.primary)
-                
+
                 Spacer()
-                
+
                 // Checkmark
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
@@ -1129,7 +1129,7 @@ private struct ParticipantGridItem: View {
     let member: GroupMember
     let isSelected: Bool
     let onToggle: (Bool) -> Void
-    
+
     var body: some View {
         Button(action: { onToggle(!isSelected) }) {
             VStack(spacing: 8) {
@@ -1143,7 +1143,7 @@ private struct ParticipantGridItem: View {
                             .foregroundStyle(isSelected ? .white : .primary)
                     )
 
-                
+
                 // Name
                 Text(member.name)
                     .font(.caption)
@@ -1220,7 +1220,7 @@ private struct BottomMetaBubble: View {
 private struct NotesEditor: View {
     @Environment(\.dismiss) var dismiss
     @State private var text: String = ""
-    
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -1238,7 +1238,7 @@ private struct NotesEditor: View {
                         .fill(AppTheme.card.opacity(0.3))
                         .frame(height: 60)
                 )
-                
+
                 // Notes Input
                 TextEditor(text: $text)
                     .frame(maxHeight: .infinity)
@@ -1274,7 +1274,7 @@ private struct NotesEditor: View {
 // MARK: - Split Mode Selector
 private struct SplitModeSelector: View {
     @Binding var selectedMode: SplitMode
-    
+
     var body: some View {
         HStack(spacing: 8) {
             ForEach(SplitMode.allCases) { mode in
@@ -1297,7 +1297,7 @@ private struct SplitModeButton: View {
     let mode: SplitMode
     let isSelected: Bool
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 4) {
@@ -1398,7 +1398,7 @@ private struct EqualSplitView: View {
                         .fontWeight(.medium)
                 }
             }
-            
+
             AdjustmentsSection(
                 participants: participants,
                 adjustments: $adjustments,
@@ -1438,25 +1438,25 @@ private struct PercentSplitView: View {
                     }
                 }
             }
-            
+
             let totalPercent = participants.reduce(0) { $0 + (percents[$1.id] ?? 0) }
             let computed = participants.map { id in
                 (percents[id.id] ?? 0) / max(totalPercent, 1) * total + (adjustments[id.id] ?? 0)
             }.reduce(0, +)
-            
+
             HStack {
                 Text("Total Percent")
                 Spacer()
                 Text("\(totalPercent, specifier: "%.0f")%")
                     .foregroundStyle(abs(totalPercent - 100) < 0.01 ? .green : .orange)
             }
-            
+
             HStack {
                 Text("Allocated")
                 Spacer()
                 Text(computed, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
             }
-            
+
             AdjustmentsSection(
                 participants: participants,
                 adjustments: $adjustments,
@@ -1509,7 +1509,7 @@ private struct ManualSplitView: View {
                 Text(total - sum, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                     .foregroundStyle((total - sum).magnitude < AppMetrics.AddExpense.balanceTolerance ? .green : .orange)
             }
-            
+
             AdjustmentsSection(
                 participants: participants,
                 adjustments: $adjustments,
@@ -1526,11 +1526,11 @@ private struct SharesSplitView: View {
     @Binding var shares: [UUID: Int]
     @Binding var adjustments: [UUID: Double]
     @Binding var showAdjustments: Bool
-    
+
     private var totalShares: Int {
         participants.reduce(0) { $0 + (shares[$1.id] ?? 1) }
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(participants) { p in
@@ -1539,13 +1539,13 @@ private struct SharesSplitView: View {
                 let baseAmount = total * portion
                 let adjustment = adjustments[p.id] ?? 0
                 let finalAmount = baseAmount + adjustment
-                
+
                 VStack(spacing: 6) {
                     HStack {
                         Text(p.name)
                             .fontWeight(.medium)
                         Spacer()
-                        
+
                         // Stepper for shares
                         HStack(spacing: 12) {
                             Button {
@@ -1560,11 +1560,11 @@ private struct SharesSplitView: View {
                                     .foregroundStyle((shares[p.id] ?? 1) > 0 ? AppTheme.brand : .secondary)
                             }
                             .disabled((shares[p.id] ?? 1) <= 0)
-                            
+
                             Text("\(memberShares)")
                                 .font(.system(size: 18, weight: .bold, design: .rounded))
                                 .frame(minWidth: 30)
-                            
+
                             Button {
                                 let current = shares[p.id] ?? 1
                                 shares[p.id] = current + 1
@@ -1576,7 +1576,7 @@ private struct SharesSplitView: View {
                             }
                         }
                     }
-                    
+
                     // Portion bar
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
@@ -1589,7 +1589,7 @@ private struct SharesSplitView: View {
                         }
                     }
                     .frame(height: 8)
-                    
+
                     HStack {
                         Text("\(Int(portion * 100))% of total")
                             .font(.caption)
@@ -1606,16 +1606,16 @@ private struct SharesSplitView: View {
                 }
                 .padding(.vertical, 4)
             }
-            
+
             Divider()
-            
+
             HStack {
                 Text("Total Shares")
                 Spacer()
                 Text("\(totalShares)")
                     .fontWeight(.bold)
             }
-            
+
             AdjustmentsSection(
                 participants: participants,
                 adjustments: $adjustments,
@@ -1634,24 +1634,24 @@ private struct ItemizedSplitView: View {
     @Binding var tax: Double
     @Binding var tip: Double
     @Binding var autoDistributeTaxTip: Bool
-    
+
     /// Computed subtotal from sum of all item inputs
     private var itemsSubtotal: Double {
         participants.reduce(0) { $0 + (itemizedAmounts[$1.id] ?? 0) }
     }
-    
+
     /// Derived "Tax, Tips, & Fees" = total - itemsSubtotal
     private var taxTipsFees: Double {
         total - itemsSubtotal
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             // Section: Each Person's Items
             Text("Each Person's Items")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
-            
+
             ForEach(participants) { p in
                 HStack {
                     Text(p.name)
@@ -1674,9 +1674,9 @@ private struct ItemizedSplitView: View {
                     )
                 }
             }
-            
+
             Divider()
-            
+
             // Section: Subtotal (read-only, derived from items)
             HStack {
                 Text("Subtotal")
@@ -1685,7 +1685,7 @@ private struct ItemizedSplitView: View {
                 Text(itemsSubtotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                     .fontWeight(.medium)
             }
-            
+
             // Section: Tax, Tips, & Fees (read-only, derived)
             HStack {
                 Text("Tax, Tips, & Fees")
@@ -1695,7 +1695,7 @@ private struct ItemizedSplitView: View {
                     .fontWeight(.medium)
                     .foregroundStyle(taxTipsFees < 0 ? .red : .primary)
             }
-            
+
             // Warning if items exceed total
             if taxTipsFees < 0 {
                 HStack {
@@ -1709,20 +1709,20 @@ private struct ItemizedSplitView: View {
                         .foregroundStyle(.orange)
                 }
             }
-            
+
             Divider()
-            
+
             // Section: Preview (Smartly Distributed) - always shown
             Text("Preview (Smartly Distributed)")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
-            
+
             ForEach(participants) { p in
                 let userItems = itemizedAmounts[p.id] ?? 0
                 let proportion = itemsSubtotal > 0 ? userItems / itemsSubtotal : 0
                 let feesShare = proportion * taxTipsFees
                 let finalAmount = userItems + feesShare
-                
+
                 ItemizedPreviewRow(
                     name: p.name,
                     userItems: userItems,
@@ -1732,9 +1732,9 @@ private struct ItemizedSplitView: View {
                     isNegativeFees: taxTipsFees < 0
                 )
             }
-            
+
             Divider()
-            
+
             // Grand Total confirmation
             HStack {
                 Text("Grand Total")
@@ -1766,11 +1766,11 @@ private struct ItemizedPreviewRow: View {
     let finalAmount: Double
     let showDetails: Bool
     let isNegativeFees: Bool
-    
+
     private var currencyCode: String {
         Locale.current.currency?.identifier ?? "USD"
     }
-    
+
     var body: some View {
         VStack(spacing: 4) {
             HStack {
@@ -1781,7 +1781,7 @@ private struct ItemizedPreviewRow: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(AppTheme.brand)
             }
-            
+
             if showDetails {
                 HStack {
                     Text("Items: \(userItems.formatted(.currency(code: currencyCode)))")
@@ -1804,12 +1804,12 @@ private struct AdjustmentsSection: View {
     let participants: [GroupMember]
     @Binding var adjustments: [UUID: Double]
     @Binding var showAdjustments: Bool
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
                 .padding(.vertical, 4)
-            
+
             Button {
                 withAnimation(AppAnimation.springy) {
                     showAdjustments.toggle()
@@ -1831,19 +1831,19 @@ private struct AdjustmentsSection: View {
                 }
             }
             .buttonStyle(.plain)
-            
+
             if showAdjustments {
                 VStack(spacing: 8) {
                     Text("Add/subtract amounts for specific people")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
+
                     ForEach(participants) { p in
                         HStack {
                             Text(p.name)
                                 .font(.subheadline)
                             Spacer()
-                            
+
                             HStack(spacing: 8) {
                                 Button {
                                     let current = adjustments[p.id] ?? 0
@@ -1853,7 +1853,7 @@ private struct AdjustmentsSection: View {
                                     Image(systemName: "minus.circle")
                                         .foregroundStyle(.red)
                                 }
-                                
+
                                 TextField("0", value: Binding(
                                     get: { adjustments[p.id] ?? 0 },
                                     set: { adjustments[p.id] = $0 }
@@ -1867,7 +1867,7 @@ private struct AdjustmentsSection: View {
                                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                                         .fill(AppTheme.card)
                                 )
-                                
+
                                 Button {
                                     let current = adjustments[p.id] ?? 0
                                     adjustments[p.id] = current + 1
@@ -1879,7 +1879,7 @@ private struct AdjustmentsSection: View {
                             }
                         }
                     }
-                    
+
                     if !adjustments.isEmpty {
                         Button {
                             withAnimation(AppAnimation.springy) {

@@ -84,10 +84,10 @@ public enum PayBackError: Error, Sendable, Equatable {
     case linkAccountAlreadyLinked
 
     // MARK: - Auth Errors Extension
-    
+
     /// Password is too weak
     case authWeakPassword
-    
+
     /// Email address has not been confirmed yet
     case authEmailNotConfirmed(email: String)
 

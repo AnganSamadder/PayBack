@@ -5,7 +5,7 @@ public struct EmailAuthSignInResult: Sendable {
     let email: String
     let firstName: String?
     let lastName: String?
-    
+
     var displayName: String {
         [firstName, lastName].compactMap { $0 }.joined(separator: " ")
     }
@@ -29,18 +29,18 @@ protocol EmailAuthService: Sendable {
 final class MockEmailAuthService: EmailAuthService, @unchecked Sendable {
     private var users: [String: (password: String, firstName: String, lastName: String?)] = [:]
     private let lock = NSLock()
-    
+
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
         return try lock.withLock {
             let normalizedEmail = email.lowercased()
             guard let user = users[normalizedEmail] else {
                 throw PayBackError.authInvalidCredentials(message: "Invalid credentials")
             }
-            
+
             guard user.password == password else {
                 throw PayBackError.authInvalidCredentials(message: "Invalid credentials")
             }
-            
+
             return EmailAuthSignInResult(
                 uid: UUID().uuidString,
                 email: normalizedEmail,
@@ -49,21 +49,21 @@ final class MockEmailAuthService: EmailAuthService, @unchecked Sendable {
             )
         }
     }
-    
+
     func signUp(email: String, password: String, firstName: String, lastName: String?) async throws -> SignUpResult {
         return try lock.withLock {
             let normalizedEmail = email.lowercased()
             if users[normalizedEmail] != nil {
                 throw PayBackError.accountDuplicate(email: normalizedEmail)
             }
-            
+
             // Basic validation to match tests
             if password == "weak" || password.count < 6 {
                 throw PayBackError.authWeakPassword
             }
-            
+
             users[normalizedEmail] = (password, firstName, lastName)
-            
+
             let result = EmailAuthSignInResult(
                 uid: UUID().uuidString,
                 email: normalizedEmail,
@@ -73,11 +73,11 @@ final class MockEmailAuthService: EmailAuthService, @unchecked Sendable {
             return .complete(result)
         }
     }
-    
+
     func verifyCode(code: String) async throws -> EmailAuthSignInResult {
         return EmailAuthSignInResult(uid: UUID().uuidString, email: "mock@example.com", firstName: "Mock", lastName: "User")
     }
-    
+
     func sendPasswordReset(email: String) async throws {
         try lock.withLock {
              let normalizedEmail = email.lowercased()
@@ -86,11 +86,11 @@ final class MockEmailAuthService: EmailAuthService, @unchecked Sendable {
              }
         }
     }
-    
+
     func resendConfirmationEmail(email: String) async throws {
         // No-op
     }
-    
+
     func signOut() async throws {
         // No-op
     }

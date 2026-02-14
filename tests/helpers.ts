@@ -15,7 +15,7 @@ export const createMockUser = async (
   const authenticated = t.withIdentity({
     email,
     name,
-    subject,
+    subject
   });
 
   await authenticated.mutation(api.users.store, {});
@@ -41,15 +41,15 @@ export const createMockGroup = async (
   const members = overrides?.members ?? [
     {
       id: "member-1",
-      name: "Member 1",
-    },
+      name: "Member 1"
+    }
   ];
 
   return await t.mutation(api.groups.create, {
     name,
     members,
     id: overrides?.id,
-    is_direct: overrides?.is_direct,
+    is_direct: overrides?.is_direct
   });
 };
 
@@ -77,8 +77,8 @@ export const createMockExpense = async (
     participants: [
       {
         member_id: "member-1",
-        name: "Member 1",
-      },
+        name: "Member 1"
+      }
     ],
     participant_member_ids: ["member-1"],
     splits: [
@@ -86,9 +86,9 @@ export const createMockExpense = async (
         id: "split-1",
         member_id: "member-1",
         amount: total_amount,
-        is_settled: false,
-      },
+        is_settled: false
+      }
     ],
-    is_settled: false,
+    is_settled: false
   });
 };

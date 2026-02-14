@@ -6,7 +6,7 @@ struct GroupsTabView: View {
     @Binding var selectedRootTab: Int
     var rootResetToken: UUID = UUID()
     @State private var showCreateGroup = false
-    
+
     var body: some View {
         NavigationStack(path: $path) {
             homeContent
@@ -62,7 +62,7 @@ struct GroupsTabView: View {
             .toolbar(path.isEmpty ? .hidden : .visible, for: .navigationBar)
         }
     }
-    
+
     @ViewBuilder
     private var homeContent: some View {
         ZStack(alignment: .topLeading) {
@@ -83,7 +83,7 @@ struct GroupsTabView: View {
                         }
 
                     Spacer()
-                    
+
                     Button(action: {
                         showCreateGroup = true
                     }) {
@@ -108,7 +108,7 @@ struct GroupsTabView: View {
                 .environmentObject(store)
         }
     }
-    
+
     private func handleDoubleTap() {
         // Double-tap on Groups title switches to Friends tab
         withAnimation(.easeInOut(duration: 0.3)) {

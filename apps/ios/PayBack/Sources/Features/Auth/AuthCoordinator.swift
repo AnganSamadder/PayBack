@@ -19,7 +19,7 @@ final class AuthCoordinator: ObservableObject {
     private let accountService: AccountService
     private let emailAuthService: EmailAuthService
     private let store: AppStore
-    
+
     /// Stores the display name during signup flow for use after verification
     private var pendingDisplayName: String = ""
 
@@ -70,12 +70,12 @@ final class AuthCoordinator: ObservableObject {
         await runBusyTask {
             do {
                 let result = try await self.store.signup(
-                    email: emailInput, 
-                    firstName: firstName, 
-                    lastName: lastName, 
+                    email: emailInput,
+                    firstName: firstName,
+                    lastName: lastName,
                     password: password
                 )
-                
+
                 switch result {
                 case .needsVerification(let email):
                     // Store display name for later and show verification screen
@@ -84,9 +84,9 @@ final class AuthCoordinator: ObservableObject {
                     self.pendingDisplayName = [firstNameTrimmed, lastNameTrimmed]
                         .compactMap { $0 }
                         .joined(separator: " ")
-                        
+
                     self.route = .verification(email: email, displayName: self.pendingDisplayName)
-                    
+
                 case .complete(_):
                     // Auto-login logic inside store handles session setup, we just update route
                     // We need to fetch the account to populate UserSession
@@ -110,7 +110,7 @@ final class AuthCoordinator: ObservableObject {
             }
         }
     }
-    
+
     func verifyCode(_ code: String) async {
         await runBusyTask {
             do {
@@ -121,10 +121,10 @@ final class AuthCoordinator: ObservableObject {
             }
         }
     }
-    
+
     func resendVerificationCode() async {
         guard case .verification(let email, _) = route else { return }
-        
+
         await runBusyTask(allowsConcurrent: true) {
             do {
                 try await self.emailAuthService.resendConfirmationEmail(email: email)
@@ -149,7 +149,7 @@ final class AuthCoordinator: ObservableObject {
 
     func resendConfirmationEmail() async {
         guard let email = unconfirmedEmail else { return }
-        
+
         await runBusyTask(allowsConcurrent: true) {
             do {
                 try await self.emailAuthService.resendConfirmationEmail(email: email)

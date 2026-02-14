@@ -3,17 +3,17 @@ import SwiftUI
 struct MergeFriendsView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    
+
     @State private var friendA: AccountFriend?
     @State private var friendB: AccountFriend?
     @State private var showConfirmation = false
     @State private var isLoading = false
-    
+
     var unlinkedFriends: [AccountFriend] {
         store.friends.filter { !$0.hasLinkedAccount }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
-    
+
     var body: some View {
         Form {
             Section {
@@ -21,7 +21,7 @@ struct MergeFriendsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            
+
             Section("Select Friends") {
                 Picker("Merge From (Remove)", selection: $friendA) {
                     Text("Select Friend").tag(Optional<AccountFriend>.none)
@@ -31,7 +31,7 @@ struct MergeFriendsView: View {
                         }
                     }
                 }
-                
+
                 Picker("Merge Into (Keep)", selection: $friendB) {
                     Text("Select Friend").tag(Optional<AccountFriend>.none)
                     ForEach(unlinkedFriends) { friend in
@@ -41,21 +41,21 @@ struct MergeFriendsView: View {
                     }
                 }
             }
-            
+
             if let a = friendA, let b = friendB, a.memberId != b.memberId {
                 Section("Preview") {
                     LabeledContent("Merge From", value: a.name)
                     LabeledContent("Merge Into", value: b.name)
-                    
+
                     let expensesA = countExpenses(for: a.memberId)
                     let expensesB = countExpenses(for: b.memberId)
-                    
+
                     LabeledContent("Combined Expenses", value: "\(expensesA + expensesB)")
-                    
+
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
-                        
+
                         VStack(alignment: .leading, spacing: 4) {
                             Text("This action cannot be undone")
                                 .font(.headline)
@@ -66,7 +66,7 @@ struct MergeFriendsView: View {
                     }
                     .padding(.vertical, 4)
                 }
-                
+
                 Section {
                     Button(role: .destructive) {
                         showConfirmation = true
@@ -97,18 +97,18 @@ struct MergeFriendsView: View {
             Text("This will move all data from \(friendA?.name ?? "Friend A") to \(friendB?.name ?? "Friend B"). This cannot be undone.")
         }
     }
-    
+
     private func countExpenses(for memberId: UUID) -> Int {
         store.expenses.filter { expense in
             expense.paidByMemberId == memberId || expense.involvedMemberIds.contains(memberId)
         }.count
     }
-    
+
     private func performMerge() {
         guard let a = friendA, let b = friendB else { return }
-        
+
         isLoading = true
-        
+
         Task {
             do {
                 try await store.mergeFriend(unlinkedMemberId: a.memberId, into: b.memberId)

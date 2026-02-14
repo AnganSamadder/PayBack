@@ -1,3 +1,4 @@
+// swiftlint:disable for_where line_length
 import Foundation
 @testable import PayBack
 
@@ -7,19 +8,19 @@ actor MockAccountServiceForAppStore: AccountService {
     private var friends: [String: [AccountFriend]] = [:] // email -> friends
     private var friendSyncHistory: [String: [[AccountFriend]]] = [:] // email -> sync snapshots
     private var shouldFail: Bool = false
-    
+
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return trimmed
     }
-    
+
     func lookupAccount(byEmail email: String) async throws -> UserAccount? {
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
         return accounts[email.lowercased()]
     }
-    
+
     func createAccount(email: String, displayName: String) async throws -> UserAccount {
         if shouldFail {
             throw PayBackError.networkUnavailable
@@ -28,7 +29,7 @@ actor MockAccountServiceForAppStore: AccountService {
         accounts[email.lowercased()] = account
         return account
     }
-    
+
     func updateLinkedMember(accountId: String, memberId: UUID?) async throws {
         if shouldFail {
             throw PayBackError.networkUnavailable
@@ -42,7 +43,7 @@ actor MockAccountServiceForAppStore: AccountService {
             }
         }
     }
-    
+
     func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {
         if shouldFail {
             throw PayBackError.networkUnavailable
@@ -51,14 +52,14 @@ actor MockAccountServiceForAppStore: AccountService {
         self.friends[normalizedEmail] = friends
         friendSyncHistory[normalizedEmail, default: []].append(friends)
     }
-    
+
     func fetchFriends(accountEmail: String) async throws -> [AccountFriend] {
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
         return friends[accountEmail.lowercased()] ?? []
     }
-    
+
     func updateFriendLinkStatus(
         accountEmail: String,
         memberId: UUID,
@@ -68,7 +69,7 @@ actor MockAccountServiceForAppStore: AccountService {
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
-        
+
         var currentFriends = friends[accountEmail.lowercased()] ?? []
         if let index = currentFriends.firstIndex(where: { $0.memberId == memberId }) {
             var friend = currentFriends[index]
@@ -79,16 +80,16 @@ actor MockAccountServiceForAppStore: AccountService {
         }
         friends[accountEmail.lowercased()] = currentFriends
     }
-    
+
     // Test helpers
     func addAccount(_ account: UserAccount) {
         accounts[account.email.lowercased()] = account
     }
-    
+
     func setShouldFail(_ fail: Bool) {
         shouldFail = fail
     }
-    
+
     func reset() {
         accounts.removeAll()
         friends.removeAll()
@@ -99,7 +100,7 @@ actor MockAccountServiceForAppStore: AccountService {
     func latestSyncedFriends(accountEmail: String) -> [AccountFriend]? {
         friendSyncHistory[accountEmail.lowercased()]?.last
     }
-    
+
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
         if shouldFail { throw PayBackError.networkUnavailable }
         return imageUrl
@@ -108,22 +109,22 @@ actor MockAccountServiceForAppStore: AccountService {
     func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws {
         if shouldFail { throw PayBackError.networkUnavailable }
     }
-    
+
     func uploadProfileImage(_ data: Data) async throws -> String {
         if shouldFail { throw PayBackError.networkUnavailable }
         return "https://example.com/mock.jpg"
     }
-    
+
     func checkAuthentication() async throws -> Bool {
         if shouldFail { throw PayBackError.networkUnavailable }
         return true
     }
-    
+
     func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
         if shouldFail { throw PayBackError.networkUnavailable }
         // No-op for mock
     }
-    
+
     func deleteLinkedFriend(memberId: UUID) async throws {
         if shouldFail { throw PayBackError.networkUnavailable }
         for (email, var friendList) in friends {
@@ -133,7 +134,7 @@ actor MockAccountServiceForAppStore: AccountService {
             }
         }
     }
-    
+
     func deleteUnlinkedFriend(memberId: UUID) async throws {
         if shouldFail { throw PayBackError.networkUnavailable }
         for (email, var friendList) in friends {
@@ -143,7 +144,7 @@ actor MockAccountServiceForAppStore: AccountService {
             }
         }
     }
-    
+
     func selfDeleteAccount() async throws {
         if shouldFail { throw PayBackError.networkUnavailable }
         // Mock implementation: could remove the account from internal storage if we tracked "current user",
@@ -176,12 +177,12 @@ actor MockAccountServiceForAppStore: AccountService {
     func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {
         if shouldFail { throw PayBackError.networkUnavailable }
     }
-    
+
     func validateAccountIds(_ ids: [String]) async throws -> Set<String> {
         if shouldFail { throw PayBackError.networkUnavailable }
         return Set(ids)
     }
-    
+
     func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
         if shouldFail { throw PayBackError.networkUnavailable }
         return [:]

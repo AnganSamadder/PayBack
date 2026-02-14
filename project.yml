@@ -288,14 +288,14 @@ targets:
       - name: Convex Backend Sync
         basedOnDependencyAnalysis: true
         inputFiles:
-          - $(SRCROOT)/convex/schema.ts
-          - $(SRCROOT)/convex/auth.config.ts
-          - $(SRCROOT)/convex/expenses.ts
-          - $(SRCROOT)/convex/friends.ts
-          - $(SRCROOT)/convex/groups.ts
-          - $(SRCROOT)/convex/inviteTokens.ts
-          - $(SRCROOT)/convex/linkRequests.ts
-          - $(SRCROOT)/convex/users.ts
+          - $(SRCROOT)/apps/backend/convex/schema.ts
+          - $(SRCROOT)/apps/backend/convex/auth.config.ts
+          - $(SRCROOT)/apps/backend/convex/expenses.ts
+          - $(SRCROOT)/apps/backend/convex/friends.ts
+          - $(SRCROOT)/apps/backend/convex/groups.ts
+          - $(SRCROOT)/apps/backend/convex/inviteTokens.ts
+          - $(SRCROOT)/apps/backend/convex/linkRequests.ts
+          - $(SRCROOT)/apps/backend/convex/users.ts
         outputFiles:
           - $(DERIVED_FILE_DIR)/convex_sync_timestamp
         script: |
@@ -325,7 +325,7 @@ targets:
 
           export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
 
-          # Try to find npx via nvm (local dev) or Homebrew (XcodeCloud)
+          # Try to find bunx/npx via nvm (local dev) or Homebrew (XcodeCloud)
           export NVM_DIR="$HOME/.nvm"
           if [ -s "$NVM_DIR/nvm.sh" ]; then
             . "$NVM_DIR/nvm.sh"
@@ -336,12 +336,16 @@ targets:
             fi
           fi
 
-          if command -v npx >/dev/null 2>&1; then
+          if command -v bunx >/dev/null 2>&1; then
             echo "Deploying Convex backend..."
-            npx convex deploy -y --cmd 'echo "Backend deploy successful"'
+            bunx convex deploy -y --cmd 'echo "Backend deploy successful"'
+            touch "$DERIVED_FILE_DIR/convex_sync_timestamp"
+          elif command -v npx >/dev/null 2>&1; then
+            echo "Deploying Convex backend..."
+            npx convex deploy -y --cmd 'echo \"Backend deploy successful\"'
             touch "$DERIVED_FILE_DIR/convex_sync_timestamp"
           else
-            echo "error: npx not found in PATH. Cannot deploy Convex backend."
+            echo "error: bunx and npx not found in PATH. Cannot deploy Convex backend."
             echo "PATH: $PATH"
             exit 1
           fi

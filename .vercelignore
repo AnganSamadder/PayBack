@@ -1,0 +1,11 @@
+node_modules
+.git
+.turbo
+apps/backend
+apps/android
+apps/web/dist
+apps/web/node_modules
+*.xcodeproj
+*.xcworkspace
+Pods
+.build

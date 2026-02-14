@@ -83,10 +83,16 @@ test("groups:listPaginated pagination with limit 5 and 10", async () => {
   expect(result5.items).toHaveLength(5);
   expect(result5.nextCursor).not.toBeNull();
 
-  const result5_p2 = await t.query(api.groups.listPaginated, { cursor: result5.nextCursor, limit: 5 });
+  const result5_p2 = await t.query(api.groups.listPaginated, {
+    cursor: result5.nextCursor,
+    limit: 5
+  });
   expect(result5_p2.items).toHaveLength(5);
-  
-  const result5_p3 = await t.query(api.groups.listPaginated, { cursor: result5_p2.nextCursor, limit: 5 });
+
+  const result5_p3 = await t.query(api.groups.listPaginated, {
+    cursor: result5_p2.nextCursor,
+    limit: 5
+  });
   expect(result5_p3.items).toHaveLength(0);
   expect(result5_p3.nextCursor).toBeNull();
 
@@ -104,8 +110,11 @@ test("groups:listPaginated cursor navigation across different limits", async () 
 
   const result1 = await t.query(api.groups.listPaginated, { limit: 3 });
   expect(result1.items).toHaveLength(3);
-  
-  const result2 = await t.query(api.groups.listPaginated, { cursor: result1.nextCursor, limit: 10 });
+
+  const result2 = await t.query(api.groups.listPaginated, {
+    cursor: result1.nextCursor,
+    limit: 10
+  });
   expect(result2.items).toHaveLength(7);
   expect(result2.nextCursor).toBeNull();
 });

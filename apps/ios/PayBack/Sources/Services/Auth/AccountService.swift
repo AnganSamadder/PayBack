@@ -13,42 +13,42 @@ protocol AccountService: Actor {
         linkedAccountId: String,
         linkedAccountEmail: String
     ) async throws
-    
+
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String?
     func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws
     func uploadProfileImage(_ data: Data) async throws -> String
-    
+
     /// Checks if the user is authenticated on the backend
     func checkAuthentication() async throws -> Bool
-    
+
     /// Merges two member IDs (e.g. merging a manual unlinked friend into a linked friend)
     func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws
-    
+
     /// Deletes a linked friend (removes link and 1:1 expenses, keeps account)
     func deleteLinkedFriend(memberId: UUID) async throws
-    
+
     /// Deletes an unlinked friend (removes entirely from groups and expenses)
     func deleteUnlinkedFriend(memberId: UUID) async throws
-    
+
     /// Deletes the current user's account (unlinks from friends, keeps expenses, signs out)
     func selfDeleteAccount() async throws
-    
+
     /// Monitors the current user's session status in real-time
     nonisolated func monitorSession() -> AsyncStream<UserAccount?>
-    
+
     // MARK: - Friend Requests
     func sendFriendRequest(email: String) async throws
     func acceptFriendRequest(requestId: String) async throws
     func rejectFriendRequest(requestId: String) async throws
     func listIncomingFriendRequests() async throws -> [IncomingFriendRequest]
-    
+
     /// Merges two unlinked friends (alias to alias)
     func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws
-    
+
     /// Validates which account IDs exist in the system
     /// Returns a set of valid account IDs
     func validateAccountIds(_ ids: [String]) async throws -> Set<String>
-    
+
     /// Resolves which member IDs have linked accounts (checking both current and historical UUIDs)
     /// Returns mapping of member ID -> (account ID, email)
     func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)]
@@ -117,7 +117,7 @@ actor MockAccountService: AccountService {
     func fetchFriends(accountEmail: String) async throws -> [AccountFriend] {
         friends[accountEmail] ?? []
     }
-    
+
     func updateFriendLinkStatus(
         accountEmail: String,
         memberId: UUID,
@@ -135,7 +135,7 @@ actor MockAccountService: AccountService {
             friends[accountEmail] = currentFriends
         }
     }
-    
+
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
         // Mock implementation
         return imageUrl
@@ -144,23 +144,23 @@ actor MockAccountService: AccountService {
     func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws {
         // Mock implementation
     }
-    
+
     func uploadProfileImage(_ data: Data) async throws -> String {
         // Mock implementation - return a fake URL
         return "https://mock.convex.cloud/storage/mock-id"
     }
-    
+
     func checkAuthentication() async throws -> Bool {
         return true
     }
-    
+
     func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
         // Mock implementation - no-op or simulate merge
         #if DEBUG
         print("[MockAccountService] Merging \(sourceId) into \(targetId)")
         #endif
     }
-    
+
     func deleteLinkedFriend(memberId: UUID) async throws {
         #if DEBUG
         print("[MockAccountService] deleteLinkedFriend \(memberId)")
@@ -173,7 +173,7 @@ actor MockAccountService: AccountService {
             }
         }
     }
-    
+
     func deleteUnlinkedFriend(memberId: UUID) async throws {
         #if DEBUG
         print("[MockAccountService] deleteUnlinkedFriend \(memberId)")
@@ -186,7 +186,7 @@ actor MockAccountService: AccountService {
             }
         }
     }
-    
+
     func selfDeleteAccount() async throws {
         #if DEBUG
         print("[MockAccountService] selfDeleteAccount")
@@ -194,7 +194,7 @@ actor MockAccountService: AccountService {
         // Mock implementation - remove current user from accounts
         // In a real mock, we might need to know WHO is calling, but for now just log it
     }
-    
+
     nonisolated func monitorSession() -> AsyncStream<UserAccount?> {
         AsyncStream { continuation in
             // Mock implementation: just finish immediately or yield current state if we tracked "currentUser"
@@ -202,31 +202,31 @@ actor MockAccountService: AccountService {
             continuation.finish()
         }
     }
-    
+
     func sendFriendRequest(email: String) async throws {
         // Mock
     }
-    
+
     func acceptFriendRequest(requestId: String) async throws {
         // Mock
     }
-    
+
     func rejectFriendRequest(requestId: String) async throws {
         // Mock
     }
-    
+
     func listIncomingFriendRequests() async throws -> [IncomingFriendRequest] {
         return []
     }
-    
+
     func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {
         // Mock
     }
-    
+
     func validateAccountIds(_ ids: [String]) async throws -> Set<String> {
         return Set(ids)
     }
-    
+
     func resolveLinkedAccountsForMemberIds(_ memberIds: [UUID]) async throws -> [UUID: (accountId: String, email: String)] {
         return [:]
     }

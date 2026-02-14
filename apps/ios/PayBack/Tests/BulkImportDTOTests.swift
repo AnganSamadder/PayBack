@@ -4,7 +4,7 @@ import XCTest
 @testable import PayBack
 
 final class BulkImportDTOTests: XCTestCase {
-    
+
     func testBulkFriendDTO_Encoding() throws {
         let friend = BulkFriendDTO(
             member_id: "member-1",
@@ -14,10 +14,10 @@ final class BulkImportDTOTests: XCTestCase {
             profile_image_url: "https://example.com/image.png",
             profile_avatar_color: "#FF5733"
         )
-        
+
         let data = try JSONEncoder().encode(friend)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        
+
         XCTAssertEqual(json["member_id"] as? String, "member-1")
         XCTAssertEqual(json["name"] as? String, "John Doe")
         XCTAssertEqual(json["nickname"] as? String, "Johnny")
@@ -25,25 +25,25 @@ final class BulkImportDTOTests: XCTestCase {
         XCTAssertEqual(json["profile_image_url"] as? String, "https://example.com/image.png")
         XCTAssertEqual(json["profile_avatar_color"] as? String, "#FF5733")
     }
-    
+
     func testBulkGroupDTO_Encoding() throws {
         let member = BulkGroupMemberDTO(id: "member-1", name: "John", profile_avatar_color: "#FF5733")
         let group = BulkGroupDTO(id: "group-1", name: "Trip", members: [member], is_direct: false)
-        
+
         let data = try JSONEncoder().encode(group)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        
+
         XCTAssertEqual(json["id"] as? String, "group-1")
         XCTAssertEqual(json["name"] as? String, "Trip")
         XCTAssertEqual(json["is_direct"] as? Bool, false)
-        
+
         let members = try XCTUnwrap(json["members"] as? [[String: Any]])
         XCTAssertEqual(members.count, 1)
         XCTAssertEqual(members[0]["id"] as? String, "member-1")
         XCTAssertEqual(members[0]["name"] as? String, "John")
         XCTAssertEqual(members[0]["profile_avatar_color"] as? String, "#FF5733")
     }
-    
+
     func testBulkExpenseDTO_Encoding() throws {
         let split = BulkSplitDTO(id: "split-1", member_id: "member-1", amount: 10.0, is_settled: false)
         let participant = BulkParticipantDTO(member_id: "member-1", name: "John")
@@ -62,10 +62,10 @@ final class BulkImportDTOTests: XCTestCase {
             participants: [participant],
             subexpenses: [subexpense]
         )
-        
+
         let data = try JSONEncoder().encode(expense)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        
+
         XCTAssertEqual(json["id"] as? String, "expense-1")
         XCTAssertEqual(json["group_id"] as? String, "group-1")
         XCTAssertEqual(json["description"] as? String, "Dinner")
@@ -75,7 +75,7 @@ final class BulkImportDTOTests: XCTestCase {
         XCTAssertEqual(json["is_settled"] as? Bool, false)
         XCTAssertEqual(json["involved_member_ids"] as? [String], ["member-1"])
         XCTAssertEqual(json["participant_member_ids"] as? [String], ["member-1"])
-        
+
         let splits = try XCTUnwrap(json["splits"] as? [[String: Any]])
         XCTAssertEqual(splits[0]["id"] as? String, "split-1")
         XCTAssertEqual(splits[0]["member_id"] as? String, "member-1")
@@ -85,7 +85,7 @@ final class BulkImportDTOTests: XCTestCase {
         let participants = try XCTUnwrap(json["participants"] as? [[String: Any]])
         XCTAssertEqual(participants[0]["member_id"] as? String, "member-1")
         XCTAssertEqual(participants[0]["name"] as? String, "John")
-        
+
         let subexpenses = try XCTUnwrap(json["subexpenses"] as? [[String: Any]])
         XCTAssertEqual(subexpenses[0]["id"] as? String, "sub-1")
         XCTAssertEqual(subexpenses[0]["amount"] as? Double, 5.0)

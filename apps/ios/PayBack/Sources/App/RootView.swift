@@ -4,7 +4,7 @@ import UIKit
 struct RootView: View {
     @EnvironmentObject var store: AppStore
     @Binding var pendingInviteToken: UUID?
-    
+
     @State private var tabNavigationState = TabNavigationState()
     @State private var showAddOverlay: Bool = false
     @State private var selectedGroupForNewExpense: SpendingGroup?
@@ -46,7 +46,7 @@ struct RootView: View {
                             Text("Groups")
                         }
                         .tag(RootTab.groups.rawValue)
-                    
+
                     // Tab 2: Empty spacer for FAB (invisible but takes space)
                     Color.clear
                         .tabItem {
@@ -110,7 +110,7 @@ struct RootView: View {
                     .zIndex(1)
             }
 
-            
+
 
             // AddExpenseView on top
             if let group = selectedGroupForNewExpense {
@@ -166,7 +166,7 @@ struct RootView: View {
                             let diagonal = sqrt(proxy.size.width * proxy.size.width + proxy.size.height * proxy.size.height)
                             let diameter = diagonal * 2.2
                             withAnimation(.spring(response: 0.8, dampingFraction: 0.8)) { circleSize = diameter }
-                            
+
                             // Hide circle after animation completes, with extra time for fade-out
                             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                                 showExpandingCircle = false
@@ -229,11 +229,11 @@ struct RootView: View {
                 #if DEBUG
                 print("[RootView] Handling pending invite token: \(tokenId)")
                 #endif
-                
+
                 // Set the token to show and present the sheet
                 inviteTokenToShow = tokenId
                 showInviteClaim = true
-                
+
                 // Clear the pending token
                 pendingInviteToken = nil
             }
@@ -244,7 +244,7 @@ struct RootView: View {
                 #if DEBUG
                 print("[RootView] Handling pending invite token on appear: \(tokenId)")
                 #endif
-                
+
                 inviteTokenToShow = tokenId
                 showInviteClaim = true
                 pendingInviteToken = nil

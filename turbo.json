@@ -1,0 +1,51 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "src/**",
+        "convex/**",
+        "public/**",
+        "index.html",
+        "vite.config.*",
+        "tsconfig*.json",
+        "package.json"
+      ],
+      "outputs": ["dist/**", "build/**"]
+    },
+    "lint": {
+      "inputs": ["src/**", "convex/**", "tests/**", "eslint.config.*", "package.json"],
+      "outputs": []
+    },
+    "lint:fix": {
+      "inputs": ["src/**", "convex/**", "tests/**", "eslint.config.*", "package.json"],
+      "cache": false
+    },
+    "typecheck": {
+      "inputs": ["src/**", "convex/**", "tests/**", "tsconfig*.json", "package.json"],
+      "outputs": []
+    },
+    "test": {
+      "inputs": ["src/**", "convex/**", "tests/**", "vitest.config.*", "package.json"],
+      "outputs": [],
+      "env": ["CI"]
+    },
+    "test:e2e": {
+      "dependsOn": ["build"],
+      "outputs": ["playwright-report/**", "test-results/**"],
+      "cache": false
+    },
+    "clean": {
+      "cache": false
+    },
+    "deploy": {
+      "dependsOn": ["build"],
+      "cache": false
+    }
+  }
+}

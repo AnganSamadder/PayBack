@@ -6,7 +6,7 @@ struct FriendDetailView: View {
     let friend: GroupMember
     let onBack: (() -> Void)?
     let onExpenseSelected: ((Expense) -> Void)?
-    
+
     @State private var selectedTab: FriendDetailTab = .direct
     @State private var showAddExpense = false
     @State private var isGeneratingInviteLink = false
@@ -28,17 +28,17 @@ struct FriendDetailView: View {
         self.onBack = onBack
         self.onExpenseSelected = onExpenseSelected
     }
-    
+
     enum FriendDetailTab: String, CaseIterable, Identifiable {
         case direct = "Direct"
         case groups = "Groups"
-        
+
         var id: String { rawValue }
     }
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
-    
+
     private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
     private func isFriend(_ memberId: UUID) -> Bool {
@@ -47,7 +47,7 @@ struct FriendDetailView: View {
 
     private var netBalance: Double {
         var balance: Double = 0
-        
+
         // Debug logging for troubleshooting
 
         // TODO: DATABASE_INTEGRATION - Replace store.groups with database query
@@ -74,15 +74,15 @@ struct FriendDetailView: View {
         }
         return balance
     }
-    
+
     private var isSettled: Bool {
         abs(netBalance) < 0.01
     }
-    
+
     private var isPositive: Bool {
         netBalance > 0.01
     }
-    
+
     private var balanceColor: Color {
         if isSettled {
             return AppTheme.brand
@@ -94,7 +94,7 @@ struct FriendDetailView: View {
             return .secondary // Settled up
         }
     }
-    
+
     private var balanceIcon: String {
         if isSettled {
             return "checkmark.circle.fill"
@@ -104,7 +104,7 @@ struct FriendDetailView: View {
             return "arrow.down.circle.fill"
         }
     }
-    
+
     private var balanceText: String {
         if isSettled {
             return "All settled"
@@ -114,7 +114,7 @@ struct FriendDetailView: View {
             return "You owe"
         }
     }
-    
+
     private var balanceAmount: String {
         if isSettled {
             return "$0"
@@ -122,25 +122,25 @@ struct FriendDetailView: View {
             return currencyPositive(netBalance)
         }
     }
-    
+
     // MARK: - Link Status Properties
-    
+
     private var isLinked: Bool {
         store.friendHasLinkedAccount(friend)
     }
-    
+
     private var linkedEmail: String? {
         store.linkedAccountEmail(for: friend)
     }
-    
+
     private var hasPendingOutgoingRequest: Bool {
         store.outgoingLinkRequests.contains { request in
             store.areSamePerson(request.targetMemberId, friend.id) && request.status == .pending
         }
     }
-    
+
     // MARK: - Nickname Properties
-    
+
     private var accountFriend: AccountFriend? {
         return store.friends.first { candidate in
             if store.areSamePerson(candidate.memberId, friend.id) { return true }
@@ -150,11 +150,11 @@ struct FriendDetailView: View {
             return false
         }
     }
-    
+
     private var isFriend: Bool {
         accountFriend != nil
     }
-    
+
     private var availableTabs: [FriendDetailTab] {
         if isFriend {
             return FriendDetailTab.allCases
@@ -162,11 +162,11 @@ struct FriendDetailView: View {
             return [.groups]
         }
     }
-    
+
     private var unlinkedFriends: [AccountFriend] {
         store.friends.filter { !$0.hasLinkedAccount }
     }
-    
+
     private var currentNickname: String? {
         sanitizedNickname(accountFriend?.nickname)
     }
@@ -203,7 +203,7 @@ struct FriendDetailView: View {
 
         return cleaned
     }
-    
+
     private var displayName: String {
         if isLinked {
             // For linked friends, show nickname if available, otherwise show account name
@@ -213,13 +213,13 @@ struct FriendDetailView: View {
             return friend.name
         }
     }
-    
+
     private var realName: String? {
         // Only return real name if linked and different from nickname
         guard isLinked else { return nil }
         return friend.name
     }
-    
+
     private var gradientColors: [Color] {
         if isSettled {
             return [
@@ -254,7 +254,7 @@ struct FriendDetailView: View {
             dismiss()
         }
     }
-    
+
     private var addFriendButtons: some View {
         VStack(spacing: 12) {
             Button(action: {
@@ -266,7 +266,7 @@ struct FriendDetailView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "person.badge.plus")
                         .font(.system(size: 16, weight: .semibold))
-                    
+
                     Text("Add Friend")
                         .font(.system(.body, design: .rounded, weight: .semibold))
                 }
@@ -279,7 +279,7 @@ struct FriendDetailView: View {
                 )
             }
             .buttonStyle(.plain)
-            
+
             if !unlinkedFriends.isEmpty {
                 Button(action: {
                     Haptics.selection()
@@ -288,7 +288,7 @@ struct FriendDetailView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "person.2.circle")
                             .font(.system(size: 16, weight: .semibold))
-                        
+
                         Text("Merge with Existing Friend")
                             .font(.system(.body, design: .rounded, weight: .semibold))
                     }
@@ -304,7 +304,7 @@ struct FriendDetailView: View {
             }
         }
     }
-    
+
     private var inviteLinkButton: some View {
         Button(action: {
             Haptics.selection()
@@ -321,7 +321,7 @@ struct FriendDetailView: View {
                     Image(systemName: "link.badge.plus")
                         .font(.system(size: 16, weight: .semibold))
                 }
-                
+
                 Text(isGeneratingInviteLink ? "Generating Link..." : "Send Invite Link")
                     .font(.system(.body, design: .rounded, weight: .semibold))
             }
@@ -338,7 +338,7 @@ struct FriendDetailView: View {
         .scaleEffect(isGeneratingInviteLink ? 0.98 : 1.0)
         .animation(AppAnimation.quick, value: isGeneratingInviteLink)
     }
-    
+
     private var cancelRequestButton: some View {
         Button(action: {
             Haptics.selection()
@@ -349,7 +349,7 @@ struct FriendDetailView: View {
             HStack(spacing: 8) {
                 Image(systemName: "xmark.circle")
                     .font(.system(size: 16, weight: .semibold))
-                
+
                 Text("Cancel Link Request")
                     .font(.system(.body, design: .rounded, weight: .semibold))
             }
@@ -367,13 +367,13 @@ struct FriendDetailView: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     private var successMessageView: some View {
         HStack(spacing: 8) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(.green)
-            
+
             Text("Invite link ready to share!")
                 .font(.system(.body, design: .rounded, weight: .medium))
                 .foregroundStyle(.primary)
@@ -390,16 +390,16 @@ struct FriendDetailView: View {
         )
         .transition(.scale.combined(with: .opacity))
     }
-    
+
     // MARK: - Link Status Badge
-    
+
     private var linkStatusBadge: some View {
         HStack(spacing: 6) {
             if isLinked {
                 Image(systemName: "link.circle.fill")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.green)
-                
+
                 if let email = linkedEmail {
                     Text(email)
                         .font(.system(.caption, design: .rounded, weight: .medium))
@@ -413,7 +413,7 @@ struct FriendDetailView: View {
                 Image(systemName: "clock.fill")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.orange)
-                
+
                 Text("Link Request Sent")
                     .font(.system(.caption, design: .rounded, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -421,7 +421,7 @@ struct FriendDetailView: View {
                 Image(systemName: "person.crop.circle.badge.questionmark")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.gray)
-                
+
                 Text("Unlinked")
                     .font(.system(.caption, design: .rounded, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -435,7 +435,7 @@ struct FriendDetailView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
                         .strokeBorder(
-                            isLinked ? Color.green.opacity(0.3) : 
+                            isLinked ? Color.green.opacity(0.3) :
                             hasPendingOutgoingRequest ? Color.orange.opacity(0.3) :
                             Color.gray.opacity(0.2),
                             lineWidth: 1.5
@@ -443,9 +443,9 @@ struct FriendDetailView: View {
                 )
         )
     }
-    
+
     // MARK: - Nickname Edit Sheet
-    
+
     private var nicknameEditSheet: some View {
         NavigationView {
             VStack(spacing: 20) {
@@ -453,7 +453,7 @@ struct FriendDetailView: View {
                     Text(isLinked ? "Nickname" : "Name")
                         .font(.system(.headline, design: .rounded, weight: .semibold))
                         .foregroundStyle(.primary)
-                    
+
                     if isLinked {
                         Text("Set a custom nickname for \(friend.name)")
                             .font(.system(.caption, design: .rounded))
@@ -465,11 +465,11 @@ struct FriendDetailView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                
+
                 TextField(isLinked ? "Enter nickname" : "Enter name", text: $nicknameText)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .rounded))
-                
+
                 if isLinked {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Display Preference")
@@ -484,7 +484,7 @@ struct FriendDetailView: View {
                         .pickerStyle(.segmented)
                     }
                 }
-                
+
                 if currentNickname != nil {
                     Button(action: {
                         Haptics.selection()
@@ -495,7 +495,7 @@ struct FriendDetailView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "xmark.circle")
                                 .font(.system(size: 16, weight: .semibold))
-                            
+
                             Text("Remove Nickname")
                                 .font(.system(.body, design: .rounded, weight: .semibold))
                         }
@@ -514,7 +514,7 @@ struct FriendDetailView: View {
                     .buttonStyle(.plain)
                     .disabled(isSavingNickname)
                 }
-                
+
                 Spacer()
             }
             .padding()
@@ -527,7 +527,7 @@ struct FriendDetailView: View {
                     }
                     .disabled(isSavingNickname)
                 }
-                
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         Haptics.selection()
@@ -541,7 +541,7 @@ struct FriendDetailView: View {
             }
         }
     }
-    
+
     private var mergeSheet: some View {
         NavigationStack {
             List(unlinkedFriends) { friend in
@@ -552,21 +552,21 @@ struct FriendDetailView: View {
                 } label: {
                     HStack(spacing: 12) {
                         AvatarView(name: friend.name, size: 40, colorHex: friend.profileColorHex)
-                        
+
                         VStack(alignment: .leading, spacing: 2) {
                             Text(friend.name)
                                 .font(.system(.body, design: .rounded, weight: .medium))
                                 .foregroundStyle(.primary)
-                            
+
                             if let nickname = friend.nickname {
                                 Text(nickname)
                                     .font(.system(.caption, design: .rounded))
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        
+
                         Spacer()
-                        
+
                         Image(systemName: "arrow.merge")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(AppTheme.brand)
@@ -586,20 +586,20 @@ struct FriendDetailView: View {
         }
         .presentationDetents([.medium, .large])
     }
-    
+
     // MARK: - Helper Functions
 
     private func currency(_ amount: Double) -> String {
         let id = Locale.current.currency?.identifier ?? "USD"
         return amount.formatted(.currency(code: id))
     }
-    
+
     private func currencyPositive(_ amount: Double) -> String {
         let id = Locale.current.currency?.identifier ?? "USD"
         let positiveAmount = abs(amount)
         return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
     }
-    
+
     private func saveNickname(_ nickname: String?, preferNickname: Bool, displayPreference: String? = nil) async {
         isSavingNickname = true
 
@@ -628,16 +628,16 @@ struct FriendDetailView: View {
             }
             return cleaned
         }()
-        
+
         do {
             try await store.updateFriendNickname(memberId: friend.id, nickname: normalizedNickname)
             try await store.updateFriendPreferNickname(memberId: friend.id, prefer: preferNickname)
             try await store.updateFriendDisplayPreference(memberId: friend.id, preference: displayPreference)
-            
+
             await MainActor.run {
                 // Trigger success haptic
                 Haptics.notify(.success)
-                
+
                 isSavingNickname = false
                 isEditingNickname = false
             }
@@ -645,14 +645,14 @@ struct FriendDetailView: View {
             await MainActor.run {
                 // Trigger error haptic
                 Haptics.notify(.error)
-                
+
                 self.linkError = .networkUnavailable
                 self.showErrorAlert = true
                 self.isSavingNickname = false
             }
         }
     }
-    
+
     private func addAsFriend() async {
         let newFriend = AccountFriend(
             memberId: friend.id,
@@ -666,7 +666,7 @@ struct FriendDetailView: View {
             Haptics.notify(.success)
         }
     }
-    
+
     private func mergeWithFriend(_ target: AccountFriend) async {
         showMergeSheet = false
         do {
@@ -763,45 +763,45 @@ struct FriendDetailView: View {
         } message: {
             let isLinked = store.friendHasLinkedAccount(friend)
             var message = ""
-            
+
             if isLinked {
                 message = "Remove \(displayName) as a friend? Their account will remain, but your 1:1 expenses will be deleted."
             } else {
                 message = "Delete \(displayName)? This will remove them from all your groups and expenses."
             }
-            
+
             if abs(netBalance) > 0.01 {
                 let currencyCode = Locale.current.currency?.identifier ?? "USD"
                 let formattedAmount = abs(netBalance).formatted(.currency(code: currencyCode))
                 message += "\n\n⚠️ You have unsettled expenses totaling \(formattedAmount). Deleting will remove these."
             }
-            
+
             return Text(message)
         }
     }
-    
+
     // MARK: - Invite Link Methods
-    
+
     private func generateInviteLink() async {
         isGeneratingInviteLink = true
         showSuccessMessage = false
-        
+
         do {
             let inviteLink = try await store.generateInviteLink(forFriend: friend)
-            
+
             await MainActor.run {
                 // Trigger success haptic
                 Haptics.notify(.success)
-                
+
                 self.inviteLinkToShare = inviteLink
                 self.isGeneratingInviteLink = false
-                
+
                 withAnimation(AppAnimation.springy) {
                     self.showSuccessMessage = true
                 }
-                
+
                 self.showShareSheet = true
-                
+
                 // Hide success message after 3 seconds
                 Task {
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -827,7 +827,7 @@ struct FriendDetailView: View {
             }
         }
     }
-    
+
     private func cancelLinkRequest() async {
         // Find the pending request for this friend
         guard let request = store.outgoingLinkRequests.first(where: {
@@ -835,10 +835,10 @@ struct FriendDetailView: View {
         }) else {
             return
         }
-        
+
         do {
             try await store.cancelLinkRequest(request)
-            
+
             await MainActor.run {
                 // Trigger selection haptic
                 Haptics.selection()
@@ -847,23 +847,23 @@ struct FriendDetailView: View {
             await MainActor.run {
                 // Trigger error haptic
                 Haptics.notify(.error)
-                
+
                 self.linkError = .networkUnavailable
                 self.showErrorAlert = true
             }
         }
     }
-    
 
-    
+
+
     // MARK: - Hero Balance Card
-    
+
     private var heroBalanceCard: some View {
         VStack(spacing: AppMetrics.FriendDetail.heroCardSpacing) {
             // Avatar and name
             VStack(spacing: AppMetrics.FriendDetail.avatarNameSpacing) {
                 AvatarView(name: friend.name, size: AppMetrics.FriendDetail.avatarSize, colorHex: friend.profileColorHex)
-                
+
                 // Name display with nickname support
                 VStack(spacing: 4) {
                     Text(accountFriend?.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames) ?? friend.name)
@@ -874,7 +874,7 @@ struct FriendDetailView: View {
                             .font(.system(.subheadline, design: .rounded, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
-                    
+
                     // Additional info: Original name (what you called them before linking)
                     if isLinked,
                        let originalName = accountFriend?.originalName,
@@ -884,7 +884,7 @@ struct FriendDetailView: View {
                             .font(.system(.caption, design: .rounded))
                             .foregroundStyle(.secondary.opacity(0.8))
                     }
-                    
+
                     // Additional info: Previous nickname (if changed)
                     if isLinked,
                        let originalNick = accountFriend?.originalNickname,
@@ -895,7 +895,7 @@ struct FriendDetailView: View {
                             .foregroundStyle(.secondary.opacity(0.8))
                     }
                 }
-                
+
                 // Nickname edit button
                 Button(action: {
                     Haptics.selection()
@@ -919,11 +919,11 @@ struct FriendDetailView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                
+
                 // Link status indicator
                 linkStatusBadge
             }
-            
+
                          // Balance display with gradient background
              VStack(spacing: AppMetrics.FriendDetail.balanceDisplaySpacing) {
                  if isSettled {
@@ -935,17 +935,17 @@ struct FriendDetailView: View {
                          Image(systemName: balanceIcon)
                              .font(.system(size: AppMetrics.FriendDetail.balanceIconSize, weight: .semibold))
                              .foregroundStyle(balanceColor)
-                         
+
                          VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.balanceTextSpacing) {
                              Text(balanceText)
                                  .font(.system(.body, design: .rounded, weight: .medium))
                                  .foregroundStyle(.primary)
-                             
+
                              Text(balanceAmount)
                                  .font(.system(.title, design: .rounded, weight: .bold))
                                  .foregroundStyle(balanceColor)
                          }
-                         
+
                          Spacer()
                      }
                  }
@@ -972,13 +972,13 @@ struct FriendDetailView: View {
                              )
                      )
              )
-             
+
              // Invite link button for unlinked friends
              if isFriend {
                  if !isLinked && !hasPendingOutgoingRequest {
                      inviteLinkButton
                  }
-                 
+
                  // Cancel request button for pending requests
                  if hasPendingOutgoingRequest {
                      cancelRequestButton
@@ -986,7 +986,7 @@ struct FriendDetailView: View {
              } else {
                  addFriendButtons
              }
-             
+
              // Success message
              if showSuccessMessage {
                  successMessageView
@@ -1023,9 +1023,9 @@ struct FriendDetailView: View {
         .shadow(color: AppTheme.brand.opacity(0.1), radius: AppMetrics.FriendDetail.heroCardShadowRadius, x: 0, y: AppMetrics.FriendDetail.heroCardShadowY)
           .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
     }
-    
+
     // MARK: - Tab Selector
-    
+
     private var tabSelector: some View {
         HStack(spacing: 8) {
             ForEach(availableTabs) { tab in
@@ -1057,9 +1057,9 @@ struct FriendDetailView: View {
         }
         .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
     }
-    
+
     // MARK: - Tab Content
-    
+
     @ViewBuilder
     private var tabContent: some View {
         switch selectedTab {
@@ -1077,12 +1077,12 @@ struct FriendDetailView: View {
                 ))
         }
     }
-    
+
         // MARK: - Helper Methods
-    
+
     private func getDirectGroup() -> SpendingGroup? {
         return store.groups.first { group in
-            (group.isDirect ?? false) && 
+            (group.isDirect ?? false) &&
             group.members.count == 2 &&
             group.members.contains(where: { isMe($0.id) }) &&
             group.members.contains(where: { isFriend($0.id) })
@@ -1125,7 +1125,7 @@ struct DirectExpensesView: View {
         // Example: SELECT * FROM expenses WHERE group_id = directGroup.id
         return store.expenses(in: directGroup.id)
     }
-    
+
     var body: some View {
         VStack(spacing: AppMetrics.FriendDetail.contentSpacing) {
             if directExpenses.isEmpty {
@@ -1142,10 +1142,10 @@ struct DirectExpensesView: View {
         .padding(.top, AppMetrics.FriendDetail.contentTopPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-    
+
     private func getDirectGroup() -> SpendingGroup? {
         return store.groups.first { group in
-            (group.isDirect ?? false) && 
+            (group.isDirect ?? false) &&
             group.members.count == 2 &&
             group.members.contains(where: { isMe($0.id) }) &&
             group.members.contains(where: { isFriend($0.id) })
@@ -1164,7 +1164,7 @@ struct GroupExpensesView: View {
         self.friend = friend
         self.onExpenseTap = onExpenseTap
     }
-    
+
     private var groupExpenses: [SpendingGroup: [Expense]] {
         var result: [SpendingGroup: [Expense]] = [:]
 
@@ -1180,8 +1180,8 @@ struct GroupExpensesView: View {
         // Example: SELECT * FROM groups WHERE member_ids CONTAINS friend.id AND is_direct = false
         for group in store.groups {
             // Skip direct groups - those are handled separately
-            guard !(group.isDirect ?? false) else { 
-                continue 
+            guard !(group.isDirect ?? false) else {
+                continue
             }
 
             guard group.members.contains(where: { isFriend($0.id) }) else { continue }
@@ -1200,7 +1200,7 @@ struct GroupExpensesView: View {
 
         return result
     }
-    
+
     var body: some View {
         VStack(spacing: AppMetrics.FriendDetail.contentSpacing) {
             if groupExpenses.isEmpty {
@@ -1341,7 +1341,7 @@ struct DirectExpenseCard: View {
         let id = Locale.current.currency?.identifier ?? "USD"
         return amount.formatted(.currency(code: id))
     }
-    
+
     private func currencyPositive(_ amount: Double) -> String {
         let id = Locale.current.currency?.identifier ?? "USD"
         let positiveAmount = abs(amount)
@@ -1498,7 +1498,7 @@ struct GroupExpenseRow: View {
         let id = Locale.current.currency?.identifier ?? "USD"
         return amount.formatted(.currency(code: id))
     }
-    
+
     private func currencyPositive(_ amount: Double) -> String {
         let id = Locale.current.currency?.identifier ?? "USD"
         let positiveAmount = abs(amount)
@@ -1515,12 +1515,12 @@ struct GroupExpenseRow: View {
 
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
-    
+
     func makeUIViewController(context: Context) -> UIActivityViewController {
         let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
         return controller
     }
-    
+
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {
         // No update needed
     }

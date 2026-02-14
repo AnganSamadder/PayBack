@@ -168,27 +168,27 @@ final class TabBarTests: XCTestCase {
 // MARK: - AppAppearance Tab Bar Tests
 
 extension AppAppearanceTests {
-    
+
     func test_appAppearance_configuresTabBarAppearance() {
         // When configure is called, it should set up tab bar appearance
         AppAppearance.configure()
-        
+
         // Verify tab bar appearance is set
         let tabBarAppearance = UITabBar.appearance().standardAppearance
         XCTAssertNotNil(tabBarAppearance, "Tab bar should have standard appearance configured")
     }
-    
+
     func test_appAppearance_tabBarHasBrandTintColor() {
         AppAppearance.configure()
-        
+
         // The tint color should be set (brand color)
         let tintColor = UITabBar.appearance().tintColor
         XCTAssertNotNil(tintColor, "Tab bar should have tint color set")
     }
-    
+
     func test_appAppearance_tabBarHasScrollEdgeAppearance() {
         AppAppearance.configure()
-        
+
         let scrollEdgeAppearance = UITabBar.appearance().scrollEdgeAppearance
         XCTAssertNotNil(scrollEdgeAppearance, "Tab bar should have scroll edge appearance configured")
     }

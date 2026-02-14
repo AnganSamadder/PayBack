@@ -10,10 +10,10 @@ enum AppTheme {
     // - darkModeBrand: Color used in dark mode
     // All other colors are derived from these base colors
     // ========================================
-    
+
     private static let lightModeBrand = UIColor(red: 0.06, green: 0.72, blue: 0.78, alpha: 1.0) // Light mode teal
     private static let darkModeBrand = UIColor(red: 0.0, green: 0.8, blue: 0.9, alpha: 1.0) // Dark mode turquoise
-    
+
     // Dynamic brand color: teal in light, turquoise blue in dark
     static let brand: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
@@ -43,7 +43,7 @@ enum AppTheme {
             return UIColor.secondarySystemGroupedBackground
         }
     })
-    
+
     // Helper function to get brand color for UIKit components
     static func brandColor(for traits: UITraitCollection) -> UIColor {
         switch traits.userInterfaceStyle {
@@ -53,7 +53,7 @@ enum AppTheme {
             return lightModeBrand
         }
     }
-    
+
     // Centralized color for + button icons
     static let plusIconColor: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
@@ -63,7 +63,7 @@ enum AppTheme {
             return UIColor.white
         }
     })
-    
+
     // Centralized color for expanding circle inner circle
     static let expandingCircleInnerColor: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
@@ -73,7 +73,7 @@ enum AppTheme {
             return UIColor.clear
         }
     })
-    
+
     // Centralized color for choose target background
     static let chooseTargetBackground: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
@@ -83,7 +83,7 @@ enum AppTheme {
             return brandColor(for: traits)
         }
     })
-    
+
     // Centralized color for text on choose target screen
     static let chooseTargetTextColor: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
@@ -93,7 +93,7 @@ enum AppTheme {
             return UIColor.white
         }
     })
-    
+
     // Navigation header colors
     static let navigationHeaderBackground: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
@@ -131,7 +131,7 @@ enum AppTheme {
             return lightModeBrand
         }
     })
-    
+
     // Centralized color for AddExpense screen background
     static let addExpenseBackground: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
@@ -141,7 +141,7 @@ enum AppTheme {
             return brandColor(for: traits)
         }
     })
-    
+
     // Centralized color for AddExpense screen text and icons
     static let addExpenseTextColor: Color = Color(UIColor { traits in
         switch traits.userInterfaceStyle {
@@ -164,7 +164,7 @@ public enum AppMetrics {
         // Use the actual display corner radius from UIScreen (like ScreenCorners library)
         return UIScreen.main.displayCornerRadius
     }
-    
+
     // Header
     static let headerTitleFontSize: CGFloat = 32
     static let headerTopPadding: CGFloat = 8
@@ -234,7 +234,7 @@ public enum AppMetrics {
         static let manualAmountFieldWidth: CGFloat = 100
         static let balanceTolerance: CGFloat = 0.01
     }
-    
+
     // MARK: - Friend Detail specific metrics
     enum FriendDetail {
         // Layout spacing
@@ -243,24 +243,24 @@ public enum AppMetrics {
         static let contentHorizontalPadding: CGFloat = 8
         static let contentTopPadding: CGFloat = 20
         static let contentSpacing: CGFloat = 16
-        
+
         // Header metrics
         static let headerIconSpacing: CGFloat = 8
         static let headerIconSize: CGFloat = 18
         static let headerHorizontalPadding: CGFloat = 20
         static let headerVerticalPadding: CGFloat = 16
-        
+
         // Hero balance card metrics
         static let heroCardSpacing: CGFloat = 20
         static let heroCardPadding: CGFloat = 24
         static let heroCardCornerRadius: CGFloat = 24
         static let heroCardShadowRadius: CGFloat = 16
         static let heroCardShadowY: CGFloat = 8
-        
+
         // Avatar and name metrics
         static let avatarSize: CGFloat = 80
         static let avatarNameSpacing: CGFloat = 12
-        
+
         // Balance display metrics
         static let balanceDisplaySpacing: CGFloat = 8
         static let balanceIconSpacing: CGFloat = 12
@@ -269,11 +269,11 @@ public enum AppMetrics {
         static let balanceHorizontalPadding: CGFloat = 20
         static let balanceVerticalPadding: CGFloat = 16
         static let balanceCardCornerRadius: CGFloat = 20
-        
+
         // Tab metrics
         static let tabVerticalPadding: CGFloat = 16
         static let tabCornerRadius: CGFloat = 16
-        
+
         // Expense card metrics
         static let expenseCardSpacing: CGFloat = 12
         static let expenseCardInternalSpacing: CGFloat = 12
@@ -282,7 +282,7 @@ public enum AppMetrics {
         static let expenseIconSize: CGFloat = 40
         static let expenseTextSpacing: CGFloat = 4
         static let expenseAmountSpacing: CGFloat = 4
-        
+
         // Group section metrics
         static let groupSectionSpacing: CGFloat = 16
         static let groupSectionInternalSpacing: CGFloat = 12
@@ -294,14 +294,14 @@ public enum AppMetrics {
         static let groupExpenseTextSpacing: CGFloat = 2
         static let groupExpenseAmountSpacing: CGFloat = 2
         static let groupExpenseRowPadding: CGFloat = 8
-        
+
         // Border and shadow metrics
         static let borderWidth: CGFloat = 2.5
         static let dashboardBorderWidth: CGFloat = 2.5
         static let groupCardBorderWidth: CGFloat = 2.5
         static let dragThreshold: CGFloat = 100
     }
-    
+
     // MARK: - Navigation Header metrics
     public enum Navigation {
         static let headerIconSpacing: CGFloat = 8
@@ -352,11 +352,11 @@ extension UIScreen {
         // Access the private _displayCornerRadius property (like ScreenCorners library)
         let selector = NSSelectorFromString("_displayCornerRadius")
         guard responds(to: selector) else { return 0 }
-        
+
         let method = class_getInstanceMethod(UIScreen.self, selector)
         let implementation = method_getImplementation(method!)
         let function = unsafeBitCast(implementation, to: (@convention(c) (AnyObject, Selector) -> CGFloat).self)
-        
+
         return function(self, selector)
     }
 }
@@ -399,14 +399,14 @@ struct AvatarView: View {
     let size: CGFloat
     let imageUrl: String?
     let colorHex: String?
-    
+
     init(name: String, size: CGFloat = 40, imageUrl: String? = nil, colorHex: String? = nil) {
         self.name = name
         self.size = size
         self.imageUrl = imageUrl
         self.colorHex = colorHex
     }
-    
+
     var body: some View {
         ZStack {
             if let imageUrl, let url = URL(string: imageUrl) {
@@ -424,18 +424,18 @@ struct AvatarView: View {
         .frame(width: size, height: size)
         .clipShape(Circle())
     }
-    
+
     private var fallbackView: some View {
         ZStack {
             Circle()
                 .fill(resolveColor)
-            
+
             Text(initials)
                 .font(.system(size: size * 0.4, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
         }
     }
-    
+
     private var initials: String {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let components = trimmedName.split(whereSeparator: { $0.isWhitespace })
@@ -443,14 +443,14 @@ struct AvatarView: View {
         let lastInitial = components.count > 1 ? components.last?.first.map(String.init) ?? "" : ""
         return (firstInitial + lastInitial).uppercased()
     }
-    
+
     private var resolveColor: Color {
         if let colorHex, let color = Color(hex: colorHex) {
             return color
         }
         return avatarColor
     }
-    
+
     private var avatarColor: Color {
         // Generate a consistent color based on the name using stable DJB2 hash
         // Note: Swift's hashValue is NOT stable across app launches, so we use a custom hash
@@ -462,7 +462,7 @@ struct AvatarView: View {
         let index = Int(hash % UInt(colors.count))
         return colors[index]
     }
-    
+
     /// DJB2 hash algorithm - produces stable hash values across app launches
     private func stableHash(_ string: String) -> UInt {
         var hash: UInt = 5381
@@ -492,7 +492,7 @@ extension Color {
 
         self.init(red: Double(r), green: Double(g), blue: Double(b))
     }
-    
+
     func toHex() -> String? {
         let uic = UIColor(self)
         guard let components = uic.cgColor.components, components.count >= 3 else { return nil }
@@ -508,12 +508,12 @@ extension Color {
 struct GroupIcon: View {
     let name: String
     let size: CGFloat
-    
+
     init(name: String, size: CGFloat = 40) {
         self.name = name
         self.size = size
     }
-    
+
     var body: some View {
         let icon = SmartIcon.icon(for: name)
         ZStack {
@@ -551,14 +551,14 @@ struct SmartCurrencyField: View {
     let currency: String
     var font: Font = .system(size: 34, weight: .bold, design: .rounded)
     var alignment: Alignment = .trailing
-    
+
     // UUID-based focus (preferred for lists)
     var focusedId: FocusState<UUID?>.Binding? = nil
     var myId: UUID? = nil
-    
+
     @State private var inputBuffer: String = ""
     @FocusState private var internalFocus: Bool
-    
+
     var body: some View {
         ZStack(alignment: alignment) {
             // Invisible field capturing inputs
@@ -581,7 +581,7 @@ struct SmartCurrencyField: View {
                         handleInput(newVal)
                     }
             }
-            
+
             // Visible display
             Text(amount.formatted(.currency(code: currency)))
                 .font(font)
@@ -603,14 +603,14 @@ struct SmartCurrencyField: View {
             }
         }
     }
-    
+
     private func handleInput(_ newBuffer: String) {
         let digits = newBuffer.filter { $0.isNumber }
-        
+
         if digits != newBuffer {
             inputBuffer = digits
         }
-        
+
         if let cents = Double(digits) {
             amount = cents / 100.0
         } else {

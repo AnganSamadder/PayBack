@@ -173,7 +173,7 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
 
         if let nick = displayNickname, primary == nick {
             let secondary = realName(preferWholeNames: preferWholeNames)
-            
+
             if secondary.caseInsensitiveCompare(primary) == .orderedSame {
                 return nil
             }

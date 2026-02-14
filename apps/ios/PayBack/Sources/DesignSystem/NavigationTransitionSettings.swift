@@ -7,7 +7,7 @@ public struct NavigationTransitionStyle {
     public let backgroundActiveOpacity: Double
     public let animation: Animation?
     public let transition: AnyTransition
-    
+
     public init(
         allowsInteractiveDismiss: Bool = true,
         backgroundRestingOpacity: Double = 0.3,
@@ -21,7 +21,7 @@ public struct NavigationTransitionStyle {
         self.animation = animation
         self.transition = transition
     }
-    
+
     public static let disabled = NavigationTransitionStyle(
         allowsInteractiveDismiss: false,
         backgroundRestingOpacity: 1,
@@ -29,7 +29,7 @@ public struct NavigationTransitionStyle {
         animation: nil,
         transition: .identity
     )
-    
+
     public static let interactive = NavigationTransitionStyle(
         allowsInteractiveDismiss: true,
         backgroundRestingOpacity: 0.2,
@@ -42,16 +42,16 @@ public struct NavigationTransitionStyle {
 /// Global settings for navigation transitions
 public enum NavigationTransitionSettings {
     private static var _style: NavigationTransitionStyle = .disabled
-    
+
     public static var style: NavigationTransitionStyle {
         get { _style }
         set { _style = newValue }
     }
-    
+
     public static func configure(with style: NavigationTransitionStyle) {
         _style = style
     }
-    
+
     public static func reset() {
         _style = .disabled
     }

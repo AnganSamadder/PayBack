@@ -20,7 +20,7 @@ struct GroupDetailView: View {
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
-    
+
     // Get the live group from store to ensure updates are reflected
     private var group: SpendingGroup? {
         store.groups.first { $0.id == groupId }
@@ -39,7 +39,7 @@ struct GroupDetailView: View {
     private func handleBack() {
         dismiss()
     }
-    
+
     var body: some View {
         ZStack {
             if let group = group {
@@ -312,7 +312,7 @@ struct GroupDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .contentShape(RoundedRectangle(cornerRadius: 12))
     }
-    
+
     private func memberDisplayName(_ member: GroupMember) -> String {
         // Current user always shows their name
         if store.isCurrentUser(member) {
@@ -341,18 +341,18 @@ struct GroupDetailView: View {
 
 
     // MARK: - Group Info Card
-    
+
     private func groupInfoCard(_ group: SpendingGroup) -> some View {
         VStack(spacing: 0) {
             // Top section with icon and name
             HStack(spacing: 16) {
                 GroupIconView(name: group.name, size: 60)
-                
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text(group.name)
                         .font(.system(.title2, design: .rounded, weight: .bold))
                         .foregroundStyle(.primary)
-                    
+
                     HStack(spacing: 6) {
                         Image(systemName: "person.3.fill")
                             .font(.system(size: 14, weight: .medium))
@@ -362,19 +362,19 @@ struct GroupDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                
+
                 Spacer()
             }
             .padding(.horizontal, 20)
             .padding(.top, 20)
             .padding(.bottom, 16)
-            
+
             // Divider
             Rectangle()
                 .fill(.quaternary)
                 .frame(height: 0.5)
                 .padding(.horizontal, 20)
-            
+
             // Bottom section with total spent
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -385,9 +385,9 @@ struct GroupDetailView: View {
                         .font(.system(.title, design: .rounded, weight: .bold))
                         .foregroundStyle(AppTheme.brand)
                 }
-                
+
                 Spacer()
-                
+
                 // Settle button
                 Button(action: { showSettleView = true }) {
                     HStack(spacing: 6) {
@@ -416,18 +416,18 @@ struct GroupDetailView: View {
         )
         .padding(.horizontal, 20)
     }
-    
+
     // MARK: - Members Section
-    
+
     private func membersSection(_ group: SpendingGroup) -> some View {
         VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.contentSpacing) {
             HStack {
                 Text("Members")
                     .font(.system(.headline, design: .rounded, weight: .semibold))
                     .foregroundStyle(.primary)
-                
+
                 Spacer()
-                
+
                 Button(action: {
                     Haptics.selection()
                     showAddMemberSheet = true
@@ -461,7 +461,7 @@ struct GroupDetailView: View {
                                 } label: {
                                     Label("Remove from Group", systemImage: "person.badge.minus")
                                 }
-                                
+
                                 if !store.friends.contains(where: { store.areSamePerson($0.memberId, member.id) }) {
                                     Button {
                                         let newFriend = AccountFriend(
@@ -476,7 +476,7 @@ struct GroupDetailView: View {
                                     } label: {
                                         Label("Add Friend", systemImage: "person.badge.plus")
                                     }
-                                    
+
                                     if !store.friends.filter({
                                         !$0.hasLinkedAccount && !store.areSamePerson($0.memberId, member.id)
                                     }).isEmpty {
@@ -588,9 +588,9 @@ struct GroupDetailView: View {
             }
         }
     }
-    
+
     // MARK: - Expenses Section
-    
+
     private func expensesSection(_ group: SpendingGroup) -> some View {
         VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.contentSpacing) {
             Text("Expenses")
@@ -658,7 +658,7 @@ private struct SettleConfirmationView: View {
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
-    
+
     private func memberName(for id: UUID, in expense: Expense) -> String {
         // Current user always shows their name
         if id == store.currentUser.id {
@@ -790,7 +790,7 @@ private struct SettleConfirmationView: View {
                                             Text(recipientDisplayName(recipient.member))
                                                 .font(.system(.body, design: .rounded, weight: .medium))
                                                 .foregroundStyle(.primary)
-                                            
+
                                             if let secondaryName = recipientSecondaryName(recipient.member) {
                                                 Text(secondaryName)
                                                     .font(.system(.caption, design: .rounded))
@@ -1216,12 +1216,12 @@ private struct SettleModal: View {
 struct AddGroupMemberSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var store: AppStore
-    
+
     let group: SpendingGroup
-    
+
     @State private var selectedFriendIds: Set<UUID> = []
     @State private var searchText = ""
-    
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -1229,7 +1229,7 @@ struct AddGroupMemberSheet: View {
                 if !availableFriends.isEmpty {
                     searchBar
                 }
-                
+
                 // Friend Grid
                 ScrollView {
                     if availableFriends.isEmpty {
@@ -1250,7 +1250,7 @@ struct AddGroupMemberSheet: View {
                         dismiss()
                     }
                 }
-                
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
                         addMembers()
@@ -1261,7 +1261,7 @@ struct AddGroupMemberSheet: View {
             }
         }
     }
-    
+
     private var availableFriends: [GroupMember] {
         // Filter out friends who are already in the group
         // GroupMember equality is based on ID
@@ -1270,7 +1270,7 @@ struct AddGroupMemberSheet: View {
             !store.isCurrentUser(friend)
         }
     }
-    
+
     private var filteredFriends: [GroupMember] {
         if searchText.isEmpty {
             return availableFriends
@@ -1279,17 +1279,17 @@ struct AddGroupMemberSheet: View {
             friend.name.localizedCaseInsensitiveContains(searchText)
         }
     }
-    
+
     // MARK: - Views
-    
+
     private var searchBar: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            
+
             TextField("Search friends", text: $searchText)
                 .textFieldStyle(.plain)
-            
+
             if !searchText.isEmpty {
                 Button(action: { searchText = "" }) {
                     Image(systemName: "xmark.circle.fill")
@@ -1303,7 +1303,7 @@ struct AddGroupMemberSheet: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
     }
-    
+
     private var friendGrid: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 120), spacing: 16)], spacing: 16) {
             ForEach(filteredFriends) { friend in
@@ -1318,7 +1318,7 @@ struct AddGroupMemberSheet: View {
         }
         .padding(20)
     }
-    
+
     private var emptyState: some View {
         VStack(spacing: 16) {
             Spacer()
@@ -1336,9 +1336,9 @@ struct AddGroupMemberSheet: View {
         }
         .padding(40)
     }
-    
+
     // MARK: - Actions
-    
+
     private func toggleSelection(_ friend: GroupMember) {
         if selectedFriendIds.contains(friend.id) {
             selectedFriendIds.remove(friend.id)
@@ -1348,14 +1348,14 @@ struct AddGroupMemberSheet: View {
             Haptics.selection()
         }
     }
-    
+
     private func addMembers() {
         let memberNames = availableFriends
             .filter { selectedFriendIds.contains($0.id) }
             .map { $0.name }
-        
+
         guard !memberNames.isEmpty else { return }
-        
+
         store.addMembersToGroup(groupId: group.id, memberNames: memberNames)
         Haptics.notify(.success)
         dismiss()
@@ -1365,13 +1365,13 @@ struct AddGroupMemberSheet: View {
 private struct FriendSelectionCard: View {
     let friend: GroupMember
     let isSelected: Bool
-    
+
     var body: some View {
         VStack(spacing: 12) {
             ZStack {
                 AvatarView(name: friend.name, size: 56)
                     .grayscale(isSelected ? 0 : 1)
-                
+
                 if isSelected {
                     ZStack {
                         Circle()
@@ -1385,7 +1385,7 @@ private struct FriendSelectionCard: View {
                     .transition(.scale.combined(with: .opacity))
                 }
             }
-            
+
             Text(friend.name)
                 .font(.system(.subheadline, design: .rounded, weight: .medium))
                 .foregroundStyle(isSelected ? AppTheme.brand : .primary)
