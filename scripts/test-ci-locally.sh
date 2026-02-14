@@ -325,14 +325,17 @@ if [ "$XCODECLOUD_MODE" = true ]; then
 	mkdir -p "$DERIVED_DATA_PATH"
 fi
 
-# Determine sanitizer flags
+# Determine sanitizer flags and parallel testing
 SANITIZER_FLAGS=""
+PARALLEL_FLAG="-parallel-testing-enabled YES"
 if [ "$SANITIZER" = "none" ]; then
 	SANITIZER_FLAGS="-enableCodeCoverage YES"
 elif [ "$SANITIZER" = "thread" ]; then
 	SANITIZER_FLAGS="-enableThreadSanitizer YES"
+	PARALLEL_FLAG="-parallel-testing-enabled NO"
 elif [ "$SANITIZER" = "address" ]; then
 	SANITIZER_FLAGS="-enableAddressSanitizer YES"
+	PARALLEL_FLAG="-parallel-testing-enabled NO"
 fi
 
 # Build derived data argument
@@ -354,7 +357,7 @@ if [ "$XCODECLOUD_MODE" = true ]; then
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $SANITIZER_FLAGS \
     $DERIVED_DATA_ARG \
-    -parallel-testing-enabled YES"
+    $PARALLEL_FLAG"
 
 	set +e
 	if [ "$XCPRETTY_AVAILABLE" = true ]; then
@@ -392,7 +395,7 @@ if [ "$XCODECLOUD_MODE" = true ]; then
     -scheme PayBack \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $DERIVED_DATA_ARG \
-    -parallel-testing-enabled YES \
+    $PARALLEL_FLAG \
     -resultBundlePath TestResults.xcresult"
 else
 	# Standard mode: single xcodebuild test command (matches CI)
@@ -405,7 +408,7 @@ else
     -scheme PayBack \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $SANITIZER_FLAGS \
-    -parallel-testing-enabled YES \
+    $PARALLEL_FLAG \
     -resultBundlePath TestResults.xcresult"
 fi
 

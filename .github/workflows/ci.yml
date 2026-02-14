@@ -390,10 +390,10 @@ jobs:
             timeout: 45
           - sanitizer: thread
             run_on_pr: false
-            timeout: 45
+            timeout: 60
           - sanitizer: address
             run_on_pr: false
-            timeout: 45
+            timeout: 60
 
     steps:
       - name: Skip sanitizer jobs on PRs
@@ -594,11 +594,11 @@ jobs:
           if [ "${{ matrix.sanitizer }}" = "thread" ]; then
             echo "sanitizer_flag=-enableThreadSanitizer YES" >> $GITHUB_OUTPUT
             echo "coverage_flag=" >> $GITHUB_OUTPUT
-            echo "parallel_flag=-parallel-testing-enabled YES" >> $GITHUB_OUTPUT
+            echo "parallel_flag=-parallel-testing-enabled NO" >> $GITHUB_OUTPUT
           elif [ "${{ matrix.sanitizer }}" = "address" ]; then
             echo "sanitizer_flag=-enableAddressSanitizer YES" >> $GITHUB_OUTPUT
             echo "coverage_flag=" >> $GITHUB_OUTPUT
-            echo "parallel_flag=-parallel-testing-enabled YES" >> $GITHUB_OUTPUT
+            echo "parallel_flag=-parallel-testing-enabled NO" >> $GITHUB_OUTPUT
           else
             echo "sanitizer_flag=" >> $GITHUB_OUTPUT
             echo "coverage_flag=-enableCodeCoverage YES" >> $GITHUB_OUTPUT
