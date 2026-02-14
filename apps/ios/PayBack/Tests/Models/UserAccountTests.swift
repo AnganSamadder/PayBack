@@ -390,28 +390,26 @@ final class UserAccountTests: XCTestCase {
 
     // MARK: - Deprecated API Backward Compatibility
 
-    func test_displayName_deprecatedAPI_showRealNames() {
+    func test_displayName_preferNicknames_false() {
         let friend = AccountFriend(
             memberId: UUID(),
             name: "Real Name",
             nickname: "Nick",
             hasLinkedAccount: true
         )
-        // showRealNames: true → preferNicknames: false
-        XCTAssertEqual(friend.displayName(showRealNames: true), "Real Name")
-        XCTAssertEqual(friend.secondaryDisplayName(showRealNames: true), "Nick")
+        XCTAssertEqual(friend.displayName(preferNicknames: false, preferWholeNames: false), "Real Name")
+        XCTAssertEqual(friend.secondaryDisplayName(preferNicknames: false, preferWholeNames: false), "Nick")
     }
 
-    func test_displayName_deprecatedAPI_showNicknames() {
+    func test_displayName_preferNicknames_true() {
         let friend = AccountFriend(
             memberId: UUID(),
             name: "Real Name",
             nickname: "Nick",
             hasLinkedAccount: true
         )
-        // showRealNames: false → preferNicknames: true
-        XCTAssertEqual(friend.displayName(showRealNames: false), "Nick")
-        XCTAssertEqual(friend.secondaryDisplayName(showRealNames: false), "Real Name")
+        XCTAssertEqual(friend.displayName(preferNicknames: true, preferWholeNames: false), "Nick")
+        XCTAssertEqual(friend.secondaryDisplayName(preferNicknames: true, preferWholeNames: false), "Real Name")
     }
 
     // MARK: - Codable Tests

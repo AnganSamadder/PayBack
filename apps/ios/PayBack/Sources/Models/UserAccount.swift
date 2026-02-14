@@ -187,18 +187,6 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         return nil
     }
 
-    // MARK: - Deprecated Compatibility Wrappers
-
-    @available(*, deprecated, message: "Use displayName(preferNicknames:preferWholeNames:)")
-    func displayName(showRealNames: Bool) -> String {
-        displayName(preferNicknames: !showRealNames, preferWholeNames: false)
-    }
-
-    @available(*, deprecated, message: "Use secondaryDisplayName(preferNicknames:preferWholeNames:)")
-    func secondaryDisplayName(showRealNames: Bool) -> String? {
-        secondaryDisplayName(preferNicknames: !showRealNames, preferWholeNames: false)
-    }
-
     init(
         memberId: UUID,
         name: String,

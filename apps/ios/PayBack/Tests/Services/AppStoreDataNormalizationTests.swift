@@ -812,20 +812,20 @@ final class AppStoreDataNormalizationTests: XCTestCase {
     }
 
     func testNormalizeExpenses_WithAliasInPaidBy() async throws {
-        // Given: expense.paidByMemberId is an alias
+        // Given: expense.paidByMemberId is an alias of the current user
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        let aliceId1 = UUID()
-        let aliceId2 = UUID()
+        let currentUserId = sut.currentUser.id
+        let aliasId = UUID()
 
         let remoteGroup = SpendingGroup(
             id: UUID(),
             name: "Trip",
             members: [
-                GroupMember(id: aliceId1, name: "Alice"),
-                GroupMember(id: aliceId2, name: "Alice")
+                GroupMember(id: currentUserId, name: sut.currentUser.name),
+                GroupMember(id: aliasId, name: sut.currentUser.name) // Alias of current user
             ]
         )
 
@@ -833,9 +833,9 @@ final class AppStoreDataNormalizationTests: XCTestCase {
             groupId: remoteGroup.id,
             description: "Dinner",
             totalAmount: 100,
-            paidByMemberId: aliceId2, // Alias
-            involvedMemberIds: [aliceId1],
-            splits: [ExpenseSplit(memberId: aliceId1, amount: 100)]
+            paidByMemberId: aliasId, // Alias
+            involvedMemberIds: [currentUserId],
+            splits: [ExpenseSplit(memberId: currentUserId, amount: 100)]
         )
 
         await mockGroupCloudService.addGroup(remoteGroup)
@@ -844,9 +844,9 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         // When: normalize
         try await Task.sleep(nanoseconds: 500_000_000)
 
-        // Then: paidByMemberId updated to canonical
+        // Then: paidByMemberId updated to canonical current user ID
         if let loadedExpense = sut.expenses.first {
-            XCTAssertEqual(loadedExpense.paidByMemberId, aliceId1)
+            XCTAssertEqual(loadedExpense.paidByMemberId, currentUserId)
         }
     }
 
