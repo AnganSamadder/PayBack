@@ -427,7 +427,8 @@ final class AppStore: ObservableObject {
 
     private var sessionMonitorTask: Task<Void, Never>?
 
-    private func startSessionMonitoring() async {
+    @MainActor
+    private func startSessionMonitoring() {
         sessionMonitorTask?.cancel()
         sessionMonitorTask = Task { @MainActor in
             for await account in accountService.monitorSession() {

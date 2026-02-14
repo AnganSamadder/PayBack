@@ -3,6 +3,7 @@ import Foundation
 
 /// Mock implementation of CurrencyServiceProtocol for testing without network calls.
 /// Provides realistic exchange rate data that behaves like a real currency API.
+@MainActor
 final class MockCurrencyService: CurrencyServiceProtocol {
 
     // MARK: - Configuration
@@ -48,20 +49,26 @@ final class MockCurrencyService: CurrencyServiceProtocol {
 
     // MARK: - CurrencyServiceProtocol
 
-    func fetchRates(base: String) async throws -> [String: Double] {
-        // Track the call
-        fetchRatesCallCount += 1
-        lastRequestedBase = base
+    nonisolated func fetchRates(base: String) async throws -> [String: Double] {
+        // Access mutable state on the main actor
+        let (delay, shouldThrow, error) = await MainActor.run {
+            let d = networkDelay
+            let s = shouldThrowError
+            let e = errorToThrow
+            fetchRatesCallCount += 1
+            lastRequestedBase = base
+            if shouldThrowError { shouldThrowError = false }
+            return (d, s, e)
+        }
 
         // Simulate network delay if configured
-        if networkDelay > 0 {
-            try await Task.sleep(nanoseconds: UInt64(networkDelay * 1_000_000_000))
+        if delay > 0 {
+            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
 
         // Throw error if configured
-        if shouldThrowError {
-            shouldThrowError = false // Reset for next call
-            throw errorToThrow
+        if shouldThrow {
+            throw error
         }
 
         // Validate base currency
@@ -75,7 +82,6 @@ final class MockCurrencyService: CurrencyServiceProtocol {
         }
 
         // Calculate exchange rates relative to the requested base
-        // Formula: rate_to_target = (rate_from_usd_to_target) / (rate_from_usd_to_base)
         var rates: [String: Double] = [:]
         for (currency, rateFromUSD) in baseRatesFromUSD {
             rates[currency] = rateFromUSD / baseRate
