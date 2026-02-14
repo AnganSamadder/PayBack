@@ -737,29 +737,82 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     var shouldThrowOnSignOut = false
     var errorToThrow: Error = PayBackError.authInvalidCredentials(message: "Invalid credentials")
 
-    var signInCalled = false
-    var signUpCalled = false
-    var verifyCodeCalled = false
-    var sendPasswordResetCalled = false
-    var signOutCalled = false
-
-    var lastSignInEmail: String?
-    var lastSignUpEmail: String?
-    var lastSignUpFirstName: String?
-    var lastSignUpLastName: String?
-    var lastVerifyCode: String?
-    var lastPasswordResetEmail: String?
-
     var signInDelay: TimeInterval = 0
     var passwordResetDelay: TimeInterval = 0
 
-    var signInCallCount = 0
-    var passwordResetCallCount = 0
+    private let lock = NSLock()
+
+    private var _signInCalled = false
+    private var _signUpCalled = false
+    private var _verifyCodeCalled = false
+    private var _sendPasswordResetCalled = false
+    private var _signOutCalled = false
+    private var _lastSignInEmail: String?
+    private var _lastSignUpEmail: String?
+    private var _lastSignUpFirstName: String?
+    private var _lastSignUpLastName: String?
+    private var _lastVerifyCode: String?
+    private var _lastPasswordResetEmail: String?
+    private var _signInCallCount = 0
+    private var _passwordResetCallCount = 0
+
+    var signInCalled: Bool {
+        get { lock.withLock { _signInCalled } }
+        set { lock.withLock { _signInCalled = newValue } }
+    }
+    var signUpCalled: Bool {
+        get { lock.withLock { _signUpCalled } }
+        set { lock.withLock { _signUpCalled = newValue } }
+    }
+    var verifyCodeCalled: Bool {
+        get { lock.withLock { _verifyCodeCalled } }
+        set { lock.withLock { _verifyCodeCalled = newValue } }
+    }
+    var sendPasswordResetCalled: Bool {
+        get { lock.withLock { _sendPasswordResetCalled } }
+        set { lock.withLock { _sendPasswordResetCalled = newValue } }
+    }
+    var signOutCalled: Bool {
+        get { lock.withLock { _signOutCalled } }
+        set { lock.withLock { _signOutCalled = newValue } }
+    }
+    var lastSignInEmail: String? {
+        get { lock.withLock { _lastSignInEmail } }
+        set { lock.withLock { _lastSignInEmail = newValue } }
+    }
+    var lastSignUpEmail: String? {
+        get { lock.withLock { _lastSignUpEmail } }
+        set { lock.withLock { _lastSignUpEmail = newValue } }
+    }
+    var lastSignUpFirstName: String? {
+        get { lock.withLock { _lastSignUpFirstName } }
+        set { lock.withLock { _lastSignUpFirstName = newValue } }
+    }
+    var lastSignUpLastName: String? {
+        get { lock.withLock { _lastSignUpLastName } }
+        set { lock.withLock { _lastSignUpLastName = newValue } }
+    }
+    var lastVerifyCode: String? {
+        get { lock.withLock { _lastVerifyCode } }
+        set { lock.withLock { _lastVerifyCode = newValue } }
+    }
+    var lastPasswordResetEmail: String? {
+        get { lock.withLock { _lastPasswordResetEmail } }
+        set { lock.withLock { _lastPasswordResetEmail = newValue } }
+    }
+    var signInCallCount: Int {
+        get { lock.withLock { _signInCallCount } }
+    }
+    var passwordResetCallCount: Int {
+        get { lock.withLock { _passwordResetCallCount } }
+    }
 
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
-        signInCalled = true
-        signInCallCount += 1
-        lastSignInEmail = email
+        lock.withLock {
+            _signInCalled = true
+            _signInCallCount += 1
+            _lastSignInEmail = email
+        }
 
         if signInDelay > 0 {
             try? await Task.sleep(nanoseconds: UInt64(signInDelay * 1_000_000_000))
@@ -777,10 +830,12 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     }
 
     func signUp(email: String, password: String, firstName: String, lastName: String?) async throws -> SignUpResult {
-        signUpCalled = true
-        lastSignUpEmail = email
-        lastSignUpFirstName = firstName
-        lastSignUpLastName = lastName
+        lock.withLock {
+            _signUpCalled = true
+            _lastSignUpEmail = email
+            _lastSignUpFirstName = firstName
+            _lastSignUpLastName = lastName
+        }
 
         if shouldThrowOnSignUp {
             throw errorToThrow
@@ -794,8 +849,10 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     }
 
     func verifyCode(code: String) async throws -> EmailAuthSignInResult {
-        verifyCodeCalled = true
-        lastVerifyCode = code
+        lock.withLock {
+            _verifyCodeCalled = true
+            _lastVerifyCode = code
+        }
 
         if shouldThrowOnVerifyCode {
             throw errorToThrow
@@ -809,9 +866,11 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     }
 
     func sendPasswordReset(email: String) async throws {
-        sendPasswordResetCalled = true
-        passwordResetCallCount += 1
-        lastPasswordResetEmail = email
+        lock.withLock {
+            _sendPasswordResetCalled = true
+            _passwordResetCallCount += 1
+            _lastPasswordResetEmail = email
+        }
 
         if passwordResetDelay > 0 {
             try? await Task.sleep(nanoseconds: UInt64(passwordResetDelay * 1_000_000_000))
@@ -823,7 +882,9 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     }
 
     func signOut() async throws {
-        signOutCalled = true
+        lock.withLock {
+            _signOutCalled = true
+        }
 
         if shouldThrowOnSignOut {
             throw PayBackError.underlying(message: "Sign out error")
@@ -831,6 +892,6 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     }
 
     func resendConfirmationEmail(email: String) async throws {
-        // Mock implementation for testings
+        // Mock implementation for testing
     }
 }

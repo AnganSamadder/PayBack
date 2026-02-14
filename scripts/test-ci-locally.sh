@@ -328,11 +328,13 @@ fi
 # Determine sanitizer flags and parallel testing
 SANITIZER_FLAGS=""
 PARALLEL_FLAG="-parallel-testing-enabled YES"
+TSAN_OPTIONS_ENV=""
 if [ "$SANITIZER" = "none" ]; then
 	SANITIZER_FLAGS="-enableCodeCoverage YES"
 elif [ "$SANITIZER" = "thread" ]; then
 	SANITIZER_FLAGS="-enableThreadSanitizer YES"
 	PARALLEL_FLAG="-parallel-testing-enabled NO"
+	TSAN_OPTIONS_ENV="halt_on_error=0"
 elif [ "$SANITIZER" = "address" ]; then
 	SANITIZER_FLAGS="-enableAddressSanitizer YES"
 	PARALLEL_FLAG="-parallel-testing-enabled NO"
@@ -345,6 +347,10 @@ if [ -n "$DERIVED_DATA_PATH" ]; then
 fi
 
 export NSUnbufferedIO=YES
+if [ -n "$TSAN_OPTIONS_ENV" ]; then
+	export TSAN_OPTIONS="$TSAN_OPTIONS_ENV"
+	echo "TSAN_OPTIONS set to: $TSAN_OPTIONS"
+fi
 
 # In XcodeCloud mode, run build-for-testing first (like XcodeCloud does)
 if [ "$XCODECLOUD_MODE" = true ]; then

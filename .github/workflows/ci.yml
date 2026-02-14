@@ -595,14 +595,17 @@ jobs:
             echo "sanitizer_flag=-enableThreadSanitizer YES" >> $GITHUB_OUTPUT
             echo "coverage_flag=" >> $GITHUB_OUTPUT
             echo "parallel_flag=-parallel-testing-enabled NO" >> $GITHUB_OUTPUT
+            echo "tsan_options=halt_on_error=0" >> $GITHUB_OUTPUT
           elif [ "${{ matrix.sanitizer }}" = "address" ]; then
             echo "sanitizer_flag=-enableAddressSanitizer YES" >> $GITHUB_OUTPUT
             echo "coverage_flag=" >> $GITHUB_OUTPUT
             echo "parallel_flag=-parallel-testing-enabled NO" >> $GITHUB_OUTPUT
+            echo "tsan_options=" >> $GITHUB_OUTPUT
           else
             echo "sanitizer_flag=" >> $GITHUB_OUTPUT
             echo "coverage_flag=-enableCodeCoverage YES" >> $GITHUB_OUTPUT
             echo "parallel_flag=-parallel-testing-enabled YES" >> $GITHUB_OUTPUT
+            echo "tsan_options=" >> $GITHUB_OUTPUT
           fi
 
       - name: Clean Previous Test Results
@@ -626,6 +629,7 @@ jobs:
             2>&1 | tee test-output.txt
         env:
           NSUnbufferedIO: "YES"
+          TSAN_OPTIONS: ${{ steps.test-flags.outputs.tsan_options }}
 
       - name: Report Skipped Tests
         if: always() && (matrix.run_on_pr == true || github.event_name == 'push')

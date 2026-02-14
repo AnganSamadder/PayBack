@@ -46,9 +46,7 @@ final class InviteDataPopulationTests: XCTestCase {
     func testClaimInviteToken_PopulatesGroupDataAutomatically() async throws {
         // Given
         let account = UserAccount(id: "test-user-id", email: "test@example.com", displayName: "Example User")
-        _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Initial state: No groups locally
         XCTAssertTrue(sut.groups.isEmpty)
@@ -100,9 +98,7 @@ final class InviteDataPopulationTests: XCTestCase {
     func testClaimInviteToken_PopulatesExpenseDataAutomatically() async throws {
         // Given
         let account = UserAccount(id: "test-user-id", email: "test@example.com", displayName: "Example User")
-        _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         XCTAssertTrue(sut.expenses.isEmpty)
 
