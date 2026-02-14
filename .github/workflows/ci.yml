@@ -387,7 +387,7 @@ jobs:
         include:
           - sanitizer: none
             run_on_pr: true
-            timeout: 120
+            timeout: 60
           - sanitizer: thread
             run_on_pr: false
             timeout: 45
@@ -620,8 +620,7 @@ jobs:
             -resultBundlePath TestResults.xcresult \
             ${{ steps.test-flags.outputs.sanitizer_flag }} \
             ${{ steps.test-flags.outputs.coverage_flag }} \
-            | tee test-output.txt \
-            | xcpretty
+            2>&1 | tee test-output.txt
         env:
           NSUnbufferedIO: "YES"
 
