@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 # and update the project's marketing version.
 # ----------------------------------------------------------------------------
 if [[ -n "${CI_TAG:-}" ]]; then
-	MARKETING_VERSION=$(echo "$CI_TAG" | sed -E 's/^(beta|release|prod)-//')
+	MARKETING_VERSION=$(echo "$CI_TAG" | sed -E 's/^(alpha|beta|release|prod)-//')
 	BUILD_NUMBER="$CI_BUILD_NUMBER"
 
 	echo "Tag detected: $CI_TAG"

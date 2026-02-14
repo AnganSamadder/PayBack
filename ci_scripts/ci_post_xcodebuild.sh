@@ -34,7 +34,7 @@ if [[ -n "$CI_APP_STORE_SIGNED_APP_PATH" ]]; then
 
 	# Extract version info
 	if [[ -n "$CI_TAG" ]]; then
-		VERSION=$(echo "$CI_TAG" | sed -E 's/^(beta|release|prod)-//')
+		VERSION=$(echo "$CI_TAG" | sed -E 's/^(alpha|beta|release|prod)-//')
 		TAG_TYPE=$(echo "$CI_TAG" | sed -E 's/-.*$//')
 	else
 		VERSION="${CI_BUILD_NUMBER:-unknown}"
@@ -85,11 +85,14 @@ if [[ -n "$CI_TAG" ]]; then
 	echo "Workflow: $CI_WORKFLOW"
 	echo "Scheme: ${CI_XCODE_SCHEME:-unknown}"
 
-	if [[ "$CI_TAG" == beta-* ]]; then
+	if [[ "$CI_TAG" == alpha-* ]]; then
 		echo "Deployment: TestFlight Internal Testing"
 		echo "Convex DB: Development"
+	elif [[ "$CI_TAG" == beta-* ]]; then
+		echo "Deployment: TestFlight External Testing"
+		echo "Convex DB: Production"
 	elif [[ "$CI_TAG" == release-* ]] || [[ "$CI_TAG" == prod-* ]]; then
-		echo "Deployment: TestFlight External Testing / App Store"
+		echo "Deployment: App Store"
 		echo "Convex DB: Production"
 	fi
 	echo "========================================="

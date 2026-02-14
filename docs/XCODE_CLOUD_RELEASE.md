@@ -4,11 +4,12 @@ This document describes the complete Xcode Cloud workflow setup for PayBack.
 
 ## Overview
 
-| Workflow               | Trigger                     | Scheme          | Convex DB   | TestFlight |
-| ---------------------- | --------------------------- | --------------- | ----------- | ---------- |
-| **Main CI**            | Push to `main`              | PayBack         | Development | No         |
-| **Beta Release**       | Tag `beta-*`                | PayBackInternal | Development | Internal   |
-| **Production Release** | Tag `release-*` or `prod-*` | PayBack         | Production  | External   |
+| Workflow               | Trigger         | Scheme          | Convex DB   | Destination         |
+| ---------------------- | --------------- | --------------- | ----------- | ------------------- |
+| **Main CI**            | Push to `main`  | PayBack         | Development | None (CI only)      |
+| **Alpha Release**      | Tag `alpha-*`   | PayBackInternal | Development | TestFlight Internal |
+| **Beta Release**       | Tag `beta-*`    | PayBack         | Production  | TestFlight External |
+| **Production Release** | Tag `release-*` | PayBack         | Production  | App Store           |
 
 ## Workflow Configuration
 
@@ -24,19 +25,18 @@ This document describes the complete Xcode Cloud workflow setup for PayBack.
 - **Actions**:
   - Test (iPhone 15 Pro, iOS 18)
   - Build (Debug configuration)
-- **Environment Variables**: None needed (uses Debug config)
 - **Post-Actions**: Notify on failure
 
 ---
 
-### 2. Beta Release (Internal TestFlight)
+### 2. Alpha Release (Internal TestFlight)
 
 **Purpose**: Release to internal testers via TestFlight. Uses development Convex DB.
 
 **Xcode Cloud Settings**:
 
-- **Name**: `Beta Release`
-- **Start Condition**: Tag Changes → `beta-*`
+- **Name**: `Alpha Release`
+- **Start Condition**: Tag Changes → `alpha-*`
 - **Scheme**: `PayBackInternal`
 - **Actions**:
   - Test (iPhone 15 Pro, iOS 18)
@@ -46,21 +46,19 @@ This document describes the complete Xcode Cloud workflow setup for PayBack.
   ```
   CONVEX_DEPLOY_KEY = <your-convex-deploy-key>
   ```
-- **Post-Actions**:
-  - Notify on success/failure
 
-**Tag Format**: `beta-X.Y.Z` (e.g., `beta-0.1.0`, `beta-1.2.3`)
+**Tag Format**: `alpha-X.Y.Z` (e.g., `alpha-0.1.0`, `alpha-1.2.3`)
 
 ---
 
-### 3. Production Release (External TestFlight / App Store)
+### 3. Beta Release (External TestFlight)
 
-**Purpose**: Release to external testers and App Store. Uses production Convex DB.
+**Purpose**: Release to external testers via TestFlight. Uses production Convex DB.
 
 **Xcode Cloud Settings**:
 
-- **Name**: `Production Release`
-- **Start Condition**: Tag Changes → `release-*` or `prod-*`
+- **Name**: `Beta Release`
+- **Start Condition**: Tag Changes → `beta-*`
 - **Scheme**: `PayBack`
 - **Actions**:
   - Test (iPhone 15 Pro, iOS 18)
@@ -71,52 +69,81 @@ This document describes the complete Xcode Cloud workflow setup for PayBack.
   CONVEX_DEPLOY_KEY = <your-convex-deploy-key>
   CONVEX_DEPLOY_ON_CI = 1
   ```
-- **Post-Actions**:
-  - Notify on success/failure
 
-**Tag Format**: `release-X.Y.Z` or `prod-X.Y.Z` (e.g., `release-1.0.0`, `prod-2.1.0`)
+**Tag Format**: `beta-X.Y.Z` (e.g., `beta-0.1.0`, `beta-1.0.0`)
+
+---
+
+### 4. Production Release (App Store)
+
+**Purpose**: Release to App Store. Uses production Convex DB.
+
+**Xcode Cloud Settings**:
+
+- **Name**: `Production Release`
+- **Start Condition**: Tag Changes → `release-*`
+- **Scheme**: `PayBack`
+- **Actions**:
+  - Test (iPhone 15 Pro, iOS 18)
+  - Archive (Release configuration)
+  - Deploy to App Store: **Release**
+- **Environment Variables**:
+  ```
+  CONVEX_DEPLOY_KEY = <your-convex-deploy-key>
+  CONVEX_DEPLOY_ON_CI = 1
+  ```
+
+**Tag Format**: `release-X.Y.Z` (e.g., `release-1.0.0`, `release-2.1.0`)
 
 ---
 
 ## Release Process
 
-### Creating a Beta Release
+### Creating an Alpha Release (Internal Testing)
 
 ```bash
-# 1. Ensure you're on main with all changes committed
 git checkout main
 git pull
 
-# 2. Create and push the beta tag
-git tag beta-0.1.0
-git push origin beta-0.1.0
+git tag alpha-0.1.0
+git push origin alpha-0.1.0
 
-# 3. Xcode Cloud automatically:
-#    - Detects the tag
-#    - Runs tests
-#    - Archives with Internal config (development DB)
-#    - Uploads to TestFlight Internal Testing
-#    - Notifies the team
+# Xcode Cloud automatically:
+# - Runs tests
+# - Archives with Internal config (development DB)
+# - Uploads to TestFlight Internal Testing
 ```
 
-### Creating a Production Release
+### Creating a Beta Release (External Testing)
 
 ```bash
-# 1. Ensure you're on main with all changes committed
 git checkout main
 git pull
 
-# 2. Create and push the production tag
+git tag beta-1.0.0
+git push origin beta-1.0.0
+
+# Xcode Cloud automatically:
+# - Runs tests
+# - Archives with Release config (production DB)
+# - Deploys Convex backend
+# - Uploads to TestFlight External Testing
+```
+
+### Creating a Production Release (App Store)
+
+```bash
+git checkout main
+git pull
+
 git tag release-1.0.0
 git push origin release-1.0.0
 
-# 3. Xcode Cloud automatically:
-#    - Detects the tag
-#    - Runs tests
-#    - Archives with Release config (production DB)
-#    - Deploys Convex backend (if CONVEX_DEPLOY_ON_CI=1)
-#    - Uploads to TestFlight External Testing
-#    - Notifies the team
+# Xcode Cloud automatically:
+# - Runs tests
+# - Archives with Release config (production DB)
+# - Deploys Convex backend
+# - Submits to App Store for review
 ```
 
 ---
@@ -127,54 +154,13 @@ Version numbers are extracted from git tags automatically:
 
 | Tag             | Marketing Version | Build Number             |
 | --------------- | ----------------- | ------------------------ |
-| `beta-0.1.0`    | 0.1.0             | Xcode Cloud build number |
-| `beta-1.2.3`    | 1.2.3             | Xcode Cloud build number |
+| `alpha-0.1.0`   | 0.1.0             | Xcode Cloud build number |
+| `beta-1.0.0`    | 1.0.0             | Xcode Cloud build number |
 | `release-1.0.0` | 1.0.0             | Xcode Cloud build number |
-
-The `ci_pre_xcodebuild.sh` script:
-
-1. Detects if a tag triggered the build
-2. Extracts the version from the tag
-3. Updates `project.yml` with the version
-4. Regenerates the Xcode project
-
----
-
-## CI Scripts
-
-### ci_pre_xcodebuild.sh
-
-Runs before xcodebuild:
-
-- Logs environment info
-- Extracts version from tags
-- Updates project.yml with version
-- Regenerates Xcode project
-
-### ci_post_xcodebuild.sh
-
-Runs after xcodebuild:
-
-- Generates TestFlight release notes from git commits
-- Logs deployment summary
-
----
-
-## Environment Variables
-
-| Variable              | Set In         | Purpose                       |
-| --------------------- | -------------- | ----------------------------- |
-| `CI_TAG`              | Xcode Cloud    | Git tag that triggered build  |
-| `CI_BUILD_NUMBER`     | Xcode Cloud    | Build number                  |
-| `CONVEX_DEPLOY_KEY`   | Workflow       | Deploy backend on release     |
-| `CONVEX_DEPLOY_ON_CI` | Workflow       | Set to `1` to enable deploy   |
-| `PAYBACK_CONVEX_ENV`  | Build Settings | `development` or `production` |
 
 ---
 
 ## Convex DB Routing
-
-The correct Convex database is selected based on build configuration:
 
 | Config   | `PAYBACK_CONVEX_ENV` | Convex URL                       |
 | -------- | -------------------- | -------------------------------- |
@@ -182,39 +168,29 @@ The correct Convex database is selected based on build configuration:
 | Internal | `development`        | flippant-bobcat-304.convex.cloud |
 | Release  | `production`         | tacit-marmot-746.convex.cloud    |
 
-This is configured in `project.yml` and automatically applied based on the scheme's archive configuration.
-
 ---
 
 ## Xcode Cloud Setup Checklist
 
 1. [ ] Create **Main CI** workflow (branch changes on `main`)
-2. [ ] Create **Beta Release** workflow (tag changes `beta-*`)
-3. [ ] Create **Production Release** workflow (tag changes `release-*`, `prod-*`)
-4. [ ] Add `CONVEX_DEPLOY_KEY` secret to release workflows
-5. [ ] Set `CONVEX_DEPLOY_ON_CI=1` for Production Release workflow
-6. [ ] Configure TestFlight groups for Internal and External testing
-7. [ ] Test with a beta tag: `git tag beta-0.0.1 && git push origin beta-0.0.1`
+2. [ ] Create **Alpha Release** workflow (tag changes `alpha-*`)
+3. [ ] Create **Beta Release** workflow (tag changes `beta-*`)
+4. [ ] Create **Production Release** workflow (tag changes `release-*`)
+5. [ ] Add `CONVEX_DEPLOY_KEY` secret to Alpha/Beta/Production workflows
+6. [ ] Set `CONVEX_DEPLOY_ON_CI=1` for Beta and Production workflows
+7. [ ] Configure TestFlight groups for Internal and External testing
+8. [ ] Test: `git tag alpha-0.0.1 && git push origin alpha-0.0.1`
 
 ---
 
 ## Troubleshooting
 
-### Build fails with "No iOS 18 simulators"
-
-- Check Xcode Cloud is using Xcode 16+
-- The pre-build script logs available runtimes
-
-### Version not updating from tag
-
-- Check tag format: must be `beta-X.Y.Z` or `release-X.Y.Z`
-- Check ci_pre_xcodebuild.sh logs for version extraction
-
 ### Wrong Convex DB used
 
-- Check scheme's archive configuration:
-  - PayBackInternal → Internal config → development DB
-  - PayBack → Release config → production DB
+Check scheme's archive configuration:
+
+- PayBackInternal → Internal config → development DB
+- PayBack → Release config → production DB
 
 ### TestFlight upload fails
 
