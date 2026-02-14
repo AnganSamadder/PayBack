@@ -65,8 +65,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockGroupCloudService.addGroup(remoteGroup)
 
         // When: Complete authentication (triggers normalization)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_000_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Group should be normalized with current user added
         XCTAssertGreaterThanOrEqual(sut.groups.count, 1)
@@ -94,8 +93,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
 
         await mockGroupCloudService.addGroup(remoteGroup)
 
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_000_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: All aliases should be consolidated
         XCTAssertGreaterThanOrEqual(sut.groups.count, 1)
@@ -121,8 +119,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
 
         await mockGroupCloudService.addGroup(remoteGroup)
 
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_000_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Duplicates should be removed
         XCTAssertGreaterThanOrEqual(sut.groups.count, 1)
@@ -136,8 +133,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Example User")
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Create a group with exactly 2 members (should be inferred as direct)
         let currentUserMember = GroupMember(id: sut.currentUser.id, name: account.displayName)
@@ -152,8 +148,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockGroupCloudService.addGroup(remoteGroup)
 
         // Trigger reload
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_000_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Should be inferred as direct group
         XCTAssertGreaterThanOrEqual(sut.groups.count, 1)
@@ -168,8 +163,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "John Doe")
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Create group with alias
         let aliasId = UUID()
@@ -199,8 +193,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense)
 
         // Trigger reload
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Expense should be normalized with current user as payer
         XCTAssertGreaterThanOrEqual(sut.expenses.count, 1)
@@ -213,8 +206,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Jane Smith")
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let aliasId = UUID()
         let bob = GroupMember(name: "Bob")
@@ -243,8 +235,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense)
 
         // Trigger reload
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Splits should be normalized
         XCTAssertGreaterThanOrEqual(sut.expenses.count, 1)
@@ -259,8 +250,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Alice Wonder")
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Create multiple aliases
         let alias1 = UUID()
@@ -293,8 +283,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense)
 
         // Trigger reload
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Splits should be aggregated
         XCTAssertGreaterThanOrEqual(sut.expenses.count, 1)
@@ -312,8 +301,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Example User")
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let aliasId = UUID()
         let charlie = GroupMember(name: "Charlie")
@@ -342,8 +330,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense)
 
         // Trigger reload
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Involved members should be normalized and deduplicated
         XCTAssertGreaterThanOrEqual(sut.expenses.count, 1)
@@ -359,8 +346,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "User One")
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let alias1 = UUID()
         let alias2 = UUID()
@@ -392,8 +378,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense)
 
         // Trigger reload
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Aggregated split should have isSettled = false (both must be true)
         XCTAssertGreaterThanOrEqual(sut.expenses.count, 1)
@@ -411,8 +396,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Example User")
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Create expenses without a corresponding group (orphan expenses)
         let orphanGroupId = UUID()
@@ -449,8 +433,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense2)
 
         // Trigger reload
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Group should be synthesized
         XCTAssertGreaterThanOrEqual(sut.groups.count, 1, "Should synthesize group for orphan expenses")
@@ -467,8 +450,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Example User")
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let orphanGroupId = UUID()
         let friend1Id = UUID()
@@ -495,8 +477,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense)
 
         // Trigger reload
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Synthesized group should use participant names
         if let synthesizedGroup = sut.groups.first(where: { $0.id == orphanGroupId }) {
@@ -512,8 +493,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Example User")
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let orphanGroupId = UUID()
         let friendId = UUID()
@@ -535,8 +515,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense)
 
         // Trigger reload
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Synthesized group should be marked as direct
         if let synthesizedGroup = sut.groups.first(where: { $0.id == orphanGroupId }) {
@@ -549,8 +528,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Example User")
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let orphanGroupId = UUID()
         let friendId = UUID()
@@ -586,8 +564,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense2)
 
         // Trigger reload
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Should use first available name
         if let synthesizedGroup = sut.groups.first(where: { $0.id == orphanGroupId }) {
