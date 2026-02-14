@@ -235,10 +235,19 @@ final class Dependencies: Sendable {
     /// Resets the shared instance to default production dependencies.
     /// Useful for cleaning up after tests.
     static func reset() {
+        // Clear state under the lock first
         stateLock.lock()
         convexClient = nil
         _syncManager = nil
-        current = Dependencies()
+        stateLock.unlock()
+
+        // Create fresh instance outside the lock to avoid deadlock:
+        // Dependencies() init calls makeDefaultAccountService() → getConvexClient()
+        // which also acquires stateLock. NSLock is not reentrant.
+        let fresh = Dependencies()
+
+        stateLock.lock()
+        current = fresh
         stateLock.unlock()
     }
 }

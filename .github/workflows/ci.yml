@@ -387,7 +387,7 @@ jobs:
         include:
           - sanitizer: none
             run_on_pr: true
-            timeout: 90
+            timeout: 45
           - sanitizer: thread
             run_on_pr: false
             timeout: 45
@@ -602,9 +602,7 @@ jobs:
           else
             echo "sanitizer_flag=" >> $GITHUB_OUTPUT
             echo "coverage_flag=-enableCodeCoverage YES" >> $GITHUB_OUTPUT
-            # Disable parallel testing with coverage to prevent resource exhaustion
-            # on M1 runners. Parallel clones + coverage instrumentation cause hangs.
-            echo "parallel_flag=-parallel-testing-enabled NO" >> $GITHUB_OUTPUT
+            echo "parallel_flag=-parallel-testing-enabled YES" >> $GITHUB_OUTPUT
           fi
 
       - name: Clean Previous Test Results
