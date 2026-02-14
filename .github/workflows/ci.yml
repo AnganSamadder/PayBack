@@ -387,7 +387,7 @@ jobs:
         include:
           - sanitizer: none
             run_on_pr: true
-            timeout: 60
+            timeout: 90
           - sanitizer: thread
             run_on_pr: false
             timeout: 45
@@ -594,12 +594,17 @@ jobs:
           if [ "${{ matrix.sanitizer }}" = "thread" ]; then
             echo "sanitizer_flag=-enableThreadSanitizer YES" >> $GITHUB_OUTPUT
             echo "coverage_flag=" >> $GITHUB_OUTPUT
+            echo "parallel_flag=-parallel-testing-enabled YES" >> $GITHUB_OUTPUT
           elif [ "${{ matrix.sanitizer }}" = "address" ]; then
             echo "sanitizer_flag=-enableAddressSanitizer YES" >> $GITHUB_OUTPUT
             echo "coverage_flag=" >> $GITHUB_OUTPUT
+            echo "parallel_flag=-parallel-testing-enabled YES" >> $GITHUB_OUTPUT
           else
             echo "sanitizer_flag=" >> $GITHUB_OUTPUT
             echo "coverage_flag=-enableCodeCoverage YES" >> $GITHUB_OUTPUT
+            # Disable parallel testing with coverage to prevent resource exhaustion
+            # on M1 runners. Parallel clones + coverage instrumentation cause hangs.
+            echo "parallel_flag=-parallel-testing-enabled NO" >> $GITHUB_OUTPUT
           fi
 
       - name: Clean Previous Test Results
@@ -616,7 +621,9 @@ jobs:
             -scheme PayBackTests \
             -configuration Debug \
             -destination "$SIMULATOR_DESTINATION" \
-            -parallel-testing-enabled YES \
+            ${{ steps.test-flags.outputs.parallel_flag }} \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
             -resultBundlePath TestResults.xcresult \
             ${{ steps.test-flags.outputs.sanitizer_flag }} \
             ${{ steps.test-flags.outputs.coverage_flag }} \
