@@ -77,13 +77,16 @@ enum AppConfig {
 
     // MARK: - Performance Tracking
 
-    private static var appStartTime: Date?
-    private static var timingMarkers: [(String, Date)] = []
+    private static let timingLock = NSLock()
+    private static var _appStartTime: Date?
+    private static var _timingMarkers: [(String, Date)] = []
 
     /// Call this at the very start of app launch
     static func markAppStart() {
-        appStartTime = Date()
-        timingMarkers = []
+        timingLock.lock()
+        _appStartTime = Date()
+        _timingMarkers = []
+        timingLock.unlock()
         log("⏱️ App launch started")
     }
 
@@ -91,9 +94,12 @@ enum AppConfig {
     static func markTiming(_ label: String) {
         guard verboseLogging else { return }
         let now = Date()
-        timingMarkers.append((label, now))
+        timingLock.lock()
+        _timingMarkers.append((label, now))
+        let start = _appStartTime
+        timingLock.unlock()
 
-        if let start = appStartTime {
+        if let start {
             let elapsed = now.timeIntervalSince(start) * 1000
             print("⏱️ [\(String(format: "%7.1f", elapsed))ms] \(label)")
         }
@@ -101,7 +107,14 @@ enum AppConfig {
 
     /// Print summary of all timing markers
     static func printTimingSummary() {
-        guard verboseLogging, let start = appStartTime else { return }
+        guard verboseLogging else { return }
+        timingLock.lock()
+        guard let start = _appStartTime else {
+            timingLock.unlock()
+            return
+        }
+        let markers = _timingMarkers
+        timingLock.unlock()
 
         print("")
         print("╔═══════════════════════════════════════════════════════════════╗")
@@ -109,7 +122,7 @@ enum AppConfig {
         print("╠═══════════════════════════════════════════════════════════════╣")
 
         var previousTime = start
-        for (label, time) in timingMarkers {
+        for (label, time) in markers {
             let totalMs = time.timeIntervalSince(start) * 1000
             let deltaMs = time.timeIntervalSince(previousTime) * 1000
             print("║ \(String(format: "%6.0f", totalMs))ms (+\(String(format: "%5.0f", deltaMs))ms) \(label.padding(toLength: 35, withPad: " ", startingAt: 0))║")
