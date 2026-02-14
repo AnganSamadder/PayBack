@@ -48,8 +48,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testLinkAccount_SuccessfullyLinksAccount() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Create a group with Alice
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
@@ -84,8 +83,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testLinkAccount_HandlesErrors() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let group = sut.groups[0]
@@ -120,8 +118,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testUpdateFriendLinkStatus_UpdatesLocalFriendState() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let group = sut.groups[0]
@@ -167,8 +164,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testSyncAffectedData_SyncsGroupsWithLinkedMember() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Create multiple groups with Alice
         sut.addGroup(name: "Group1", memberNames: ["Alice", "Bob"])
@@ -219,8 +215,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testSyncAffectedData_HandlesMultipleExpenses() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let group = sut.groups[0]
@@ -271,8 +266,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testReconcileLinkState_UpdatesLocalStateFromRemote() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
         let group = sut.groups[0]
@@ -311,8 +305,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testReconcileLinkState_HandlesPartiallyLinkedFriends() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob", "Charlie"])
         let group = sut.groups[0]
@@ -363,8 +356,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testRetryFailedLinkOperations_RetriesPendingFailures() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // When - trigger retry (even with no failures)
         await sut.reconcileAfterNetworkRecovery()
@@ -378,8 +370,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testSendLinkRequest_ThrowsForAlreadyLinkedMember() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let group = sut.groups[0]
@@ -407,8 +398,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testSendLinkRequest_ThrowsForAccountAlreadyLinkedToAnotherMember() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
         let group = sut.groups[0]
@@ -483,8 +473,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testValidateInviteToken_ReturnsValidationForValidToken() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let tokenId = UUID()
         let memberId = UUID()
@@ -507,8 +496,7 @@ final class AppStoreLinkingTests: XCTestCase {
     func testValidateInviteToken_HandlesInvalidToken() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let tokenId = UUID()
 
