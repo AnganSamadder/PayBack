@@ -1,16 +1,45 @@
 #!/bin/sh
-
-# Xcode Cloud Pre-Build Script
-# Validates environment and provides diagnostics before xcodebuild runs.
-
 set -euo pipefail
 
 echo "=========================================="
-echo "ci_pre_xcodebuild.sh: Pre-build validation"
+echo "ci_pre_xcodebuild.sh: Pre-build"
 echo "=========================================="
+echo "CI_TAG: ${CI_TAG:-none}"
+echo "CI_BUILD_NUMBER: ${CI_BUILD_NUMBER:-none}"
+echo "CI_WORKFLOW: ${CI_WORKFLOW:-none}"
 
-# Navigate to repository root
 cd "$(dirname "$0")/.."
+
+# ----------------------------------------------------------------------------
+# Version Extraction from Tag
+# When a tag like beta-0.1.0 or release-1.0.0 is pushed, extract the version
+# and update the project's marketing version.
+# ----------------------------------------------------------------------------
+if [[ -n "${CI_TAG:-}" ]]; then
+	MARKETING_VERSION=$(echo "$CI_TAG" | sed -E 's/^(beta|release|prod)-//')
+	BUILD_NUMBER="$CI_BUILD_NUMBER"
+
+	echo "Tag detected: $CI_TAG"
+	echo "Marketing Version: $MARKETING_VERSION"
+	echo "Build Number: $BUILD_NUMBER"
+
+	PROJECT_YML="$CI_PRIMARY_REPOSITORY_PATH/project.yml"
+
+	if [[ -f "$PROJECT_YML" ]]; then
+		sed -i.bak "s/MARKETING_VERSION: .*/MARKETING_VERSION: $MARKETING_VERSION/" "$PROJECT_YML"
+		sed -i.bak "s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: $BUILD_NUMBER/" "$PROJECT_YML"
+		rm -f "${PROJECT_YML}.bak"
+
+		echo "Updated project.yml with version $MARKETING_VERSION ($BUILD_NUMBER)"
+
+		cd "$CI_PRIMARY_REPOSITORY_PATH"
+		if command -v bunx >/dev/null 2>&1; then
+			bunx xcodegen generate --spec project.yml
+		elif command -v npx >/dev/null 2>&1; then
+			npx xcodegen generate --spec project.yml
+		fi
+	fi
+fi
 
 # ----------------------------------------------------------------------------
 # Ensure our helper binaries are on PATH
