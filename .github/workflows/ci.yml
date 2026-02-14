@@ -622,8 +622,6 @@ jobs:
             -configuration Debug \
             -destination "$SIMULATOR_DESTINATION" \
             ${{ steps.test-flags.outputs.parallel_flag }} \
-            -test-timeouts-enabled YES \
-            -default-test-execution-time-allowance 120 \
             -resultBundlePath TestResults.xcresult \
             ${{ steps.test-flags.outputs.sanitizer_flag }} \
             ${{ steps.test-flags.outputs.coverage_flag }} \
