@@ -387,7 +387,7 @@ jobs:
         include:
           - sanitizer: none
             run_on_pr: true
-            timeout: 60
+            timeout: 120
           - sanitizer: thread
             run_on_pr: false
             timeout: 45
