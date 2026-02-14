@@ -74,15 +74,12 @@ final class MockCurrencyService: CurrencyServiceProtocol, @unchecked Sendable {
     // MARK: - CurrencyServiceProtocol
 
     func fetchRates(base: String) async throws -> [String: Double] {
-        // Snapshot mutable state under lock
-        lock.lock()
-        let delay = _networkDelay
-        let shouldThrow = _shouldThrowError
-        let error = _errorToThrow
-        _fetchRatesCallCount += 1
-        _lastRequestedBase = base
-        if _shouldThrowError { _shouldThrowError = false }
-        lock.unlock()
+        let (delay, shouldThrow, error) = lock.withLock {
+            _fetchRatesCallCount += 1
+            _lastRequestedBase = base
+            if _shouldThrowError { _shouldThrowError = false }
+            return (_networkDelay, _shouldThrowError, _errorToThrow)
+        }
 
         // Simulate network delay if configured
         if delay > 0 {
@@ -117,20 +114,19 @@ final class MockCurrencyService: CurrencyServiceProtocol, @unchecked Sendable {
 
     /// Reset all tracking and configuration
     func reset() {
-        lock.lock()
-        _fetchRatesCallCount = 0
-        _lastRequestedBase = nil
-        _shouldThrowError = false
-        _networkDelay = 0
-        _errorToThrow = CurrencyServiceError.invalidBase
-        lock.unlock()
+        lock.withLock {
+            _fetchRatesCallCount = 0
+            _lastRequestedBase = nil
+            _shouldThrowError = false
+            _networkDelay = 0
+            _errorToThrow = CurrencyServiceError.invalidBase
+        }
     }
 
-    /// Configure the mock to throw an error on the next call
     func throwErrorOnNextCall(_ error: Error) {
-        lock.lock()
-        _shouldThrowError = true
-        _errorToThrow = error
-        lock.unlock()
+        lock.withLock {
+            _shouldThrowError = true
+            _errorToThrow = error
+        }
     }
 }
