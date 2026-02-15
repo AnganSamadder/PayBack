@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { PrimaryCta } from "./components/PrimaryCta";
 import { FooterLinks } from "./components/FooterLinks";
 
@@ -9,20 +8,6 @@ export default function Home() {
   const accent = "#10d5cf";
   const pink = "#f472b6";
   const muted = "#555a70";
-
-  const [showToast, setShowToast] = useState(false);
-  const [dismissing, setDismissing] = useState(false);
-  const handleCtaClick = () => {
-    setDismissing(false);
-    setShowToast(true);
-  };
-  const handleDismiss = () => {
-    setDismissing(true);
-    setTimeout(() => {
-      setShowToast(false);
-      setDismissing(false);
-    }, 300);
-  };
 
   return (
     <div
@@ -77,84 +62,6 @@ export default function Home() {
               }
             `}</style>
 
-      {showToast && (
-        <div
-          style={{
-            position: "fixed",
-            top: "1.5rem",
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 1000,
-            background: bg,
-            boxShadow: `${shadowR}, inset 0 0 0 1px rgba(16,213,207,0.15)`,
-            borderRadius: "1.2rem",
-            padding: "1rem 1.4rem",
-            display: "flex",
-            alignItems: "center",
-            gap: "0.85rem",
-            maxWidth: "28rem",
-            width: "calc(100% - 2rem)",
-            animation: dismissing ? "slide-up 0.3s ease-in forwards" : "slide-down 0.35s ease-out"
-          }}
-        >
-          <span
-            style={{
-              width: 10,
-              height: 10,
-              borderRadius: "50%",
-              background: accent,
-              display: "inline-block",
-              flexShrink: 0,
-              animation: "pulse-dot 2s ease-in-out infinite"
-            }}
-          />
-          <p
-            style={{ fontSize: "0.88rem", fontFamily: "'Outfit', sans-serif", margin: 0, flex: 1 }}
-          >
-            <span style={{ color: accent, fontWeight: 600 }}>Coming soon on TestFlight!</span>
-            <br />
-            <span style={{ color: muted }}>Check back shortly, we're almost ready.</span>
-          </p>
-          <button
-            onClick={handleDismiss}
-            aria-label="Dismiss"
-            style={{
-              background: bg,
-              border: "none",
-              color: accent,
-              cursor: "pointer",
-              fontSize: "0.85rem",
-              lineHeight: 1,
-              padding: 0,
-              flexShrink: 0,
-              width: 32,
-              height: 32,
-              borderRadius: "50%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              boxShadow:
-                "inset 3px 3px 8px rgba(8,10,16,0.6), inset -3px -3px 8px rgba(50,54,66,0.2)",
-              fontFamily: "'Outfit', sans-serif",
-              fontWeight: 600,
-              transition: "box-shadow 0.15s ease, transform 0.15s ease"
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.transform = "translateY(-1px)";
-              e.currentTarget.style.boxShadow =
-                "4px 4px 10px rgba(8,10,16,0.6), -4px -4px 10px rgba(50,54,66,0.2)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.transform = "translateY(0)";
-              e.currentTarget.style.boxShadow =
-                "inset 3px 3px 8px rgba(8,10,16,0.6), inset -3px -3px 8px rgba(50,54,66,0.2)";
-            }}
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
       <header className="px-6 md:px-10 py-6 flex items-center justify-between">
         <span
           className="text-3xl font-bold"
@@ -164,7 +71,6 @@ export default function Home() {
         </span>
         <PrimaryCta
           className="primary-cta"
-          onClickFallback={handleCtaClick}
           style={{
             color: bg,
             borderRadius: "1rem",
@@ -191,7 +97,6 @@ export default function Home() {
             </p>
             <PrimaryCta
               className="primary-cta text-lg px-14 py-5"
-              onClickFallback={handleCtaClick}
               style={{
                 borderRadius: "1rem",
                 fontFamily: "'Outfit', sans-serif",
@@ -460,7 +365,6 @@ export default function Home() {
         </h2>
         <PrimaryCta
           className="primary-cta text-lg px-12 py-5"
-          onClickFallback={handleCtaClick}
           style={{
             color: bg,
             borderRadius: "1rem",
