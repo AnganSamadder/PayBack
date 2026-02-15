@@ -555,9 +555,6 @@ export const clearAllForUser = mutation({
       await ctx.db.delete(row._id);
     }
 
-    return {
-      deleted_owned_expenses: ownedExpenseByClientId.size,
-      removed_viewer_visibility_rows: viewerExpenseRows.length
-    };
+    return null;
   }
 });

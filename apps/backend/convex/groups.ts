@@ -288,11 +288,7 @@ export const clearAllForUser = mutation({
       sharedGroupsUpdated += 1;
     }
 
-    return {
-      deleted_owned_groups: ownedGroupIdSet.size,
-      left_shared_groups: sharedGroupsUpdated,
-      deleted_empty_shared_groups: emptySharedGroupsDeleted
-    };
+    return null;
   }
 });
 
