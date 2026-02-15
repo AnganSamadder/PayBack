@@ -424,7 +424,7 @@ targets:
         # NSPhotoLibraryUsageDescription: "We need photo library access"
         # NSLocationWhenInUseUsageDescription: "We need location access"
         # UIApplicationSupportsIndirectInputEvents: true
-        # ITSAppUsesNonExemptEncryption: false
+        ITSAppUsesNonExemptEncryption: false
 
     # Entitlements
     entitlements:
