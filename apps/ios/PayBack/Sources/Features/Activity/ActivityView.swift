@@ -162,8 +162,23 @@ private func addTestData() {
         "David": UUID(uuidString: "BFBF4E46-82ED-4D2A-9BD9-4A5C9E88BD3F")!,
         "Emma": UUID(uuidString: "945E7D2A-4CA6-46DA-A0B1-1C4C2D5BB6AE")!,
         "Chris": UUID(uuidString: "CCF8AA41-3BC0-4D3F-939E-FA5F2AEADBBE")!,
-        "Taylor": UUID(uuidString: "3B9B1709-95D8-471A-9048-561B41E3D93A")!
+        "Taylor": UUID(uuidString: "3B9B1709-95D8-471A-9048-561B41E3D93A")!,
+        "Pat": UUID(uuidString: "A1B2C3D4-E5F6-7890-ABCD-EF1234567890")!,
+        "Quinn": UUID(uuidString: "B2C3D4E5-F6A7-8901-BCDE-F12345678901")!
     ]
+
+    let friends: [AccountFriend] = [
+        AccountFriend(memberId: members["Alex"]!, name: "Alex", nickname: nil, originalName: nil, originalNickname: nil, preferNickname: false, firstName: nil, lastName: nil, displayPreference: nil, hasLinkedAccount: false, linkedAccountId: nil, linkedAccountEmail: nil, profileImageUrl: nil, profileColorHex: "#FF6B6B", status: nil, aliasMemberIds: nil),
+        AccountFriend(memberId: members["Sam"]!, name: "Sam", nickname: nil, originalName: nil, originalNickname: nil, preferNickname: false, firstName: nil, lastName: nil, displayPreference: nil, hasLinkedAccount: false, linkedAccountId: nil, linkedAccountEmail: nil, profileImageUrl: nil, profileColorHex: "#4ECDC4", status: nil, aliasMemberIds: nil),
+        AccountFriend(memberId: members["Chris"]!, name: "Chris", nickname: nil, originalName: nil, originalNickname: nil, preferNickname: false, firstName: nil, lastName: nil, displayPreference: nil, hasLinkedAccount: false, linkedAccountId: nil, linkedAccountEmail: nil, profileImageUrl: nil, profileColorHex: "#45B7D1", status: nil, aliasMemberIds: nil),
+        AccountFriend(memberId: members["Taylor"]!, name: "Taylor", nickname: nil, originalName: nil, originalNickname: nil, preferNickname: false, firstName: nil, lastName: nil, displayPreference: nil, hasLinkedAccount: false, linkedAccountId: nil, linkedAccountEmail: nil, profileImageUrl: nil, profileColorHex: "#96CEB4", status: nil, aliasMemberIds: nil),
+        AccountFriend(memberId: members["Sarah"]!, name: "Sarah", nickname: nil, originalName: nil, originalNickname: nil, preferNickname: false, firstName: nil, lastName: nil, displayPreference: nil, hasLinkedAccount: false, linkedAccountId: nil, linkedAccountEmail: nil, profileImageUrl: nil, profileColorHex: "#FFEAA7", status: nil, aliasMemberIds: nil)
+    ]
+    for friend in friends {
+        if !store.friends.contains(where: { $0.memberId == friend.memberId }) {
+            store.friends.append(friend)
+        }
+    }
 
     let groups: [SpendingGroup] = [
         SpendingGroup(
@@ -197,6 +212,17 @@ private func addTestData() {
             members: [current, GroupMember(id: members["Taylor"]!, name: "Taylor")],
             createdAt: Date().addingTimeInterval(-86400 * 60),
             isDirect: true
+        ),
+        SpendingGroup(
+            id: UUID(uuidString: "AABBCC11-22DD-4EE3-AA55-123456789012")!,
+            name: "Weekend Trip",
+            members: [
+                current,
+                GroupMember(id: members["Pat"]!, name: "Pat"),
+                GroupMember(id: members["Quinn"]!, name: "Quinn"),
+                GroupMember(id: members["Alex"]!, name: "Alex")
+            ],
+            createdAt: Date().addingTimeInterval(-86400 * 30)
         )
     ]
 
@@ -327,6 +353,59 @@ private func addTestData() {
                 ExpenseSplit(memberId: members["Emma"]!, amount: 8.10, isSettled: false)
             ],
             isSettled: false
+        ),
+        Expense(
+            id: UUID(uuidString: "EEFF0011-2233-4455-6677-8899AABBCCDD")!,
+            groupId: groups[4].id,
+            description: "Hotel Booking",
+            date: Date().addingTimeInterval(-86400 * 15),
+            totalAmount: 450.00,
+            paidByMemberId: current.id,
+            involvedMemberIds: [current.id, members["Pat"]!, members["Quinn"]!, members["Alex"]!],
+            splits: [
+                ExpenseSplit(memberId: current.id, amount: 112.50, isSettled: true),
+                ExpenseSplit(memberId: members["Pat"]!, amount: 112.50, isSettled: false),
+                ExpenseSplit(memberId: members["Quinn"]!, amount: 112.50, isSettled: false),
+                ExpenseSplit(memberId: members["Alex"]!, amount: 112.50, isSettled: true)
+            ],
+            isSettled: false
+        ),
+        Expense(
+            id: UUID(uuidString: "12345678-90AB-CDEF-1234-567890ABCDEF")!,
+            groupId: groups[4].id,
+            description: "Gas & Tolls",
+            date: Date().addingTimeInterval(-86400 * 14),
+            totalAmount: 80.00,
+            paidByMemberId: members["Quinn"]!,
+            involvedMemberIds: [current.id, members["Pat"]!, members["Quinn"]!, members["Alex"]!],
+            splits: [
+                ExpenseSplit(memberId: current.id, amount: 20.00, isSettled: false),
+                ExpenseSplit(memberId: members["Pat"]!, amount: 20.00, isSettled: false),
+                ExpenseSplit(memberId: members["Quinn"]!, amount: 20.00, isSettled: true),
+                ExpenseSplit(memberId: members["Alex"]!, amount: 20.00, isSettled: false)
+            ],
+            isSettled: false
+        ),
+        Expense(
+            id: UUID(uuidString: "FEDCBA98-7654-3210-FEDC-BA9876543210")!,
+            groupId: groups[0].id,
+            description: "Costco Run",
+            date: Date().addingTimeInterval(-86400 * 20),
+            totalAmount: 156.75,
+            paidByMemberId: members["Sam"]!,
+            involvedMemberIds: [current.id, members["Alex"]!, members["Sam"]!, members["Jordan"]!],
+            splits: [
+                ExpenseSplit(memberId: current.id, amount: 39.19, isSettled: false),
+                ExpenseSplit(memberId: members["Alex"]!, amount: 39.19, isSettled: false),
+                ExpenseSplit(memberId: members["Sam"]!, amount: 39.19, isSettled: true),
+                ExpenseSplit(memberId: members["Jordan"]!, amount: 39.18, isSettled: false)
+            ],
+            isSettled: false,
+            subexpenses: [
+                Subexpense(id: UUID(uuidString: "11111111-AAAA-BBBB-CCCC-DDDDEEEEFFFF")!, amount: 45.00),
+                Subexpense(id: UUID(uuidString: "22222222-AAAA-BBBB-CCCC-DDDDEEEEFFFF")!, amount: 55.25),
+                Subexpense(id: UUID(uuidString: "33333333-AAAA-BBBB-CCCC-DDDDEEEEFFFF")!, amount: 56.50)
+            ]
         )
     ]
 

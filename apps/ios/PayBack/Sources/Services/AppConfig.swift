@@ -2,18 +2,11 @@ import Foundation
 
 /// Centralized configuration for app behavior across different build environments.
 ///
-/// **How it works:**
-/// - `isDebugBuild`: True when compiled with DEBUG flag (Xcode Debug configuration)
-/// - `isCI`: True when running in CI environment (Xcode Cloud sets CI env var)
-/// - `showDebugUI`: True only for local debug builds (not CI)
-/// - `verboseLogging`: Enables detailed startup/runtime logging
-/// - `environment`: Reads `PAYBACK_CONVEX_ENV` from Info.plist with debug/release fallback
-///
 /// **Build Matrix:**
 /// | Build Config | Typical Use | Debug UI | Verbose Logs | Database |
 /// |--------------|-------------|----------|--------------|----------|
 /// | Debug        | Local run   | ✅        | ✅            | Dev      |
-/// | Internal     | Internal testing archives | ❌ | ❌       | Dev      |
+/// | Internal     | Internal testing | ✅ | ❌       | Dev      |
 /// | Release      | External TestFlight / App Store | ❌ | ❌ | Prod |
 enum AppConfig {
 
@@ -36,9 +29,10 @@ enum AppConfig {
     // MARK: - Feature Flags
 
     /// Show debug UI elements (test data buttons, etc.)
-    /// Only visible in local debug builds, hidden in CI and release builds
+    /// Only visible when using development database (local and internal builds).
+    /// Hidden in production builds (App Store, TestFlight external).
     static var showDebugUI: Bool {
-        isDebugBuild && !isCI
+        environment == .development
     }
 
     /// Enable verbose logging for debugging

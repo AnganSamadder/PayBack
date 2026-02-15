@@ -20,18 +20,19 @@ async function getCurrentUser(ctx: any) {
 
 export const create = mutation({
   args: {
-    id: v.optional(v.string()), // UUID from client
+    id: v.optional(v.string()),
     name: v.string(),
     members: v.array(
       v.object({
-        id: v.string(), // UUID
+        id: v.string(),
         name: v.string(),
         profile_image_url: v.optional(v.string()),
         profile_avatar_color: v.optional(v.string()),
         is_current_user: v.optional(v.boolean())
       })
     ),
-    is_direct: v.optional(v.boolean())
+    is_direct: v.optional(v.boolean()),
+    is_payback_generated_mock_data: v.optional(v.boolean())
   },
   handler: async (ctx, args) => {
     const { identity, user } = await getCurrentUser(ctx);
@@ -50,6 +51,8 @@ export const create = mutation({
           name: args.name,
           members: args.members,
           is_direct: args.is_direct ?? existing.is_direct,
+          is_payback_generated_mock_data:
+            args.is_payback_generated_mock_data ?? existing.is_payback_generated_mock_data,
           updated_at: Date.now()
         });
 
@@ -58,13 +61,14 @@ export const create = mutation({
     }
 
     const groupId = await ctx.db.insert("groups", {
-      id: args.id || crypto.randomUUID(), // Use provided UUID if available
+      id: args.id || crypto.randomUUID(),
       name: args.name,
       members: args.members,
       owner_email: user.email,
-      owner_account_id: user.id, // Auth provider ID
+      owner_account_id: user.id,
       owner_id: user._id,
       is_direct: args.is_direct ?? false,
+      is_payback_generated_mock_data: args.is_payback_generated_mock_data ?? false,
       created_at: Date.now(),
       updated_at: Date.now()
     });
@@ -286,6 +290,39 @@ export const clearAllForUser = mutation({
         updated_at: Date.now()
       });
       sharedGroupsUpdated += 1;
+    }
+
+    return null;
+  }
+});
+
+export const clearDebugDataForUser = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+
+    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      user.member_id ?? user.id
+    );
+    const aliases = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+    const membershipIds = new Set([canonicalMemberId, ...aliases]);
+
+    const debugGroups = await ctx.db
+      .query("groups")
+      .withIndex("by_is_payback_generated_mock_data", (q) =>
+        q.eq("is_payback_generated_mock_data", true)
+      )
+      .collect();
+
+    let deleted = 0;
+    for (const group of debugGroups) {
+      const isOwner = membershipIds.has(normalizeMemberId(group.owner_id as any));
+      if (!isOwner) continue;
+
+      await ctx.db.delete(group._id);
+      deleted += 1;
     }
 
     return null;

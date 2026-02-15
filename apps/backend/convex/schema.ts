@@ -101,7 +101,8 @@ export default defineSchema({
     .index("by_owner_account_id", ["owner_account_id"])
     .index("by_owner_email", ["owner_email"])
     .index("by_owner_id", ["owner_id"])
-    .index("by_client_id", ["id"]),
+    .index("by_client_id", ["id"])
+    .index("by_is_payback_generated_mock_data", ["is_payback_generated_mock_data"]),
 
   expenses: defineTable({
     id: v.string(), // UUID string from client
@@ -154,7 +155,8 @@ export default defineSchema({
     .index("by_owner_id", ["owner_id"])
     .index("by_group_id", ["group_id"])
     .index("by_group_ref", ["group_ref"])
-    .index("by_client_id", ["id"]),
+    .index("by_client_id", ["id"])
+    .index("by_is_payback_generated_mock_data", ["is_payback_generated_mock_data"]),
 
   user_expenses: defineTable({
     user_id: v.string(), // The user who "sees" this expense

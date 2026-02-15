@@ -75,8 +75,26 @@ final class ConvexGroupService: GroupCloudService, Sendable {
         try await createGroup(group)
     }
 
-    func upsertDebugGroup(_ group: SpendingGroup) async throws {
-         try await createGroup(group)
+func upsertDebugGroup(_ group: SpendingGroup) async throws {
+        let membersArgs: [ConvexEncodable?] = group.members.map {
+            GroupMemberArg(
+                id: $0.id.uuidString,
+                name: $0.name,
+                profile_image_url: $0.profileImageUrl,
+                profile_avatar_color: $0.profileColorHex,
+                is_current_user: $0.isMe
+            )
+        }
+
+        let args: [String: ConvexEncodable?] = [
+            "id": group.id.uuidString,
+            "name": group.name,
+            "members": membersArgs,
+            "is_direct": group.isDirect ?? false,
+            "is_payback_generated_mock_data": true
+        ]
+
+        _ = try await client.mutation("groups:create", with: args)
     }
 
     private struct GroupMemberArg: Codable, ConvexEncodable {
@@ -114,9 +132,8 @@ final class ConvexGroupService: GroupCloudService, Sendable {
         _ = try await client.mutation("groups:deleteGroups", with: args)
     }
 
-    func deleteDebugGroups() async throws {
-        // Use clearAllForUser which deletes all groups owned by user
-        _ = try await client.mutation("groups:clearAllForUser", with: [:])
+func deleteDebugGroups() async throws {
+        _ = try await client.mutation("groups:clearDebugDataForUser", with: [:])
     }
 
     func clearAllData() async throws {

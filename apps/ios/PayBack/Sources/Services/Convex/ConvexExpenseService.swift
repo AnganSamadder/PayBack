@@ -180,11 +180,58 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
             args["subexpenses"] = subArgs
         }
 
-        try await client.mutation("expenses:create", with: args)
+        _ = try await client.mutation("expenses:create", with: args)
     }
 
     func upsertDebugExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
-        try await upsertExpense(expense, participants: participants)
+        let splitArgs: [ConvexEncodable?] = expense.splits.map {
+            SplitArg(
+                id: $0.id.uuidString,
+                member_id: $0.memberId.uuidString,
+                amount: $0.amount,
+                is_settled: $0.isSettled
+            )
+        }
+
+        let participantMemberIds: [ConvexEncodable?] = participants.map { $0.memberId.uuidString }
+        let involvedMemberIds: [ConvexEncodable?] = expense.involvedMemberIds.map { $0.uuidString }
+
+        let participantArgs: [ConvexEncodable?] = participants.map {
+            ParticipantArg(
+                member_id: $0.memberId.uuidString,
+                name: $0.name,
+                linked_account_id: $0.linkedAccountId,
+                linked_account_email: $0.linkedAccountEmail
+            )
+        }
+
+        var subexpenseArgs: [ConvexEncodable?]? = nil
+        if let subexpenses = expense.subexpenses, !subexpenses.isEmpty {
+            subexpenseArgs = subexpenses.map {
+                SubexpenseArg(id: $0.id.uuidString, amount: $0.amount)
+            }
+        }
+
+        var args: [String: ConvexEncodable?] = [
+            "id": expense.id.uuidString,
+            "group_id": expense.groupId.uuidString,
+            "description": expense.description,
+            "date": expense.date.timeIntervalSince1970 * 1000,
+            "total_amount": expense.totalAmount,
+            "paid_by_member_id": expense.paidByMemberId.uuidString,
+            "involved_member_ids": involvedMemberIds,
+            "splits": splitArgs,
+            "is_settled": expense.isSettled,
+            "participant_member_ids": participantMemberIds,
+            "participants": participantArgs,
+            "is_payback_generated_mock_data": true
+        ]
+
+        if let subArgs = subexpenseArgs {
+            args["subexpenses"] = subArgs
+        }
+
+        _ = try await client.mutation("expenses:create", with: args)
     }
 
     func deleteExpense(_ id: UUID) async throws {
@@ -193,7 +240,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
     }
 
     func deleteDebugExpenses() async throws {
-        _ = try await client.mutation("expenses:clearAllForUser", with: [:])
+        _ = try await client.mutation("expenses:clearDebugDataForUser", with: [:])
     }
 
     func clearLegacyMockExpenses() async throws {

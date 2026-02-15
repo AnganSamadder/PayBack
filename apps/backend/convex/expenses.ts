@@ -8,7 +8,7 @@ import {
   normalizeMemberId,
   normalizeMemberIds
 } from "./identity";
-import { getAllEquivalentMemberIds } from "./aliases";
+import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 
 async function getCurrentUser(ctx: any) {
   const identity = await ctx.auth.getUserIdentity();
@@ -89,7 +89,8 @@ export const create = mutation({
           amount: v.number()
         })
       )
-    )
+    ),
+    is_payback_generated_mock_data: v.optional(v.boolean())
   },
   handler: async (ctx, args) => {
     const { identity, user } = await getCurrentUser(ctx);
@@ -329,7 +330,6 @@ export const create = mutation({
       .unique();
 
     if (existing) {
-      // Update existing record
       await ctx.db.patch(existing._id, {
         description: args.description,
         date: args.date,
@@ -344,6 +344,8 @@ export const create = mutation({
         participant_member_ids: normalizedParticipantMemberIds,
         participant_emails: participantEmails,
         subexpenses: args.subexpenses,
+        is_payback_generated_mock_data:
+          args.is_payback_generated_mock_data ?? existing.is_payback_generated_mock_data,
         updated_at: Date.now()
       });
 
@@ -380,6 +382,7 @@ export const create = mutation({
       participant_emails: participantEmails,
       linked_participants: args.linked_participants,
       subexpenses: args.subexpenses,
+      is_payback_generated_mock_data: args.is_payback_generated_mock_data ?? false,
       created_at: Date.now(),
       updated_at: Date.now()
     });
@@ -553,6 +556,40 @@ export const clearAllForUser = mutation({
       .collect();
     for (const row of viewerExpenseRows) {
       await ctx.db.delete(row._id);
+    }
+
+    return null;
+  }
+});
+
+export const clearDebugDataForUser = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+
+    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      user.member_id ?? user.id
+    );
+    const aliases = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+    const membershipIds = new Set([canonicalMemberId, ...aliases]);
+
+    const debugExpenses = await ctx.db
+      .query("expenses")
+      .withIndex("by_is_payback_generated_mock_data", (q) =>
+        q.eq("is_payback_generated_mock_data", true)
+      )
+      .collect();
+
+    let deleted = 0;
+    for (const expense of debugExpenses) {
+      const isOwner = membershipIds.has(normalizeMemberId(expense.paid_by_member_id));
+      if (!isOwner) continue;
+
+      await reconcileUserExpenses(ctx, expense.id, []);
+      await ctx.db.delete(expense._id);
+      deleted += 1;
     }
 
     return null;
