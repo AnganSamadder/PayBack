@@ -1364,14 +1364,24 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     func markExpenseAsSettled(_ expense: Expense) {
         guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
-        var updatedExpense = expense
-        updatedExpense.isSettled = true
-        // Mark all splits as settled
-        updatedExpense.splits = updatedExpense.splits.map { split in
-            var updatedSplit = split
-            updatedSplit.isSettled = true
-            return updatedSplit
+
+        // Find the current user's split(s) to settle
+        let updatedSplits = expense.splits.map { split in
+            if isMe(split.memberId) {
+                var newSplit = split
+                newSplit.isSettled = true
+                return newSplit
+            }
+            return split
         }
+
+        // Only mark expense as fully settled when ALL splits are settled
+        let allSplitsSettled = updatedSplits.allSatisfy { $0.isSettled }
+
+        var updatedExpense = expense
+        updatedExpense.splits = updatedSplits
+        updatedExpense.isSettled = allSplitsSettled
+
         expenses[idx] = updatedExpense
         persistCurrentState()
         let participants = makeParticipants(for: updatedExpense)

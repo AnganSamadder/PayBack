@@ -267,7 +267,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertTrue(sut.expenses.isEmpty)
     }
 
-    func testMarkExpenseAsSettled_SettlesAllSplits() async throws {
+    func testMarkExpenseAsSettled_OnlySettlesCurrentUserSplit() async throws {
         sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
         let group = sut.groups[0]
         let aliceId = group.members.first(where: { $0.name == "Alice" })!.id
@@ -290,8 +290,10 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         sut.markExpenseAsSettled(expense)
 
         let updatedExpense = sut.expenses.first(where: { $0.id == expense.id })!
-        XCTAssertTrue(updatedExpense.isSettled)
-        XCTAssertTrue(updatedExpense.splits.allSatisfy { $0.isSettled })
+        XCTAssertTrue(updatedExpense.splits.first(where: { $0.memberId == sut.currentUser.id })?.isSettled ?? false)
+        XCTAssertFalse(updatedExpense.splits.first(where: { $0.memberId == aliceId })?.isSettled ?? true)
+        XCTAssertFalse(updatedExpense.splits.first(where: { $0.memberId == bobId })?.isSettled ?? true)
+        XCTAssertFalse(updatedExpense.isSettled)
     }
 
     // MARK: - Settle Current User Edge Cases
