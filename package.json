@@ -29,6 +29,9 @@
     "deploy:web": "vercel deploy --prod",
     "deploy:backend": "turbo deploy --filter=@payback/backend"
   },
+  "dependencies": {
+    "convex": "^1.31.3"
+  },
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",
     "@eslint/js": "^9.21.0",
