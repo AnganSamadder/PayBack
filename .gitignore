@@ -151,3 +151,16 @@ LocalPackages/
 roadmap/
 .todos/
 .sidecar/
+
+# OpenCode IDE
+.opencode/
+
+# Design tool outputs
+docs/design/
+screens.txt
+
+# One-off helper scripts with hardcoded local paths
+scripts/list_stitch_screens.py
+
+# Dev session artifacts
+token-usage-output.txt
