@@ -476,7 +476,8 @@ cat build_output.log test_output.log 2>/dev/null >combined_output.log || cp test
 # Xcode 26+ can emit these even for apps that do not use AppIntents.
 grep "warning:" combined_output.log 2>/dev/null |
 	grep -v "appintentsmetadataprocessor" \
-		>warnings_filtered.log ||
+		| grep -v "ld: warning: duplicate -rpath '@executable_path' ignored" \
+			>warnings_filtered.log ||
 	true
 
 WARNING_COUNT=$(wc -l <warnings_filtered.log 2>/dev/null | tr -d ' ' || echo "0")
