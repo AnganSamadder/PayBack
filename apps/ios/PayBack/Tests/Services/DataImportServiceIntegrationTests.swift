@@ -132,6 +132,65 @@ final class DataImportServiceIntegrationTests: XCTestCase {
         }
     }
 
+    func testImportData_PreservesImportedExpenseSplitAndSubexpenseIds() async {
+        let groupId = UUID()
+        let friendId = UUID()
+        let expenseId = UUID()
+        let splitId1 = UUID()
+        let splitId2 = UUID()
+        let subexpenseId = UUID()
+        let isoDate = ISO8601DateFormatter().string(from: Date())
+
+        let exportText = """
+        ===PAYBACK_EXPORT===
+        EXPORTED_AT: \(isoDate)
+        ACCOUNT_EMAIL: test@example.com
+        CURRENT_USER_ID: \(store.currentUser.id.uuidString)
+        CURRENT_USER_NAME: \(store.currentUser.name)
+
+        [GROUPS]
+        \(groupId.uuidString),Trip,false,false,\(isoDate),2
+
+        [GROUP_MEMBERS]
+        \(groupId.uuidString),\(store.currentUser.id.uuidString),\(store.currentUser.name)
+        \(groupId.uuidString),\(friendId.uuidString),Alice
+
+        [EXPENSES]
+        \(expenseId.uuidString),\(groupId.uuidString),Dinner,\(isoDate),100.0,\(store.currentUser.id.uuidString),false,false
+
+        [EXPENSE_INVOLVED_MEMBERS]
+        \(expenseId.uuidString),\(store.currentUser.id.uuidString)
+        \(expenseId.uuidString),\(friendId.uuidString)
+
+        [EXPENSE_SPLITS]
+        \(expenseId.uuidString),\(splitId1.uuidString),\(store.currentUser.id.uuidString),50.0,false
+        \(expenseId.uuidString),\(splitId2.uuidString),\(friendId.uuidString),50.0,false
+
+        [EXPENSE_SUBEXPENSES]
+        \(expenseId.uuidString),\(subexpenseId.uuidString),100.0
+
+        ===END_PAYBACK_EXPORT===
+        """
+
+        let result = await DataImportService.importData(from: exportText, into: store)
+
+        switch result {
+        case .success, .partialSuccess:
+            guard let importedExpense = store.expenses.first(where: { $0.id == expenseId }) else {
+                XCTFail("Expected imported expense with original ID")
+                return
+            }
+            XCTAssertEqual(importedExpense.id, expenseId)
+            XCTAssertTrue(importedExpense.splits.contains { $0.id == splitId1 })
+            XCTAssertTrue(importedExpense.splits.contains { $0.id == splitId2 })
+            XCTAssertEqual(importedExpense.subexpenses?.first?.id, subexpenseId)
+        case .incompatibleFormat(let message):
+            XCTFail("Import failed: \(message)")
+        case .needsResolution(let conflicts):
+            XCTFail("Unexpected resolution needed: \(conflicts)")
+        }
+    }
+
     // MARK: - Helper Methods
 
     private func createMinimalExport() -> String {

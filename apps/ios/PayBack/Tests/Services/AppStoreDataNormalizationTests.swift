@@ -559,6 +559,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         )
 
         sut.addExpense(expense)
+        try await Task.sleep(nanoseconds: 200_000_000)
 
         let syncedParticipants = await mockExpenseCloudService.participants(for: expense.id)
         let participants = try XCTUnwrap(syncedParticipants)

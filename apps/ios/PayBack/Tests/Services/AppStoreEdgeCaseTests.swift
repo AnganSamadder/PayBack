@@ -134,6 +134,30 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertFalse(sut.friends.contains { $0.memberId == sut.currentUser.id })
     }
 
+    func testPurgeCurrentUserFriendRecords_DoesNotRemoveSameNameFriendWhenAuthenticated() async throws {
+        // Given
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let sameNameDifferentIdFriend = AccountFriend(
+            memberId: UUID(),
+            name: "Example User",
+            nickname: nil,
+            hasLinkedAccount: false,
+            linkedAccountId: nil,
+            linkedAccountEmail: nil
+        )
+
+        sut.friends = [sameNameDifferentIdFriend]
+
+        // When
+        sut.purgeCurrentUserFriendRecords()
+
+        // Then
+        XCTAssertTrue(sut.friends.contains { $0.memberId == sameNameDifferentIdFriend.memberId })
+    }
+
     func testNormalizeDirectGroupFlags_UpdatesInferredDirectGroups() async throws {
         // Given
         let directGroup = SpendingGroup(
@@ -229,6 +253,64 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
         // Then
         XCTAssertFalse(canSettle)
+    }
+
+    func testCanDeleteExpense_ReturnsTrueForOwnerAccount() async throws {
+        let account = UserAccount(id: "owner-auth", email: "owner@test.com", displayName: "Owner")
+        sut.session = UserSession(account: account)
+
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Owner Expense",
+            totalAmount: 50,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id],
+            splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 50, isSettled: false)],
+            ownerEmail: account.email,
+            ownerAccountId: account.id
+        )
+
+        XCTAssertTrue(sut.canDeleteExpense(expense))
+    }
+
+    func testCanDeleteExpense_ReturnsFalseForNonOwnerAccount() async throws {
+        let account = UserAccount(id: "viewer-auth", email: "viewer@test.com", displayName: "Viewer")
+        sut.session = UserSession(account: account)
+
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Other Expense",
+            totalAmount: 20,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id],
+            splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 20, isSettled: false)],
+            ownerEmail: "owner@test.com",
+            ownerAccountId: "owner-auth"
+        )
+
+        XCTAssertFalse(sut.canDeleteExpense(expense))
+    }
+
+    func testDeleteExpense_NonOwner_DoesNotRemoveLocally() async throws {
+        let account = UserAccount(id: "viewer-auth", email: "viewer@test.com", displayName: "Viewer")
+        sut.session = UserSession(account: account)
+
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Protected Expense",
+            totalAmount: 30,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id],
+            splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 30, isSettled: false)],
+            ownerEmail: "owner@test.com",
+            ownerAccountId: "owner-auth"
+        )
+        sut.addExpense(expense)
+
+        sut.deleteExpense(expense)
+
+        XCTAssertEqual(sut.expenses.count, 1)
+        XCTAssertEqual(sut.expenses.first?.id, expense.id)
     }
 
     // MARK: - Friend Members Edge Cases
@@ -342,6 +424,44 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
         // Then
         XCTAssertTrue(isCurrent)
+    }
+
+    func testIsCurrentUser_WithEquivalentAliasId_ReturnsTrue() async throws {
+        // Given
+        let aliasId = UUID()
+        let account = UserAccount(
+            id: "test-123",
+            email: "test@example.com",
+            displayName: "Example User",
+            equivalentMemberIds: [aliasId]
+        )
+        await mockAccountService.addAccount(account)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        let member = GroupMember(id: aliasId, name: "Alias")
+
+        // When
+        let isCurrent = sut.isCurrentUser(member)
+
+        // Then
+        XCTAssertTrue(isCurrent)
+    }
+
+    func testIsCurrentUser_WithSessionAndSameNameDifferentId_ReturnsFalse() async throws {
+        // Given
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        await mockAccountService.addAccount(account)
+        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        let member = GroupMember(id: UUID(), name: account.displayName)
+
+        // When
+        let isCurrent = sut.isCurrentUser(member)
+
+        // Then
+        XCTAssertFalse(isCurrent)
     }
 
     func testIsCurrentUser_WithMatchingName_ReturnsTrue() async throws {

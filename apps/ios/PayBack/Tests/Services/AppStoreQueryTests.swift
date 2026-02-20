@@ -88,6 +88,34 @@ final class AppStoreQueryTests: XCTestCase {
         XCTAssertEqual(preview.totalBalance, 20.0, accuracy: 0.01)
     }
 
+    func testGenerateExpensePreview_ExcludesSettledSplitsFromBalanceTotals() async throws {
+        // Given
+        sut.addGroup(name: "Trip", memberNames: ["Alice"])
+        let group = sut.groups[0]
+        let alice = group.members.first { $0.name == "Alice" }!
+
+        // Alice paid, but the current user's split is already settled.
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 100,
+            paidByMemberId: alice.id,
+            involvedMemberIds: [alice.id, sut.currentUser.id],
+            splits: [
+                ExpenseSplit(memberId: alice.id, amount: 50, isSettled: false),
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 50, isSettled: true)
+            ],
+            isSettled: false
+        )
+        sut.addExpense(expense)
+
+        // When
+        let preview = sut.generateExpensePreview(forMemberId: alice.id)
+
+        // Then
+        XCTAssertEqual(preview.totalBalance, 0.0, accuracy: 0.01)
+    }
+
     func testGenerateExpensePreview_SeparatesPersonalAndGroupExpenses() async throws {
         // Given
         // Direct group with Alice

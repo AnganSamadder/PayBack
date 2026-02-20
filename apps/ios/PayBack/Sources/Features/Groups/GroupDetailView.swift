@@ -149,9 +149,10 @@ struct GroupDetailView: View {
     private func expenseRow(_ exp: Expense) -> some View {
         let otherSplits = exp.splits.filter { !isMe($0.memberId) }
         let allOthersSettled = !otherSplits.isEmpty && otherSplits.allSatisfy(\.isSettled)
+        let mySplits = exp.splits.filter { isMe($0.memberId) }
         let mySettled = isMe(exp.paidByMemberId)
             ? allOthersSettled
-            : exp.isSettled(for: store.currentUser.id)
+            : !mySplits.isEmpty && mySplits.allSatisfy(\.isSettled)
 
         return HStack {
             VStack(alignment: .leading) {
@@ -661,7 +662,7 @@ private struct SettleConfirmationView: View {
 
     private func memberName(for id: UUID, in expense: Expense) -> String {
         // Current user always shows their name
-        if id == store.currentUser.id {
+        if store.isMe(id) {
             return store.currentUser.name
         }
 
@@ -858,7 +859,10 @@ private struct SettleConfirmationView: View {
                                     }
 
                                     // Your Split
-                                    if let userSplit = expense.split(for: store.currentUser.id), !userSplit.isSettled {
+                                    let myUnsettledAmount = expense.splits
+                                        .filter { store.isMe($0.memberId) && !$0.isSettled }
+                                        .reduce(0) { $0 + $1.amount }
+                                    if myUnsettledAmount > 0 {
                                         HStack {
                                             Text("Your share:")
                                                 .font(.system(.caption, design: .rounded))
@@ -866,7 +870,7 @@ private struct SettleConfirmationView: View {
 
                                             Spacer()
 
-                                            Text(userSplit.amount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                                            Text(myUnsettledAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                                                 .font(.system(.callout, design: .rounded, weight: .medium))
                                                 .foregroundStyle(AppTheme.settlementText)
                                         }
@@ -1003,8 +1007,9 @@ private struct SettleModal: View {
     var unsettledExpenses: [Expense] {
         let allExpenses = store.expenses(in: group.id)
         let filtered = allExpenses.filter { expense in
-            // Show expenses where the current user's split is NOT settled
-            !expense.isSettled(for: store.currentUser.id)
+            // Show expenses where ANY of the current user's equivalent splits are still unsettled.
+            let mySplits = expense.splits.filter { store.isMe($0.memberId) }
+            return mySplits.contains { !$0.isSettled }
         }
 
         print("📊 Expense Analysis:")
@@ -1012,9 +1017,11 @@ private struct SettleModal: View {
         print("   - Unsettled expenses: \(filtered.count)")
 
         for expense in allExpenses {
+            let mySplits = expense.splits.filter { store.isMe($0.memberId) }
+            let currentUserSettled = !mySplits.contains { !$0.isSettled }
             print("   - Expense: \(expense.description)")
             print("     * Fully settled: \(expense.isSettled)")
-            print("     * Current user settled: \(expense.isSettled(for: store.currentUser.id))")
+            print("     * Current user settled: \(currentUserSettled)")
             print("     * Can settle: \(store.canSettleExpenseForSelf(expense))")
         }
 
@@ -1033,28 +1040,32 @@ private struct SettleModal: View {
 
     var paymentRecipients: [(member: GroupMember, amount: Double)] {
         let selectedExpenses = unsettledExpenses.filter { selectedExpenseIds.contains($0.id) }
-
-        var payments: [UUID: Double] = [:]
+        var payments: [(memberId: UUID, amount: Double)] = []
 
         for expense in selectedExpenses {
             // Only consider expenses where current user is not the payer
-            if expense.paidByMemberId != store.currentUser.id {
-                // Find current user's split
-                if let userSplit = expense.split(for: store.currentUser.id), !userSplit.isSettled {
-                    // Add amount to the person who paid
-                    payments[expense.paidByMemberId, default: 0] += userSplit.amount
+            if !store.isMe(expense.paidByMemberId) {
+                let unsettledMyAmount = expense.splits
+                    .filter { store.isMe($0.memberId) && !$0.isSettled }
+                    .reduce(0) { $0 + $1.amount }
+                if unsettledMyAmount > 0 {
+                    if let index = payments.firstIndex(where: {
+                        store.areSamePerson($0.memberId, expense.paidByMemberId)
+                    }) {
+                        payments[index].amount += unsettledMyAmount
+                    } else {
+                        payments.append((memberId: expense.paidByMemberId, amount: unsettledMyAmount))
+                    }
                 }
             }
         }
 
-        // Convert to array with member objects
-        return payments.map { (memberId, amount) in
-            if let member = group.members.first(where: { $0.id == memberId }) {
+        return payments.compactMap { (memberId, amount) in
+            if let member = store.navigationMember(id: memberId) {
                 return (member: member, amount: amount)
             }
             return nil
         }
-        .compactMap { $0 }
         .sorted { $0.member.name < $1.member.name }
     }
 
@@ -1187,9 +1198,11 @@ private struct SettleModal: View {
         print("🔄 Starting settlement process for \(selectedExpenseIds.count) expenses")
         for expenseId in selectedExpenseIds {
             if let expense = unsettledExpenses.first(where: { $0.id == expenseId }) {
+                let mySplits = expense.splits.filter { store.isMe($0.memberId) }
+                let currentUserSettled = !mySplits.contains { !$0.isSettled }
                 print("📝 Processing expense: \(expense.description)")
                 print("   - Can settle for self: \(store.canSettleExpenseForSelf(expense))")
-                print("   - Current user settled: \(expense.isSettled(for: store.currentUser.id))")
+                print("   - Current user settled: \(currentUserSettled)")
                 print("   - Expense fully settled: \(expense.isSettled)")
 
                 // Only settle if current user can settle this expense

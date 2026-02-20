@@ -71,16 +71,16 @@ struct ExpenseDetailView: View {
                             PaymentDetailRow(
                                 title: "Paid by",
                                 value: memberName(for: expense.paidByMemberId),
-                                isHighlighted: expense.paidByMemberId == store.currentUser.id
+                                isHighlighted: store.isMe(expense.paidByMemberId)
                             )
 
                             // Splits
-                            ForEach(expense.splits.filter { $0.memberId != expense.paidByMemberId }) { split in
+                            ForEach(expense.splits.filter { !store.areSamePerson($0.memberId, expense.paidByMemberId) }) { split in
                                 HStack {
                                     PaymentDetailRow(
-                                        title: split.memberId == store.currentUser.id ? "You owe" : "\(memberName(for: split.memberId)) owes",
+                                        title: store.isMe(split.memberId) ? "You owe" : "\(memberName(for: split.memberId)) owes",
                                         value: currency(split.amount),
-                                        isHighlighted: split.memberId == store.currentUser.id
+                                        isHighlighted: store.isMe(split.memberId)
                                     )
 
                                     // Settlement status icon
@@ -181,14 +181,14 @@ struct ExpenseDetailView: View {
 
     private var shouldShowSettleButton: Bool {
         // Show settle button if current user is involved in the expense
-        let isPaidByUser = expense.paidByMemberId == store.currentUser.id
-        let isOwingUser = expense.splits.contains { $0.memberId == store.currentUser.id }
+        let isPaidByUser = store.isMe(expense.paidByMemberId)
+        let isOwingUser = expense.splits.contains { store.isMe($0.memberId) }
         return isPaidByUser || isOwingUser
     }
 
     private func memberName(for id: UUID) -> String {
         // Current user always shows their name
-        if id == store.currentUser.id {
+        if store.isMe(id) {
             return store.currentUser.name
         }
 
@@ -254,9 +254,9 @@ enum SettleMethod: String, CaseIterable {
     var description: String {
         switch self {
         case .markAsPaid:
-            return "Mark this expense as settled between all parties"
+            return "Mark your share of this expense as settled"
         case .deleteExpense:
-            return "Remove this expense from your records"
+            return "Delete this expense for everyone (owner only)"
         }
     }
 
@@ -287,6 +287,14 @@ struct SettleExpenseSheet: View {
     let expense: Expense
     @Binding var settleMethod: SettleMethod
 
+    private var availableSettleMethods: [SettleMethod] {
+        var methods: [SettleMethod] = [.markAsPaid]
+        if store.canDeleteExpense(expense) {
+            methods.append(.deleteExpense)
+        }
+        return methods
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
@@ -308,7 +316,7 @@ struct SettleExpenseSheet: View {
 
                 // Settle method picker
                 VStack(spacing: 12) {
-                    ForEach(SettleMethod.allCases, id: \.self) { method in
+                    ForEach(availableSettleMethods, id: \.self) { method in
                         Button(action: { settleMethod = method }) {
                             HStack {
                                 Image(systemName: method.icon)
@@ -365,6 +373,11 @@ struct SettleExpenseSheet: View {
             .background(AppTheme.background)
             .navigationTitle("Settle Expense")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                if !store.canDeleteExpense(expense), settleMethod == .deleteExpense {
+                    settleMethod = .markAsPaid
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -376,11 +389,11 @@ struct SettleExpenseSheet: View {
     private func settleExpense() {
         switch settleMethod {
         case .markAsPaid:
-            // Mark the expense as settled
-            store.markExpenseAsSettled(expense)
+            // Mark only the current user's share as settled.
+            store.settleExpenseForCurrentUser(expense)
             dismiss()
         case .deleteExpense:
-            // Remove the expense
+            guard store.canDeleteExpense(expense) else { return }
             store.deleteExpense(expense)
             dismiss()
         }

@@ -432,8 +432,26 @@ final class AppStore: ObservableObject {
         sessionMonitorTask?.cancel()
         sessionMonitorTask = Task { @MainActor in
             for await account in accountService.monitorSession() {
-                if account == nil && self.session != nil {
-                     self.handleForcedLogout(reason: "Account deleted")
+                if let account {
+                    let previousSession = self.session
+                    self.session = UserSession(account: account)
+
+                    if let linkedId = account.linkedMemberId, self.currentUser.id != linkedId {
+                        self.currentUser = GroupMember(
+                            id: linkedId,
+                            name: self.currentUser.name,
+                            profileImageUrl: self.currentUser.profileImageUrl,
+                            profileColorHex: self.currentUser.profileColorHex,
+                            isCurrentUser: true
+                        )
+                    }
+
+                    // Keep persisted session identity in sync with realtime account updates.
+                    if previousSession?.account != self.session?.account {
+                        self.persistCurrentState()
+                    }
+                } else if self.session != nil {
+                    self.handleForcedLogout(reason: "Account deleted")
                 }
             }
         }
@@ -1324,20 +1342,30 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     // MARK: - Expenses
     func addExpense(_ expense: Expense) {
-        expenses.append(expense)
+        var expenseToStore = expense
+        if expenseToStore.ownerEmail == nil || expenseToStore.ownerAccountId == nil {
+            expenseToStore.ownerEmail = session?.account.email
+            expenseToStore.ownerAccountId = session?.account.id
+        }
+        expenses.append(expenseToStore)
         persistCurrentState()
         if !isImporting {
-            let participants = makeParticipants(for: expense)
-            queueExpenseUpsert(expense, participants: participants)
+            let participants = makeParticipants(for: expenseToStore)
+            queueExpenseUpsert(expenseToStore, participants: participants)
         }
     }
 
     func updateExpense(_ expense: Expense) {
         guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
-        expenses[idx] = expense
+        var expenseToStore = expense
+        if expenseToStore.ownerEmail == nil || expenseToStore.ownerAccountId == nil {
+            expenseToStore.ownerEmail = expenses[idx].ownerEmail
+            expenseToStore.ownerAccountId = expenses[idx].ownerAccountId
+        }
+        expenses[idx] = expenseToStore
         persistCurrentState()
-        let participants = makeParticipants(for: expense)
-        queueExpenseUpsert(expense, participants: participants)
+        let participants = makeParticipants(for: expenseToStore)
+        queueExpenseUpsert(expenseToStore, participants: participants)
     }
 
     func deleteExpenses(groupId: UUID, at offsets: IndexSet) {
@@ -1346,7 +1374,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
         let validOffsets = offsets.filter { $0 < groupExpenses.count }
         guard !validOffsets.isEmpty else { return }
 
-        let ids = validOffsets.map { groupExpenses[$0].id }
+        let ids = validOffsets
+            .map { groupExpenses[$0] }
+            .filter { canDeleteExpense($0) }
+            .map { $0.id }
+        guard !ids.isEmpty else { return }
         expenses.removeAll { ids.contains($0.id) }
         persistCurrentState()
         for id in ids {
@@ -1355,6 +1387,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func deleteExpense(_ expense: Expense) {
+        guard canDeleteExpense(expense) else {
+            #if DEBUG
+            print("⚠️ Attempted to delete non-owned expense \(expense.id)")
+            #endif
+            return
+        }
         expenses.removeAll { $0.id == expense.id }
         persistCurrentState()
         queueExpenseDelete(expense.id)
@@ -1394,7 +1432,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
 
         let updatedSplits = expense.splits.map { split in
-            if split.memberId == memberId {
+            if areSamePerson(split.memberId, memberId) {
                 var newSplit = split
                 newSplit.isSettled = true
                 return newSplit
@@ -1404,17 +1442,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         let allSplitsSettled = updatedSplits.allSatisfy { $0.isSettled }
 
-        let updatedExpense = Expense(
-            id: expense.id,
-            groupId: expense.groupId,
-            description: expense.description,
-            date: expense.date,
-            totalAmount: expense.totalAmount,
-            paidByMemberId: expense.paidByMemberId,
-            involvedMemberIds: expense.involvedMemberIds,
-            splits: updatedSplits,
-            isSettled: allSplitsSettled
-        )
+        var updatedExpense = expense
+        updatedExpense.splits = updatedSplits
+        updatedExpense.isSettled = allSplitsSettled
 
         print("   📊 Expense fully settled: \(updatedExpense.isSettled)")
 
@@ -2052,17 +2082,16 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func isCurrentUser(_ member: GroupMember) -> Bool {
-        if member.id == currentUser.id {
+        if isMe(member.id) {
             return true
         }
         if normalizedName(member.name) == "you" {
             return true
         }
-        if let account = session?.account,
-           let linkedMemberId = account.linkedMemberId,
-           member.id == linkedMemberId {
-            return true
-        }
+        // In authenticated sessions, identity resolution must be ID-based only
+        // (plus explicit "You" label) to avoid same-name collisions.
+        guard session == nil else { return false }
+
         if normalizedName(member.name) == normalizedName(currentUser.name) {
             return true
         }
@@ -2296,21 +2325,14 @@ func completeAuthentication(id: String, email: String, name: String?) {
             return true
         }
 
-        // Fallback: If unlinked, duplicates usually happen if name matches exactly
-        // But only if we are signed in and the friend is NOT linked to someone else
-        guard let account = session?.account else {
-            // If not signed in, matching names is best guess
-            return friendName == currentName
+        // Authenticated sessions must use identifier-based matching only.
+        // Name-based fallback can incorrectly hide real people who share a name.
+        if session?.account != nil {
+            return false
         }
 
-        // If friend is NOT linked, but has same name as user...
-        // We should be careful: a friend may have the same name as the current user.
-        // If the friend name equals the current user's display name, it is likely a self-reference.
-        if !friend.hasLinkedAccount {
-             return friendName == normalizedName(account.displayName)
-        }
-
-        return false
+        // Pre-auth fallback used only in local/no-session contexts.
+        return friendName == currentName
     }
 
     private func makeParticipants(for expense: Expense) -> [ExpenseParticipant] {
@@ -2364,23 +2386,41 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func settleExpenseForCurrentUser(_ expense: Expense) {
-        settleExpenseForMember(expense, memberId: currentUser.id)
+        markExpenseAsSettled(expense)
     }
 
     func canSettleExpenseForAll(_ expense: Expense) -> Bool {
         // Only the person who paid can settle for everyone
-        return expense.paidByMemberId == currentUser.id
+        return isMe(expense.paidByMemberId)
     }
 
     func canSettleExpenseForSelf(_ expense: Expense) -> Bool {
-        // Anyone involved in the expense can settle their own part
-        let canSettle = expense.involvedMemberIds.contains(currentUser.id)
+        // Anyone involved in the expense can settle their own unresolved part.
+        let hasOwnUnsettledSplit = expense.splits.contains { split in
+            isMe(split.memberId) && !split.isSettled
+        }
+        let canSettle = hasOwnUnsettledSplit || expense.involvedMemberIds.contains(where: { isMe($0) })
         print("🔐 canSettleExpenseForSelf check:")
         print("   - Expense ID: \(expense.id)")
         print("   - Current user ID: \(currentUser.id)")
         print("   - Involved member IDs: \(expense.involvedMemberIds)")
         print("   - Can settle: \(canSettle)")
         return canSettle
+    }
+
+    func canDeleteExpense(_ expense: Expense) -> Bool {
+        guard let account = session?.account else {
+            // Local/offline mode: preserve prior behavior when no authenticated session exists.
+            return true
+        }
+        if let ownerAccountId = expense.ownerAccountId, ownerAccountId == account.id {
+            return true
+        }
+        if let ownerEmail = expense.ownerEmail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            return ownerEmail == account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        // Legacy fallback: if owner metadata is absent, allow only when the payer is current-user-equivalent.
+        return isMe(expense.paidByMemberId)
     }
 
     // MARK: - Queries
@@ -2400,13 +2440,24 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func unsettledExpensesInvolvingCurrentUser() -> [Expense] {
-        let userIds = currentUserMemberIds
         return expenses
             .filter { expense in
-                let isInvolved = expense.involvedMemberIds.contains { userIds.contains($0) }
-                // Check if settled using any of the user's IDs
-                let isSettled = userIds.allSatisfy { expense.isSettled(for: $0) }
-                return isInvolved && !isSettled
+                let isInvolved = expense.involvedMemberIds.contains { isMe($0) } ||
+                    isMe(expense.paidByMemberId) ||
+                    expense.splits.contains { isMe($0.memberId) }
+                guard isInvolved else { return false }
+
+                if isMe(expense.paidByMemberId) {
+                    let otherSplits = expense.splits.filter { !isMe($0.memberId) }
+                    let settledAsPayer = otherSplits.isEmpty
+                        ? (expense.isSettled || expense.splits.allSatisfy(\.isSettled))
+                        : otherSplits.allSatisfy(\.isSettled)
+                    return !settledAsPayer
+                }
+
+                let ownSplits = expense.splits.filter { isMe($0.memberId) }
+                let settledAsParticipant = !ownSplits.isEmpty && ownSplits.allSatisfy(\.isSettled)
+                return !settledAsParticipant
             }
             .sorted(by: { $0.date > $1.date })
     }
@@ -2879,12 +2930,15 @@ func completeAuthentication(id: String, email: String, name: String?) {
             if areSamePerson(expense.paidByMemberId, memberId) {
                 // They paid, so others owe them
                 let othersOwe = expense.splits
-                    .filter { !areSamePerson($0.memberId, memberId) }
+                    .filter { !areSamePerson($0.memberId, memberId) && !$0.isSettled }
                     .reduce(0.0) { $0 + $1.amount }
                 totalBalance += othersOwe
-            } else if let split = expense.splits.first(where: { areSamePerson($0.memberId, memberId) }) {
+            } else {
                 // They owe someone
-                totalBalance -= split.amount
+                let unsettledAmount = expense.splits
+                    .filter { areSamePerson($0.memberId, memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
+                totalBalance -= unsettledAmount
             }
         }
 

@@ -323,6 +323,44 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertFalse(updatedExpense.isSettled)
     }
 
+    func testSettleExpenseForCurrentUser_SettlesEquivalentAliasSplit() async throws {
+        // Given
+        let aliasId = UUID()
+        sut.session = UserSession(
+            account: UserAccount(
+                id: "test-123",
+                email: "test@example.com",
+                displayName: "Example User",
+                equivalentMemberIds: [aliasId]
+            )
+        )
+
+        sut.addGroup(name: "Trip", memberNames: ["Alice"])
+        let group = sut.groups[0]
+        let aliceId = group.members.first(where: { $0.name == "Alice" })!.id
+
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 100,
+            paidByMemberId: aliceId,
+            involvedMemberIds: [aliceId, aliasId],
+            splits: [
+                ExpenseSplit(memberId: aliceId, amount: 50),
+                ExpenseSplit(memberId: aliasId, amount: 50)
+            ]
+        )
+        sut.addExpense(expense)
+
+        // When
+        sut.settleExpenseForCurrentUser(expense)
+
+        // Then
+        let updatedExpense = sut.expenses[0]
+        XCTAssertTrue(updatedExpense.splits.first(where: { $0.memberId == aliasId })?.isSettled ?? false)
+        XCTAssertFalse(updatedExpense.isSettled)
+    }
+
     // MARK: - Can Settle Expense Tests
 
     func testCanSettleExpenseForAll_UserIsPayer_ReturnsTrue() async throws {
@@ -363,6 +401,41 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         )
 
         XCTAssertFalse(sut.canSettleExpenseForAll(expense))
+    }
+
+    func testCanSettleExpenseForSelf_ReturnsTrueForEquivalentAliasInvolvedMember() async throws {
+        // Given
+        let aliasId = UUID()
+        sut.session = UserSession(
+            account: UserAccount(
+                id: "test-123",
+                email: "test@example.com",
+                displayName: "Example User",
+                equivalentMemberIds: [aliasId]
+            )
+        )
+
+        sut.addGroup(name: "Trip", memberNames: ["Alice"])
+        let group = sut.groups[0]
+        let aliceId = group.members.first(where: { $0.name == "Alice" })!.id
+
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 100,
+            paidByMemberId: aliceId,
+            involvedMemberIds: [aliceId, aliasId],
+            splits: [
+                ExpenseSplit(memberId: aliceId, amount: 50),
+                ExpenseSplit(memberId: aliasId, amount: 50)
+            ]
+        )
+
+        // When
+        let canSettle = sut.canSettleExpenseForSelf(expense)
+
+        // Then
+        XCTAssertTrue(canSettle)
     }
 
     // MARK: - Delete Member Edge Cases

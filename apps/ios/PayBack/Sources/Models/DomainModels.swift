@@ -112,9 +112,11 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
     var participantNames: [UUID: String]? // Optional cache of participant display names from remote payload
     var isDebug: Bool // Whether this is debug/test data (not synced to real transactions)
     var subexpenses: [Subexpense]? // Optional breakdown of the total amount into sub-costs
+    var ownerEmail: String?
+    var ownerAccountId: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, groupId, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug, subexpenses
+        case id, groupId, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug, subexpenses, ownerEmail, ownerAccountId
     }
 
     init(from decoder: Decoder) throws {
@@ -134,6 +136,8 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         isDebug = try container.decodeIfPresent(Bool.self, forKey: .isDebug) ?? false
         // subexpenses is optional - decode if present, otherwise nil
         subexpenses = try container.decodeIfPresent([Subexpense].self, forKey: .subexpenses)
+        ownerEmail = try container.decodeIfPresent(String.self, forKey: .ownerEmail)
+        ownerAccountId = try container.decodeIfPresent(String.self, forKey: .ownerAccountId)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -159,6 +163,12 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         if let subexpenses = subexpenses, !subexpenses.isEmpty {
             try container.encode(subexpenses, forKey: .subexpenses)
         }
+        if let ownerEmail {
+            try container.encode(ownerEmail, forKey: .ownerEmail)
+        }
+        if let ownerAccountId {
+            try container.encode(ownerAccountId, forKey: .ownerAccountId)
+        }
     }
 
     init(
@@ -173,7 +183,9 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         isSettled: Bool = false,
         participantNames: [UUID: String]? = nil,
         isDebug: Bool = false,
-        subexpenses: [Subexpense]? = nil
+        subexpenses: [Subexpense]? = nil,
+        ownerEmail: String? = nil,
+        ownerAccountId: String? = nil
     ) {
         self.id = id
         self.groupId = groupId
@@ -187,6 +199,8 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         self.participantNames = participantNames
         self.isDebug = isDebug
         self.subexpenses = subexpenses
+        self.ownerEmail = ownerEmail
+        self.ownerAccountId = ownerAccountId
     }
 
     // Computed property to check if all splits are settled

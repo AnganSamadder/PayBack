@@ -680,7 +680,7 @@ struct DataImportService {
             let splitEntries = parsedData.expenseSplits.filter { $0.expenseId == parsedExpense.id }
             let newSplits = splitEntries.map { entry in
                 ExpenseSplit(
-                    id: UUID(),
+                    id: entry.splitId,
                     memberId: resolveMemberId(entry.memberId),
                     amount: entry.amount,
                     isSettled: entry.isSettled
@@ -699,11 +699,11 @@ struct DataImportService {
 
             let subEntries = parsedData.expenseSubexpenses.filter { $0.expenseId == parsedExpense.id }
             let subexpenses: [Subexpense]? = subEntries.isEmpty ? nil : subEntries.map { entry in
-                Subexpense(id: UUID(), amount: entry.amount)
+                Subexpense(id: entry.subexpenseId, amount: entry.amount)
             }
 
             let newExpense = Expense(
-                id: UUID(),
+                id: parsedExpense.id,
                 groupId: newGroupId,
                 description: parsedExpense.description,
                 date: parsedExpense.date,

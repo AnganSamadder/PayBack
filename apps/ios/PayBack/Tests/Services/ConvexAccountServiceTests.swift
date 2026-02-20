@@ -178,10 +178,11 @@ final class ConvexAccountServiceTests: XCTestCase {
         )
 
         let args = ConvexAccountService.buildFriendUpsertArgs(from: friend)
-        let displayPreference = args["display_preference"]
+        guard let displayPreference = args["display_preference"] else {
+            return XCTFail("Expected display_preference key to be present")
+        }
 
-        XCTAssertNotNil(displayPreference)
-        XCTAssertNil(displayPreference!)
+        XCTAssertTrue(displayPreference == nil)
     }
 
     func testBuildFriendUpsertArgs_DisplayPreferenceWhitespace_IncludesNullForClearing() {
@@ -192,10 +193,11 @@ final class ConvexAccountServiceTests: XCTestCase {
         )
 
         let args = ConvexAccountService.buildFriendUpsertArgs(from: friend)
-        let displayPreference = args["display_preference"]
+        guard let displayPreference = args["display_preference"] else {
+            return XCTFail("Expected display_preference key to be present")
+        }
 
-        XCTAssertNotNil(displayPreference)
-        XCTAssertNil(displayPreference!)
+        XCTAssertTrue(displayPreference == nil)
     }
     #endif
 

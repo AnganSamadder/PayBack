@@ -44,8 +44,8 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         let involved_member_ids: [String]
         let splits: [SplitDTO]
         let is_settled: Bool
-        let owner_email: String
-        let owner_account_id: String
+        let owner_email: String?
+        let owner_account_id: String?
         let participant_member_ids: [String]
         let participants: [ParticipantDTO]
         let subexpenses: [SubexpenseDTO]?
@@ -110,7 +110,9 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
                 },
                 isSettled: is_settled,
                 participantNames: participantNames,
-                subexpenses: subexpenses?.map { $0.toSubexpense() }
+                subexpenses: subexpenses?.map { $0.toSubexpense() },
+                ownerEmail: owner_email,
+                ownerAccountId: owner_account_id
             )
         }
     }
