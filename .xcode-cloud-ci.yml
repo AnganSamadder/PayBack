@@ -1,0 +1,24 @@
+workflows:
+  - name: "Internal Testing"
+    scheme: PayBackInternal
+    environment:
+      CONVEX_DEPLOY_ON_CI: "0"
+    actions:
+      - name: "Test"
+        test:
+          testPlan: "PayBack.xctestplan"
+      - name: "Archive for TestFlight"
+        archive:
+          configuration: Internal
+
+  - name: "External Release"
+    scheme: PayBack
+    environment:
+      CONVEX_DEPLOY_ON_CI: "1"
+    actions:
+      - name: "Test"
+        test:
+          testPlan: "PayBack.xctestplan"
+      - name: "Archive for App Store"
+        archive:
+          configuration: Release
