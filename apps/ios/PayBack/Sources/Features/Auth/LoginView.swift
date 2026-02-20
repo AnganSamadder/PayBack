@@ -274,10 +274,11 @@ struct LoginView: View {
                 .textInputAutocapitalization(.never)
                 .textContentType(.password)
                 .disableAutocorrection(true)
+                .textFieldStyle(.plain)
+                .tint(.white.opacity(0.85))
                 .foregroundStyle(.white)
                 .font(.system(.headline, design: .rounded))
                 .submitLabel(.go)
-                .privacySensitive()
                 .focused($focusedField, equals: .password)
                 .onSubmit(login)
 
@@ -285,6 +286,7 @@ struct LoginView: View {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         isPasswordVisible.toggle()
                     }
+                    focusedField = .password
                 } label: {
                     Image(systemName: isPasswordVisible ? "eye.slash.fill" : "eye.fill")
                         .font(.system(size: 16, weight: .semibold))

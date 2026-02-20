@@ -84,11 +84,13 @@ struct SignupView: View {
                     isFocused: focusedField == .email,
                     keyboardType: .emailAddress,
                     submitLabel: .next,
-                    textContentType: .username,
-                    autocapitalization: .never
+                    textContentType: .emailAddress,
+                    autocapitalization: .never,
+                    autocorrectionDisabled: true
                 ) {
                     focusedField = .firstName
                 }
+                .id("signup-email")
                 .focused($focusedField, equals: .email)
 
                 AuthTextField(
@@ -100,10 +102,12 @@ struct SignupView: View {
                     keyboardType: .default,
                     submitLabel: .next,
                     textContentType: .givenName,
-                    autocapitalization: .words
+                    autocapitalization: .words,
+                    autocorrectionDisabled: true
                 ) {
                     focusedField = .lastName
                 }
+                .id("signup-first-name")
                 .focused($focusedField, equals: .firstName)
 
                 AuthTextField(
@@ -115,10 +119,12 @@ struct SignupView: View {
                     keyboardType: .default,
                     submitLabel: .next,
                     textContentType: .familyName,
-                    autocapitalization: .words
+                    autocapitalization: .words,
+                    autocorrectionDisabled: true
                 ) {
                     focusedField = .password
                 }
+                .id("signup-last-name")
                 .focused($focusedField, equals: .lastName)
 
                 passwordField(
@@ -138,11 +144,6 @@ struct SignupView: View {
                     field: .confirm,
                     onSubmit: submit
                 )
-
-                Text("Use the iPhone suggested strong password for the fastest sign up.")
-                    .font(.system(.caption, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.75))
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if passwordMismatch {
@@ -223,6 +224,12 @@ struct SignupView: View {
         .onAppear {
             focusedField = firstNameInput.isEmpty ? .firstName : .password
         }
+        .onChange(of: passwordInput) { oldValue, newValue in
+            autoRevealIfAutofilled(changedField: .password, oldValue: oldValue, newValue: newValue)
+        }
+        .onChange(of: confirmPasswordInput) { oldValue, newValue in
+            autoRevealIfAutofilled(changedField: .confirm, oldValue: oldValue, newValue: newValue)
+        }
     }
 
     private var isFormValid: Bool {
@@ -238,6 +245,32 @@ struct SignupView: View {
         let trimmedLastName = lastNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let lastName: String? = trimmedLastName.isEmpty ? nil : trimmedLastName
         onSubmit(emailInput, trimmedFirstName, lastName, passwordInput)
+    }
+
+    private func autoRevealIfAutofilled(changedField: Field, oldValue: String, newValue: String) {
+        guard !newValue.isEmpty, newValue != oldValue else { return }
+        guard focusedField == .password || focusedField == .confirm else { return }
+
+        // Strong-password autofill usually arrives as a bulk insert, not single-character typing.
+        let lengthJump = max(0, newValue.count - oldValue.count)
+        let replacedWithLargeValue = !oldValue.isEmpty && newValue.count >= 10 && abs(newValue.count - oldValue.count) >= 4
+        let bulkInserted = (oldValue.isEmpty && newValue.count >= 10) || lengthJump >= 6 || replacedWithLargeValue
+        guard bulkInserted else { return }
+
+        withAnimation(.easeInOut(duration: 0.15)) {
+            if changedField == .password {
+                isPasswordVisible = true
+            } else if changedField == .confirm {
+                isConfirmVisible = true
+            }
+        }
+
+        if !passwordInput.isEmpty, passwordInput == confirmPasswordInput {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isPasswordVisible = true
+                isConfirmVisible = true
+            }
+        }
     }
 
     @ViewBuilder
@@ -269,10 +302,11 @@ struct SignupView: View {
                 .textInputAutocapitalization(.never)
                 .disableAutocorrection(true)
                 .textContentType(field == .password ? .newPassword : .password)
+                .textFieldStyle(.plain)
+                .tint(.white.opacity(0.85))
                 .foregroundStyle(.white)
                 .font(.system(.headline, design: .rounded))
                 .submitLabel(field == .confirm ? .join : .next)
-                .privacySensitive()
                 .focused($focusedField, equals: field)
                 .onSubmit(onSubmit)
 
@@ -280,6 +314,7 @@ struct SignupView: View {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         isVisible.wrappedValue.toggle()
                     }
+                    focusedField = field
                 } label: {
                     Image(systemName: isVisible.wrappedValue ? "eye.slash.fill" : "eye.fill")
                         .font(.system(size: 16, weight: .semibold))
@@ -308,6 +343,7 @@ private struct AuthTextField: View {
     let submitLabel: SubmitLabel
     let textContentType: UITextContentType?
     let autocapitalization: TextInputAutocapitalization
+    let autocorrectionDisabled: Bool
     let onSubmit: () -> Void
 
     var body: some View {
@@ -324,7 +360,7 @@ private struct AuthTextField: View {
                 TextField(placeholder, text: $text)
                     .keyboardType(keyboardType)
                     .textInputAutocapitalization(autocapitalization)
-                    .disableAutocorrection(true)
+                    .disableAutocorrection(autocorrectionDisabled)
                     .foregroundStyle(.white)
                     .font(.system(.headline, design: .rounded))
                     .submitLabel(submitLabel)
