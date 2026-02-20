@@ -184,3 +184,66 @@ test("import_robustness: does not dedupe by name-only when id mismatches", async
   const memberIds = group.members.map((m) => m.id);
   expect(memberIds).toContain(importId.toLowerCase());
 });
+
+test("import_robustness: updates existing friend status even without new link metadata", async () => {
+  const t = convexTest(schema, modules);
+  const ownerEmail = "owner@test.com";
+  const friendMemberId = "friend_member";
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: ownerEmail,
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "owner_member"
+    });
+
+    await ctx.db.insert("account_friends", {
+      account_email: ownerEmail,
+      member_id: friendMemberId,
+      name: "Friend",
+      profile_avatar_color: "#111111",
+      has_linked_account: false,
+      status: "manual",
+      updated_at: Date.now()
+    });
+  });
+
+  const ownerCtx = t.withIdentity({
+    subject: "owner_auth",
+    email: ownerEmail,
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+
+  await ownerCtx.mutation(api.bulkImport.bulkImport, {
+    friends: [
+      {
+        member_id: friendMemberId,
+        name: "Friend",
+        profile_avatar_color: "#111111",
+        has_linked_account: false,
+        status: "friend"
+      }
+    ],
+    groups: [],
+    expenses: []
+  });
+
+  const updatedFriend = await t.run(async (ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", ownerEmail).eq("member_id", friendMemberId)
+      )
+      .unique()
+  );
+
+  expect(updatedFriend).not.toBeNull();
+  expect(updatedFriend?.status).toBe("friend");
+});

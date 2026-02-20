@@ -1,7 +1,77 @@
-import { mutation, internalMutation } from "./_generated/server";
+import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { reconcileUserExpenses } from "./helpers";
+import { findAccountByAuthIdOrDocId, findAccountByMemberId } from "./identity";
+
+function normalizeEmail(value: string | undefined | null): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+async function deriveExpenseParticipantEmails(ctx: any, expense: any): Promise<string[]> {
+  const emailSet = new Set<string>();
+  const ownerEmail = normalizeEmail(expense.owner_email);
+  if (ownerEmail) {
+    emailSet.add(ownerEmail);
+  }
+
+  for (const participant of expense.participants ?? []) {
+    let account: any | null = null;
+    const linkedEmail = normalizeEmail(participant.linked_account_email);
+    const linkedAccountId =
+      typeof participant.linked_account_id === "string"
+        ? participant.linked_account_id.trim()
+        : undefined;
+
+    if (linkedEmail) {
+      account = await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q: any) => q.eq("email", linkedEmail))
+        .unique();
+    }
+    if (!account && linkedAccountId) {
+      account = await findAccountByAuthIdOrDocId(ctx.db, linkedAccountId);
+    }
+    if (!account && typeof participant.member_id === "string") {
+      account = await findAccountByMemberId(ctx.db, participant.member_id);
+    }
+    if (account?.email) {
+      const normalized = normalizeEmail(account.email);
+      if (normalized) {
+        emailSet.add(normalized);
+      }
+    }
+  }
+
+  for (const memberId of expense.participant_member_ids ?? []) {
+    const account = await findAccountByMemberId(ctx.db, memberId);
+    if (account?.email) {
+      const normalized = normalizeEmail(account.email);
+      if (normalized) {
+        emailSet.add(normalized);
+      }
+    }
+  }
+
+  return Array.from(emailSet);
+}
+
+function canonicalEmailArray(values: string[] | undefined): string[] {
+  const normalized = (values ?? [])
+    .map((value) => normalizeEmail(value))
+    .filter((value): value is string => Boolean(value));
+  return Array.from(new Set(normalized)).sort();
+}
+
+function arraysEqual(lhs: string[], rhs: string[]): boolean {
+  if (lhs.length !== rhs.length) return false;
+  for (let i = 0; i < lhs.length; i += 1) {
+    if (lhs[i] !== rhs[i]) return false;
+  }
+  return true;
+}
 
 /**
  * Creates member_aliases records for existing linked accounts.
@@ -13,7 +83,7 @@ import { reconcileUserExpenses } from "./helpers";
  *
  * Also preserves original_nickname from nickname field before linking.
  */
-export const createMemberAliasesFromClaimedTokens = mutation({
+export const createMemberAliasesFromClaimedTokens = internalMutation({
   args: {},
   handler: async (ctx) => {
     const claimedTokens = await ctx.db
@@ -74,7 +144,7 @@ export const createMemberAliasesFromClaimedTokens = mutation({
   }
 });
 
-export const backfillProfileColors = mutation({
+export const backfillProfileColors = internalMutation({
   args: {},
   handler: async (ctx) => {
     // Backfill accounts
@@ -124,7 +194,7 @@ export const backfillProfileColors = mutation({
   }
 });
 
-export const backfillFriendsFromGroups = mutation({
+export const backfillFriendsFromGroups = internalMutation({
   args: {},
   handler: async (ctx) => {
     const groups = await ctx.db.query("groups").collect();
@@ -173,7 +243,7 @@ export const backfillFriendsFromGroups = mutation({
 /**
  * Fixes linked_member_id by finding members with matching display names in owned groups.
  */
-export const fixLinkedMemberIds = mutation({
+export const fixLinkedMemberIds = internalMutation({
   args: {},
   handler: async (ctx) => {
     const accounts = await ctx.db.query("accounts").collect();
@@ -215,7 +285,7 @@ export const fixLinkedMemberIds = mutation({
  * Fixes expenses where paid_by_member_id doesn't match any member in the group's owner account.
  * This can happen when expenses were created before the account was properly linked.
  */
-export const fixExpenseMemberIds = mutation({
+export const fixExpenseMemberIds = internalMutation({
   args: {},
   handler: async (ctx) => {
     const accounts = await ctx.db.query("accounts").collect();
@@ -296,7 +366,7 @@ export const fixExpenseMemberIds = mutation({
  * Force fixes ALL expenses by replacing any orphaned member ID with the account's linked_member_id.
  * This is a more aggressive fix that handles all cases.
  */
-export const fixAllExpenseMemberIds = mutation({
+export const fixAllExpenseMemberIds = internalMutation({
   args: {
     old_member_id: v.string(),
     new_member_id: v.string(),
@@ -396,7 +466,7 @@ export const fixAllExpenseMemberIds = mutation({
  * Clear linked_member_id for a specific user email.
  * Use this to fix data isolation issues where a user has the wrong linked_member_id.
  */
-export const clearLinkedMemberId = mutation({
+export const clearLinkedMemberId = internalMutation({
   args: { email: v.string() },
   handler: async (ctx, args) => {
     const user = await ctx.db
@@ -425,7 +495,7 @@ export const clearLinkedMemberId = mutation({
  * Set linked_member_id for a specific user email.
  * Use this to fix data where a user has the wrong linked_member_id.
  */
-export const setLinkedMemberId = mutation({
+export const setLinkedMemberId = internalMutation({
   args: {
     email: v.string(),
     linked_member_id: v.string()
@@ -461,7 +531,7 @@ export const setLinkedMemberId = mutation({
  * This ensures all expenses have the correct participant_emails array
  * for cross-account visibility.
  */
-export const backfillParticipantEmails = mutation({
+export const backfillParticipantEmails = internalMutation({
   args: {},
   handler: async (ctx) => {
     const expenses = await ctx.db.query("expenses").collect();
@@ -492,6 +562,18 @@ export const backfillParticipantEmails = mutation({
           participant_emails: emails,
           updated_at: Date.now()
         });
+        const visibilityUsers = await Promise.all(
+          emails.map((email) =>
+            ctx.db
+              .query("accounts")
+              .withIndex("by_email", (q: any) => q.eq("email", email))
+              .unique()
+          )
+        );
+        const visibilityUserIds = visibilityUsers
+          .filter((account): account is NonNullable<typeof account> => account !== null)
+          .map((account) => account.id);
+        await reconcileUserExpenses(ctx, expense.id, visibilityUserIds);
         updated++;
         console.log(
           `Backfilled participant_emails for expense ${expense.id}: ${emails.join(", ")}`
@@ -507,7 +589,7 @@ export const backfillParticipantEmails = mutation({
  * Advanced backfill that looks up linked accounts by member_id.
  * This is more thorough than the simple backfill.
  */
-export const backfillParticipantEmailsAdvanced = mutation({
+export const backfillParticipantEmailsAdvanced = internalMutation({
   args: {},
   handler: async (ctx) => {
     // Build a map of member_id -> account email
@@ -567,6 +649,18 @@ export const backfillParticipantEmailsAdvanced = mutation({
           participants: updatedParticipants,
           updated_at: Date.now()
         });
+        const visibilityUsers = await Promise.all(
+          emailArray.map((email) =>
+            ctx.db
+              .query("accounts")
+              .withIndex("by_email", (q: any) => q.eq("email", email))
+              .unique()
+          )
+        );
+        const visibilityUserIds = visibilityUsers
+          .filter((account): account is NonNullable<typeof account> => account !== null)
+          .map((account) => account.id);
+        await reconcileUserExpenses(ctx, expense.id, visibilityUserIds);
         updated++;
         console.log(`Updated expense ${expense.id} with emails: ${emailArray.join(", ")}`);
       }
@@ -620,7 +714,66 @@ export const backfillUserExpenses = internalMutation({
   }
 });
 
-export const backfillFriendStatus = mutation({
+/**
+ * One-time repair:
+ * 1) recompute `expenses.is_settled` from split-level settled state
+ * 2) rebuild `participant_emails` from resolved participant accounts + owner
+ * 3) reconcile `user_expenses` visibility rows from the rebuilt participant emails
+ */
+export const repairExpenseSettlementAndVisibility = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const expenses = await ctx.db.query("expenses").collect();
+
+    let patchedCount = 0;
+    let reconciledCount = 0;
+
+    for (const expense of expenses) {
+      const computedSettled =
+        Array.isArray(expense.splits) &&
+        expense.splits.length > 0 &&
+        expense.splits.every((split: any) => split.is_settled === true);
+
+      const participantEmails = await deriveExpenseParticipantEmails(ctx, expense);
+      const canonicalCurrentEmails = canonicalEmailArray(expense.participant_emails);
+      const canonicalNextEmails = canonicalEmailArray(participantEmails);
+
+      if (
+        expense.is_settled !== computedSettled ||
+        !arraysEqual(canonicalCurrentEmails, canonicalNextEmails)
+      ) {
+        await ctx.db.patch(expense._id, {
+          is_settled: computedSettled,
+          participant_emails: canonicalNextEmails,
+          updated_at: Date.now()
+        });
+        patchedCount += 1;
+      }
+
+      const participantUsers = await Promise.all(
+        canonicalNextEmails.map((email) =>
+          ctx.db
+            .query("accounts")
+            .withIndex("by_email", (q: any) => q.eq("email", email))
+            .unique()
+        )
+      );
+      const participantUserIds = participantUsers
+        .filter((user): user is NonNullable<typeof user> => user !== null)
+        .map((user) => user.id);
+      await reconcileUserExpenses(ctx, expense.id, participantUserIds);
+      reconciledCount += 1;
+    }
+
+    return {
+      processed: expenses.length,
+      patched: patchedCount,
+      reconciled: reconciledCount
+    };
+  }
+});
+
+export const backfillFriendStatus = internalMutation({
   args: {},
   handler: async (ctx) => {
     const friends = await ctx.db.query("account_friends").collect();
@@ -646,7 +799,7 @@ export const backfillFriendStatus = mutation({
  * Splits display_name on whitespace: first word → first_name, rest → last_name.
  * For linked friends, copies first_name/last_name from the linked account.
  */
-export const backfillFirstLastNames = mutation({
+export const backfillFirstLastNames = internalMutation({
   args: {},
   handler: async (ctx) => {
     const accounts = await ctx.db.query("accounts").collect();

@@ -193,28 +193,38 @@ export const bulkImport = mutation({
         // Map the IMPORT ID to the EXISTING ID
         memberIdMap.set(friend.member_id, normalizeMemberId(match.member_id));
 
-        // Update existing friend if new link info is available
-        if (finalLinkedEmail && !match.linked_account_email) {
-          await ctx.db.patch(match._id, {
-            has_linked_account: finalHasLinked,
-            linked_account_id: finalLinkedAccountId,
-            linked_account_email: finalLinkedEmail,
-            linked_member_id: linkedMemberId,
-            status: finalStatus,
-            updated_at: Date.now()
-          });
+        // Keep friend metadata up-to-date for existing rows, even when there is no new linking event.
+        const patch: Record<string, any> = {};
+        if ((match.has_linked_account ?? false) !== finalHasLinked) {
+          patch.has_linked_account = finalHasLinked;
+        }
+        if ((match.linked_account_id ?? undefined) !== finalLinkedAccountId) {
+          patch.linked_account_id = finalLinkedAccountId;
+        }
+        if ((match.linked_account_email ?? undefined) !== finalLinkedEmail) {
+          patch.linked_account_email = finalLinkedEmail;
+        }
+        if ((match.linked_member_id ?? undefined) !== linkedMemberId) {
+          patch.linked_member_id = linkedMemberId;
+        }
+        if ((match.status ?? undefined) !== finalStatus) {
+          patch.status = finalStatus;
+        }
+        if (Object.keys(patch).length > 0) {
+          patch.updated_at = Date.now();
+          await ctx.db.patch(match._id, patch);
           created.friends++;
+        }
 
-          // Trigger reconciliation if we just linked a user
-          if (finalLinkedEmail && linkedMemberId) {
-            const linkedAccount = await ctx.db
-              .query("accounts")
-              .withIndex("by_email", (q) => q.eq("email", finalLinkedEmail!))
-              .unique();
+        // Trigger reconciliation only when introducing a link to a previously unlinked row.
+        if (finalLinkedEmail && !match.linked_account_email && linkedMemberId) {
+          const linkedAccount = await ctx.db
+            .query("accounts")
+            .withIndex("by_email", (q) => q.eq("email", finalLinkedEmail!))
+            .unique();
 
-            if (linkedAccount) {
-              await reconcileExpensesForMember(ctx, user.email, match.member_id, linkedAccount.id);
-            }
+          if (linkedAccount) {
+            await reconcileExpensesForMember(ctx, user.email, match.member_id, linkedAccount.id);
           }
         }
 

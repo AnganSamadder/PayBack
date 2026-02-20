@@ -1,7 +1,8 @@
 import { mutation, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
-import { normalizeMemberId } from "./identity";
+import { findAccountByAuthIdOrDocId, findAccountByMemberId, normalizeMemberId } from "./identity";
+import { reconcileUserExpenses } from "./helpers";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -23,6 +24,139 @@ async function deleteUserExpensesForExpense(ctx: any, expenseId: string) {
     .withIndex("by_expense_id", (q: any) => q.eq("expense_id", expenseId))
     .collect();
   for (const row of rows) await ctx.db.delete(row._id);
+}
+
+function normalizeEmail(value: string | undefined | null): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+async function buildResolvedParticipantEmails(
+  ctx: any,
+  ownerEmail: string | undefined,
+  participants: any[] | undefined,
+  participantMemberIds: string[] | undefined
+): Promise<string[]> {
+  const emails = new Set<string>();
+  const normalizedOwnerEmail = normalizeEmail(ownerEmail);
+  if (normalizedOwnerEmail) {
+    emails.add(normalizedOwnerEmail);
+  }
+
+  for (const participant of participants ?? []) {
+    let account: any | null = null;
+    const linkedEmail = normalizeEmail(participant.linked_account_email);
+    const linkedAccountId =
+      typeof participant.linked_account_id === "string"
+        ? participant.linked_account_id.trim()
+        : undefined;
+
+    if (linkedEmail) {
+      account = await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q: any) => q.eq("email", linkedEmail))
+        .unique();
+    }
+    if (!account && linkedAccountId) {
+      account = await findAccountByAuthIdOrDocId(ctx.db, linkedAccountId);
+    }
+    if (!account && typeof participant.member_id === "string") {
+      account = await findAccountByMemberId(ctx.db, participant.member_id);
+    }
+    if (account?.email) {
+      const normalized = normalizeEmail(account.email);
+      if (normalized) {
+        emails.add(normalized);
+      }
+    }
+  }
+
+  for (const memberId of participantMemberIds ?? []) {
+    const account = await findAccountByMemberId(ctx.db, memberId);
+    if (account?.email) {
+      const normalized = normalizeEmail(account.email);
+      if (normalized) {
+        emails.add(normalized);
+      }
+    }
+  }
+
+  return Array.from(emails);
+}
+
+async function reconcileExpenseVisibilityFromEmails(
+  ctx: any,
+  expenseId: string,
+  participantEmails: string[]
+) {
+  const participantUsers = await Promise.all(
+    participantEmails.map((email) =>
+      ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q: any) => q.eq("email", email))
+        .unique()
+    )
+  );
+  const participantUserIds = participantUsers
+    .filter((user): user is NonNullable<typeof user> => user !== null)
+    .map((user) => user.id);
+  await reconcileUserExpenses(ctx, expenseId, participantUserIds);
+}
+
+async function removeAliasesForAccountMemberIds(
+  ctx: any,
+  accountEmail: string,
+  memberIds: string[]
+): Promise<number> {
+  let aliasesDeleted = 0;
+  for (const memberId of memberIds) {
+    const aliasesAsCanonical = await ctx.db
+      .query("member_aliases")
+      .withIndex("by_canonical_member_id", (q: any) => q.eq("canonical_member_id", memberId))
+      .collect();
+
+    for (const alias of aliasesAsCanonical) {
+      if (alias.account_email !== accountEmail) continue;
+      await ctx.db.delete(alias._id);
+      aliasesDeleted++;
+    }
+
+    const aliasesAsAlias = await ctx.db
+      .query("member_aliases")
+      .withIndex("by_alias_member_id", (q: any) => q.eq("alias_member_id", memberId))
+      .collect();
+
+    for (const alias of aliasesAsAlias) {
+      if (alias.account_email !== accountEmail) continue;
+      await ctx.db.delete(alias._id);
+      aliasesDeleted++;
+    }
+  }
+  return aliasesDeleted;
+}
+
+async function pruneAliasMemberIdsFromAccount(
+  ctx: any,
+  accountEmail: string,
+  memberIdsToRemove: string[]
+): Promise<void> {
+  const account = await ctx.db
+    .query("accounts")
+    .withIndex("by_email", (q: any) => q.eq("email", accountEmail))
+    .unique();
+  if (!account || !Array.isArray(account.alias_member_ids)) return;
+
+  const removeSet = new Set(memberIdsToRemove.map((id) => normalizeMemberId(id)));
+  const nextAliasIds = account.alias_member_ids.filter(
+    (memberId: string) => !removeSet.has(normalizeMemberId(memberId))
+  );
+  if (nextAliasIds.length === account.alias_member_ids.length) return;
+
+  await ctx.db.patch(account._id, {
+    alias_member_ids: nextAliasIds,
+    updated_at: Date.now()
+  });
 }
 
 const MAX_SAMPLE_IDS = 10;
@@ -288,7 +422,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   };
 }
 
-export const deleteSelfFriends = mutation({
+export const deleteSelfFriends = internalMutation({
   args: {},
   handler: async (ctx) => {
     // Admin mode: Clean for ALL users
@@ -365,7 +499,7 @@ export const deleteAccountByEmail = internalMutation({
  * Delete all data from the orphaned subexpenses table.
  * This table is no longer in the schema (subexpenses are embedded in expenses).
  */
-export const deleteSubexpensesTable = mutation({
+export const deleteSubexpensesTable = internalMutation({
   args: {},
   handler: async (ctx) => {
     // Query the orphaned table using type assertion
@@ -474,8 +608,10 @@ export const deleteLinkedFriend = mutation({
 
       await ctx.db.delete(group._id);
       directGroupDeleted = true;
-      break;
     }
+
+    const aliasesDeleted = await removeAliasesForAccountMemberIds(ctx, accountEmail, equivalentIds);
+    await pruneAliasMemberIdsFromAccount(ctx, accountEmail, equivalentIds);
 
     await ctx.db.delete(friend._id);
 
@@ -484,6 +620,7 @@ export const deleteLinkedFriend = mutation({
       message: "Linked friend removed",
       directGroupDeleted,
       expensesDeleted,
+      aliasesDeleted,
       linkedAccountPreserved: true
     };
   }
@@ -590,14 +727,25 @@ export const deleteUnlinkedFriend = mutation({
             const newInvolvedIds = expense.involved_member_ids.filter(
               (id) => !equivalentIds.includes(id)
             );
+            const newIsSettled =
+              newSplits.length > 0 && newSplits.every((split) => split.is_settled);
+            const participantEmails = await buildResolvedParticipantEmails(
+              ctx,
+              expense.owner_email,
+              newParticipants,
+              remainingParticipants
+            );
 
             await ctx.db.patch(expense._id, {
               splits: newSplits,
               participants: newParticipants,
               participant_member_ids: remainingParticipants,
               involved_member_ids: newInvolvedIds,
+              participant_emails: participantEmails,
+              is_settled: newIsSettled,
               updated_at: Date.now()
             });
+            await reconcileExpenseVisibilityFromEmails(ctx, expense.id, participantEmails);
             expensesModified++;
           }
         }
@@ -605,27 +753,8 @@ export const deleteUnlinkedFriend = mutation({
       groupsModified++;
     }
 
-    for (const memberId of equivalentIds) {
-      const aliasesAsCanonical = await ctx.db
-        .query("member_aliases")
-        .withIndex("by_canonical_member_id", (q) => q.eq("canonical_member_id", memberId))
-        .collect();
-
-      for (const alias of aliasesAsCanonical) {
-        await ctx.db.delete(alias._id);
-        aliasesDeleted++;
-      }
-
-      const aliasesAsAlias = await ctx.db
-        .query("member_aliases")
-        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", memberId))
-        .collect();
-
-      for (const alias of aliasesAsAlias) {
-        await ctx.db.delete(alias._id);
-        aliasesDeleted++;
-      }
-    }
+    aliasesDeleted = await removeAliasesForAccountMemberIds(ctx, accountEmail, equivalentIds);
+    await pruneAliasMemberIdsFromAccount(ctx, accountEmail, equivalentIds);
 
     await ctx.db.delete(friend._id);
 
@@ -698,7 +827,113 @@ export const selfDeleteAccount = mutation({
       .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
       .collect();
 
-    // FAN-OUT CLEANUP: Delete my user_expenses view
+    for (const friend of myFriends) {
+      await ctx.db.delete(friend._id);
+    }
+
+    const membershipCanonical = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      user.member_id ?? user.id
+    );
+    const membershipEquivalent = await getAllEquivalentMemberIds(ctx.db, membershipCanonical);
+    const membershipIds = new Set([
+      normalizeMemberId(membershipCanonical),
+      ...membershipEquivalent.map((id) => normalizeMemberId(id)),
+      ...(user.alias_member_ids || []).map((id: string) => normalizeMemberId(id))
+    ]);
+
+    const ownedGroupsByAccount = await ctx.db
+      .query("groups")
+      .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", user.id))
+      .collect();
+    const ownedGroupsByEmail = await ctx.db
+      .query("groups")
+      .withIndex("by_owner_email", (q: any) => q.eq("owner_email", accountEmail))
+      .collect();
+    const ownedGroupMap = new Map<string, any>();
+    for (const group of ownedGroupsByAccount) {
+      ownedGroupMap.set(group._id, group);
+    }
+    for (const group of ownedGroupsByEmail) {
+      ownedGroupMap.set(group._id, group);
+    }
+
+    let ownedGroupsDeleted = 0;
+    let ownedExpensesDeleted = 0;
+
+    for (const group of ownedGroupMap.values()) {
+      const groupExpenses = await ctx.db
+        .query("expenses")
+        .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
+        .collect();
+      for (const expense of groupExpenses) {
+        await reconcileUserExpenses(ctx, expense.id, []);
+        await ctx.db.delete(expense._id);
+        ownedExpensesDeleted++;
+      }
+      await ctx.db.delete(group._id);
+      ownedGroupsDeleted++;
+    }
+
+    const ownedExpensesByAccount = await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", user.id))
+      .collect();
+    const ownedExpensesByEmail = await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_email", (q: any) => q.eq("owner_email", accountEmail))
+      .collect();
+    const ownedExpenseMap = new Map<string, any>();
+    for (const expense of ownedExpensesByAccount) {
+      ownedExpenseMap.set(expense._id, expense);
+    }
+    for (const expense of ownedExpensesByEmail) {
+      ownedExpenseMap.set(expense._id, expense);
+    }
+    for (const expense of ownedExpenseMap.values()) {
+      await reconcileUserExpenses(ctx, expense.id, []);
+      await ctx.db.delete(expense._id);
+      ownedExpensesDeleted++;
+    }
+
+    // Leave shared groups by removing all IDs equivalent to the current user.
+    const allGroups = await ctx.db.query("groups").collect();
+    let sharedGroupsUpdated = 0;
+    for (const group of allGroups) {
+      if (ownedGroupMap.has(group._id)) continue;
+
+      const hasMembership = group.members.some((member: any) =>
+        membershipIds.has(normalizeMemberId(member.id))
+      );
+      if (!hasMembership) continue;
+
+      const remainingMembers = group.members.filter(
+        (member: any) => !membershipIds.has(normalizeMemberId(member.id))
+      );
+      if (remainingMembers.length === group.members.length) continue;
+
+      if (remainingMembers.length === 0) {
+        const groupExpenses = await ctx.db
+          .query("expenses")
+          .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
+          .collect();
+        for (const expense of groupExpenses) {
+          await reconcileUserExpenses(ctx, expense.id, []);
+          await ctx.db.delete(expense._id);
+          ownedExpensesDeleted++;
+        }
+        await ctx.db.delete(group._id);
+        ownedGroupsDeleted++;
+      } else {
+        await ctx.db.patch(group._id, {
+          members: remainingMembers,
+          updated_at: Date.now()
+        });
+        sharedGroupsUpdated++;
+      }
+    }
+
+    // FAN-OUT CLEANUP: Delete my user_expenses visibility view
     const myUserExpenses = await ctx.db
       .query("user_expenses")
       .withIndex("by_user_id", (q: any) => q.eq("user_id", user.id))
@@ -707,17 +942,16 @@ export const selfDeleteAccount = mutation({
       await ctx.db.delete(ue._id);
     }
 
-    for (const friend of myFriends) {
-      await ctx.db.delete(friend._id);
-    }
-
     await ctx.db.delete(user._id);
 
     return {
       success: true,
-      message: "Account deleted, friendships unlinked, expenses preserved",
+      message: "Account deleted with owned data and visibility cleanup",
       friendshipsUnlinked,
-      expensesPreserved: true
+      ownedGroupsDeleted,
+      ownedExpensesDeleted,
+      sharedGroupsUpdated,
+      expensesPreserved: false
     };
   }
 });

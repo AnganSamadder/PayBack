@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { checkRateLimit } from "./rateLimit";
+import { findAccountByAuthIdOrDocId, normalizeMemberId } from "./identity";
 
 const MAX_SAMPLE_IDS = 10;
 const MAX_EQUIVALENT_MEMBER_IDS = 50;
@@ -487,18 +488,36 @@ export const updateLinkedMemberId = mutation({
       throw new Error("User not found");
     }
 
-    const currentAliases = user.alias_member_ids || [];
-    const currentCanonical = user.member_id;
+    const requestedMemberId = normalizeMemberId(args.member_id);
+    const existingCanonical = user.member_id ? normalizeMemberId(user.member_id) : undefined;
 
-    const newAliasSet = new Set<string>(currentAliases);
-    if (currentCanonical && currentCanonical !== args.member_id) {
-      newAliasSet.add(currentCanonical);
+    // Harden against identity spoofing:
+    // callers cannot swap canonical member IDs on an existing account.
+    if (existingCanonical) {
+      if (existingCanonical !== requestedMemberId) {
+        throw new Error("Forbidden: canonical member_id cannot be reassigned");
+      }
+      return user._id;
     }
 
-    const updatedAliases = Array.from(newAliasSet).slice(0, MAX_EQUIVALENT_MEMBER_IDS);
+    // Legacy-only bootstrap path for old rows without member_id.
+    // Never allow adopting a member ID already used by a different account.
+    const takenByAccount = await ctx.db
+      .query("accounts")
+      .withIndex("by_member_id", (q) => q.eq("member_id", requestedMemberId))
+      .unique();
+    if (takenByAccount && takenByAccount._id !== user._id) {
+      throw new Error("Forbidden: member_id already in use");
+    }
+
+    const updatedAliases = Array.from(
+      new Set((user.alias_member_ids || []).map((id: string) => normalizeMemberId(id)))
+    )
+      .filter((id) => id !== requestedMemberId)
+      .slice(0, MAX_EQUIVALENT_MEMBER_IDS);
 
     await ctx.db.patch(user._id, {
-      member_id: args.member_id,
+      member_id: requestedMemberId,
       alias_member_ids: updatedAliases,
       updated_at: Date.now()
     });
@@ -662,34 +681,110 @@ export const resolveLinkedAccountsForMemberIds = query({
       throw new Error("Unauthenticated");
     }
 
+    const user = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", identity.email!))
+      .unique();
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    // Build the caller's authorized member-id surface from:
+    // - self canonical/aliases
+    // - owned/shared groups
+    // - direct friends + linked friend accounts
+    const authorizedMemberIds = new Set<string>();
+    const ownCanonical = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id ?? user.id);
+    const ownEquivalent = await getAllEquivalentMemberIds(ctx.db, ownCanonical);
+    for (const id of [ownCanonical, ...ownEquivalent, ...(user.alias_member_ids || [])]) {
+      authorizedMemberIds.add(normalizeMemberId(id));
+    }
+
+    const ownerGroupsByAccount = await ctx.db
+      .query("groups")
+      .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
+      .collect();
+    const ownerGroupsByEmail = await ctx.db
+      .query("groups")
+      .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
+      .collect();
+    const ownerGroupIdSet = new Set(ownerGroupsByAccount.map((group) => String(group._id)));
+    ownerGroupsByEmail.forEach((group) => ownerGroupIdSet.add(String(group._id)));
+
+    const allGroups = await ctx.db.query("groups").collect();
+    const visibleGroups = allGroups.filter((group) => {
+      if (ownerGroupIdSet.has(String(group._id))) return true;
+      return group.members.some((member: any) =>
+        authorizedMemberIds.has(normalizeMemberId(member.id))
+      );
+    });
+    for (const group of visibleGroups) {
+      for (const member of group.members) {
+        authorizedMemberIds.add(normalizeMemberId(member.id));
+      }
+    }
+
+    const myFriends = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+      .collect();
+    for (const friend of myFriends) {
+      authorizedMemberIds.add(normalizeMemberId(friend.member_id));
+      if (friend.linked_member_id) {
+        authorizedMemberIds.add(normalizeMemberId(friend.linked_member_id));
+      }
+      let linkedAccount: any | null = null;
+      if (friend.linked_account_id) {
+        linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id);
+      }
+      if (!linkedAccount && friend.linked_account_email) {
+        linkedAccount = await ctx.db
+          .query("accounts")
+          .withIndex("by_email", (q) => q.eq("email", friend.linked_account_email!))
+          .unique();
+      }
+      if (linkedAccount?.member_id) {
+        authorizedMemberIds.add(normalizeMemberId(linkedAccount.member_id));
+      }
+      for (const aliasId of linkedAccount?.alias_member_ids || []) {
+        authorizedMemberIds.add(normalizeMemberId(aliasId));
+      }
+    }
+
     const results: Array<{
       member_id: string;
       account_id: string;
       email: string;
     }> = [];
 
+    const allAccounts = await ctx.db.query("accounts").collect();
+    const accountByCanonical = new Map<string, (typeof allAccounts)[number]>();
+    const accountByAlias = new Map<string, (typeof allAccounts)[number]>();
+    for (const account of allAccounts) {
+      if (account.member_id) {
+        accountByCanonical.set(normalizeMemberId(account.member_id), account);
+      }
+      for (const alias of account.alias_member_ids || []) {
+        accountByAlias.set(normalizeMemberId(alias), account);
+      }
+    }
+
     for (const memberId of args.memberIds) {
-      const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, memberId);
+      const normalizedRequested = normalizeMemberId(memberId);
+      const canonicalId = normalizeMemberId(
+        await resolveCanonicalMemberIdInternal(ctx.db, normalizedRequested)
+      );
 
-      const accountByCanonicalId = await ctx.db
-        .query("accounts")
-        .withIndex("by_member_id", (q) => q.eq("member_id", canonicalId))
-        .unique();
-
-      if (accountByCanonicalId) {
-        results.push({
-          member_id: memberId,
-          account_id: accountByCanonicalId.id,
-          email: accountByCanonicalId.email
-        });
+      const targetEquivalent = await getAllEquivalentMemberIds(ctx.db, canonicalId);
+      const isAuthorized =
+        authorizedMemberIds.has(normalizedRequested) ||
+        authorizedMemberIds.has(canonicalId) ||
+        targetEquivalent.some((id) => authorizedMemberIds.has(normalizeMemberId(id)));
+      if (!isAuthorized) {
         continue;
       }
 
-      const allAccounts = await ctx.db.query("accounts").collect();
-      const match = allAccounts.find((account) => {
-        const aliases = account.alias_member_ids || [];
-        return aliases.includes(memberId) || aliases.includes(canonicalId);
-      });
+      const match = accountByCanonical.get(canonicalId) ?? accountByAlias.get(normalizedRequested);
 
       if (match) {
         results.push({

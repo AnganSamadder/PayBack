@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { normalizeMemberId } from "./identity";
+import { reconcileUserExpenses } from "./helpers";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -16,6 +17,37 @@ async function getCurrentUser(ctx: any) {
     .unique();
 
   return { identity, user };
+}
+
+function isGroupOwner(group: any, user: any): boolean {
+  return (
+    group.owner_id === user._id ||
+    group.owner_account_id === user.id ||
+    group.owner_email === user.email
+  );
+}
+
+async function deleteGroupWithExpenses(ctx: any, group: any) {
+  const expenseByDocId = new Map<string, any>();
+
+  const byGroupRef = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_ref", (q: any) => q.eq("group_ref", group._id))
+    .collect();
+  byGroupRef.forEach((expense: any) => expenseByDocId.set(expense._id, expense));
+
+  const byGroupId = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
+    .collect();
+  byGroupId.forEach((expense: any) => expenseByDocId.set(expense._id, expense));
+
+  for (const expense of expenseByDocId.values()) {
+    await reconcileUserExpenses(ctx, expense.id, []);
+    await ctx.db.delete(expense._id);
+  }
+
+  await ctx.db.delete(group._id);
 }
 
 export const create = mutation({
@@ -46,6 +78,10 @@ export const create = mutation({
         .unique();
 
       if (existing) {
+        if (!isGroupOwner(existing, user)) {
+          throw new Error("Forbidden: cannot update a group you do not own");
+        }
+
         // If it exists, update it instead of creating a duplicate
         await ctx.db.patch(existing._id, {
           name: args.name,
@@ -188,11 +224,11 @@ export const deleteGroup = mutation({
     if (!group) return;
 
     // Auth check - only owner can delete
-    if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
+    if (!isGroupOwner(group, user)) {
       throw new Error("Not authorized to delete this group");
     }
 
-    await ctx.db.delete(group._id);
+    await deleteGroupWithExpenses(ctx, group);
   }
 });
 
@@ -212,11 +248,11 @@ export const deleteGroups = mutation({
       if (!group) continue;
 
       // Auth check - only owner can delete
-      if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
+      if (!isGroupOwner(group, user)) {
         continue;
       }
 
-      await ctx.db.delete(group._id);
+      await deleteGroupWithExpenses(ctx, group);
     }
   }
 });
@@ -255,10 +291,13 @@ export const clearAllForUser = mutation({
     const ownedGroupIdSet = new Set<string>();
     ownedGroups.forEach((g) => ownedGroupIdSet.add(g._id));
     byEmail.forEach((g) => ownedGroupIdSet.add(g._id));
+    const ownedGroupMap = new Map<string, any>();
+    ownedGroups.forEach((g) => ownedGroupMap.set(g._id, g));
+    byEmail.forEach((g) => ownedGroupMap.set(g._id, g));
 
-    // Delete owned
-    for (const _id of ownedGroupIdSet) {
-      await ctx.db.delete(_id as any);
+    // Delete owned groups and cascade-delete their expenses.
+    for (const group of ownedGroupMap.values()) {
+      await deleteGroupWithExpenses(ctx, group);
     }
 
     // 2) Leave any remaining shared groups where this user is still a member.
@@ -280,7 +319,7 @@ export const clearAllForUser = mutation({
       );
 
       if (remainingMembers.length === 0) {
-        await ctx.db.delete(group._id);
+        await deleteGroupWithExpenses(ctx, group);
         emptySharedGroupsDeleted += 1;
         continue;
       }
@@ -321,7 +360,7 @@ export const clearDebugDataForUser = mutation({
       const isOwner = membershipIds.has(normalizeMemberId(group.owner_id as any));
       if (!isOwner) continue;
 
-      await ctx.db.delete(group._id);
+      await deleteGroupWithExpenses(ctx, group);
       deleted += 1;
     }
 
@@ -357,7 +396,7 @@ export const leaveGroup = mutation({
     );
 
     if (normalizedNewMembers.length === 0) {
-      await ctx.db.delete(group._id);
+      await deleteGroupWithExpenses(ctx, group);
     } else {
       await ctx.db.patch(group._id, {
         members: normalizedNewMembers,

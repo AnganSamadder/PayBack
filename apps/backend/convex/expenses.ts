@@ -52,6 +52,121 @@ function normalizePersonName(name: string | undefined | null): string | undefine
   return normalized.length > 0 ? normalized : undefined;
 }
 
+async function buildUserEquivalentMemberIds(db: any, user: any): Promise<Set<string>> {
+  const equivalentIds = new Set<string>();
+  const seeds = [user.member_id, user.id].filter(
+    (value): value is string => typeof value === "string" && value.trim().length > 0
+  );
+
+  for (const seed of seeds) {
+    equivalentIds.add(normalizeMemberId(seed));
+    const aliases = await getAllEquivalentMemberIds(db, seed);
+    for (const id of aliases) {
+      equivalentIds.add(normalizeMemberId(id));
+    }
+  }
+
+  return equivalentIds;
+}
+
+function isGroupOwner(group: any, user: any): boolean {
+  return (
+    group.owner_id === user._id ||
+    group.owner_email === user.email ||
+    group.owner_account_id === user.id
+  );
+}
+
+function isGroupMember(group: any, memberIds: Set<string>): boolean {
+  return group.members.some((member: any) => memberIds.has(normalizeMemberId(member.id)));
+}
+
+function isExpenseOwner(expense: any, user: any): boolean {
+  return (
+    expense.owner_id === user._id ||
+    expense.owner_email === user.email ||
+    expense.owner_account_id === user.id
+  );
+}
+
+async function requireGroupAccess(
+  ctx: any,
+  user: any,
+  group: any,
+  precomputedEquivalentIds?: Set<string>
+): Promise<Set<string>> {
+  const callerEquivalentIds =
+    precomputedEquivalentIds ?? (await buildUserEquivalentMemberIds(ctx.db, user));
+  if (!isGroupOwner(group, user) && !isGroupMember(group, callerEquivalentIds)) {
+    throw new Error("Forbidden: group access denied");
+  }
+  return callerEquivalentIds;
+}
+
+async function requireGroupByClientIdWithAccess(
+  ctx: any,
+  user: any,
+  groupId: string,
+  precomputedEquivalentIds?: Set<string>
+): Promise<{ group: any; callerEquivalentIds: Set<string> }> {
+  const group = await ctx.db
+    .query("groups")
+    .withIndex("by_client_id", (q: any) => q.eq("id", groupId))
+    .unique();
+  if (!group) {
+    throw new Error("Group not found");
+  }
+  const callerEquivalentIds = await requireGroupAccess(ctx, user, group, precomputedEquivalentIds);
+  return { group, callerEquivalentIds };
+}
+
+function normalizeLinkedAccountId(value: string | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeLinkedAccountEmail(value: string | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function canonicalizeMembers(values: string[]): string[] {
+  return [...values.map((value) => normalizeMemberId(value))].sort();
+}
+
+function canonicalizeParticipantMembers(values: any[]): string[] {
+  return [...values.map((value) => normalizeMemberId(String(value)))].sort();
+}
+
+function canonicalizeParticipants(values: any[]): string {
+  const canonical = values
+    .map((participant) => ({
+      member_id: normalizeMemberId(participant.member_id),
+      name: participant.name,
+      linked_account_id: normalizeLinkedAccountId(participant.linked_account_id),
+      linked_account_email: normalizeLinkedAccountEmail(participant.linked_account_email)
+    }))
+    .sort((a, b) => {
+      if (a.member_id !== b.member_id) return a.member_id.localeCompare(b.member_id);
+      if (a.name !== b.name) return a.name.localeCompare(b.name);
+      if ((a.linked_account_id ?? "") !== (b.linked_account_id ?? "")) {
+        return (a.linked_account_id ?? "").localeCompare(b.linked_account_id ?? "");
+      }
+      return (a.linked_account_email ?? "").localeCompare(b.linked_account_email ?? "");
+    });
+  return JSON.stringify(canonical);
+}
+
+function canonicalizeSubexpenses(subexpenses: any[] | undefined): string {
+  if (!subexpenses || subexpenses.length === 0) return "[]";
+  const canonical = [...subexpenses]
+    .map((subexpense) => ({ id: subexpense.id, amount: subexpense.amount }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return JSON.stringify(canonical);
+}
+
 export const create = mutation({
   args: {
     id: v.string(), // Client UUID
@@ -109,6 +224,14 @@ export const create = mutation({
       ...participant,
       member_id: normalizeMemberId(participant.member_id)
     }));
+
+    // VALIDATION: Check Group & Friendship for Direct Expenses
+    const { group, callerEquivalentIds } = await requireGroupByClientIdWithAccess(
+      ctx,
+      user,
+      args.group_id
+    );
+
     const linkedAccountCache = new Map<string, any | null>();
     const resolveLinkedAccount = async ({
       linkedAccountEmail,
@@ -166,30 +289,37 @@ export const create = mutation({
       return linkedAccount;
     };
 
-    // Build participant_emails from linked participants plus server-side account resolution.
-    const participantEmailSet = new Set<string>([user.email.toLowerCase()]);
-    for (const participant of normalizedParticipants) {
-      if (participant.linked_account_email && participant.linked_account_email.trim().length > 0) {
-        participantEmailSet.add(participant.linked_account_email.trim().toLowerCase());
+    const buildParticipantEmails = async ({
+      participants,
+      involvedMemberIds
+    }: {
+      participants: {
+        member_id: string;
+        name: string;
+        linked_account_id?: string;
+        linked_account_email?: string;
+      }[];
+      involvedMemberIds: string[];
+    }): Promise<string[]> => {
+      const participantEmailSet = new Set<string>([user.email.toLowerCase()]);
+      for (const participant of participants) {
+        const participantAccount = await resolveLinkedAccount({
+          linkedAccountEmail: participant.linked_account_email,
+          linkedAccountId: participant.linked_account_id,
+          memberSeeds: [participant.member_id]
+        });
+        if (participantAccount?.email) {
+          participantEmailSet.add(String(participantAccount.email).trim().toLowerCase());
+        }
       }
-      const participantAccount = await resolveLinkedAccount({
-        linkedAccountEmail: participant.linked_account_email,
-        linkedAccountId: participant.linked_account_id,
-        memberSeeds: [participant.member_id]
-      });
-      if (participantAccount?.email) {
-        participantEmailSet.add(String(participantAccount.email).trim().toLowerCase());
+      for (const memberId of involvedMemberIds) {
+        const account = await findAccountByMemberId(ctx.db, memberId);
+        if (account?.email) {
+          participantEmailSet.add(String(account.email).trim().toLowerCase());
+        }
       }
-    }
-    const participantEmails = Array.from(participantEmailSet);
-
-    // VALIDATION: Check Group & Friendship for Direct Expenses
-    const group = await ctx.db
-      .query("groups")
-      .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
-      .unique();
-
-    if (!group) throw new Error("Group not found");
+      return Array.from(participantEmailSet);
+    };
 
     if (group.is_direct) {
       const equivalentIdCache = new Map<string, Set<string>>();
@@ -213,8 +343,7 @@ export const create = mutation({
       };
 
       const currentUserEquivalentIds = new Set<string>();
-      for (const selfId of [user.member_id, user.id]) {
-        if (!selfId) continue;
+      for (const selfId of callerEquivalentIds) {
         const selfEquivalentIds = await getEquivalentIdSet(selfId);
         for (const id of selfEquivalentIds) {
           currentUserEquivalentIds.add(id);
@@ -323,6 +452,9 @@ export const create = mutation({
       }
     }
 
+    const computedSettledFromSplits = (splits: { is_settled: boolean }[]) =>
+      splits.length > 0 && splits.every((split) => split.is_settled);
+
     // Deduplication check: Check if expense with this ID already exists
     const existing = await ctx.db
       .query("expenses")
@@ -330,22 +462,119 @@ export const create = mutation({
       .unique();
 
     if (existing) {
+      if (existing.group_id !== args.group_id || String(existing.group_ref) !== String(group._id)) {
+        throw new Error("Expense group mismatch");
+      }
+
+      const callerOwnsExpense = isExpenseOwner(existing, user);
+      const isStructuralChange =
+        args.description !== existing.description ||
+        args.date !== existing.date ||
+        args.total_amount !== existing.total_amount ||
+        normalizedPaidBy !== normalizeMemberId(existing.paid_by_member_id) ||
+        JSON.stringify(canonicalizeMembers(normalizedInvolved)) !==
+          JSON.stringify(canonicalizeMembers(existing.involved_member_ids)) ||
+        JSON.stringify(canonicalizeParticipantMembers(normalizedParticipantMemberIds)) !==
+          JSON.stringify(canonicalizeParticipantMembers(existing.participant_member_ids)) ||
+        canonicalizeParticipants(normalizedParticipants) !==
+          canonicalizeParticipants(existing.participants) ||
+        canonicalizeSubexpenses(args.subexpenses) !==
+          canonicalizeSubexpenses(existing.subexpenses) ||
+        JSON.stringify(args.linked_participants ?? null) !==
+          JSON.stringify(existing.linked_participants ?? null) ||
+        (args.is_payback_generated_mock_data ?? false) !==
+          (existing.is_payback_generated_mock_data ?? false);
+
+      if (!callerOwnsExpense) {
+        const callerTouchesExpense = existing.splits.some((split: any) =>
+          callerEquivalentIds.has(normalizeMemberId(split.member_id))
+        );
+        if (!callerTouchesExpense) {
+          throw new Error("Forbidden: expense access denied");
+        }
+      }
+
+      const existingSplitById = new Map(existing.splits.map((split: any) => [split.id, split]));
+      if (existingSplitById.size !== normalizedSplits.length) {
+        throw new Error("Split structure mismatch");
+      }
+
+      const validatedSplits = normalizedSplits.map((incomingSplit) => {
+        const existingSplit = existingSplitById.get(incomingSplit.id);
+        if (!existingSplit) {
+          throw new Error("Split structure mismatch");
+        }
+
+        const existingMemberId = normalizeMemberId(existingSplit.member_id);
+        if (
+          existingMemberId !== incomingSplit.member_id ||
+          existingSplit.amount !== incomingSplit.amount
+        ) {
+          throw new Error("Split structure mismatch");
+        }
+
+        if (existingSplit.is_settled && !incomingSplit.is_settled) {
+          throw new Error("Cannot unsettle a settled split");
+        }
+
+        const callerOwnsSplit = callerEquivalentIds.has(existingMemberId);
+        if (!callerOwnsExpense) {
+          if (isStructuralChange) {
+            throw new Error("Forbidden: only owner can edit expense structure");
+          }
+
+          if (!callerOwnsSplit) {
+            if (incomingSplit.is_settled !== existingSplit.is_settled) {
+              throw new Error("Forbidden: cannot settle another member's split");
+            }
+            return existingSplit;
+          }
+
+          // Non-owner callers can only transition their own split false -> true.
+          if (!existingSplit.is_settled && incomingSplit.is_settled) {
+            return { ...incomingSplit, is_settled: true };
+          }
+
+          return { ...incomingSplit, is_settled: existingSplit.is_settled };
+        }
+
+        return incomingSplit;
+      });
+
+      const nextParticipants = callerOwnsExpense ? normalizedParticipants : existing.participants;
+      const nextParticipantMemberIds = callerOwnsExpense
+        ? normalizedParticipantMemberIds
+        : existing.participant_member_ids;
+      const nextInvolvedMemberIds = callerOwnsExpense
+        ? normalizedInvolved
+        : existing.involved_member_ids;
+      const nextSubexpenses = callerOwnsExpense ? args.subexpenses : existing.subexpenses;
+      const nextLinkedParticipants = callerOwnsExpense
+        ? args.linked_participants
+        : existing.linked_participants;
+      const nextMockData = callerOwnsExpense
+        ? (args.is_payback_generated_mock_data ?? existing.is_payback_generated_mock_data)
+        : existing.is_payback_generated_mock_data;
+      const participantEmails = await buildParticipantEmails({
+        participants: nextParticipants,
+        involvedMemberIds: nextInvolvedMemberIds
+      });
+      const isSettled = computedSettledFromSplits(validatedSplits);
       await ctx.db.patch(existing._id, {
-        description: args.description,
-        date: args.date,
-        total_amount: args.total_amount,
-        paid_by_member_id: normalizedPaidBy,
-        involved_member_ids: normalizedInvolved,
-        splits: normalizedSplits,
-        is_settled: args.is_settled,
-        owner_id: user._id,
-        group_ref: group._id,
-        participants: normalizedParticipants,
-        participant_member_ids: normalizedParticipantMemberIds,
+        description: callerOwnsExpense ? args.description : existing.description,
+        date: callerOwnsExpense ? args.date : existing.date,
+        total_amount: callerOwnsExpense ? args.total_amount : existing.total_amount,
+        paid_by_member_id: callerOwnsExpense ? normalizedPaidBy : existing.paid_by_member_id,
+        involved_member_ids: nextInvolvedMemberIds,
+        splits: validatedSplits,
+        is_settled: isSettled,
+        group_ref: existing.group_ref,
+        participants: nextParticipants,
+        participant_member_ids: nextParticipantMemberIds,
         participant_emails: participantEmails,
-        subexpenses: args.subexpenses,
-        is_payback_generated_mock_data:
-          args.is_payback_generated_mock_data ?? existing.is_payback_generated_mock_data,
+        linked_participants: nextLinkedParticipants,
+        subexpenses: nextSubexpenses,
+        is_payback_generated_mock_data: nextMockData,
         updated_at: Date.now()
       });
 
@@ -363,6 +592,11 @@ export const create = mutation({
       return existing._id;
     }
 
+    const participantEmails = await buildParticipantEmails({
+      participants: normalizedParticipants,
+      involvedMemberIds: normalizedInvolved
+    });
+    const isSettled = computedSettledFromSplits(normalizedSplits);
     const expenseId = await ctx.db.insert("expenses", {
       id: args.id,
       group_id: args.group_id,
@@ -373,7 +607,7 @@ export const create = mutation({
       paid_by_member_id: normalizedPaidBy,
       involved_member_ids: normalizedInvolved,
       splits: normalizedSplits,
-      is_settled: args.is_settled,
+      is_settled: isSettled,
       owner_email: user.email,
       owner_account_id: user.id,
       owner_id: user._id,
@@ -408,9 +642,11 @@ export const listByGroup = query({
     const { user } = await getCurrentUser(ctx);
     if (!user) return [];
 
+    const { group } = await requireGroupByClientIdWithAccess(ctx, user, args.group_id);
+
     const expenses = await ctx.db
       .query("expenses")
-      .withIndex("by_group_id", (q) => q.eq("group_id", args.group_id))
+      .withIndex("by_group_ref", (q) => q.eq("group_ref", group._id))
       .collect();
 
     return expenses;
@@ -428,6 +664,12 @@ export const listByGroupPaginated = query({
     if (!user) {
       return { items: [], nextCursor: null };
     }
+
+    const group = await ctx.db.get(args.groupId);
+    if (!group) {
+      return { items: [], nextCursor: null };
+    }
+    await requireGroupAccess(ctx, user, group);
 
     const result = await ctx.db
       .query("expenses")

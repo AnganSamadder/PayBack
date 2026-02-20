@@ -1,6 +1,6 @@
-import { mutation } from "./_generated/server";
+import { internalMutation } from "./_generated/server";
 
-export const repairAlias = mutation({
+export const repairAlias = internalMutation({
   args: {},
   handler: async (ctx) => {
     // NOTE: Set these env vars when running this one-off script.

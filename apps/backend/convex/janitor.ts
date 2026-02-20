@@ -50,8 +50,12 @@ export const cleanupOrphans = internalMutation({
     const friendEmails = new Set(friendsPage.page.map((f) => f.account_email));
 
     const linkedEmails = new Set<string>();
+    const linkedAccountIds = new Set<string>();
+    const linkedMemberIds = new Set<string>();
     for (const f of friendsPage.page) {
       if (f.linked_account_email) linkedEmails.add(f.linked_account_email);
+      if (f.linked_account_id) linkedAccountIds.add(f.linked_account_id);
+      if (f.linked_member_id) linkedMemberIds.add(f.linked_member_id);
     }
 
     // NOTE: Only one .paginate() is allowed per Convex mutation, so we
@@ -70,6 +74,8 @@ export const cleanupOrphans = internalMutation({
         friendEmailCount: friendEmails.size,
         groupEmailCount: groupEmails.size,
         linkedEmailCount: linkedEmails.size,
+        linkedAccountIdCount: linkedAccountIds.size,
+        linkedMemberIdCount: linkedMemberIds.size,
         totalOwnerEmails: ownerEmailsToCheck.size,
         friendPageSize: friendsPage.page.length,
         groupsTotalSize: allGroups.length,
@@ -107,6 +113,30 @@ export const cleanupOrphans = internalMutation({
       }
     }
 
+    const orphanedLinkedAccountIds: string[] = [];
+    for (const accountId of linkedAccountIds) {
+      const account = await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", accountId))
+        .unique();
+
+      if (!account) {
+        orphanedLinkedAccountIds.push(accountId);
+      }
+    }
+
+    const orphanedLinkedMemberIds: string[] = [];
+    for (const memberId of linkedMemberIds) {
+      const account = await ctx.db
+        .query("accounts")
+        .withIndex("by_member_id", (q) => q.eq("member_id", memberId))
+        .unique();
+
+      if (!account) {
+        orphanedLinkedMemberIds.push(memberId);
+      }
+    }
+
     console.log(
       JSON.stringify({
         scope: "janitor.cleanupOrphans",
@@ -114,12 +144,21 @@ export const cleanupOrphans = internalMutation({
         step: "orphans_identified",
         orphanOwnerCount: orphanedOwnerEmails.length,
         orphanLinkedCount: orphanedLinkedEmails.length,
+        orphanLinkedAccountIdCount: orphanedLinkedAccountIds.length,
+        orphanLinkedMemberIdCount: orphanedLinkedMemberIds.length,
         orphanOwnerEmails: orphanedOwnerEmails.slice(0, 10),
-        orphanLinkedEmails: orphanedLinkedEmails.slice(0, 10)
+        orphanLinkedEmails: orphanedLinkedEmails.slice(0, 10),
+        orphanLinkedAccountIds: orphanedLinkedAccountIds.slice(0, 10),
+        orphanLinkedMemberIds: orphanedLinkedMemberIds.slice(0, 10)
       })
     );
 
-    if (orphanedOwnerEmails.length === 0 && orphanedLinkedEmails.length === 0) {
+    if (
+      orphanedOwnerEmails.length === 0 &&
+      orphanedLinkedEmails.length === 0 &&
+      orphanedLinkedAccountIds.length === 0 &&
+      orphanedLinkedMemberIds.length === 0
+    ) {
       console.log(
         JSON.stringify({
           scope: "janitor.cleanupOrphans",
@@ -132,6 +171,13 @@ export const cleanupOrphans = internalMutation({
     }
 
     const linkedEmailsToClean = orphanedLinkedEmails.slice(0, MAX_ORPHANS_PER_RUN);
+    const remainingLinkedSlots = Math.max(0, MAX_ORPHANS_PER_RUN - linkedEmailsToClean.length);
+    const linkedAccountIdsToClean = orphanedLinkedAccountIds.slice(0, remainingLinkedSlots);
+    const remainingMemberSlots = Math.max(
+      0,
+      MAX_ORPHANS_PER_RUN - linkedEmailsToClean.length - linkedAccountIdsToClean.length
+    );
+    const linkedMemberIdsToClean = orphanedLinkedMemberIds.slice(0, remainingMemberSlots);
     const results: any[] = [];
 
     for (const email of linkedEmailsToClean) {
@@ -162,9 +208,86 @@ export const cleanupOrphans = internalMutation({
       }
     }
 
+    for (const accountId of linkedAccountIdsToClean) {
+      try {
+        const friendsToDelete = await ctx.db
+          .query("account_friends")
+          .withIndex("by_linked_account_id", (q) => q.eq("linked_account_id", accountId))
+          .collect();
+
+        let deletedCount = 0;
+        for (const friend of friendsToDelete) {
+          await ctx.db.delete(friend._id);
+          deletedCount++;
+        }
+
+        results.push({
+          accountId,
+          type: "linked_account_id",
+          success: true,
+          deletedFriendRecords: deletedCount
+        });
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            scope: "janitor.cleanupOrphans",
+            operationId,
+            step: "linked_account_id_cleanup_error",
+            accountId,
+            error: String(error)
+          })
+        );
+        results.push({
+          accountId,
+          type: "linked_account_id",
+          success: false,
+          error: String(error)
+        });
+      }
+    }
+
+    for (const memberId of linkedMemberIdsToClean) {
+      try {
+        const friendsToDelete = await ctx.db
+          .query("account_friends")
+          .withIndex("by_linked_member_id", (q) => q.eq("linked_member_id", memberId))
+          .collect();
+
+        let deletedCount = 0;
+        for (const friend of friendsToDelete) {
+          await ctx.db.delete(friend._id);
+          deletedCount++;
+        }
+
+        results.push({
+          memberId,
+          type: "linked_member_id",
+          success: true,
+          deletedFriendRecords: deletedCount
+        });
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            scope: "janitor.cleanupOrphans",
+            operationId,
+            step: "linked_member_id_cleanup_error",
+            memberId,
+            error: String(error)
+          })
+        );
+        results.push({ memberId, type: "linked_member_id", success: false, error: String(error) });
+      }
+    }
+
     const ownerEmailsToClean = orphanedOwnerEmails.slice(
       0,
-      MAX_ORPHANS_PER_RUN - linkedEmailsToClean.length
+      Math.max(
+        0,
+        MAX_ORPHANS_PER_RUN -
+          linkedEmailsToClean.length -
+          linkedAccountIdsToClean.length -
+          linkedMemberIdsToClean.length
+      )
     );
 
     for (const email of ownerEmailsToClean) {
@@ -185,8 +308,16 @@ export const cleanupOrphans = internalMutation({
       }
     }
 
-    const totalOrphans = orphanedOwnerEmails.length + orphanedLinkedEmails.length;
-    const totalCleaned = linkedEmailsToClean.length + ownerEmailsToClean.length;
+    const totalOrphans =
+      orphanedOwnerEmails.length +
+      orphanedLinkedEmails.length +
+      orphanedLinkedAccountIds.length +
+      orphanedLinkedMemberIds.length;
+    const totalCleaned =
+      linkedEmailsToClean.length +
+      linkedAccountIdsToClean.length +
+      linkedMemberIdsToClean.length +
+      ownerEmailsToClean.length;
 
     console.log(
       JSON.stringify({
