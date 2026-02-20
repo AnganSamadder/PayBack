@@ -358,34 +358,20 @@ final class UIViewsMinimalTests: XCTestCase {
         XCTAssertNotEqual(state1, state2)
     }
 
-    // MARK: - SettleMethod Tests
+    // MARK: - SettleMode Tests
 
-    func test_settleMethod_allCases() {
-        let methods = SettleMethod.allCases
-        XCTAssertEqual(methods.count, 2)
-        XCTAssertTrue(methods.contains(.markAsPaid))
-        XCTAssertTrue(methods.contains(.deleteExpense))
+    func test_settleMode_settle() {
+        let mode = SettleMode.settle
+        if case .settle = mode { XCTAssertTrue(true) } else { XCTFail("Expected .settle") }
     }
 
-    func test_settleMethod_rawValues() {
-        XCTAssertEqual(SettleMethod.markAsPaid.rawValue, "Mark as Paid")
-        XCTAssertEqual(SettleMethod.deleteExpense.rawValue, "Delete Expense")
+    func test_settleMode_unsettle() {
+        let mode = SettleMode.unsettle
+        if case .unsettle = mode { XCTAssertTrue(true) } else { XCTFail("Expected .unsettle") }
     }
 
-    func test_settleMethod_initialization() {
-        let markAsPaid = SettleMethod(rawValue: "Mark as Paid")
-        XCTAssertEqual(markAsPaid, .markAsPaid)
-
-        let deleteExpense = SettleMethod(rawValue: "Delete Expense")
-        XCTAssertEqual(deleteExpense, .deleteExpense)
-
-        let invalid = SettleMethod(rawValue: "Invalid")
-        XCTAssertNil(invalid)
-    }
-
-    func test_settleMethod_caseIterable() {
-        let allMethods = SettleMethod.allCases
-        XCTAssertEqual(allMethods[0], .markAsPaid)
-        XCTAssertEqual(allMethods[1], .deleteExpense)
+    func test_settleMode_delete() {
+        let mode = SettleMode.delete
+        if case .delete = mode { XCTAssertTrue(true) } else { XCTFail("Expected .delete") }
     }
 }

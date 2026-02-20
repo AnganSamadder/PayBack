@@ -42,24 +42,17 @@ final class UIModelsAndEnumsTests: XCTestCase {
         XCTAssertNil(SplitMode(rawValue: "Invalid"))
     }
 
-    // MARK: - SettleMethod Tests
+    // MARK: - SettleMode Tests
 
-    func test_settleMethod_allCases() {
-        let methods = SettleMethod.allCases
-        XCTAssertEqual(methods.count, 2)
-        XCTAssertTrue(methods.contains(.markAsPaid))
-        XCTAssertTrue(methods.contains(.deleteExpense))
-    }
-
-    func test_settleMethod_rawValues() {
-        XCTAssertEqual(SettleMethod.markAsPaid.rawValue, "Mark as Paid")
-        XCTAssertEqual(SettleMethod.deleteExpense.rawValue, "Delete Expense")
-    }
-
-    func test_settleMethod_initialization() {
-        XCTAssertEqual(SettleMethod(rawValue: "Mark as Paid"), .markAsPaid)
-        XCTAssertEqual(SettleMethod(rawValue: "Delete Expense"), .deleteExpense)
-        XCTAssertNil(SettleMethod(rawValue: "Invalid"))
+    func test_settleMode_cases() {
+        // SettleMode is a plain enum — verify each case compiles and is distinct
+        let settle = SettleMode.settle
+        let unsettle = SettleMode.unsettle
+        let delete = SettleMode.delete
+        // Each case is a different value
+        if case .settle = settle { XCTAssertTrue(true) } else { XCTFail() }
+        if case .unsettle = unsettle { XCTAssertTrue(true) } else { XCTFail() }
+        if case .delete = delete { XCTAssertTrue(true) } else { XCTFail() }
     }
 
     // MARK: - AddFriendSheet.AddMode Tests

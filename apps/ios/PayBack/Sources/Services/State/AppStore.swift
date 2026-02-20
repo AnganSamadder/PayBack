@@ -2389,6 +2389,78 @@ func completeAuthentication(id: String, email: String, name: String?) {
         markExpenseAsSettled(expense)
     }
 
+    /// Settle specific members' splits by member ID set.
+    func settleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) {
+        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
+
+        let updatedSplits = expense.splits.map { split in
+            let shouldSettle = memberIds.contains { areSamePerson(split.memberId, $0) }
+            if shouldSettle {
+                var newSplit = split
+                newSplit.isSettled = true
+                return newSplit
+            }
+            return split
+        }
+
+        let allSplitsSettled = updatedSplits.allSatisfy { $0.isSettled }
+
+        var updatedExpense = expense
+        updatedExpense.splits = updatedSplits
+        updatedExpense.isSettled = allSplitsSettled
+
+        expenses[idx] = updatedExpense
+        persistCurrentState()
+        let participants = makeParticipants(for: updatedExpense)
+        queueExpenseUpsert(updatedExpense, participants: participants)
+    }
+
+    /// Unsettle specific members' splits by member ID set.
+    func unsettleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) {
+        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
+
+        let updatedSplits = expense.splits.map { split in
+            let shouldUnsettle = memberIds.contains { areSamePerson(split.memberId, $0) }
+            if shouldUnsettle {
+                var newSplit = split
+                newSplit.isSettled = false
+                return newSplit
+            }
+            return split
+        }
+
+        var updatedExpense = expense
+        updatedExpense.splits = updatedSplits
+        updatedExpense.isSettled = updatedSplits.allSatisfy { $0.isSettled }
+
+        expenses[idx] = updatedExpense
+        persistCurrentState()
+        let participants = makeParticipants(for: updatedExpense)
+        queueExpenseUpsert(updatedExpense, participants: participants)
+    }
+
+    func unsettleExpenseForCurrentUser(_ expense: Expense) {
+        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
+
+        let updatedSplits = expense.splits.map { split in
+            if isMe(split.memberId) {
+                var newSplit = split
+                newSplit.isSettled = false
+                return newSplit
+            }
+            return split
+        }
+
+        var updatedExpense = expense
+        updatedExpense.splits = updatedSplits
+        updatedExpense.isSettled = false
+
+        expenses[idx] = updatedExpense
+        persistCurrentState()
+        let participants = makeParticipants(for: updatedExpense)
+        queueExpenseUpsert(updatedExpense, participants: participants)
+    }
+
     func canSettleExpenseForAll(_ expense: Expense) -> Bool {
         // Only the person who paid can settle for everyone
         return isMe(expense.paidByMemberId)
@@ -2410,17 +2482,23 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     func canDeleteExpense(_ expense: Expense) -> Bool {
         guard let account = session?.account else {
-            // Local/offline mode: preserve prior behavior when no authenticated session exists.
             return true
         }
+        // Creator can always delete
         if let ownerAccountId = expense.ownerAccountId, ownerAccountId == account.id {
             return true
         }
-        if let ownerEmail = expense.ownerEmail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-            return ownerEmail == account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let ownerEmail = expense.ownerEmail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           !ownerEmail.isEmpty {
+            if ownerEmail == account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                return true
+            }
         }
-        // Legacy fallback: if owner metadata is absent, allow only when the payer is current-user-equivalent.
-        return isMe(expense.paidByMemberId)
+        // Payer can also delete
+        if isMe(expense.paidByMemberId) {
+            return true
+        }
+        return false
     }
 
     // MARK: - Queries

@@ -726,8 +726,15 @@ export const deleteExpense = mutation({
 
     if (!expense) return;
 
-    // Auth check - only owner can delete
-    if (expense.owner_id !== user._id && expense.owner_email !== user.email) {
+    const isCreator = expense.owner_id === user._id || expense.owner_email === user.email;
+
+    const userMemberIds = new Set([
+      ...(user.member_id ? [user.member_id] : []),
+      ...(user.alias_member_ids ?? [])
+    ]);
+    const isPayer = userMemberIds.has(expense.paid_by_member_id);
+
+    if (!isCreator && !isPayer) {
       throw new Error("Not authorized to delete this expense");
     }
 
@@ -743,6 +750,11 @@ export const deleteExpenses = mutation({
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
+    const userMemberIds = new Set([
+      ...(user.member_id ? [user.member_id] : []),
+      ...(user.alias_member_ids ?? [])
+    ]);
+
     for (const id of args.ids) {
       const expense = await ctx.db
         .query("expenses")
@@ -751,8 +763,10 @@ export const deleteExpenses = mutation({
 
       if (!expense) continue;
 
-      // Auth check - only owner can delete
-      if (expense.owner_id !== user._id && expense.owner_email !== user.email) {
+      const isCreator = expense.owner_id === user._id || expense.owner_email === user.email;
+      const isPayer = userMemberIds.has(expense.paid_by_member_id);
+
+      if (!isCreator && !isPayer) {
         continue;
       }
 
