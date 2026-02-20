@@ -91,6 +91,51 @@ final class AuthCoordinatorTests: XCTestCase {
         }
     }
 
+    func testOpenSignup_PopulatesSignupDraftEmail() {
+        coordinator.openSignup(with: "  TEST@EXAMPLE.COM  ")
+
+        XCTAssertEqual(coordinator.signupEmail, "test@example.com")
+    }
+
+    func testBackToLoginFromSignup_UsesEditedSignupEmailForLoginDraft() {
+        coordinator.openSignup(with: "first@example.com")
+        coordinator.signupEmail = "edited@example.com"
+
+        coordinator.backToLoginFromSignup()
+
+        XCTAssertEqual(coordinator.route, .login)
+        XCTAssertEqual(coordinator.loginEmail, "edited@example.com")
+    }
+
+    func testBackToSignupFromVerification_PreservesSignupDraft() async {
+        mockEmailAuthService.signUpResult = .needsVerification(email: "draft@example.com")
+
+        coordinator.openSignup(with: "draft@example.com")
+        coordinator.signupFirstName = "Alex"
+        coordinator.signupLastName = "Johnson"
+        coordinator.signupPassword = "Password123!"
+        coordinator.signupConfirmPassword = "Password123!"
+
+        await coordinator.signup(
+            emailInput: coordinator.signupEmail,
+            firstName: coordinator.signupFirstName,
+            lastName: coordinator.signupLastName,
+            password: coordinator.signupPassword
+        )
+
+        coordinator.backToSignupFromVerification()
+
+        if case .signup(let presetEmail) = coordinator.route {
+            XCTAssertEqual(presetEmail, "draft@example.com")
+        } else {
+            XCTFail("Expected signup route")
+        }
+        XCTAssertEqual(coordinator.signupFirstName, "Alex")
+        XCTAssertEqual(coordinator.signupLastName, "Johnson")
+        XCTAssertEqual(coordinator.signupPassword, "Password123!")
+        XCTAssertEqual(coordinator.signupConfirmPassword, "Password123!")
+    }
+
     // MARK: - Login Tests
 
     func testLogin_Success_WithExistingAccount() async {

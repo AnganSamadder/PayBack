@@ -7,8 +7,8 @@ struct LoginView: View {
         case password
     }
 
-    @State private var emailInput: String = ""
-    @State private var passwordInput: String = ""
+    @Binding private var emailInput: String
+    @Binding private var passwordInput: String
     @State private var isPasswordVisible: Bool = false
     @FocusState private var focusedField: Field?
 
@@ -22,6 +22,8 @@ struct LoginView: View {
     let onResendConfirmation: () -> Void
 
     init(
+        email: Binding<String> = .constant(""),
+        password: Binding<String> = .constant(""),
         isBusy: Bool,
         errorMessage: String?,
         infoMessage: String?,
@@ -31,6 +33,8 @@ struct LoginView: View {
         onPrefillSignup: @escaping (String) -> Void,
         onResendConfirmation: @escaping () -> Void = {}
     ) {
+        _emailInput = email
+        _passwordInput = password
         self.isBusy = isBusy
         self.errorMessage = errorMessage
         self.infoMessage = infoMessage
@@ -187,7 +191,7 @@ struct LoginView: View {
             }
         }
         .onAppear {
-            focusedField = .email
+            focusedField = emailInput.isEmpty ? .email : .password
         }
     }
 
@@ -273,6 +277,7 @@ struct LoginView: View {
                 .foregroundStyle(.white)
                 .font(.system(.headline, design: .rounded))
                 .submitLabel(.go)
+                .privacySensitive()
                 .focused($focusedField, equals: .password)
                 .onSubmit(login)
 

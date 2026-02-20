@@ -10,11 +10,11 @@ struct SignupView: View {
         case confirm
     }
 
-    @State private var emailInput: String
-    @State private var firstNameInput: String = ""
-    @State private var lastNameInput: String = ""
-    @State private var passwordInput: String = ""
-    @State private var confirmPasswordInput: String = ""
+    @Binding private var emailInput: String
+    @Binding private var firstNameInput: String
+    @Binding private var lastNameInput: String
+    @Binding private var passwordInput: String
+    @Binding private var confirmPasswordInput: String
     @State private var isPasswordVisible: Bool = false
     @State private var isConfirmVisible: Bool = false
     @FocusState private var focusedField: Field?
@@ -29,13 +29,21 @@ struct SignupView: View {
     let onBack: () -> Void
 
     init(
-        email: String,
+        email: Binding<String>,
+        firstName: Binding<String>,
+        lastName: Binding<String>,
+        password: Binding<String>,
+        confirmPassword: Binding<String>,
         isBusy: Bool,
         errorMessage: String?,
         onSubmit: @escaping (String, String, String?, String) -> Void,
         onBack: @escaping () -> Void
     ) {
-        _emailInput = State(initialValue: email)
+        _emailInput = email
+        _firstNameInput = firstName
+        _lastNameInput = lastName
+        _passwordInput = password
+        _confirmPasswordInput = confirmPassword
         self.isBusy = isBusy
         self.errorMessage = errorMessage
         self.onSubmit = onSubmit
@@ -130,6 +138,11 @@ struct SignupView: View {
                     field: .confirm,
                     onSubmit: submit
                 )
+
+                Text("Use the iPhone suggested strong password for the fastest sign up.")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if passwordMismatch {
@@ -208,9 +221,7 @@ struct SignupView: View {
             }
         }
         .onAppear {
-            if firstNameInput.isEmpty {
-                focusedField = .firstName
-            }
+            focusedField = firstNameInput.isEmpty ? .firstName : .password
         }
     }
 
@@ -257,10 +268,11 @@ struct SignupView: View {
                 }
                 .textInputAutocapitalization(.never)
                 .disableAutocorrection(true)
-                .textContentType(.newPassword)
+                .textContentType(field == .password ? .newPassword : .password)
                 .foregroundStyle(.white)
                 .font(.system(.headline, design: .rounded))
-                .submitLabel(.next)
+                .submitLabel(field == .confirm ? .join : .next)
+                .privacySensitive()
                 .focused($focusedField, equals: field)
                 .onSubmit(onSubmit)
 
@@ -350,7 +362,11 @@ struct SignupView_Previews: PreviewProvider {
             LinearGradient(colors: [.teal, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
             SignupView(
-                email: "you@example.com",
+                email: .constant("you@example.com"),
+                firstName: .constant(""),
+                lastName: .constant(""),
+                password: .constant(""),
+                confirmPassword: .constant(""),
                 isBusy: false,
                 errorMessage: "",
                 onSubmit: { _, _, _, _ in },

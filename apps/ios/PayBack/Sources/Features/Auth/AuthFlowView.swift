@@ -39,6 +39,8 @@ struct AuthFlowView: View {
         switch coordinator.route {
         case .login:
             LoginView(
+                email: $coordinator.loginEmail,
+                password: $coordinator.loginPassword,
                 isBusy: coordinator.isBusy,
                 errorMessage: coordinator.errorMessage,
                 infoMessage: coordinator.infoMessage,
@@ -57,9 +59,13 @@ struct AuthFlowView: View {
                 }
             )
             .frame(maxWidth: 520)
-        case .signup(let email):
+        case .signup:
             SignupView(
-                email: email,
+                email: $coordinator.signupEmail,
+                firstName: $coordinator.signupFirstName,
+                lastName: $coordinator.signupLastName,
+                password: $coordinator.signupPassword,
+                confirmPassword: $coordinator.signupConfirmPassword,
                 isBusy: coordinator.isBusy,
                 errorMessage: coordinator.errorMessage,
                 onSubmit: { email, firstName, lastName, password in
@@ -67,7 +73,7 @@ struct AuthFlowView: View {
                 },
                 onBack: {
                     withAnimation {
-                        coordinator.start()
+                        coordinator.backToLoginFromSignup()
                     }
                 }
             )
@@ -82,7 +88,7 @@ struct AuthFlowView: View {
                 },
                 onBack: {
                     withAnimation {
-                        coordinator.start()
+                        coordinator.backToSignupFromVerification()
                     }
                 },
                 onResend: {

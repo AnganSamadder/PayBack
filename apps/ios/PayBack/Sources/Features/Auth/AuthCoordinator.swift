@@ -15,6 +15,13 @@ final class AuthCoordinator: ObservableObject {
     @Published var infoMessage: String?
     /// Email that needs confirmation - when set, shows the "Resend confirmation" option
     @Published var unconfirmedEmail: String?
+    @Published var loginEmail: String = ""
+    @Published var loginPassword: String = ""
+    @Published var signupEmail: String = ""
+    @Published var signupFirstName: String = ""
+    @Published var signupLastName: String = ""
+    @Published var signupPassword: String = ""
+    @Published var signupConfirmPassword: String = ""
 
     private let accountService: AccountService
     private let emailAuthService: EmailAuthService
@@ -47,13 +54,29 @@ final class AuthCoordinator: ObservableObject {
 
     func openSignup(with emailInput: String) {
         let normalized = (try? accountService.normalizedEmail(from: emailInput)) ?? emailInput
+        loginEmail = normalized
+        signupEmail = normalized
         route = .signup(presetEmail: normalized)
     }
 
+    func backToLoginFromSignup() {
+        let normalized = (try? accountService.normalizedEmail(from: signupEmail)) ?? signupEmail
+        loginEmail = normalized
+        route = .login
+    }
+
+    func backToSignupFromVerification() {
+        route = .signup(presetEmail: signupEmail)
+    }
+
     func login(emailInput: String, password: String) async {
+        loginEmail = emailInput
+        loginPassword = password
+
         await runBusyTask {
             do {
                 let account = try await self.store.login(email: emailInput, password: password)
+                self.loginPassword = ""
                 self.route = .authenticated(UserSession(account: account))
             } catch PayBackError.authEmailNotConfirmed {
                 // Special handling: offer to resend confirmation
@@ -67,6 +90,11 @@ final class AuthCoordinator: ObservableObject {
     }
 
     func signup(emailInput: String, firstName: String, lastName: String?, password: String) async {
+        signupEmail = emailInput
+        signupFirstName = firstName
+        signupLastName = lastName ?? ""
+        signupPassword = password
+
         await runBusyTask {
             do {
                 let result = try await self.store.signup(
@@ -85,9 +113,14 @@ final class AuthCoordinator: ObservableObject {
                         .compactMap { $0 }
                         .joined(separator: " ")
 
+                    self.signupEmail = email
                     self.route = .verification(email: email, displayName: self.pendingDisplayName)
 
                 case .complete(_):
+                    self.loginEmail = emailInput
+                    self.loginPassword = ""
+                    self.signupPassword = ""
+                    self.signupConfirmPassword = ""
                     // Auto-login logic inside store handles session setup, we just update route
                     // We need to fetch the account to populate UserSession
                     // store.session should be set by store.signup -> performConvexAuthAndSetup

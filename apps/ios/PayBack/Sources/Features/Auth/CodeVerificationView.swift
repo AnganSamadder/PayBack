@@ -157,6 +157,17 @@ struct CodeVerificationView: View {
         .onAppear {
             isInputFocused = true
         }
+        .onTapGesture {
+            isInputFocused = false
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    isInputFocused = false
+                }
+            }
+        }
     }
 
     private var isContinueEnabled: Bool {
