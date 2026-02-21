@@ -2425,10 +2425,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 return true
             }
         }
-        // Payer can also delete
-        if isMe(expense.paidByMemberId) {
-            return true
-        }
         return false
     }
 
