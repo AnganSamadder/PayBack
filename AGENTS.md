@@ -99,10 +99,25 @@ All project configuration changes must be made in `project.yml`. After editing, 
 xcodegen generate
 ```
 
+### Build Number Rule
+
+**Always bump `CURRENT_PROJECT_VERSION` in `project.yml`, then run `xcodegen generate`.** Never edit the Xcode project directly.
+
+```yaml
+# project.yml → settings.base
+CURRENT_PROJECT_VERSION: 95   # increment by 1 each release
+```
+
+```bash
+xcodegen generate
+```
+
 ### Common Examples
 
 | What you want to change      | Where in `project.yml`                    | Example                                  |
 | ---------------------------- | ----------------------------------------- | ---------------------------------------- |
+| Build number                 | `settings.base.CURRENT_PROJECT_VERSION`   | `95`                                     |
+| App version                  | `settings.base.MARKETING_VERSION`         | `1.2.0`                                  |
 | Build setting (project-wide) | `settings.base`                           | `SWIFT_VERSION: "5.10"`                  |
 | Build setting (per-config)   | `settings.configs.Debug`                  | `GCC_OPTIMIZATION_LEVEL: 0`              |
 | Build setting (per-target)   | `targets.PayBack.settings.base`           | `PRODUCT_BUNDLE_IDENTIFIER`              |
