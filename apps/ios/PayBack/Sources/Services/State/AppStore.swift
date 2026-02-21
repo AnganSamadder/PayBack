@@ -1965,20 +1965,89 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     var friendMembers: [GroupMember] {
         let overrides = friendNameOverrides()
-        return friends
-            .filter { !isCurrentUserFriend($0) }
-            .map { friend in
-                let name = sanitizedFriendName(friend, overrides: overrides)
-                var member = GroupMember(
-                    id: friend.memberId,
-                    name: name,
-                    accountFriendMemberId: friend.memberId
-                )
-                member.profileColorHex = friend.profileColorHex
-                member.profileImageUrl = friend.profileImageUrl
-                return member
+
+        // Build a map of non-current-user group members keyed by display name.
+        var groupMemberByName: [String: GroupMember] = [:]
+        var groupMemberIds: Set<UUID> = []
+        for group in groups {
+            for member in group.members {
+                guard !isCurrentUser(member) else { continue }
+                guard !groupMemberIds.contains(member.id) else { continue }
+                let key = member.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if !key.isEmpty {
+                    groupMemberByName[key] = member
+                }
+                groupMemberIds.insert(member.id)
             }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+
+        var result: [GroupMember] = []
+        var includedIds: Set<UUID> = []
+
+        for friend in friends {
+            guard !isCurrentUserFriend(friend) else { continue }
+
+            let displayName = sanitizedFriendName(friend, overrides: overrides)
+            // Use nickname as effective name for dedup matching when available.
+            let effectiveName: String
+            if let nick = friend.nickname?.trimmingCharacters(in: .whitespacesAndNewlines), !nick.isEmpty {
+                effectiveName = nick
+            } else {
+                effectiveName = displayName
+            }
+            let nameKey = effectiveName.lowercased()
+
+            if let groupMember = groupMemberByName[nameKey], groupMember.id != friend.memberId {
+                // Name/nickname collision with a group member of a different ID.
+                if areSamePerson(groupMember.id, friend.memberId) {
+                    // The group member is an identity alias of this confirmed friend.
+                    // Show only the canonical friend entry; mark the alias ID as covered.
+                    if !includedIds.contains(friend.memberId) {
+                        var member = GroupMember(id: friend.memberId, name: displayName, accountFriendMemberId: friend.memberId)
+                        member.profileColorHex = friend.profileColorHex
+                        member.profileImageUrl = friend.profileImageUrl
+                        result.append(member)
+                        includedIds.insert(friend.memberId)
+                    }
+                    includedIds.insert(groupMember.id)
+                } else if friend.hasLinkedAccount {
+                    // Truly different people with the same name; linked friend: include both.
+                    if !includedIds.contains(groupMember.id) {
+                        result.append(groupMember)
+                        includedIds.insert(groupMember.id)
+                    }
+                    if !includedIds.contains(friend.memberId) {
+                        var member = GroupMember(id: friend.memberId, name: displayName, accountFriendMemberId: friend.memberId)
+                        member.profileColorHex = friend.profileColorHex
+                        member.profileImageUrl = friend.profileImageUrl
+                        result.append(member)
+                        includedIds.insert(friend.memberId)
+                    }
+                } else {
+                    // Unlinked friend: prefer the group member ID, skip the remote friend ID.
+                    if !includedIds.contains(groupMember.id) {
+                        result.append(groupMember)
+                        includedIds.insert(groupMember.id)
+                    }
+                }
+            } else {
+                // No collision or IDs already match: include as a confirmed friend entry.
+                if !includedIds.contains(friend.memberId) {
+                    var member = GroupMember(id: friend.memberId, name: displayName, accountFriendMemberId: friend.memberId)
+                    member.profileColorHex = friend.profileColorHex
+                    member.profileImageUrl = friend.profileImageUrl
+                    result.append(member)
+                    includedIds.insert(friend.memberId)
+                }
+            }
+        }
+
+        // Include any group-derived members not already covered by a confirmed friend.
+        for (_, groupMember) in groupMemberByName where !includedIds.contains(groupMember.id) {
+            result.append(groupMember)
+        }
+
+        return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func purgeCurrentUserFriendRecords() {
