@@ -8,7 +8,7 @@ enum AppAppearance {
 			return AppTheme.brandColor(for: traits)
 		}
 
-		// Navigation Bar: transparent background; white titles; no large titles
+		// Navigation Bar: transparent background with brand-tinted actions
 		let nav = UINavigationBarAppearance()
 		nav.configureWithTransparentBackground()
 		nav.backgroundEffect = nil
@@ -25,10 +25,11 @@ enum AppAppearance {
 		UINavigationBar.appearance().standardAppearance = nav
 		UINavigationBar.appearance().scrollEdgeAppearance = nav
 		UINavigationBar.appearance().compactAppearance = nav
-		UINavigationBar.appearance().tintColor = .white
+		UINavigationBar.appearance().tintColor = brand
 		UINavigationBar.appearance().prefersLargeTitles = false
 		UINavigationBar.appearance().shadowImage = UIImage()
 		UINavigationBar.appearance().setBackgroundImage(UIImage(), for: .default)
+		UIBarButtonItem.appearance().tintColor = brand
 
 		// Native Tab Bar: liquid glass appearance with brand tint
 		// Note: RootView uses a 5-tab TabView where tab 2 is an empty spacer for the FAB
@@ -42,6 +43,12 @@ enum AppAppearance {
 		UITabBar.appearance().standardAppearance = tab
 		UITabBar.appearance().scrollEdgeAppearance = tab
 		UITabBar.appearance().tintColor = brand
+
+		// Keep system controls aligned with app theme accent.
+		UIView.appearance().tintColor = brand
+		UIView.appearance(whenContainedInInstancesOf: [UIAlertController.self]).tintColor = brand
+		UISwitch.appearance().onTintColor = brand
+		UIStepper.appearance().tintColor = brand
 
 		// Lists: clear background and no default separators (we draw our own when needed)
 		UITableView.appearance().backgroundColor = .clear

@@ -260,6 +260,7 @@ struct PayBackApp: App {
         WindowGroup {
             RootViewWithStore()
                 .environment(\.clerk, clerk)
+                .tint(AppTheme.brand)
         }
     }
 }
