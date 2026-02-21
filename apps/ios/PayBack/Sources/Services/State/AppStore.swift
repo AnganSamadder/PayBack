@@ -1075,7 +1075,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         do {
             try await accountService.deleteLinkedFriend(memberId: memberId)
             print("✅ Backend deleteLinkedFriend success")
-            scheduleFriendSync()
+            await MainActor.run { scheduleFriendSync() }
         } catch {
             print("🔴 Backend deleteLinkedFriend failed: \(error)")
         }
@@ -1123,7 +1123,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         do {
             try await accountService.deleteUnlinkedFriend(memberId: memberId)
             print("✅ Backend deleteUnlinkedFriend success")
-            scheduleFriendSync()
+            await MainActor.run { scheduleFriendSync() }
         } catch {
             print("🔴 Backend deleteUnlinkedFriend failed: \(error)")
         }
