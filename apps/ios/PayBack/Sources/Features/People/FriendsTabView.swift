@@ -338,15 +338,17 @@ private struct FriendsList: View {
             if group.members.contains(where: { isFriend($0.id, for: friend) }) {
                 let groupExpenses = store.expenses(in: group.id)
 
-                for exp in groupExpenses where !exp.isSettled {
+                for exp in groupExpenses {
                     if isMe(exp.paidByMemberId) {
                         // Current user paid, check if friend owes anything
-                        if let friendSplit = exp.splits.first(where: { isFriend($0.memberId, for: friend) }) {
+                        if let friendSplit = exp.splits.first(where: { isFriend($0.memberId, for: friend) }),
+                           !friendSplit.isSettled {
                             totalBalance += friendSplit.amount
                         }
                     } else if isFriend(exp.paidByMemberId, for: friend) {
                         // Friend paid, check if current user owes anything
-                        if let userSplit = exp.splits.first(where: { isMe($0.memberId) }) {
+                        if let userSplit = exp.splits.first(where: { isMe($0.memberId) }),
+                           !userSplit.isSettled {
                             totalBalance -= userSplit.amount
                         }
                     }
@@ -403,15 +405,17 @@ private struct BalanceView: View {
 
             let groupExpenses = store.expenses(in: group.id)
 
-            for expense in groupExpenses where !expense.isSettled {
+            for expense in groupExpenses {
                 if isMe(expense.paidByMemberId) {
                     // Current user paid - friend owes current user
-                    if let friendSplit = expense.splits.first(where: { isFriend($0.memberId, for: friend) }) {
+                    if let friendSplit = expense.splits.first(where: { isFriend($0.memberId, for: friend) }),
+                       !friendSplit.isSettled {
                         totalBalance += friendSplit.amount
                     }
                 } else if isFriend(expense.paidByMemberId, for: friend) {
                     // Friend paid - current user owes friend
-                    if let userSplit = expense.splits.first(where: { isMe($0.memberId) }) {
+                    if let userSplit = expense.splits.first(where: { isMe($0.memberId) }),
+                       !userSplit.isSettled {
                         totalBalance -= userSplit.amount
                     }
                 }
