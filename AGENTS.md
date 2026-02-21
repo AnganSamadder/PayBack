@@ -616,3 +616,63 @@ Use Apple-native content types so AutoFill and strong-password suggestions work 
 3. Signup password uses `.textContentType(.newPassword)`.
 4. Signup confirm password uses `.textContentType(.password)` and submit label `.join` to finish the flow cleanly.
 5. Verification code input uses `.textContentType(.oneTimeCode)` and keeps a keyboard dismiss affordance.
+
+## ADD EXPENSE UX CONTINUITY (IOS) (2026-02-20)
+
+### Save Validation Parity Rule
+
+Add Expense top-bar save/check availability must match actual save guards.
+
+**Required behavior:**
+
+1. Use one shared validation path for both button disabled state and `save()` guard.
+2. Validation must include: non-empty description, positive amount, at least one participant, and non-empty computed splits.
+3. Never allow silent no-op on save tap due to guard mismatch.
+
+### Save Validation Feedback Rule
+
+When save is blocked, users must see exactly what is missing.
+
+**Required behavior:**
+
+1. `saveValidationMessage` should return explicit missing-field guidance, and include multiple missing items in one message when applicable.
+2. Do not trigger warning/success-style haptics on blocked-save validation paths; show alert copy only.
+
+### Split Summary Label Rule
+
+Split label text must reflect participant selection state, not just split mode.
+
+**Required behavior:**
+
+1. If exactly one participant is selected, use `Only me` or `Only <name>` (never “Split equally”).
+2. For multi-participant splits, use mode-based labels (`Split equally`, `Split by percent`, etc.).
+3. If only a subset of group members is selected, append count context like `(<n> people)`.
+
+### Split Sheet Exit Affordance Rule
+
+Swipe-to-dismiss is not sufficient as the only close interaction in split configuration.
+
+**Required behavior:**
+
+1. Split detail sheet must expose an explicit top-bar confirmation control (checkmark) that dismisses the sheet.
+
+### Add Expense Swipe Gesture Rule
+
+Swipe gestures on Add Expense must be deterministic and never leave the screen in an in-between offset state.
+
+**Required behavior:**
+
+1. Do not animate/persist panel offset during drag; detect swipe-up from gesture end translation only.
+2. Disable swipe-down interactive dismissal for split/add-expense sheets; closing should be explicit (top controls).
+3. Add setting `confirmPromptOnSwipeUpAddExpense` (default ON): ON shows confirmation prompt before swipe-up save; OFF saves directly on swipe-up.
+4. When the swipe-confirm overlay is visible, a second upward swipe crossing threshold must execute the same save path as tapping `Save`, then fully reset panel offset/gesture state.
+
+### Expense Save + Convex Acknowledgement Rule
+
+Expense creation must not silently succeed locally while failing cloud sync in the same flow.
+
+**Required behavior:**
+
+1. Add-expense screen save path must use Convex-backed save (`addExpenseAndSync`) and surface backend/auth/config failures immediately.
+2. If Convex upsert fails during creation, rollback the optimistic local insert for that new expense and keep the user on the creation screen with an actionable error.
+3. Save-confirm and duplicate-warning prompts must share one alert state machine; avoid multiple `.alert` modifiers on the same root view to prevent prompt conflicts/no-op taps.
