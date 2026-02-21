@@ -548,7 +548,11 @@ export const create = mutation({
       const nextInvolvedMemberIds = callerOwnsExpense
         ? normalizedInvolved
         : existing.involved_member_ids;
-      const nextSubexpenses = callerOwnsExpense ? args.subexpenses : existing.subexpenses;
+      const nextSubexpenses = callerOwnsExpense
+        ? args.subexpenses && args.subexpenses.length >= 2
+          ? args.subexpenses
+          : undefined
+        : existing.subexpenses;
       const nextLinkedParticipants = callerOwnsExpense
         ? args.linked_participants
         : existing.linked_participants;
@@ -615,7 +619,7 @@ export const create = mutation({
       participants: normalizedParticipants,
       participant_emails: participantEmails,
       linked_participants: args.linked_participants,
-      subexpenses: args.subexpenses,
+      subexpenses: args.subexpenses && args.subexpenses.length >= 2 ? args.subexpenses : undefined,
       is_payback_generated_mock_data: args.is_payback_generated_mock_data ?? false,
       created_at: Date.now(),
       updated_at: Date.now()

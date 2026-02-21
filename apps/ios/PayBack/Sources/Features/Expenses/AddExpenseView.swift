@@ -291,8 +291,8 @@ struct AddExpenseView: View {
             paidByMemberId: payerId,
             involvedMemberIds: participants.map(\.id),
             splits: splits,
-            // Filter out zero-amount subexpenses (blank entries from UI)
-            subexpenses: subexpenses.filter { $0.amount > 0.001 }.isEmpty ? nil : subexpenses.filter { $0.amount > 0.001 }
+            // Filter out zero-amount subexpenses; a single item is semantically a plain expense
+            subexpenses: { let f = subexpenses.filter { $0.amount > 0.001 }; return f.count >= 2 ? f : nil }()
         )
 
         isSaving = true
