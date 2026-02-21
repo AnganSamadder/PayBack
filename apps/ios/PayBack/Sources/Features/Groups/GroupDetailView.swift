@@ -89,6 +89,8 @@ struct GroupDetailView: View {
             if let group = group {
                 AddExpenseView(group: group)
                     .environmentObject(store)
+                    .interactiveDismissDisabled()
+                    .presentationDragIndicator(.hidden)
             }
         }
         .sheet(isPresented: $showSettleView) {

@@ -273,7 +273,7 @@ struct AddFriendSheet: View {
         }
 
         // Check for duplicate
-        if store.confirmedFriendMembers.contains(where: { $0.name.lowercased() == trimmed.lowercased() }) {
+        if store.friendMembers.contains(where: { $0.name.lowercased() == trimmed.lowercased() }) {
             Haptics.notify(.error)
             searchState = .error("A friend with this name already exists.")
             return
@@ -281,6 +281,10 @@ struct AddFriendSheet: View {
 
         // Create direct group with the friend
         _ = store.directGroup(with: candidate)
+
+        // Register as a confirmed friend so they appear on the Friends tab
+        let newFriend = AccountFriend(memberId: candidate.id, name: trimmed, status: "friend")
+        store.addImportedFriend(newFriend)
 
         // Trigger success haptic
         Haptics.notify(.success)
@@ -388,6 +392,10 @@ struct AddFriendSheet: View {
 
         // Create direct group with the friend
         _ = store.directGroup(with: candidate)
+
+        // Register as a confirmed friend so they appear on the Friends tab
+        let newFriend = AccountFriend(memberId: candidate.id, name: defaultName, status: "friend")
+        store.addImportedFriend(newFriend)
 
         successMessage = "Added \(defaultName) as a friend. They can link their account later."
         showSuccessMessage = true

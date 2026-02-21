@@ -306,7 +306,7 @@ private struct FriendsList: View {
 
     private var sortedFriends: [GroupMember] {
         // Double filter to ensure current user is never shown
-        let friends = store.confirmedFriendMembers
+        let friends = store.friendMembers
             .filter { !store.isCurrentUser($0) }
             .filter { $0.id != store.currentUser.id }
 

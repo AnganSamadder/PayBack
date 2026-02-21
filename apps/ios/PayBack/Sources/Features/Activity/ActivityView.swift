@@ -558,7 +558,7 @@ struct DashboardView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 12) {
                     // Filter for active groups (groups with non-current user members)
-                    ForEach(store.groups.filter { store.hasNonCurrentUserMembers($0) }) { group in
+                    ForEach(store.groups.filter { !store.isDirectGroup($0) && store.hasNonCurrentUserMembers($0) }) { group in
                         Button(action: {
                             if group.isDirect == true,
                                let friend = group.members.first(where: { !store.isCurrentUser($0) }) {

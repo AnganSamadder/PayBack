@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("confirmPromptOnSwipeUpAddExpense") private var confirmPromptOnSwipeUpAddExpense: Bool = true
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
@@ -85,6 +86,24 @@ struct SettingsView: View {
                             .foregroundStyle(.primary)
 
                         Text("Display full names (first + last) instead of just first names")
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(SwitchToggleStyle(tint: AppTheme.brand))
+                .padding(16)
+
+                Divider()
+                    .padding(.horizontal, 16)
+
+                Toggle(isOn: $confirmPromptOnSwipeUpAddExpense) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Confirm Swipe-Up Save")
+                            .font(.system(.body, design: .rounded, weight: .medium))
+                            .foregroundStyle(.primary)
+
+                        Text("When on, swiping up on Add Expense asks for confirmation. When off, swipe up saves immediately.")
                             .font(.system(.caption, design: .rounded))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

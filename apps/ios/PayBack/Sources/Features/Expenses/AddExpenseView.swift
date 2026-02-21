@@ -30,9 +30,24 @@ enum SplitMode: String, CaseIterable, Identifiable {
     }
 }
 
+private enum AddExpenseAlert: Identifiable {
+    case duplicateExpense
+    case cannotSave(message: String)
+
+    var id: String {
+        switch self {
+        case .duplicateExpense:
+            return "duplicateExpense"
+        case .cannotSave(let message):
+            return "cannotSave-\(message)"
+        }
+    }
+}
+
 struct AddExpenseView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
+    @AppStorage("confirmPromptOnSwipeUpAddExpense") private var confirmPromptOnSwipeUpAddExpense: Bool = true
 
     let group: SpendingGroup
     let onClose: (() -> Void)?
@@ -61,9 +76,12 @@ struct AddExpenseView: View {
     @State private var showSubexpenses: Bool = false
 
     @State private var showNotesSheet: Bool = false
-    @State private var showSaveConfirm: Bool = false
+    @State private var activeAlert: AddExpenseAlert?
+    @State private var showSwipeSaveConfirmOverlay: Bool = false
+    @State private var isSaving: Bool = false
 
     @State private var dragOffset: CGFloat = 0
+    @State private var maxUpwardTravelDuringSwipe: CGFloat = 0
     @State private var hasResolvedInitialPayer = false
 
     init(group: SpendingGroup, onClose: (() -> Void)? = nil) {
@@ -82,23 +100,35 @@ struct AddExpenseView: View {
 
     var body: some View {
         GeometryReader { geometry in
-                                            mainContent(geometry: geometry)
-                    .alert("Save expense?", isPresented: $showSaveConfirm) {
-                        Button("Save") { save() }
-                        Button("Cancel", role: .cancel) {
-                            withAnimation(AppAnimation.springy) { dragOffset = 0 }
-                        }
+            mainContent(geometry: geometry)
+                .alert(item: $activeAlert) { alert in
+                    switch alert {
+                    case .duplicateExpense:
+                        return Alert(
+                            title: Text("Duplicate Expense?"),
+                            message: Text("This looks like a duplicate of an existing expense in this group. Are you sure you want to save it?"),
+                            primaryButton: .default(Text("Save Anyway")) {
+                                skipDupeCheck = true
+                                saveTapped()
+                            },
+                            secondaryButton: .cancel()
+                        )
+                    case .cannotSave(let message):
+                        return Alert(
+                            title: Text("Can't Save Yet"),
+                            message: Text(message),
+                            dismissButton: .default(Text("OK"))
+                        )
                     }
-                    .alert("Duplicate Expense?", isPresented: $showExactDupeWarning) {
-                        Button("Save Anyway") {
-                            skipDupeCheck = true
-                            save()
-                        }
-                        Button("Cancel", role: .cancel) { }
-                    } message: {
-                        Text("This looks like a duplicate of an existing expense in this group. Are you sure you want to save it?")
+                }
+                .overlay(alignment: .bottom) {
+                    if showSwipeSaveConfirmOverlay {
+                        swipeSaveConfirmOverlay
+                            .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                            .zIndex(20)
                     }
-                .gesture(dragGesture)
+                }
+                .simultaneousGesture(dragGesture, including: .all)
                 .offset(y: dragOffset)
                 .ignoresSafeArea()
                 .compositingGroup()
@@ -202,16 +232,41 @@ struct AddExpenseView: View {
         return baseSplits
     }
 
-    @State private var showExactDupeWarning: Bool = false
     @State private var skipDupeCheck: Bool = false
 
-    private func save() {
+    private var canSaveExpense: Bool {
+        AddExpenseFlowLogic.canSaveExpense(
+            description: descriptionText,
+            totalAmount: totalAmount,
+            participantCount: participants.count,
+            splitCount: computedSplits().count
+        )
+    }
+
+    private var saveValidationMessage: String? {
+        AddExpenseFlowLogic.saveValidationMessage(
+            description: descriptionText,
+            totalAmount: totalAmount,
+            participantCount: participants.count,
+            splitCount: computedSplits().count
+        )
+    }
+
+    private func saveTapped() {
+        Task {
+            await save()
+        }
+    }
+
+    @MainActor
+    private func save() async {
+        guard saveValidationMessage == nil else {
+            if let saveValidationMessage {
+                activeAlert = .cannotSave(message: saveValidationMessage)
+            }
+            return
+        }
         let splits = computedSplits()
-        guard !descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              totalAmount > 0,
-              !participants.isEmpty,
-              !splits.isEmpty,
-              participants.contains(where: { !store.isCurrentUser($0) }) else { return }
 
         // DEDUPLICATION: Check for exact/similar duplicates unless skipped
         if !skipDupeCheck {
@@ -223,8 +278,7 @@ struct AddExpenseView: View {
             }
 
             if existing != nil {
-                Haptics.notify(.warning)
-                showExactDupeWarning = true
+                activeAlert = .duplicateExpense
                 return
             }
         }
@@ -240,8 +294,20 @@ struct AddExpenseView: View {
             // Filter out zero-amount subexpenses (blank entries from UI)
             subexpenses: subexpenses.filter { $0.amount > 0.001 }.isEmpty ? nil : subexpenses.filter { $0.amount > 0.001 }
         )
-        store.addExpense(expense)
-        close()
+
+        isSaving = true
+        defer { isSaving = false }
+
+        do {
+            try await store.addExpenseAndSync(expense)
+            Haptics.notify(.success)
+            close()
+        } catch {
+            // Keep creation reliable even if immediate Convex ack fails.
+            store.addExpense(expense)
+            Haptics.notify(.success)
+            close()
+        }
     }
 
     private func close() {
@@ -275,88 +341,219 @@ struct AddExpenseView: View {
             Button(action: { close() }) {
                 Image(systemName: "xmark")
                     .font(.system(size: AppMetrics.AddExpense.topBarIconSize, weight: .semibold))
-                    .foregroundStyle(AppTheme.addExpenseTextColor)
+                    .foregroundStyle(.primary)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial, in: Circle())
             }
+            .buttonStyle(.plain)
             Spacer()
-            Button(action: { save() }) {
+            Button(action: { saveTapped() }) {
                 Image(systemName: "checkmark")
                     .font(.system(size: AppMetrics.AddExpense.topBarIconSize, weight: .semibold))
-                    .foregroundStyle(AppTheme.addExpenseTextColor)
+                    .foregroundStyle(.primary)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial, in: Circle())
             }
-            .disabled(totalAmount <= 0 || descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || participants.isEmpty)
+            .disabled(isSaving)
+            .opacity(isSaving ? 0.6 : 1)
+            .buttonStyle(.plain)
         }
         .padding(.horizontal)
         .padding(.top, 60) // Status bar area
         .padding(.bottom, 20)
     }
 
-                 private var mainExpenseContent: some View {
-                 VStack(spacing: AppMetrics.AddExpense.verticalStackSpacing) {
-                     Spacer()
+    private var mainExpenseContent: some View {
+        VStack(spacing: AppMetrics.AddExpense.verticalStackSpacing) {
+            Spacer()
 
-                     Text("Add Expense")
-                         .font(.system(size: AppMetrics.headerTitleFontSize, weight: .bold))
-                         .foregroundStyle(AppTheme.addExpenseTextColor)
+            Text("Add Expense")
+                .font(.system(size: AppMetrics.headerTitleFontSize, weight: .bold))
+                .foregroundStyle(AppTheme.addExpenseTextColor)
 
-                     CenterEntryBubble(
-                         descriptionText: $descriptionText,
-                         amountText: $amountText,
-                         currency: $currency,
-                         rates: $rates,
-                         subexpenses: $subexpenses,
-                         showSubexpenses: $showSubexpenses
-                     )
-                     .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
+            CenterEntryBubble(
+                descriptionText: $descriptionText,
+                amountText: $amountText,
+                currency: $currency,
+                rates: $rates,
+                subexpenses: $subexpenses,
+                showSubexpenses: $showSubexpenses
+            )
+            .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
 
-                     PaidSplitBubble(
-                         group: group,
-                         payerId: $payerId,
-                         currentUserMemberId: resolvedCurrentUserMemberId,
-                         involvedIds: $involvedIds,
-                         mode: $mode,
-                         percents: $percents,
-                         manualAmounts: $manualAmounts,
-                         shares: $shares,
-                         adjustments: $adjustments,
-                         itemizedAmounts: $itemizedAmounts,
-                         itemizedSubtotal: $itemizedSubtotal,
-                         itemizedTax: $itemizedTax,
-                         itemizedTip: $itemizedTip,
-                         autoDistributeTaxTip: $autoDistributeTaxTip,
-                         totalAmount: totalAmount
-                     )
-                     .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
+            PaidSplitBubble(
+                group: group,
+                payerId: $payerId,
+                currentUserMemberId: resolvedCurrentUserMemberId,
+                involvedIds: $involvedIds,
+                mode: $mode,
+                percents: $percents,
+                manualAmounts: $manualAmounts,
+                shares: $shares,
+                adjustments: $adjustments,
+                itemizedAmounts: $itemizedAmounts,
+                itemizedSubtotal: $itemizedSubtotal,
+                itemizedTax: $itemizedTax,
+                itemizedTip: $itemizedTip,
+                autoDistributeTaxTip: $autoDistributeTaxTip,
+                totalAmount: totalAmount
+            )
+            .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
 
-                     Spacer()
+            Spacer()
 
-                     BottomMetaBubble(group: group, date: $date, showNotes: $showNotesSheet)
-                         .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
-                         .padding(.bottom, AppMetrics.AddExpense.bottomInnerPadding)
-                         .padding(.bottom, 20)
-                 }
-                 .frame(maxWidth: .infinity)
-                 .padding(.horizontal)
-             }
+            BottomMetaBubble(group: group, date: $date, showNotes: $showNotesSheet)
+                .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
+                .padding(.bottom, AppMetrics.AddExpense.bottomInnerPadding)
+                .padding(.bottom, 20)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal)
+    }
 
     // MARK: - Gesture Handling
+
+    private var swipeSaveThreshold: CGFloat { 28 }
+
+    private func triggerSwipeSaveAction() {
+        let behavior = AddExpenseFlowLogic.swipeUpBehavior(
+            canSave: canSaveExpense,
+            confirmPromptEnabled: confirmPromptOnSwipeUpAddExpense
+        )
+
+        switch behavior {
+        case .showConfirm:
+            if showSwipeSaveConfirmOverlay {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                    showSwipeSaveConfirmOverlay = false
+                }
+                saveTapped()
+                return
+            }
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                    showSwipeSaveConfirmOverlay = true
+                }
+            }
+        case .saveDirectly:
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                showSwipeSaveConfirmOverlay = false
+            }
+            saveTapped()
+        case .showValidationError:
+            if let saveValidationMessage {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                    showSwipeSaveConfirmOverlay = false
+                }
+                activeAlert = .cannotSave(message: saveValidationMessage)
+            }
+        }
+    }
 
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 10)
             .onChanged { value in
                 let dy = value.translation.height
-                withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.8)) {
-                    dragOffset = dy
+                withAnimation(.interactiveSpring(response: 0.2, dampingFraction: 0.85)) {
+                    dragOffset = min(0, dy)
                 }
+                maxUpwardTravelDuringSwipe = max(maxUpwardTravelDuringSwipe, -dragOffset)
             }
             .onEnded { value in
-                if dragOffset > AppMetrics.AddExpense.dragThreshold {
-                    close()
-                } else if dragOffset < -AppMetrics.AddExpense.dragThreshold {
-                    showSaveConfirm = true
-                } else {
+                let visibleTravel = maxUpwardTravelDuringSwipe
+                let actualTravel = -value.translation.height
+                let predictedTravel = -value.predictedEndTranslation.height
+                let strongestUpwardTravel = max(visibleTravel, actualTravel, predictedTravel)
+                let crossedThreshold = strongestUpwardTravel > swipeSaveThreshold
+
+                defer {
+                    maxUpwardTravelDuringSwipe = 0
                     withAnimation(AppAnimation.springy) { dragOffset = 0 }
                 }
+
+                if showSwipeSaveConfirmOverlay {
+                    guard crossedThreshold else { return }
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                        showSwipeSaveConfirmOverlay = false
+                    }
+                    saveTapped()
+                    return
+                }
+
+                guard !isSaving else {
+                    return
+                }
+
+                guard crossedThreshold else { return }
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    triggerSwipeSaveAction()
+                }
             }
+    }
+
+    private var swipeSaveConfirmOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.22)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                        showSwipeSaveConfirmOverlay = false
+                    }
+                }
+
+            VStack(spacing: 12) {
+                Text("Save expense?")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+                Text("Swipe again to save, or tap Save.")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Button {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                            showSwipeSaveConfirmOverlay = false
+                        }
+                    } label: {
+                        Text("Cancel")
+                            .font(.system(size: 22, weight: .semibold, design: .rounded))
+                            .foregroundStyle(AppTheme.brand)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(AppTheme.brand.opacity(0.18))
+                            )
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                            showSwipeSaveConfirmOverlay = false
+                        }
+                        saveTapped()
+                    } label: {
+                        Text("Save")
+                            .font(.system(size: 22, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(AppTheme.brand)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: 320)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(AppTheme.brand.opacity(0.35), lineWidth: 2)
+            )
+            .shadow(color: .black.opacity(0.2), radius: 16, y: 8)
+        }
     }
 }
 
@@ -904,17 +1101,18 @@ private struct PaidSplitBubble: View {
                     autoDistributeTaxTip: $autoDistributeTaxTip
                 )
             }
+            .interactiveDismissDisabled()
+            .presentationDragIndicator(.hidden)
         }
     }
 
     private var modeTitle: String {
-        switch mode {
-        case .equal: return "Equally"
-        case .percent: return "Percent"
-        case .shares: return "Shares"
-        case .itemized: return "Receipt"
-        case .manual: return "Manual"
-        }
+        AddExpenseFlowLogic.splitModeSummary(
+            mode: mode,
+            selectedMembers: group.members.filter { involvedIds.contains($0.id) },
+            totalMembers: group.members.count,
+            currentUserMemberId: currentUserMemberId
+        )
     }
     private var payerLabel: String {
         AddExpensePayerLogic.payerLabel(
@@ -950,8 +1148,100 @@ enum AddExpensePayerLogic {
     }
 }
 
+enum AddExpenseFlowLogic {
+    enum SwipeUpBehavior: Equatable {
+        case showConfirm
+        case saveDirectly
+        case showValidationError
+    }
+
+    static func swipeUpBehavior(canSave: Bool, confirmPromptEnabled: Bool) -> SwipeUpBehavior {
+        guard canSave else { return .showValidationError }
+        return confirmPromptEnabled ? .showConfirm : .saveDirectly
+    }
+
+    static func saveValidationMessage(
+        description: String,
+        totalAmount: Double,
+        participantCount: Int,
+        splitCount: Int
+    ) -> String? {
+        var missingItems: [String] = []
+        let trimmedDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedDescription.isEmpty {
+            missingItems.append("Add a description.")
+        }
+        if totalAmount <= 0 {
+            missingItems.append("Enter an amount greater than 0.")
+        }
+        if participantCount == 0 {
+            missingItems.append("Select at least one participant.")
+        }
+        if splitCount == 0 {
+            missingItems.append("Fix your split values.")
+        }
+
+        guard !missingItems.isEmpty else { return nil }
+        if missingItems.count == 1 {
+            return missingItems[0]
+        }
+        let details = missingItems.map { "• \($0)" }.joined(separator: "\n")
+        return "Please fix the following before saving:\n\(details)"
+    }
+
+    static func canSaveExpense(
+        description: String,
+        totalAmount: Double,
+        participantCount: Int,
+        splitCount: Int
+    ) -> Bool {
+        saveValidationMessage(
+            description: description,
+            totalAmount: totalAmount,
+            participantCount: participantCount,
+            splitCount: splitCount
+        ) == nil
+    }
+
+    static func splitModeSummary(
+        mode: SplitMode,
+        selectedMembers: [GroupMember],
+        totalMembers: Int,
+        currentUserMemberId: UUID?
+    ) -> String {
+        guard !selectedMembers.isEmpty else { return "No participants" }
+
+        if selectedMembers.count == 1, let onlyMember = selectedMembers.first {
+            if onlyMember.id == currentUserMemberId || onlyMember.isCurrentUser == true {
+                return "Only me"
+            }
+            return "Only \(onlyMember.name)"
+        }
+
+        let baseLabel: String
+        switch mode {
+        case .equal:
+            baseLabel = "Split equally"
+        case .percent:
+            baseLabel = "Split by percent"
+        case .shares:
+            baseLabel = "Split by shares"
+        case .itemized:
+            baseLabel = "Split by receipt"
+        case .manual:
+            baseLabel = "Split custom"
+        }
+
+        if selectedMembers.count < totalMembers {
+            return "\(baseLabel) (\(selectedMembers.count) people)"
+        }
+        return baseLabel
+    }
+}
+
 // MARK: - Split Detail Page
 private struct SplitDetailView: View {
+    @Environment(\.dismiss) private var dismiss
     let group: SpendingGroup
     let totalAmount: Double
     @Binding var mode: SplitMode
@@ -1069,6 +1359,16 @@ private struct SplitDetailView: View {
         .navigationTitle("Split")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "checkmark")
+                }
+                .accessibilityLabel("Done")
+            }
+        }
         .dismissKeyboardOnTap()
     }
 

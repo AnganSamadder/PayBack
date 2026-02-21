@@ -292,6 +292,7 @@ final class AppStore: ObservableObject {
 
         // When syncManager.groups updates, replace local data (but keep dirty local items if any exist - though currently we don't have a robust dirty state here yet)
         syncManager.$groups
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] remoteGroups in
                 guard let self = self else { return }
@@ -323,6 +324,7 @@ final class AppStore: ObservableObject {
 
         // When syncManager.expenses updates
         syncManager.$expenses
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] remoteExpenses in
                 guard let self = self else { return }
@@ -345,6 +347,7 @@ final class AppStore: ObservableObject {
 
         // When syncManager.friends updates
         syncManager.$friends
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] remoteFriends in
                 guard let self = self else { return }
@@ -1159,7 +1162,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         persistCurrentState()
 
         if !isImporting {
-            Task { scheduleFriendSync() }
+            Task { @MainActor [weak self] in self?.scheduleFriendSync() }
         }
     }
 
@@ -1341,6 +1344,43 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     // MARK: - Expenses
+    @MainActor
+    func addExpenseAndSync(_ expense: Expense) async throws {
+        var expenseToStore = expense
+        if expenseToStore.ownerEmail == nil || expenseToStore.ownerAccountId == nil {
+            expenseToStore.ownerEmail = session?.account.email
+            expenseToStore.ownerAccountId = session?.account.id
+        }
+
+        expenses.append(expenseToStore)
+        persistCurrentState()
+
+        guard !isImporting, session != nil else { return }
+
+        #if !PAYBACK_CI_NO_CONVEX
+        if expenseCloudService is NoopExpenseCloudService {
+            expenses.removeAll { $0.id == expenseToStore.id }
+            persistCurrentState()
+            throw PayBackError.configurationMissing(service: "Convex expense sync")
+        }
+        #endif
+
+        let participants = makeParticipants(for: expenseToStore)
+        pendingExpenseDeleteIds.remove(expenseToStore.id)
+        pendingExpenseUpsertIds.insert(expenseToStore.id)
+
+        do {
+            try await retryPolicy.execute {
+                try await self.expenseCloudService.upsertExpense(expenseToStore, participants: participants)
+            }
+        } catch {
+            pendingExpenseUpsertIds.remove(expenseToStore.id)
+            expenses.removeAll { $0.id == expenseToStore.id }
+            persistCurrentState()
+            throw error
+        }
+    }
+
     func addExpense(_ expense: Expense) {
         var expenseToStore = expense
         if expenseToStore.ownerEmail == nil || expenseToStore.ownerAccountId == nil {
@@ -1923,7 +1963,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return tokensMatchCurrentUser(tokens)
     }
 
-    var confirmedFriendMembers: [GroupMember] {
+    var friendMembers: [GroupMember] {
         let overrides = friendNameOverrides()
         return friends
             .filter { !isCurrentUserFriend($0) }
@@ -1939,115 +1979,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 return member
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    var friendMembers: [GroupMember] {
-        let overrides = friendNameOverrides()
-        var seenIdentities: [UUID] = []
-        var seenGroupMemberNames: Set<String> = []
-        var results: [GroupMember] = []
-
-        func hasSeenIdentity(_ memberId: UUID) -> Bool {
-            seenIdentities.contains { areSamePerson($0, memberId) }
-        }
-
-        func markSeenIdentity(_ memberId: UUID) {
-            guard !hasSeenIdentity(memberId) else { return }
-            seenIdentities.append(memberId)
-        }
-
-        // Build lookups from the Convex-synced friends array for metadata
-        // Primary key: memberId (most reliable for linked friends)
-        // Secondary key: name (lowercased) for unlinked or newly created members
-        var friendMetadataById: [UUID: AccountFriend] = [:]
-        var friendMetadataByName: [String: AccountFriend] = [:]
-        var friendMetadataByNickname: [String: AccountFriend] = [:]
-
-        for friend in friends where !isCurrentUserFriend(friend) {
-            friendMetadataById[friend.memberId] = friend
-            friendMetadataByName[friend.name.lowercased().trimmingCharacters(in: .whitespaces)] = friend
-            if let nickname = friend.nickname?.lowercased().trimmingCharacters(in: .whitespaces), !nickname.isEmpty {
-                friendMetadataByNickname[nickname] = friend
-            }
-        }
-
-        // First, derive friends from actual group members (which have correct UUIDs matching expenses)
-        for group in groups {
-            for member in group.members where !isCurrentUser(member) {
-                guard !hasSeenIdentity(member.id) else { continue }
-                markSeenIdentity(member.id)
-
-                // Look up AccountFriend metadata - prioritize memberId, fall back to name or nickname
-                let memberNameKey = member.name.lowercased().trimmingCharacters(in: .whitespaces)
-                let friendData = friendMetadataById[member.id]
-                    ?? friendMetadataByName[memberNameKey]
-                    ?? friendMetadataByNickname[memberNameKey]
-
-                if let friendData = friendData {
-                    // Enrich with AccountFriend data (profile color, linking status, etc.)
-                    let name = sanitizedFriendName(friendData, overrides: overrides)
-                    var enrichedMember = GroupMember(
-                        id: member.id,
-                        name: name,
-                        accountFriendMemberId: friendData.memberId
-                    )
-                    enrichedMember.profileColorHex = friendData.profileColorHex ?? member.profileColorHex
-                    results.append(enrichedMember)
-
-                    // Track group member names so we can avoid showing duplicate friend records
-                    // that only differ by memberId (common after imports).
-                    let originalKey = normalizedName(member.name)
-                    if !originalKey.isEmpty {
-                        seenGroupMemberNames.insert(originalKey)
-                    }
-                    let enrichedKey = normalizedName(name)
-                    if !enrichedKey.isEmpty {
-                        seenGroupMemberNames.insert(enrichedKey)
-                    }
-                } else {
-                    // No metadata found - use group member as-is with its existing profile color
-                    results.append(member)
-
-                    let key = normalizedName(member.name)
-                    if !key.isEmpty {
-                        seenGroupMemberNames.insert(key)
-                    }
-                }
-            }
-        }
-
-        // Second, include friends from the friends array that don't exist in any group
-        // (e.g., friends synced from Convex that haven't been added to a group yet)
-        for friend in friends where !isCurrentUserFriend(friend) {
-            guard !hasSeenIdentity(friend.memberId) else { continue }
-            markSeenIdentity(friend.memberId)
-
-            // If a friend record has the same name as a group member but a different memberId,
-            // prefer the group member ID (it matches groups/expenses) to avoid duplicate entries.
-            if friend.hasLinkedAccount != true {
-                let friendNameKey = normalizedName(friend.name)
-                if !friendNameKey.isEmpty && seenGroupMemberNames.contains(friendNameKey) {
-                    continue
-                }
-                if let nickname = friend.nickname {
-                    let nickKey = normalizedName(nickname)
-                    if !nickKey.isEmpty && seenGroupMemberNames.contains(nickKey) {
-                        continue
-                    }
-                }
-            }
-
-            let name = sanitizedFriendName(friend, overrides: overrides)
-            var member = GroupMember(
-                id: friend.memberId,
-                name: name,
-                accountFriendMemberId: friend.memberId
-            )
-            member.profileColorHex = friend.profileColorHex
-            results.append(member)
-        }
-
-        return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func purgeCurrentUserFriendRecords() {

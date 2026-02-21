@@ -713,6 +713,8 @@ struct FriendDetailView: View {
             if let directGroup = getDirectGroup() {
                 AddExpenseView(group: directGroup)
                     .environmentObject(store)
+                    .interactiveDismissDisabled()
+                    .presentationDragIndicator(.hidden)
             }
         }
         .onAppear {

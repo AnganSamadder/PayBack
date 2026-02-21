@@ -89,7 +89,7 @@ struct ChooseTargetView: View {
     }
 
     private var friendMembers: [GroupMember] {
-        store.confirmedFriendMembers
+        store.friendMembers
     }
 
     private var availableGroups: [SpendingGroup] {
