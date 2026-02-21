@@ -246,6 +246,135 @@ final class UIViewsMinimalTests: XCTestCase {
         )
     }
 
+    func test_addExpenseFlowLogic_splitModeSummary_singleParticipantUsesOnlyLabel() {
+        let me = GroupMember(name: "Me Person")
+
+        let summary = AddExpenseFlowLogic.splitModeSummary(
+            mode: .equal,
+            selectedMembers: [me],
+            totalMembers: 2,
+            currentUserMemberId: me.id
+        )
+
+        XCTAssertEqual(summary, "Only me")
+    }
+
+    func test_addExpenseFlowLogic_splitModeSummary_equalForSubsetIncludesCount() {
+        let a = GroupMember(name: "A")
+        let b = GroupMember(name: "B")
+
+        let summary = AddExpenseFlowLogic.splitModeSummary(
+            mode: .equal,
+            selectedMembers: [a, b],
+            totalMembers: 4,
+            currentUserMemberId: nil
+        )
+
+        XCTAssertEqual(summary, "Split equally (2 people)")
+    }
+
+    func test_addExpenseFlowLogic_canSaveExpense_trueWithSingleParticipant() {
+        XCTAssertTrue(
+            AddExpenseFlowLogic.canSaveExpense(
+                description: "Lunch",
+                totalAmount: 42,
+                participantCount: 1,
+                splitCount: 1
+            )
+        )
+    }
+
+    func test_addExpenseFlowLogic_canSaveExpense_falseWhenSplitsEmpty() {
+        XCTAssertFalse(
+            AddExpenseFlowLogic.canSaveExpense(
+                description: "Lunch",
+                totalAmount: 42,
+                participantCount: 2,
+                splitCount: 0
+            )
+        )
+    }
+
+    func test_addExpenseFlowLogic_canSaveExpense_trueWhenAllValid() {
+        XCTAssertTrue(
+            AddExpenseFlowLogic.canSaveExpense(
+                description: "Lunch",
+                totalAmount: 42,
+                participantCount: 2,
+                splitCount: 2
+            )
+        )
+    }
+
+    func test_addExpenseFlowLogic_saveValidationMessage_missingDescription() {
+        let message = AddExpenseFlowLogic.saveValidationMessage(
+            description: "  ",
+            totalAmount: 42,
+            participantCount: 2,
+            splitCount: 2
+        )
+
+        XCTAssertEqual(message, "Add a description.")
+    }
+
+    func test_addExpenseFlowLogic_saveValidationMessage_missingSplitConfiguration() {
+        let message = AddExpenseFlowLogic.saveValidationMessage(
+            description: "Lunch",
+            totalAmount: 42,
+            participantCount: 2,
+            splitCount: 0
+        )
+
+        XCTAssertEqual(message, "Fix your split values.")
+    }
+
+    func test_addExpenseFlowLogic_saveValidationMessage_multipleMissingFields() {
+        let message = AddExpenseFlowLogic.saveValidationMessage(
+            description: "",
+            totalAmount: 0,
+            participantCount: 0,
+            splitCount: 0
+        )
+
+        XCTAssertEqual(
+            message,
+            """
+            Please fix the following before saving:
+            • Add a description.
+            • Enter an amount greater than 0.
+            • Select at least one participant.
+            • Fix your split values.
+            """
+        )
+    }
+
+    func test_addExpenseFlowLogic_swipeUpBehavior_showConfirmWhenEnabled() {
+        let behavior = AddExpenseFlowLogic.swipeUpBehavior(
+            canSave: true,
+            confirmPromptEnabled: true
+        )
+
+        XCTAssertEqual(behavior, .showConfirm)
+    }
+
+    func test_addExpenseFlowLogic_swipeUpBehavior_saveDirectlyWhenPromptDisabled() {
+        let behavior = AddExpenseFlowLogic.swipeUpBehavior(
+            canSave: true,
+            confirmPromptEnabled: false
+        )
+
+        XCTAssertEqual(behavior, .saveDirectly)
+    }
+
+    func test_addExpenseFlowLogic_swipeUpBehavior_showValidationErrorWhenCannotSave() {
+        let behavior = AddExpenseFlowLogic.swipeUpBehavior(
+            canSave: false,
+            confirmPromptEnabled: true
+        )
+
+        XCTAssertEqual(behavior, .showValidationError)
+    }
+
     // MARK: - ProfileView Tests
 
     func test_profileView_initialization() {

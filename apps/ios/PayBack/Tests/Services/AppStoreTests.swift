@@ -973,6 +973,62 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(preview.totalBalance, -50.0) // Alice owes $50
     }
 
+    func testAddExpenseAndSync_WhenCloudUpsertSucceeds_PersistsExpense() async throws {
+        // Given
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+        sut.addGroup(name: "Trip", memberNames: ["Alice"])
+        let group = sut.groups[0]
+        let alice = group.members.first { $0.name == "Alice" }!
+
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 100,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, alice.id],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 50),
+                ExpenseSplit(memberId: alice.id, amount: 50)
+            ]
+        )
+
+        // When
+        try await sut.addExpenseAndSync(expense)
+
+        // Then
+        XCTAssertEqual(sut.expenses.count, 1)
+        let cloudExpenses = try await mockExpenseCloudService.fetchExpenses()
+        XCTAssertEqual(cloudExpenses.count, 1)
+        XCTAssertEqual(cloudExpenses.first?.id, expense.id)
+    }
+
+    func testAddExpenseAndSync_WhenCloudUpsertFails_RollsBackLocalExpense() async throws {
+        // Given
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+        sut.addGroup(name: "Trip", memberNames: ["Alice"])
+        let group = sut.groups[0]
+        let alice = group.members.first { $0.name == "Alice" }!
+        await mockExpenseCloudService.setShouldFail(true)
+
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 100,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, alice.id],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 50),
+                ExpenseSplit(memberId: alice.id, amount: 50)
+            ]
+        )
+
+        // When/Then
+        await XCTAssertThrowsError(try await sut.addExpenseAndSync(expense))
+        XCTAssertTrue(sut.expenses.isEmpty)
+    }
+
     // MARK: - Link Request Error Path Tests
 
     func testSendLinkRequest_WithoutSession_Throws() async throws {
