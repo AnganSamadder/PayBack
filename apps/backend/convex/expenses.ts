@@ -54,7 +54,7 @@ function normalizePersonName(name: string | undefined | null): string | undefine
 
 async function buildUserEquivalentMemberIds(db: any, user: any): Promise<Set<string>> {
   const equivalentIds = new Set<string>();
-  const seeds = [user.member_id, user.id].filter(
+  const seeds = [user.member_id, user.id, ...(user.alias_member_ids ?? [])].filter(
     (value): value is string => typeof value === "string" && value.trim().length > 0
   );
 
@@ -167,9 +167,54 @@ function canonicalizeSubexpenses(subexpenses: any[] | undefined): string {
   return JSON.stringify(canonical);
 }
 
+type ExpenseContextKind = "group" | "direct" | "grouped_individual";
+
+function canonicalizeUniqueMembers(values: string[]): string[] {
+  return [...new Set(canonicalizeMembers(values))];
+}
+
+function inferExpenseContextKind(expense: any, group: any | null): ExpenseContextKind {
+  if (expense?.context_kind === "grouped_individual") {
+    return "grouped_individual";
+  }
+  if (expense?.context_kind === "direct" || group?.is_direct === true) {
+    return "direct";
+  }
+  return "group";
+}
+
+function requireMatchingMemberSets(values: {
+  involvedMemberIds: string[];
+  participantMemberIds: string[];
+  splitMemberIds: string[];
+  participantRows: { member_id: string }[];
+}) {
+  const involved = canonicalizeUniqueMembers(values.involvedMemberIds);
+  const participantIds = canonicalizeUniqueMembers(values.participantMemberIds);
+  const splitIds = canonicalizeUniqueMembers(values.splitMemberIds);
+  const participantRows = canonicalizeUniqueMembers(
+    values.participantRows.map((participant) => participant.member_id)
+  );
+
+  const baseline = JSON.stringify(involved);
+  const allMatch =
+    baseline === JSON.stringify(participantIds) &&
+    baseline === JSON.stringify(splitIds) &&
+    baseline === JSON.stringify(participantRows);
+
+  if (!allMatch) {
+    throw new Error(
+      "Grouped individual expense participants, involved members, and splits must describe the same member set."
+    );
+  }
+}
+
 export const create = mutation({
   args: {
     id: v.string(), // Client UUID
+    context_kind: v.optional(
+      v.union(v.literal("group"), v.literal("direct"), v.literal("grouped_individual"))
+    ),
     group_id: v.string(),
     description: v.string(),
     date: v.number(),
@@ -213,6 +258,11 @@ export const create = mutation({
 
     await checkRateLimit(ctx, identity.subject, "expenses:create", 10);
 
+    const existing = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", args.id))
+      .unique();
+
     const normalizedPaidBy = normalizeMemberId(args.paid_by_member_id);
     const normalizedInvolved = normalizeMemberIds(args.involved_member_ids);
     const normalizedSplits = args.splits.map((split) => ({
@@ -224,13 +274,14 @@ export const create = mutation({
       ...participant,
       member_id: normalizeMemberId(participant.member_id)
     }));
-
-    // VALIDATION: Check Group & Friendship for Direct Expenses
-    const { group, callerEquivalentIds } = await requireGroupByClientIdWithAccess(
-      ctx,
-      user,
-      args.group_id
-    );
+    const requestedContextKind = args.context_kind;
+    const existingGroup = existing?.group_ref ? await ctx.db.get(existing.group_ref) : null;
+    const inferredExistingContextKind = existing
+      ? inferExpenseContextKind(existing, existingGroup)
+      : null;
+    const requestedOrExistingContextKind =
+      requestedContextKind ?? inferredExistingContextKind ?? null;
+    const callerOwnsExistingExpense = existing ? isExpenseOwner(existing, user) : false;
 
     const linkedAccountCache = new Map<string, any | null>();
     const resolveLinkedAccount = async ({
@@ -321,27 +372,26 @@ export const create = mutation({
       return Array.from(participantEmailSet);
     };
 
-    if (group.is_direct) {
-      const equivalentIdCache = new Map<string, Set<string>>();
-      const getEquivalentIdSet = async (memberId: string): Promise<Set<string>> => {
-        const normalized = normalizeMemberId(memberId);
-        const cached = equivalentIdCache.get(normalized);
-        if (cached) return cached;
+    const equivalentIdCache = new Map<string, Set<string>>();
+    const getEquivalentIdSet = async (memberId: string): Promise<Set<string>> => {
+      const normalized = normalizeMemberId(memberId);
+      const cached = equivalentIdCache.get(normalized);
+      if (cached) return cached;
 
-        const ids = await getAllEquivalentMemberIds(ctx.db, normalized);
-        const set = new Set(ids.map((id) => normalizeMemberId(id)));
-        set.add(normalized);
-        equivalentIdCache.set(normalized, set);
-        return set;
-      };
-      const getLinkedAccountForFriend = async (friend: any) => {
-        return resolveLinkedAccount({
-          linkedAccountEmail: friend.linked_account_email,
-          linkedAccountId: friend.linked_account_id,
-          memberSeeds: [friend.linked_member_id, friend.member_id]
-        });
-      };
-
+      const ids = await getAllEquivalentMemberIds(ctx.db, normalized);
+      const set = new Set(ids.map((id) => normalizeMemberId(id)));
+      set.add(normalized);
+      equivalentIdCache.set(normalized, set);
+      return set;
+    };
+    const getLinkedAccountForFriend = async (friend: any) => {
+      return resolveLinkedAccount({
+        linkedAccountEmail: friend.linked_account_email,
+        linkedAccountId: friend.linked_account_id,
+        memberSeeds: [friend.linked_member_id, friend.member_id]
+      });
+    };
+    const buildCurrentUserEquivalentIds = async (callerEquivalentIds: Set<string>) => {
       const currentUserEquivalentIds = new Set<string>();
       for (const selfId of callerEquivalentIds) {
         const selfEquivalentIds = await getEquivalentIdSet(selfId);
@@ -349,27 +399,9 @@ export const create = mutation({
           currentUserEquivalentIds.add(id);
         }
       }
-
-      const groupMemberIdentityRows = await Promise.all(
-        group.members.map(async (member) => ({
-          member,
-          identityIds: await getEquivalentIdSet(member.id)
-        }))
-      );
-
-      const currentUserGroupRows = groupMemberIdentityRows.filter(
-        ({ member, identityIds }) =>
-          member.is_current_user === true || intersects(identityIds, currentUserEquivalentIds)
-      );
-      if (currentUserGroupRows.length === 0) {
-        throw new Error("Not authorized for direct group");
-      }
-
-      const directCounterpartyRows = groupMemberIdentityRows.filter(
-        ({ member, identityIds }) =>
-          member.is_current_user !== true && !intersects(identityIds, currentUserEquivalentIds)
-      );
-
+      return currentUserEquivalentIds;
+    };
+    const buildOwnerFriendIdentityRows = async () => {
       const ownerFriendRows = await ctx.db
         .query("account_friends")
         .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
@@ -388,11 +420,13 @@ export const create = mutation({
             identityIds.add(id);
           }
         }
+
         const linkedAccount = await getLinkedAccountForFriend(friend);
         const linkedAccountSeeds = [
           linkedAccount?.member_id,
           ...(linkedAccount?.alias_member_ids || [])
         ].filter((value): value is string => typeof value === "string" && value.length > 0);
+
         for (const seedId of linkedAccountSeeds) {
           const equivalentIds = await getEquivalentIdSet(seedId);
           for (const id of equivalentIds) {
@@ -403,51 +437,159 @@ export const create = mutation({
         ownerFriendIdentityRows.push({ friend, identityIds });
       }
 
-      for (const memberId of normalizedInvolved) {
-        // Check if this member is the current user (group marker or equivalent ID).
-        const groupMember = group.members.find((m) => normalizeMemberId(m.id) === memberId);
-        if (groupMember?.is_current_user) {
-          continue;
-        }
+      return ownerFriendIdentityRows;
+    };
 
-        const memberEquivalentIds = await getEquivalentIdSet(memberId);
-        if (intersects(memberEquivalentIds, currentUserEquivalentIds)) {
-          continue;
-        }
+    let group: any = null;
+    let callerEquivalentIds = await buildUserEquivalentMemberIds(ctx.db, user);
+    let contextKind: ExpenseContextKind;
 
-        // Must resolve to an existing friend identity (member_id, linked_member_id, or aliases).
-        const matchingFriend = ownerFriendIdentityRows.find(
-          ({ friend, identityIds }: any) =>
-            isEligibleDirectFriendRecord(friend) && intersects(identityIds, memberEquivalentIds)
-        );
+    if (requestedOrExistingContextKind === "grouped_individual") {
+      contextKind = "grouped_individual";
 
-        if (!matchingFriend) {
-          // Legacy fallback:
-          // direct groups are 1:1, but stale friend rows can drift and fail identity match.
-          // If this member is the direct counterparty in a valid 1:1 direct group, allow creation.
-          if (
-            directCounterpartyRows.length === 1 &&
-            intersects(directCounterpartyRows[0].identityIds, memberEquivalentIds)
-          ) {
+      requireMatchingMemberSets({
+        involvedMemberIds: normalizedInvolved,
+        participantMemberIds: normalizedParticipantMemberIds,
+        splitMemberIds: normalizedSplits.map((split) => split.member_id),
+        participantRows: normalizedParticipants
+      });
+
+      if (!normalizedInvolved.some((memberId) => callerEquivalentIds.has(memberId))) {
+        throw new Error("Grouped individual expense must include the current user.");
+      }
+      if (normalizedInvolved.length < 2) {
+        throw new Error("Grouped individual expense must include at least two participants.");
+      }
+
+      const currentUserEquivalentIds = await buildCurrentUserEquivalentIds(callerEquivalentIds);
+      const nonSelfParticipants = normalizedParticipants.filter(
+        (participant) => !intersects(currentUserEquivalentIds, new Set([participant.member_id]))
+      );
+      if (nonSelfParticipants.length < 1) {
+        throw new Error("Grouped individual expense must include at least one non-self participant.");
+      }
+      if (!normalizedInvolved.includes(normalizedPaidBy)) {
+        throw new Error("Expense payer must be one of the involved member IDs.");
+      }
+
+      if (!existing || callerOwnsExistingExpense) {
+        const ownerFriendIdentityRows = await buildOwnerFriendIdentityRows();
+        for (const participant of normalizedParticipants) {
+          const memberEquivalentIds = await getEquivalentIdSet(participant.member_id);
+          if (intersects(memberEquivalentIds, currentUserEquivalentIds)) {
             continue;
           }
 
-          const normalizedGroupMemberName = normalizePersonName(groupMember?.name);
-          if (normalizedGroupMemberName) {
+          const matchingFriend = ownerFriendIdentityRows.find(
+            ({ friend, identityIds }) =>
+              isEligibleDirectFriendRecord(friend) && intersects(identityIds, memberEquivalentIds)
+          );
+          if (matchingFriend) {
+            continue;
+          }
+
+          const normalizedParticipantName = normalizePersonName(participant.name);
+          if (normalizedParticipantName) {
             const byNameMatches = ownerFriendIdentityRows.filter(
-              ({ friend }: any) =>
+              ({ friend }) =>
                 isEligibleDirectFriendRecord(friend) &&
-                normalizePersonName(friend.name) === normalizedGroupMemberName
+                normalizePersonName(friend.name) === normalizedParticipantName
             );
-            // Legacy fallback for remapped member IDs where friend identity was split but names stayed stable.
             if (byNameMatches.length === 1) {
               continue;
             }
           }
 
           throw new Error(
-            `Cannot create direct expense: Member ${groupMember?.name ?? memberId} is not a confirmed friend.`
+            `Cannot create grouped individual expense: Member ${participant.name || participant.member_id} is not a confirmed friend.`
           );
+        }
+      }
+    } else {
+      const groupAccess = await requireGroupByClientIdWithAccess(ctx, user, args.group_id, callerEquivalentIds);
+      group = groupAccess.group;
+      callerEquivalentIds = groupAccess.callerEquivalentIds;
+      contextKind =
+        requestedContextKind === "grouped_individual"
+          ? "grouped_individual"
+          : requestedContextKind === "direct"
+            ? "direct"
+            : requestedContextKind === "group"
+              ? "group"
+              : group.is_direct
+                ? "direct"
+                : "group";
+
+      if (contextKind === "direct" && !group.is_direct) {
+        throw new Error("Direct expenses require a direct group.");
+      }
+      if (contextKind === "group" && group.is_direct) {
+        throw new Error("Group expenses cannot target a direct group.");
+      }
+
+      if (group.is_direct) {
+        const currentUserEquivalentIds = await buildCurrentUserEquivalentIds(callerEquivalentIds);
+        const groupMemberIdentityRows = await Promise.all(
+          group.members.map(async (member: any) => ({
+            member,
+            identityIds: await getEquivalentIdSet(member.id)
+          }))
+        );
+
+        const currentUserGroupRows = groupMemberIdentityRows.filter(
+          ({ member, identityIds }) =>
+            member.is_current_user === true || intersects(identityIds, currentUserEquivalentIds)
+        );
+        if (currentUserGroupRows.length === 0) {
+          throw new Error("Not authorized for direct group");
+        }
+
+        const directCounterpartyRows = groupMemberIdentityRows.filter(
+          ({ member, identityIds }) =>
+            member.is_current_user !== true && !intersects(identityIds, currentUserEquivalentIds)
+        );
+        const ownerFriendIdentityRows = await buildOwnerFriendIdentityRows();
+
+        for (const memberId of normalizedInvolved) {
+          const groupMember = group.members.find((m: any) => normalizeMemberId(m.id) === memberId);
+          if (groupMember?.is_current_user) {
+            continue;
+          }
+
+          const memberEquivalentIds = await getEquivalentIdSet(memberId);
+          if (intersects(memberEquivalentIds, currentUserEquivalentIds)) {
+            continue;
+          }
+
+          const matchingFriend = ownerFriendIdentityRows.find(
+            ({ friend, identityIds }: any) =>
+              isEligibleDirectFriendRecord(friend) && intersects(identityIds, memberEquivalentIds)
+          );
+
+          if (!matchingFriend) {
+            if (
+              directCounterpartyRows.length === 1 &&
+              intersects(directCounterpartyRows[0].identityIds, memberEquivalentIds)
+            ) {
+              continue;
+            }
+
+            const normalizedGroupMemberName = normalizePersonName(groupMember?.name);
+            if (normalizedGroupMemberName) {
+              const byNameMatches = ownerFriendIdentityRows.filter(
+                ({ friend }: any) =>
+                  isEligibleDirectFriendRecord(friend) &&
+                  normalizePersonName(friend.name) === normalizedGroupMemberName
+              );
+              if (byNameMatches.length === 1) {
+                continue;
+              }
+            }
+
+            throw new Error(
+              `Cannot create direct expense: Member ${groupMember?.name ?? memberId} is not a confirmed friend.`
+            );
+          }
         }
       }
     }
@@ -455,14 +597,16 @@ export const create = mutation({
     const computedSettledFromSplits = (splits: { is_settled: boolean }[]) =>
       splits.length > 0 && splits.every((split) => split.is_settled);
 
-    // Deduplication check: Check if expense with this ID already exists
-    const existing = await ctx.db
-      .query("expenses")
-      .withIndex("by_client_id", (q) => q.eq("id", args.id))
-      .unique();
-
     if (existing) {
-      if (existing.group_id !== args.group_id || String(existing.group_ref) !== String(group._id)) {
+      const existingContextKind = inferExpenseContextKind(existing, existingGroup);
+      const existingGroupRef = existing.group_ref ? String(existing.group_ref) : undefined;
+      const nextGroupRef = group?._id ? String(group._id) : undefined;
+
+      if (
+        existing.group_id !== args.group_id ||
+        existingContextKind !== contextKind ||
+        existingGroupRef !== nextGroupRef
+      ) {
         throw new Error("Expense group mismatch");
       }
 
@@ -565,6 +709,7 @@ export const create = mutation({
       });
       const isSettled = computedSettledFromSplits(validatedSplits);
       await ctx.db.patch(existing._id, {
+        context_kind: contextKind,
         description: callerOwnsExpense ? args.description : existing.description,
         date: callerOwnsExpense ? args.date : existing.date,
         total_amount: callerOwnsExpense ? args.total_amount : existing.total_amount,
@@ -604,7 +749,8 @@ export const create = mutation({
     const expenseId = await ctx.db.insert("expenses", {
       id: args.id,
       group_id: args.group_id,
-      group_ref: group._id,
+      context_kind: contextKind,
+      group_ref: group?._id,
       description: args.description,
       date: args.date,
       total_amount: args.total_amount,
