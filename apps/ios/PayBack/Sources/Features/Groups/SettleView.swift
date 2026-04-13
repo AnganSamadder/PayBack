@@ -7,6 +7,8 @@ struct SettleView: View {
     let group: SpendingGroup
     @State private var selectedExpenseIds: Set<UUID> = []
     @State private var showConfirmDialog = false
+    @State private var settlementError: PayBackError?
+    @State private var showSettlementError = false
 
     var body: some View {
         NavigationStack {
@@ -59,11 +61,16 @@ struct SettleView: View {
                 titleVisibility: .visible
             ) {
                 Button("Settle All", role: .destructive) {
-                    settleSelectedExpenses()
+                    Task { await settleSelectedExpenses() }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This will mark \(selectedExpenseIds.count) expense\(selectedExpenseIds.count == 1 ? "" : "s") as settled. This action cannot be undone.")
+            }
+            .alert("Unable to Update Settlement", isPresented: $showSettlementError) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(settlementError?.errorDescription ?? "Please try again.")
             }
         }
     }
@@ -203,12 +210,22 @@ struct SettleView: View {
         }
     }
 
-    private func settleSelectedExpenses() {
+    private func settleSelectedExpenses() async {
         for expenseId in selectedExpenseIds {
             if let expense = unsettledExpenses.first(where: { $0.id == expenseId }) {
                 // Only settle if current user can settle this expense
                 if store.canSettleExpenseForSelf(expense) {
-                    store.settleExpenseForCurrentUser(expense)
+                    do {
+                        try await store.settleExpenseForCurrentUser(expense)
+                    } catch let error as PayBackError {
+                        settlementError = error
+                        showSettlementError = true
+                        return
+                    } catch {
+                        settlementError = .underlying(message: error.localizedDescription)
+                        showSettlementError = true
+                        return
+                    }
                 }
             }
         }
