@@ -730,7 +730,9 @@ actor TestAccountService: AccountService {
 
     func deleteLinkedFriend(memberId: UUID) async throws { }
 
-    func deleteUnlinkedFriend(memberId: UUID) async throws { }
+    func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
+        DeleteFriendResult(groupsModified: 0, expensesDeleted: 0, expensesModified: 0, aliasesDeleted: 0)
+    }
 
     func selfDeleteAccount() async throws { }
 

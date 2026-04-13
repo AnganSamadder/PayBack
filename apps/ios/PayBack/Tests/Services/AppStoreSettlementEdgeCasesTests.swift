@@ -361,6 +361,36 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertFalse(updatedExpense.isSettled)
     }
 
+    func testSettleExpenseForCurrentUser_BackendFailureRollsBackOptimisticState() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.session = UserSession(account: account)
+
+        sut.addGroup(name: "Trip", memberNames: ["Alice"])
+        let group = sut.groups[0]
+        let aliceId = group.members.first(where: { $0.name == "Alice" })!.id
+
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 100,
+            paidByMemberId: aliceId,
+            involvedMemberIds: [sut.currentUser.id, aliceId],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 50),
+                ExpenseSplit(memberId: aliceId, amount: 50)
+            ]
+        )
+        sut.addExpense(expense)
+        await mockExpenseCloudService.addExpense(expense)
+        await mockExpenseCloudService.setShouldFail(true)
+
+        await XCTAssertThrowsErrorAsync(try await sut.settleExpenseForCurrentUser(expense))
+
+        let updatedExpense = sut.expenses.first(where: { $0.id == expense.id })!
+        XCTAssertFalse(updatedExpense.splits.first(where: { $0.memberId == sut.currentUser.id })?.isSettled ?? true)
+        XCTAssertFalse(updatedExpense.isSettled)
+    }
+
     // MARK: - Can Settle Expense Tests
 
     func testCanSettleExpenseForAll_UserIsPayer_ReturnsTrue() async throws {
@@ -381,6 +411,93 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         )
 
         XCTAssertTrue(sut.canSettleExpenseForAll(expense))
+    }
+
+    func testConfirmedFriendMembers_ExcludesGroupDerivedPeople() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.session = UserSession(account: account)
+
+        let realFriend = AccountFriend(
+            memberId: UUID(),
+            name: "Real Friend",
+            nickname: nil,
+            hasLinkedAccount: false,
+            linkedAccountId: nil,
+            linkedAccountEmail: nil
+        )
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [realFriend])
+        sut.friends = [realFriend]
+
+        sut.addGroup(name: "Trip", memberNames: ["Real Friend", "Group Only"])
+
+        let friendNames = sut.confirmedFriendMembers.map(\.name)
+        XCTAssertEqual(friendNames, ["Real Friend"])
+    }
+
+    func testDeleteFriend_GroupDerivedPersonThrowsAndDoesNotMutateState() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.session = UserSession(account: account)
+        sut.addGroup(name: "Trip", memberNames: ["Group Only"])
+        let groupOnlyMember = sut.groups[0].members.first(where: { $0.name == "Group Only" })!
+
+        let originalGroups = sut.groups
+        let originalExpenses = sut.expenses
+        let originalFriends = sut.friends
+
+        await XCTAssertThrowsErrorAsync(try await sut.deleteFriend(groupOnlyMember))
+
+        XCTAssertEqual(sut.groups, originalGroups)
+        XCTAssertEqual(sut.expenses, originalExpenses)
+        XCTAssertEqual(sut.friends, originalFriends)
+    }
+
+    func testDeleteUnlinkedFriend_BackendFailureRestoresLocalState() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.session = UserSession(account: account)
+
+        let friendId = UUID()
+        let friend = AccountFriend(
+            memberId: friendId,
+            name: "Alice",
+            nickname: nil,
+            hasLinkedAccount: false,
+            linkedAccountId: nil,
+            linkedAccountEmail: nil
+        )
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [friend])
+        sut.friends = [friend]
+
+        let group = SpendingGroup(
+            name: "Trip",
+            members: [
+                GroupMember(id: sut.currentUser.id, name: sut.currentUser.name, isCurrentUser: true),
+                GroupMember(id: friendId, name: "Alice")
+            ]
+        )
+        sut.groups = [group]
+        sut.expenses = [
+            Expense(
+                groupId: group.id,
+                description: "Dinner",
+                totalAmount: 100,
+                paidByMemberId: friendId,
+                involvedMemberIds: [sut.currentUser.id, friendId],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 50),
+                    ExpenseSplit(memberId: friendId, amount: 50)
+                ]
+            )
+        ]
+        let originalGroups = sut.groups
+        let originalExpenses = sut.expenses
+        let originalFriends = sut.friends
+        await mockAccountService.setShouldFail(true)
+
+        await XCTAssertThrowsErrorAsync(try await sut.deleteUnlinkedFriend(memberId: friendId))
+
+        XCTAssertEqual(sut.groups, originalGroups)
+        XCTAssertEqual(sut.expenses, originalExpenses)
+        XCTAssertEqual(sut.friends, originalFriends)
     }
 
     func testCanSettleExpenseForAll_UserIsNotPayer_ReturnsFalse() async throws {

@@ -656,7 +656,9 @@ actor MockBulkImportAccountService: AccountService {
     func checkAuthentication() async throws -> Bool { true }
     func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {}
     func deleteLinkedFriend(memberId: UUID) async throws {}
-    func deleteUnlinkedFriend(memberId: UUID) async throws {}
+    func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
+        DeleteFriendResult(groupsModified: 0, expensesDeleted: 0, expensesModified: 0, aliasesDeleted: 0)
+    }
     func selfDeleteAccount() async throws {}
     nonisolated func monitorSession() -> AsyncStream<UserAccount?> { AsyncStream { $0.finish() } }
     func sendFriendRequest(email: String) async throws {}

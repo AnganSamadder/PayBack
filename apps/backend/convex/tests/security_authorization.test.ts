@@ -18,6 +18,274 @@ function identity(email: string, subject: string) {
 }
 
 describe("Security Authorization", () => {
+  test("expenses.setSettlementState lets a participant settle their alias split only", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.run(async (ctx) => {
+      const ownerDoc = await ctx.db.insert("accounts", {
+        id: "owner_id",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: Date.now(),
+        member_id: "owner_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "participant_id",
+        email: "participant@test.com",
+        display_name: "Participant",
+        created_at: Date.now(),
+        member_id: "participant_member",
+        alias_member_ids: ["participant_alias"]
+      });
+
+      await ctx.db.insert("member_aliases", {
+        account_email: "participant@test.com",
+        canonical_member_id: "participant_member",
+        alias_member_id: "participant_alias",
+        created_at: Date.now()
+      });
+
+      const groupDoc = await ctx.db.insert("groups", {
+        id: "group_shared_id",
+        name: "Shared Group",
+        members: [
+          { id: "owner_member", name: "Owner", is_current_user: true },
+          { id: "participant_alias", name: "Participant" }
+        ],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_id",
+        owner_id: ownerDoc,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        is_direct: false
+      });
+
+      await ctx.db.insert("expenses", {
+        id: "expense_settle_alias",
+        group_id: "group_shared_id",
+        group_ref: groupDoc,
+        description: "Dinner",
+        date: Date.now(),
+        total_amount: 40,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member", "participant_alias"],
+        splits: [
+          { id: "owner_split", member_id: "owner_member", amount: 20, is_settled: false },
+          { id: "participant_split", member_id: "participant_alias", amount: 20, is_settled: false }
+        ],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_id",
+        owner_id: ownerDoc,
+        participant_member_ids: ["owner_member", "participant_alias"],
+        participant_emails: ["owner@test.com", "participant@test.com"],
+        participants: [
+          { member_id: "owner_member", name: "Owner" },
+          { member_id: "participant_alias", name: "Participant" }
+        ],
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+    });
+
+    const participantCtx = t.withIdentity(identity("participant@test.com", "participant_id"));
+    const settledExpense = await participantCtx.mutation(api.expenses.setSettlementState, {
+      expenseId: "expense_settle_alias",
+      memberIds: ["participant_alias"],
+      settled: true
+    });
+
+    expect(
+      settledExpense.splits.find(
+        (split: { member_id: string }) => split.member_id === "participant_alias"
+      )?.is_settled
+    ).toBe(true);
+    expect(
+      settledExpense.splits.find(
+        (split: { member_id: string }) => split.member_id === "owner_member"
+      )?.is_settled
+    ).toBe(false);
+    expect(settledExpense.is_settled).toBe(false);
+  });
+
+  test("expenses.setSettlementState rejects settling another member split and preserves stored expense", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.run(async (ctx) => {
+      const ownerDoc = await ctx.db.insert("accounts", {
+        id: "owner_id",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: Date.now(),
+        member_id: "owner_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "participant_id",
+        email: "participant@test.com",
+        display_name: "Participant",
+        created_at: Date.now(),
+        member_id: "participant_member"
+      });
+
+      const groupDoc = await ctx.db.insert("groups", {
+        id: "group_shared_id",
+        name: "Shared Group",
+        members: [
+          { id: "owner_member", name: "Owner", is_current_user: true },
+          { id: "participant_member", name: "Participant" }
+        ],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_id",
+        owner_id: ownerDoc,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        is_direct: false
+      });
+
+      await ctx.db.insert("expenses", {
+        id: "expense_settle_forbidden",
+        group_id: "group_shared_id",
+        group_ref: groupDoc,
+        description: "Dinner",
+        date: Date.now(),
+        total_amount: 40,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member", "participant_member"],
+        splits: [
+          { id: "owner_split", member_id: "owner_member", amount: 20, is_settled: false },
+          {
+            id: "participant_split",
+            member_id: "participant_member",
+            amount: 20,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_id",
+        owner_id: ownerDoc,
+        participant_member_ids: ["owner_member", "participant_member"],
+        participant_emails: ["owner@test.com", "participant@test.com"],
+        participants: [
+          { member_id: "owner_member", name: "Owner" },
+          { member_id: "participant_member", name: "Participant" }
+        ],
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+    });
+
+    const participantCtx = t.withIdentity(identity("participant@test.com", "participant_id"));
+    await expect(
+      participantCtx.mutation(api.expenses.setSettlementState, {
+        expenseId: "expense_settle_forbidden",
+        memberIds: ["owner_member"],
+        settled: true
+      })
+    ).rejects.toThrow("Forbidden");
+
+    const expense = await t.run(async (ctx) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "expense_settle_forbidden"))
+        .unique()
+    );
+    expect(expense?.splits.every((split) => split.is_settled === false)).toBe(true);
+    expect(expense?.is_settled).toBe(false);
+  });
+
+  test("expenses.setSettlementState lets the payer settle selected participant splits", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.run(async (ctx) => {
+      const ownerDoc = await ctx.db.insert("accounts", {
+        id: "owner_id",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: Date.now(),
+        member_id: "owner_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "participant_a_id",
+        email: "a@test.com",
+        display_name: "Participant A",
+        created_at: Date.now(),
+        member_id: "participant_a"
+      });
+      await ctx.db.insert("accounts", {
+        id: "participant_b_id",
+        email: "b@test.com",
+        display_name: "Participant B",
+        created_at: Date.now(),
+        member_id: "participant_b"
+      });
+
+      const groupDoc = await ctx.db.insert("groups", {
+        id: "group_shared_id",
+        name: "Shared Group",
+        members: [
+          { id: "owner_member", name: "Owner", is_current_user: true },
+          { id: "participant_a", name: "Participant A" },
+          { id: "participant_b", name: "Participant B" }
+        ],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_id",
+        owner_id: ownerDoc,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        is_direct: false
+      });
+
+      await ctx.db.insert("expenses", {
+        id: "expense_settle_payer",
+        group_id: "group_shared_id",
+        group_ref: groupDoc,
+        description: "Dinner",
+        date: Date.now(),
+        total_amount: 60,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member", "participant_a", "participant_b"],
+        splits: [
+          { id: "owner_split", member_id: "owner_member", amount: 20, is_settled: false },
+          { id: "participant_a_split", member_id: "participant_a", amount: 20, is_settled: false },
+          { id: "participant_b_split", member_id: "participant_b", amount: 20, is_settled: false }
+        ],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_id",
+        owner_id: ownerDoc,
+        participant_member_ids: ["owner_member", "participant_a", "participant_b"],
+        participant_emails: ["owner@test.com", "a@test.com", "b@test.com"],
+        participants: [
+          { member_id: "owner_member", name: "Owner" },
+          { member_id: "participant_a", name: "Participant A" },
+          { member_id: "participant_b", name: "Participant B" }
+        ],
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+    });
+
+    const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_id"));
+    const settledExpense = await ownerCtx.mutation(api.expenses.setSettlementState, {
+      expenseId: "expense_settle_payer",
+      memberIds: ["participant_a", "participant_b"],
+      settled: true
+    });
+
+    expect(
+      settledExpense.splits.find(
+        (split: { member_id: string }) => split.member_id === "participant_a"
+      )?.is_settled
+    ).toBe(true);
+    expect(
+      settledExpense.splits.find(
+        (split: { member_id: string }) => split.member_id === "participant_b"
+      )?.is_settled
+    ).toBe(true);
+    expect(settledExpense.is_settled).toBe(false);
+  });
+
   test("groups.create denies overwriting an existing group by non-owner", async () => {
     const t = convexTest(schema, modules);
 
@@ -384,12 +652,12 @@ describe("Security Authorization", () => {
     });
 
     const attackerCtx = t.withIdentity(identity("attacker@test.com", "attacker_id"));
-    const result = await attackerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
-      friendMemberId: "victim_friend_unlinked",
-      accountEmail: "victim@test.com"
-    });
-
-    expect(result.success).toBe(false);
+    await expect(
+      attackerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
+        friendMemberId: "victim_friend_unlinked",
+        accountEmail: "victim@test.com"
+      })
+    ).rejects.toThrow("Friend not found");
 
     const victimFriend = await t.run(async (ctx) =>
       ctx.db
