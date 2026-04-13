@@ -64,9 +64,10 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
             ]
         )
         sut.addExpense(expense)
+        await mockExpenseCloudService.addExpense(expense)
 
         // When: settle the remaining split
-        sut.settleExpenseForMember(expense, memberId: aliceId)
+        try await sut.settleExpenseForMember(expense, memberId: aliceId)
 
         // Then: expense should be fully settled
         let updatedExpense = sut.expenses.first(where: { $0.id == expense.id })!
@@ -95,9 +96,10 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
             ]
         )
         sut.addExpense(expense)
+        await mockExpenseCloudService.addExpense(expense)
 
         // When: settle only Alice's split
-        sut.settleExpenseForMember(expense, memberId: aliceId)
+        try await sut.settleExpenseForMember(expense, memberId: aliceId)
 
         // Then: expense should NOT be fully settled
         let updatedExpense = sut.expenses.first(where: { $0.id == expense.id })!
@@ -106,7 +108,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertFalse(updatedExpense.splits.first(where: { $0.memberId == bobId })!.isSettled)
     }
 
-    func testSettleExpenseForMember_ExpenseNotFound_NoChange() async throws {
+    func testSettleExpenseForMember_ExpenseNotFound_Throws() async throws {
         // Given: non-existent expense
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let nonExistentExpense = Expense(
@@ -118,8 +120,10 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
             splits: []
         )
 
-        // When: try to settle a non-existent expense
-        sut.settleExpenseForMember(nonExistentExpense, memberId: sut.currentUser.id)
+        // When: try to settle a non-existent expense — expect a throw
+        await XCTAssertThrowsErrorAsync(
+            try await sut.settleExpenseForMember(nonExistentExpense, memberId: sut.currentUser.id)
+        )
 
         // Then: no crash, no expenses added
         XCTAssertTrue(sut.expenses.isEmpty)

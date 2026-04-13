@@ -1053,6 +1053,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// 2. Removing them from ALL groups they're in
     /// 3. Deleting all expenses involving them in each group
     /// 4. Auto-deleting any groups that become single-member (only current user)
+    @MainActor
     func deleteFriend(_ friend: GroupMember) async throws {
         guard let accountFriend = accountFriend(for: friend) else {
             throw PayBackError.underlying(message: "Only confirmed friends can be deleted.")
@@ -1066,7 +1067,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func deleteFriend(_ friend: GroupMember) {
-        Task { try? await deleteFriend(friend) }
+        Task { try? await self.deleteFriend(friend) }
     }
 
     private struct DeleteStateSnapshot {
@@ -1075,10 +1076,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
         let expenses: [Expense]
     }
 
+    @MainActor
     private func makeDeleteStateSnapshot() -> DeleteStateSnapshot {
         DeleteStateSnapshot(friends: friends, groups: groups, expenses: expenses)
     }
 
+    @MainActor
     private func restoreDeleteState(_ snapshot: DeleteStateSnapshot) {
         friends = snapshot.friends
         groups = snapshot.groups
@@ -1086,6 +1089,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         persistCurrentState()
     }
 
+    @MainActor
     func deleteLinkedFriend(memberId: UUID) async throws {
         print("🔵 deleteLinkedFriend called for: \(memberId)")
         let snapshot = makeDeleteStateSnapshot()
@@ -1112,7 +1116,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
     }
 
-    @discardableResult
+    @MainActor @discardableResult
     func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
         print("🔵 deleteUnlinkedFriend called for: \(memberId)")
         let snapshot = makeDeleteStateSnapshot()
@@ -1478,6 +1482,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     // MARK: - Settlement Methods
 
+    @MainActor
     private func applyingSettlementState(
         to expense: Expense,
         memberIds: Set<UUID>,
@@ -1496,6 +1501,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return updatedExpense
     }
 
+    @MainActor
     private func performSettlementMutation(
         expenseId: UUID,
         memberIds: Set<UUID>,
@@ -1537,7 +1543,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
             } else {
                 expenses.append(canonicalExpense)
             }
-            pendingExpenseSettlementIds.remove(expenseId)
+            // Keep pendingExpenseSettlementIds until the realtime snapshot confirms the
+            // remote payload matches our local state — same pattern as pendingExpenseUpsertIds.
             persistCurrentState()
         } catch {
             pendingExpenseSettlementIds.remove(expenseId)
@@ -1551,10 +1558,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
     }
 
+    @MainActor
     func markExpenseAsSettled(_ expense: Expense) async throws {
         try await settleExpenseForCurrentUser(expense)
     }
 
+    @MainActor
     func settleExpenseForMember(_ expense: Expense, memberId: UUID) async throws {
         try await settleExpenseForMembers(expense, memberIds: [memberId])
     }
@@ -2488,6 +2497,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         )
     }
 
+    @MainActor
     func settleExpenseForCurrentUser(_ expense: Expense) async throws {
         let myMemberIds = Set(expense.splits.compactMap { split in
             isMe(split.memberId) ? split.memberId : nil
@@ -2496,15 +2506,18 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     /// Settle specific members' splits by member ID set.
+    @MainActor
     func settleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) async throws {
         try await performSettlementMutation(expenseId: expense.id, memberIds: memberIds, settled: true)
     }
 
     /// Unsettle specific members' splits by member ID set.
+    @MainActor
     func unsettleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) async throws {
         try await performSettlementMutation(expenseId: expense.id, memberIds: memberIds, settled: false)
     }
 
+    @MainActor
     func unsettleExpenseForCurrentUser(_ expense: Expense) async throws {
         let myMemberIds = Set(expense.splits.compactMap { split in
             isMe(split.memberId) ? split.memberId : nil

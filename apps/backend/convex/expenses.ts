@@ -670,6 +670,17 @@ export const setSettlementState = mutation({
     const callerEquivalentIds = await buildUserEquivalentMemberIds(ctx.db, user);
     const callerOwnsExpense = isExpenseOwner(expense, user);
     const callerIsPayer = callerEquivalentIds.has(normalizeMemberId(expense.paid_by_member_id));
+
+    // Access gate: reject non-participants before revealing any split-level details.
+    if (!callerOwnsExpense && !callerIsPayer) {
+      const callerHasSplit = expense.splits.some((split: any) =>
+        callerEquivalentIds.has(normalizeMemberId(split.member_id))
+      );
+      if (!callerHasSplit) {
+        throw new Error("Forbidden: not a participant in this expense");
+      }
+    }
+
     const splitMemberIds = expense.splits.map((split: any) => normalizeMemberId(split.member_id));
     const splitMemberIdSet = new Set(splitMemberIds);
     const requestedMemberIds = new Set(
