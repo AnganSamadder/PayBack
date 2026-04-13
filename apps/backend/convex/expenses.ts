@@ -466,7 +466,9 @@ export const create = mutation({
         (participant) => !intersects(currentUserEquivalentIds, new Set([participant.member_id]))
       );
       if (nonSelfParticipants.length < 1) {
-        throw new Error("Grouped individual expense must include at least one non-self participant.");
+        throw new Error(
+          "Grouped individual expense must include at least one non-self participant."
+        );
       }
       if (!normalizedInvolved.includes(normalizedPaidBy)) {
         throw new Error("Expense payer must be one of the involved member IDs.");
@@ -506,7 +508,12 @@ export const create = mutation({
         }
       }
     } else {
-      const groupAccess = await requireGroupByClientIdWithAccess(ctx, user, args.group_id, callerEquivalentIds);
+      const groupAccess = await requireGroupByClientIdWithAccess(
+        ctx,
+        user,
+        args.group_id,
+        callerEquivalentIds
+      );
       group = groupAccess.group;
       callerEquivalentIds = groupAccess.callerEquivalentIds;
       contextKind =

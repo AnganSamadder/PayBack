@@ -291,12 +291,10 @@ test("expenses:create infers direct context for legacy rows without context_kind
       ],
       owner_email: "owner@example.com",
       owner_account_id: "owner_auth_id",
-      owner_id: (
-        await ctx.db
-          .query("accounts")
-          .withIndex("by_email", (q) => q.eq("email", "owner@example.com"))
-          .unique()
-      )!._id,
+      owner_id: (await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) => q.eq("email", "owner@example.com"))
+        .unique())!._id,
       created_at: now,
       updated_at: now
     });

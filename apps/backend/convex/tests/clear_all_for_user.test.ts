@@ -369,7 +369,9 @@ describe("clearAllForUser", () => {
       });
     });
 
-    const viewerCtx = t.withIdentity(identityFor("grouped-viewer@example.com", "grouped_viewer_auth"));
+    const viewerCtx = t.withIdentity(
+      identityFor("grouped-viewer@example.com", "grouped_viewer_auth")
+    );
     await viewerCtx.mutation(api.expenses.clearAllForUser, {});
 
     const expenses = await t.run(async (ctx) => await ctx.db.query("expenses").collect());
