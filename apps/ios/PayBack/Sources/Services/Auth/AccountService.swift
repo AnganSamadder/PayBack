@@ -28,7 +28,7 @@ protocol AccountService: Actor {
     func deleteLinkedFriend(memberId: UUID) async throws
 
     /// Deletes an unlinked friend (removes entirely from groups and expenses)
-    func deleteUnlinkedFriend(memberId: UUID) async throws
+    func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult
 
     /// Deletes the current user's account (unlinks from friends, keeps expenses, signs out)
     func selfDeleteAccount() async throws
@@ -69,6 +69,13 @@ struct IncomingFriendRequest: Identifiable, Sendable {
     let sender: UserAccount
     let status: String
     let createdAt: Date
+}
+
+struct DeleteFriendResult: Sendable, Equatable {
+    let groupsModified: Int
+    let expensesDeleted: Int
+    let expensesModified: Int
+    let aliasesDeleted: Int
 }
 
 actor MockAccountService: AccountService {
@@ -174,7 +181,7 @@ actor MockAccountService: AccountService {
         }
     }
 
-    func deleteUnlinkedFriend(memberId: UUID) async throws {
+    func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
         #if DEBUG
         print("[MockAccountService] deleteUnlinkedFriend \(memberId)")
         #endif
@@ -185,6 +192,7 @@ actor MockAccountService: AccountService {
                 friends[email] = updated
             }
         }
+        return DeleteFriendResult(groupsModified: 0, expensesDeleted: 0, expensesModified: 0, aliasesDeleted: 0)
     }
 
     func selfDeleteAccount() async throws {

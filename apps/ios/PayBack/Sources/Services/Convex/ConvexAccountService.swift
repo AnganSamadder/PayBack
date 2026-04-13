@@ -298,9 +298,27 @@ actor ConvexAccountService: AccountService {
         _ = try await client.mutation("cleanup:deleteLinkedFriend", with: args)
     }
 
-    func deleteUnlinkedFriend(memberId: UUID) async throws {
+    private struct DeleteUnlinkedFriendResponse: Decodable {
+        let success: Bool
+        let message: String?
+        let groupsModified: Int
+        let expensesDeleted: Int
+        let expensesModified: Int
+        let aliasesDeleted: Int
+    }
+
+    func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
         let args: [String: ConvexEncodable?] = ["friendMemberId": memberId.uuidString]
-        _ = try await client.mutation("cleanup:deleteUnlinkedFriend", with: args)
+        let response: DeleteUnlinkedFriendResponse = try await client.mutation("cleanup:deleteUnlinkedFriend", with: args)
+        guard response.success else {
+            throw PayBackError.underlying(message: response.message ?? "Unable to delete friend.")
+        }
+        return DeleteFriendResult(
+            groupsModified: response.groupsModified,
+            expensesDeleted: response.expensesDeleted,
+            expensesModified: response.expensesModified,
+            aliasesDeleted: response.aliasesDeleted
+        )
     }
 
     func selfDeleteAccount() async throws {
