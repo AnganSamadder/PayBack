@@ -144,6 +144,8 @@ private struct FriendsList: View {
     @AppStorage("friendsSortAscending") private var isAscending: Bool = true
     @State private var friendToDelete: GroupMember?
     @State private var showDeleteConfirmation = false
+    @State private var deleteError: PayBackError?
+    @State private var showDeleteError = false
     let onFriendSelected: (GroupMember) -> Void
 
     enum SortOrder: String, CaseIterable {
@@ -277,8 +279,18 @@ private struct FriendsList: View {
         ) { friend in
             Button("Remove \"\(friendDisplayName(friend))\"", role: .destructive) {
                 Haptics.notify(.warning)
-                store.deleteFriend(friend)
-                friendToDelete = nil
+                Task {
+                    do {
+                        try await store.deleteFriend(friend)
+                        friendToDelete = nil
+                    } catch let error as PayBackError {
+                        deleteError = error
+                        showDeleteError = true
+                    } catch {
+                        deleteError = .underlying(message: error.localizedDescription)
+                        showDeleteError = true
+                    }
+                }
             }
             Button("Cancel", role: .cancel) {
                 friendToDelete = nil
@@ -302,11 +314,16 @@ private struct FriendsList: View {
 
             return Text(message)
         }
+        .alert("Unable to Delete Friend", isPresented: $showDeleteError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(deleteError?.errorDescription ?? "Please try again.")
+        }
     }
 
     private var sortedFriends: [GroupMember] {
         // Double filter to ensure current user is never shown
-        let friends = store.friendMembers
+        let friends = store.confirmedFriendMembers
             .filter { !store.isCurrentUser($0) }
             .filter { $0.id != store.currentUser.id }
 
