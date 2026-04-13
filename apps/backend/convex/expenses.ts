@@ -167,6 +167,23 @@ function canonicalizeSubexpenses(subexpenses: any[] | undefined): string {
   return JSON.stringify(canonical);
 }
 
+function computedSettledFromSplits(splits: { is_settled: boolean }[]) {
+  return splits.length > 0 && splits.every((split) => split.is_settled);
+}
+
+async function loadExpenseByClientId(ctx: any, expenseId: string) {
+  const expense = await ctx.db
+    .query("expenses")
+    .withIndex("by_client_id", (q: any) => q.eq("id", expenseId))
+    .unique();
+
+  if (!expense) {
+    throw new Error("Expense not found");
+  }
+
+  return expense;
+}
+
 export const create = mutation({
   args: {
     id: v.string(), // Client UUID
@@ -452,9 +469,6 @@ export const create = mutation({
       }
     }
 
-    const computedSettledFromSplits = (splits: { is_settled: boolean }[]) =>
-      splits.length > 0 && splits.every((split) => split.is_settled);
-
     // Deduplication check: Check if expense with this ID already exists
     const existing = await ctx.db
       .query("expenses")
@@ -637,6 +651,84 @@ export const create = mutation({
     await reconcileUserExpenses(ctx, args.id, participantUserIds);
 
     return expenseId;
+  }
+});
+
+export const setSettlementState = mutation({
+  args: {
+    expenseId: v.string(),
+    memberIds: v.optional(v.array(v.string())),
+    settled: v.boolean()
+  },
+  handler: async (ctx, args) => {
+    const { identity, user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+
+    await checkRateLimit(ctx, identity.subject, "expenses:setSettlementState", 20);
+
+    const expense = await loadExpenseByClientId(ctx, args.expenseId);
+    const callerEquivalentIds = await buildUserEquivalentMemberIds(ctx.db, user);
+    const callerOwnsExpense = isExpenseOwner(expense, user);
+    const callerIsPayer = callerEquivalentIds.has(normalizeMemberId(expense.paid_by_member_id));
+    const splitMemberIds = expense.splits.map((split: any) => normalizeMemberId(split.member_id));
+    const splitMemberIdSet = new Set(splitMemberIds);
+    const requestedMemberIds = new Set(
+      (args.memberIds ?? []).map((memberId) => normalizeMemberId(memberId))
+    );
+
+    if (requestedMemberIds.size === 0) {
+      if (callerOwnsExpense || callerIsPayer) {
+        for (const memberId of splitMemberIds) {
+          requestedMemberIds.add(memberId);
+        }
+      } else {
+        for (const memberId of splitMemberIds) {
+          if (callerEquivalentIds.has(memberId)) {
+            requestedMemberIds.add(memberId);
+          }
+        }
+      }
+    }
+
+    if (requestedMemberIds.size === 0) {
+      throw new Error("No matching splits to update");
+    }
+
+    for (const memberId of requestedMemberIds) {
+      if (!splitMemberIdSet.has(memberId)) {
+        throw new Error(`Split not found for member ${memberId}`);
+      }
+      if (!callerOwnsExpense && !callerIsPayer && !callerEquivalentIds.has(memberId)) {
+        throw new Error("Forbidden: cannot settle another member's split");
+      }
+    }
+
+    const nextSplits = expense.splits.map((split: any) => {
+      const normalizedMemberId = normalizeMemberId(split.member_id);
+      if (!requestedMemberIds.has(normalizedMemberId)) {
+        return split;
+      }
+
+      return {
+        ...split,
+        is_settled: args.settled
+      };
+    });
+    const nextIsSettled = computedSettledFromSplits(nextSplits);
+    const updatedAt = Date.now();
+
+    await ctx.db.patch(expense._id, {
+      splits: nextSplits,
+      is_settled: nextIsSettled,
+      updated_at: updatedAt
+    });
+
+    return {
+      ...expense,
+      splits: nextSplits,
+      is_settled: nextIsSettled,
+      updated_at: updatedAt
+    };
   }
 });
 
