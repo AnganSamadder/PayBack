@@ -143,6 +143,118 @@ final class AppStoreTests: XCTestCase {
         XCTAssertTrue(sut.outgoingLinkRequests.isEmpty)
     }
 
+    func testGroupedIndividualDraftGroup_DoesNotPersistToGroups() {
+        let alice = GroupMember(name: "Alice")
+        let bob = GroupMember(name: "Bob")
+
+        let beforeCount = sut.groups.count
+        let draft = sut.groupedIndividualDraftGroup(with: [alice, bob])
+
+        XCTAssertEqual(sut.groups.count, beforeCount)
+        XCTAssertFalse(sut.groups.contains(where: { $0.id == draft.id }))
+        XCTAssertEqual(draft.members.count, 3)
+        XCTAssertTrue(draft.members.contains(where: { $0.id == sut.currentUser.id }))
+    }
+
+    func testMakeParticipants_UsesExpenseParticipantNamesWithoutBackingGroup() {
+        let friendId = UUID()
+        sut.friends = [AccountFriend(memberId: friendId, name: "Alice", status: "friend")]
+
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Ad hoc dinner",
+            totalAmount: 40,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, friendId],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 20),
+                ExpenseSplit(memberId: friendId, amount: 20)
+            ],
+            contextKind: .groupedIndividual,
+            participantNames: [
+                sut.currentUser.id: sut.currentUser.name,
+                friendId: "Alice from Expense"
+            ]
+        )
+
+        let participants = sut.makeParticipants(for: expense)
+
+        XCTAssertEqual(participants.count, 2)
+        XCTAssertEqual(participants.first(where: { $0.memberId == friendId })?.name, "Alice from Expense")
+    }
+
+    func testParticipantDisplayName_FallsBackToFriendWithoutBackingGroup() {
+        let friendId = UUID()
+        sut.friends = [AccountFriend(memberId: friendId, name: "Alice Friend", status: "friend")]
+
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Ad hoc dinner",
+            totalAmount: 40,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, friendId],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 20),
+                ExpenseSplit(memberId: friendId, amount: 20)
+            ],
+            contextKind: .groupedIndividual
+        )
+
+        XCTAssertEqual(
+            sut.participantDisplayName(memberId: friendId, in: expense),
+            "Alice Friend"
+        )
+    }
+
+    func testResolvedContextKind_KeepsGroupedIndividualWithoutBackingGroup() {
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Ad hoc dinner",
+            totalAmount: 50,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, UUID()],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 25),
+                ExpenseSplit(memberId: UUID(), amount: 25)
+            ],
+            contextKind: .groupedIndividual
+        )
+
+        XCTAssertEqual(sut.resolvedContextKind(for: expense), .groupedIndividual)
+        XCTAssertFalse(sut.hasBackingGroup(for: expense))
+    }
+
+    func testExpenseDisplayContextName_GroupedIndividualUsesParticipantNames() {
+        let aliceId = UUID()
+        let bobId = UUID()
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Dinner",
+            totalAmount: 90,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, aliceId, bobId],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 30),
+                ExpenseSplit(memberId: aliceId, amount: 30),
+                ExpenseSplit(memberId: bobId, amount: 30)
+            ],
+            contextKind: .groupedIndividual,
+            participantNames: [
+                sut.currentUser.id: sut.currentUser.name,
+                aliceId: "Alice",
+                bobId: "Bob"
+            ]
+        )
+
+        XCTAssertEqual(sut.expenseDisplayContextName(expense), "Alice, Bob")
+    }
+
+    func testGroupedIndividualCreationEnabled_IsTrueForAllEnvironments() {
+        XCTAssertTrue(AppConfig.isGroupedIndividualCreationEnabled(environment: .development))
+        XCTAssertTrue(AppConfig.isGroupedIndividualCreationEnabled(environment: .production))
+        XCTAssertTrue(AppConfig.groupedIndividualCreationEnabled)
+    }
+
     // MARK: - Invite Link Tests
 
     func testGenerateInviteLink_CreatesInviteLink() async throws {

@@ -255,6 +255,34 @@ final class AppStoreBalanceTests: XCTestCase {
         XCTAssertEqual(overall, 20, "Direct groups should count towards overall balance.")
     }
 
+    func testOverallNetBalance_GroupedIndividualExpenseWithoutBackingGroup_ContributesToTotal() {
+        let alice = GroupMember(name: "Alice")
+        sut.friends = [
+            AccountFriend(memberId: alice.id, name: "Alice", status: "friend")
+        ]
+
+        let groupedExpense = Expense(
+            groupId: UUID(),
+            description: "Ad hoc dinner",
+            totalAmount: 90,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, alice.id],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 45, isSettled: false),
+                ExpenseSplit(memberId: alice.id, amount: 45, isSettled: false)
+            ],
+            contextKind: .groupedIndividual,
+            participantNames: [
+                sut.currentUser.id: sut.currentUser.name,
+                alice.id: "Alice"
+            ]
+        )
+
+        sut.addExpense(groupedExpense)
+
+        XCTAssertEqual(sut.overallNetBalance(), 45, accuracy: 0.01)
+    }
+
     func testNetBalance_WithEquivalentMemberIds_ReturnsCorrectBalance() {
         let primaryId = sut.currentUser.id
         let equivalentId = UUID()
