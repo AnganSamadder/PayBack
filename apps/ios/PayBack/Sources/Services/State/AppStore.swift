@@ -38,6 +38,8 @@ final class AppStore: ObservableObject {
     private var remoteLoadTask: Task<Void, Never>?
     /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseUpsertIds: Set<UUID> = []
+    /// Local settlement writes that have been sent to cloud but not yet observed in realtime snapshots.
+    private var pendingExpenseSettlementIds: Set<UUID> = []
     /// Local expense deletes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseDeleteIds: Set<UUID> = []
     private let retryPolicy: RetryPolicy = .linkingDefault
@@ -693,6 +695,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses = []
         friends = []
         pendingExpenseUpsertIds.removeAll()
+        pendingExpenseSettlementIds.removeAll()
         pendingExpenseDeleteIds.removeAll()
 
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
@@ -732,6 +735,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         groups = []
         friends = []
         pendingExpenseUpsertIds.removeAll()
+        pendingExpenseSettlementIds.removeAll()
         pendingExpenseDeleteIds.removeAll()
 
         // Persist locally
@@ -1280,10 +1284,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
 
         // Keep local optimistic writes until realtime snapshot reflects the same payload.
-        for localExpense in expenses where pendingExpenseUpsertIds.contains(localExpense.id) {
+        let pendingLocalExpenseIds = pendingExpenseUpsertIds.union(pendingExpenseSettlementIds)
+        for localExpense in expenses where pendingLocalExpenseIds.contains(localExpense.id) {
             if let remoteIndex = remoteIndexById[localExpense.id] {
                 if merged[remoteIndex] == localExpense {
                     pendingExpenseUpsertIds.remove(localExpense.id)
+                    pendingExpenseSettlementIds.remove(localExpense.id)
                 } else {
                     merged[remoteIndex] = localExpense
                 }
@@ -1317,6 +1323,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
                     try await expenseCloudService.upsertExpense(expense, participants: participants)
                 }
             } catch {
+                await MainActor.run {
+                    self.pendingExpenseUpsertIds.remove(expense.id)
+                }
                 #if DEBUG
                 print("⚠️ Failed to sync expense upsert \(expense.id): \(error.localizedDescription)")
                 #endif
@@ -1328,6 +1337,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     private func queueExpenseDelete(_ expenseId: UUID) {
         guard session != nil, !isImporting else { return }
         pendingExpenseUpsertIds.remove(expenseId)
+        pendingExpenseSettlementIds.remove(expenseId)
         pendingExpenseDeleteIds.insert(expenseId)
 
         Task { [retryPolicy, expenseCloudService, expenseId] in
@@ -1440,61 +1450,93 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     // MARK: - Settlement Methods
 
-    func markExpenseAsSettled(_ expense: Expense) {
-        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
-
-        // Find the current user's split(s) to settle
-        let updatedSplits = expense.splits.map { split in
-            if isMe(split.memberId) {
-                var newSplit = split
-                newSplit.isSettled = true
-                return newSplit
-            }
-            return split
-        }
-
-        // Only mark expense as fully settled when ALL splits are settled
-        let allSplitsSettled = updatedSplits.allSatisfy { $0.isSettled }
-
+    private func applyingSettlementState(
+        to expense: Expense,
+        memberIds: Set<UUID>,
+        settled: Bool
+    ) -> Expense {
         var updatedExpense = expense
-        updatedExpense.splits = updatedSplits
-        updatedExpense.isSettled = allSplitsSettled
-
-        expenses[idx] = updatedExpense
-        persistCurrentState()
-        let participants = makeParticipants(for: updatedExpense)
-        queueExpenseUpsert(updatedExpense, participants: participants)
+        updatedExpense.splits = expense.splits.map { split in
+            guard memberIds.contains(where: { areSamePerson(split.memberId, $0) }) else {
+                return split
+            }
+            var updatedSplit = split
+            updatedSplit.isSettled = settled
+            return updatedSplit
+        }
+        updatedExpense.isSettled = updatedExpense.splits.allSatisfy(\.isSettled)
+        return updatedExpense
     }
 
-    func settleExpenseForMember(_ expense: Expense, memberId: UUID) {
-        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else {
+    private func performSettlementMutation(
+        expenseId: UUID,
+        memberIds: Set<UUID>,
+        settled: Bool
+    ) async throws {
+        guard let idx = expenses.firstIndex(where: { $0.id == expenseId }) else {
+            throw PayBackError.expenseNotFound(id: expenseId)
+        }
+        guard !memberIds.isEmpty else { return }
+
+        let originalExpense = expenses[idx]
+        let optimisticExpense = applyingSettlementState(
+            to: originalExpense,
+            memberIds: memberIds,
+            settled: settled
+        )
+
+        expenses[idx] = optimisticExpense
+        pendingExpenseSettlementIds.insert(expenseId)
+        persistCurrentState()
+
+        guard session != nil, !isImporting else {
+            pendingExpenseSettlementIds.remove(expenseId)
+            persistCurrentState()
             return
         }
 
-        let updatedSplits = expense.splits.map { split in
-            if areSamePerson(split.memberId, memberId) {
-                var newSplit = split
-                newSplit.isSettled = true
-                return newSplit
+        do {
+            let canonicalExpense = try await retryPolicy.execute {
+                try await self.expenseCloudService.setSettlementState(
+                    expenseId: expenseId,
+                    memberIds: memberIds,
+                    settled: settled
+                )
             }
-            return split
+
+            if let canonicalIndex = expenses.firstIndex(where: { $0.id == expenseId }) {
+                expenses[canonicalIndex] = canonicalExpense
+            } else {
+                expenses.append(canonicalExpense)
+            }
+            pendingExpenseSettlementIds.remove(expenseId)
+            persistCurrentState()
+        } catch {
+            pendingExpenseSettlementIds.remove(expenseId)
+            if let rollbackIndex = expenses.firstIndex(where: { $0.id == expenseId }) {
+                expenses[rollbackIndex] = originalExpense
+            } else {
+                expenses.append(originalExpense)
+            }
+            persistCurrentState()
+            throw error
         }
+    }
 
-        let allSplitsSettled = updatedSplits.allSatisfy { $0.isSettled }
+    func markExpenseAsSettled(_ expense: Expense) async throws {
+        try await settleExpenseForCurrentUser(expense)
+    }
 
-        var updatedExpense = expense
-        updatedExpense.splits = updatedSplits
-        updatedExpense.isSettled = allSplitsSettled
+    func settleExpenseForMember(_ expense: Expense, memberId: UUID) async throws {
+        try await settleExpenseForMembers(expense, memberIds: [memberId])
+    }
 
-        print("   📊 Expense fully settled: \(updatedExpense.isSettled)")
+    func markExpenseAsSettled(_ expense: Expense) {
+        Task { try? await markExpenseAsSettled(expense) }
+    }
 
-        // Replace the entire expense in the array
-        expenses[idx] = updatedExpense
-
-        // Force immediate persistence
-        persistCurrentState()
-        let participants = makeParticipants(for: updatedExpense)
-        queueExpenseUpsert(updatedExpense, participants: participants)
+    func settleExpenseForMember(_ expense: Expense, memberId: UUID) {
+        Task { try? await settleExpenseForMember(expense, memberId: memberId) }
     }
 
     // MARK: - Balance Calculations
@@ -2385,80 +2427,44 @@ func completeAuthentication(id: String, email: String, name: String?) {
         )
     }
 
-    func settleExpenseForCurrentUser(_ expense: Expense) {
-        markExpenseAsSettled(expense)
+    func settleExpenseForCurrentUser(_ expense: Expense) async throws {
+        let myMemberIds = Set(expense.splits.compactMap { split in
+            isMe(split.memberId) ? split.memberId : nil
+        })
+        try await performSettlementMutation(expenseId: expense.id, memberIds: myMemberIds, settled: true)
     }
 
     /// Settle specific members' splits by member ID set.
-    func settleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) {
-        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
-
-        let updatedSplits = expense.splits.map { split in
-            let shouldSettle = memberIds.contains { areSamePerson(split.memberId, $0) }
-            if shouldSettle {
-                var newSplit = split
-                newSplit.isSettled = true
-                return newSplit
-            }
-            return split
-        }
-
-        let allSplitsSettled = updatedSplits.allSatisfy { $0.isSettled }
-
-        var updatedExpense = expense
-        updatedExpense.splits = updatedSplits
-        updatedExpense.isSettled = allSplitsSettled
-
-        expenses[idx] = updatedExpense
-        persistCurrentState()
-        let participants = makeParticipants(for: updatedExpense)
-        queueExpenseUpsert(updatedExpense, participants: participants)
+    func settleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) async throws {
+        try await performSettlementMutation(expenseId: expense.id, memberIds: memberIds, settled: true)
     }
 
     /// Unsettle specific members' splits by member ID set.
+    func unsettleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) async throws {
+        try await performSettlementMutation(expenseId: expense.id, memberIds: memberIds, settled: false)
+    }
+
+    func unsettleExpenseForCurrentUser(_ expense: Expense) async throws {
+        let myMemberIds = Set(expense.splits.compactMap { split in
+            isMe(split.memberId) ? split.memberId : nil
+        })
+        try await performSettlementMutation(expenseId: expense.id, memberIds: myMemberIds, settled: false)
+    }
+
+    func settleExpenseForCurrentUser(_ expense: Expense) {
+        Task { try? await settleExpenseForCurrentUser(expense) }
+    }
+
+    func settleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) {
+        Task { try? await settleExpenseForMembers(expense, memberIds: memberIds) }
+    }
+
     func unsettleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) {
-        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
-
-        let updatedSplits = expense.splits.map { split in
-            let shouldUnsettle = memberIds.contains { areSamePerson(split.memberId, $0) }
-            if shouldUnsettle {
-                var newSplit = split
-                newSplit.isSettled = false
-                return newSplit
-            }
-            return split
-        }
-
-        var updatedExpense = expense
-        updatedExpense.splits = updatedSplits
-        updatedExpense.isSettled = updatedSplits.allSatisfy { $0.isSettled }
-
-        expenses[idx] = updatedExpense
-        persistCurrentState()
-        let participants = makeParticipants(for: updatedExpense)
-        queueExpenseUpsert(updatedExpense, participants: participants)
+        Task { try? await unsettleExpenseForMembers(expense, memberIds: memberIds) }
     }
 
     func unsettleExpenseForCurrentUser(_ expense: Expense) {
-        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
-
-        let updatedSplits = expense.splits.map { split in
-            if isMe(split.memberId) {
-                var newSplit = split
-                newSplit.isSettled = false
-                return newSplit
-            }
-            return split
-        }
-
-        var updatedExpense = expense
-        updatedExpense.splits = updatedSplits
-        updatedExpense.isSettled = false
-
-        expenses[idx] = updatedExpense
-        persistCurrentState()
-        let participants = makeParticipants(for: updatedExpense)
-        queueExpenseUpsert(updatedExpense, participants: participants)
+        Task { try? await unsettleExpenseForCurrentUser(expense) }
     }
 
     func canSettleExpenseForAll(_ expense: Expense) -> Bool {
@@ -2648,6 +2654,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses.removeAll()
         friends.removeAll()
         pendingExpenseUpsertIds.removeAll()
+        pendingExpenseSettlementIds.removeAll()
         pendingExpenseDeleteIds.removeAll()
         persistCurrentState()
         Task {
