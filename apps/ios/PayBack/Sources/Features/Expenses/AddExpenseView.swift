@@ -128,7 +128,9 @@ struct AddExpenseView: View {
                             .zIndex(20)
                     }
                 }
-                .simultaneousGesture(dragGesture, including: .all)
+                // Keep swipe-to-save active on the panel itself without letting the drag
+                // recognizer compete with buttons and text fields like the top-bar Save action.
+                .simultaneousGesture(dragGesture, including: .gesture)
                 .offset(y: dragOffset)
                 .ignoresSafeArea()
                 .compositingGroup()
@@ -141,6 +143,33 @@ struct AddExpenseView: View {
 
     private var participants: [GroupMember] {
         group.members.filter { involvedIds.contains($0.id) }
+    }
+
+    private var expenseContextKind: ExpenseContextKind {
+        if store.group(by: group.id) == nil, group.isDirect != true {
+            return .groupedIndividual
+        }
+        if group.isDirect == true {
+            return .direct
+        }
+        return .group
+    }
+
+    private var bottomMetaTitle: String {
+        guard expenseContextKind == .groupedIndividual else { return group.name }
+
+        let names = participants
+            .filter { !($0.isCurrentUser ?? false) }
+            .map(\.name)
+
+        switch names.count {
+        case 0:
+            return group.name
+        case 1...3:
+            return names.joined(separator: ", ")
+        default:
+            return "\(names.prefix(2).joined(separator: ", ")) + \(names.count - 2) more"
+        }
     }
 
     private var resolvedCurrentUserMemberId: UUID? {
@@ -291,6 +320,8 @@ struct AddExpenseView: View {
             paidByMemberId: payerId,
             involvedMemberIds: participants.map(\.id),
             splits: splits,
+            contextKind: expenseContextKind,
+            participantNames: Dictionary(uniqueKeysWithValues: participants.map { ($0.id, $0.name) }),
             // Filter out zero-amount subexpenses; a single item is semantically a plain expense
             subexpenses: { let f = subexpenses.filter { $0.amount > 0.001 }; return f.count >= 2 ? f : nil }()
         )
@@ -303,10 +334,8 @@ struct AddExpenseView: View {
             Haptics.notify(.success)
             close()
         } catch {
-            // Keep creation reliable even if immediate Convex ack fails.
-            store.addExpense(expense)
-            Haptics.notify(.success)
-            close()
+            Haptics.notify(.error)
+            activeAlert = .cannotSave(message: error.localizedDescription)
         }
     }
 
@@ -317,12 +346,7 @@ struct AddExpenseView: View {
     // MARK: - View Components
 
     private func mainContent(geometry: GeometryProxy) -> some View {
-        VStack(spacing: AppMetrics.AddExpense.verticalStackSpacing) {
-            // Empty content for now
-        }
-        .safeAreaInset(edge: .top, alignment: .center, spacing: 0) {
-            expensePanel(geometry: geometry)
-        }
+        expensePanel(geometry: geometry)
     }
 
     private func expensePanel(geometry: GeometryProxy) -> some View {
@@ -354,6 +378,7 @@ struct AddExpenseView: View {
                     .frame(width: 36, height: 36)
                     .background(.ultraThinMaterial, in: Circle())
             }
+            .accessibilityLabel("Save")
             .disabled(isSaving)
             .opacity(isSaving ? 0.6 : 1)
             .buttonStyle(.plain)
@@ -402,7 +427,7 @@ struct AddExpenseView: View {
 
             Spacer()
 
-            BottomMetaBubble(group: group, date: $date, showNotes: $showNotesSheet)
+            BottomMetaBubble(title: bottomMetaTitle, group: group, date: $date, showNotes: $showNotesSheet)
                 .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
                 .padding(.bottom, AppMetrics.AddExpense.bottomInnerPadding)
                 .padding(.bottom, 20)
@@ -1469,6 +1494,7 @@ private struct ParticipantGridItem: View {
 
 // MARK: - Bottom Meta Bubble
 private struct BottomMetaBubble: View {
+    let title: String
     let group: SpendingGroup
     @Binding var date: Date
     @Binding var showNotes: Bool
@@ -1477,7 +1503,7 @@ private struct BottomMetaBubble: View {
         HStack(spacing: AppMetrics.AddExpense.bottomRowSpacing) {
             GroupIcon(name: group.name)
             VStack(alignment: .leading, spacing: 4) {
-                Text(group.name)
+                Text(title)
                     .font(.headline)
                     .lineLimit(2)
                     .truncationMode(.tail)

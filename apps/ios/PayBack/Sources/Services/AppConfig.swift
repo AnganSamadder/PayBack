@@ -35,6 +35,16 @@ enum AppConfig {
         environment == .development
     }
 
+    /// Controls whether grouped-individual expense creation is visible in the app UI.
+    /// This is intentionally independent from debug-only tooling.
+    static var groupedIndividualCreationEnabled: Bool {
+        isGroupedIndividualCreationEnabled(environment: environment)
+    }
+
+    static func isGroupedIndividualCreationEnabled(environment _: ConvexEnvironment) -> Bool {
+        true
+    }
+
     /// Enable verbose logging for debugging
     /// Controlled by DEBUG flag - can be toggled at runtime for testing
     static var verboseLogging: Bool = {
