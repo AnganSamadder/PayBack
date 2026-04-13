@@ -998,7 +998,7 @@ private struct SettleModal: View {
                     selectedExpenseIds: selectedExpenseIds,
                     selectedExpenses: selectedExpenses,
                     paymentRecipients: paymentRecipients,
-                    onConfirm: settleSelectedExpenses,
+                    onConfirm: { Task { await settleSelectedExpenses() } },
                     onCancel: { showConfirmationPage = false }
                 )
                 .environmentObject(store)
@@ -1196,33 +1196,22 @@ private struct SettleModal: View {
         }
     }
 
-    private func settleSelectedExpenses() {
-        print("🔄 Starting settlement process for \(selectedExpenseIds.count) expenses")
+    @MainActor
+    private func settleSelectedExpenses() async {
         for expenseId in selectedExpenseIds {
-            if let expense = unsettledExpenses.first(where: { $0.id == expenseId }) {
-                let mySplits = expense.splits.filter { store.isMe($0.memberId) }
-                let currentUserSettled = !mySplits.contains { !$0.isSettled }
-                print("📝 Processing expense: \(expense.description)")
-                print("   - Can settle for self: \(store.canSettleExpenseForSelf(expense))")
-                print("   - Current user settled: \(currentUserSettled)")
-                print("   - Expense fully settled: \(expense.isSettled)")
-
-                // Only settle if current user can settle this expense
-                if store.canSettleExpenseForSelf(expense) {
-                    print("   ✅ Settling expense for current user")
-                    store.settleExpenseForCurrentUser(expense)
-                    print("   🎉 Settlement completed")
-                } else {
-                    print("   ❌ Cannot settle this expense")
-                }
-            } else {
-                print("   ⚠️ Could not find expense with ID: \(expenseId)")
+            guard let expense = unsettledExpenses.first(where: { $0.id == expenseId }),
+                  store.canSettleExpenseForSelf(expense) else { continue }
+            do {
+                try await store.settleExpenseForCurrentUser(expense)
+            } catch {
+                #if DEBUG
+                print("⚠️ Settlement failed for expense \(expenseId): \(error.localizedDescription)")
+                #endif
+                // Continue settling remaining expenses even if one fails
             }
         }
-        // Clear selection after settlement
         selectedExpenseIds.removeAll()
         dismiss()
-        print("🏁 Settlement process completed")
     }
 }
 

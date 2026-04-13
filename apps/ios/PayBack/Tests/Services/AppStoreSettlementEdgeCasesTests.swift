@@ -254,7 +254,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
 
     // MARK: - Mark Expense Settled Edge Cases
 
-    func testMarkExpenseAsSettled_NonExistentExpense_NoChange() async throws {
+    func testMarkExpenseAsSettled_NonExistentExpense_Throws() async throws {
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
 
         let nonExistentExpense = Expense(
@@ -266,8 +266,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
             splits: []
         )
 
-        sut.markExpenseAsSettled(nonExistentExpense)
-
+        await XCTAssertThrowsErrorAsync(try await sut.markExpenseAsSettled(nonExistentExpense))
         XCTAssertTrue(sut.expenses.isEmpty)
     }
 
@@ -291,7 +290,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         )
         sut.addExpense(expense)
 
-        sut.markExpenseAsSettled(expense)
+        try await sut.markExpenseAsSettled(expense)
 
         let updatedExpense = sut.expenses.first(where: { $0.id == expense.id })!
         XCTAssertTrue(updatedExpense.splits.first(where: { $0.memberId == sut.currentUser.id })?.isSettled ?? false)
@@ -320,7 +319,8 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         )
         sut.addExpense(expense)
 
-        sut.settleExpenseForCurrentUser(expense)
+        // No current user split — performSettlementMutation short-circuits with empty memberIds
+        try await sut.settleExpenseForCurrentUser(expense)
 
         // No current user split to settle
         let updatedExpense = sut.expenses[0]
@@ -355,9 +355,10 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
             ]
         )
         sut.addExpense(expense)
+        await mockExpenseCloudService.addExpense(expense)
 
         // When
-        sut.settleExpenseForCurrentUser(expense)
+        try await sut.settleExpenseForCurrentUser(expense)
 
         // Then
         let updatedExpense = sut.expenses[0]

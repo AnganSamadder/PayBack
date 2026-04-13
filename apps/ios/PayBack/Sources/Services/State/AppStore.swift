@@ -1070,38 +1070,22 @@ func completeAuthentication(id: String, email: String, name: String?) {
         Task { try? await self.deleteFriend(friend) }
     }
 
-    private struct DeleteStateSnapshot {
-        let friends: [AccountFriend]
-        let groups: [SpendingGroup]
-        let expenses: [Expense]
-    }
-
-    @MainActor
-    private func makeDeleteStateSnapshot() -> DeleteStateSnapshot {
-        DeleteStateSnapshot(friends: friends, groups: groups, expenses: expenses)
-    }
-
-    @MainActor
-    private func restoreDeleteState(_ snapshot: DeleteStateSnapshot) {
-        friends = snapshot.friends
-        groups = snapshot.groups
-        expenses = snapshot.expenses
-        persistCurrentState()
-    }
-
     @MainActor
     func deleteLinkedFriend(memberId: UUID) async throws {
         print("🔵 deleteLinkedFriend called for: \(memberId)")
-        let snapshot = makeDeleteStateSnapshot()
+
+        // Capture only what we'll remove so rollback doesn't clobber concurrent realtime updates.
+        let removedFriend = friends.first { $0.memberId == memberId }
+        let directGroup = groups.first(where: {
+            ($0.isDirect ?? false) && $0.members.contains(where: { $0.id == memberId })
+        })
+        let removedGroupExpenses = directGroup.map { g in expenses.filter { $0.groupId == g.id } } ?? []
 
         friends.removeAll { $0.memberId == memberId }
-
-        if let directGroup = groups.first(where: {
-            ($0.isDirect ?? false) && $0.members.contains(where: { $0.id == memberId })
-        }) {
-            print("🟢 Deleting direct group: \(directGroup.id)")
-            expenses.removeAll { $0.groupId == directGroup.id }
-            groups.removeAll { $0.id == directGroup.id }
+        if let g = directGroup {
+            print("🟢 Deleting direct group: \(g.id)")
+            expenses.removeAll { $0.groupId == g.id }
+            groups.removeAll { $0.id == g.id }
         }
         persistCurrentState()
 
@@ -1110,7 +1094,18 @@ func completeAuthentication(id: String, email: String, name: String?) {
             print("✅ Backend deleteLinkedFriend success")
             scheduleFriendSync()
         } catch {
-            restoreDeleteState(snapshot)
+            // Surgical rollback: restore only the specific items removed, preserving
+            // any concurrent realtime updates that arrived while the request was in flight.
+            if let friend = removedFriend, !friends.contains(where: { $0.memberId == memberId }) {
+                friends.append(friend)
+            }
+            if let g = directGroup, !groups.contains(where: { $0.id == g.id }) {
+                groups.append(g)
+                for expense in removedGroupExpenses where !expenses.contains(where: { $0.id == expense.id }) {
+                    expenses.append(expense)
+                }
+            }
+            persistCurrentState()
             print("🔴 Backend deleteLinkedFriend failed: \(error)")
             throw error
         }
@@ -1119,38 +1114,38 @@ func completeAuthentication(id: String, email: String, name: String?) {
     @MainActor @discardableResult
     func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
         print("🔵 deleteUnlinkedFriend called for: \(memberId)")
-        let snapshot = makeDeleteStateSnapshot()
 
-        friends.removeAll { $0.memberId == memberId }
-
-        let groupsWithFriend = groups.filter { group in
-            group.members.contains(where: { $0.id == memberId })
+        // Capture what will change for surgical rollback.
+        struct GroupDeleteRecord {
+            let original: SpendingGroup
+            let removedExpenses: [Expense]
+            let wasDeleted: Bool
         }
-
-        var groupsToDelete: [UUID] = []
-
-        for group in groupsWithFriend {
-            expenses.removeAll { expense in
+        let removedFriend = friends.first { $0.memberId == memberId }
+        let groupsWithFriend = groups.filter { $0.members.contains(where: { $0.id == memberId }) }
+        let groupRecords: [GroupDeleteRecord] = groupsWithFriend.map { group in
+            let removed = expenses.filter { expense in
                 expense.groupId == group.id && (
                     expense.paidByMemberId == memberId ||
                     expense.involvedMemberIds.contains(memberId)
                 )
             }
+            var updated = group
+            updated.members.removeAll { $0.id == memberId }
+            let remaining = updated.members.filter { !isCurrentUser($0) }
+            return GroupDeleteRecord(original: group, removedExpenses: removed, wasDeleted: remaining.isEmpty)
+        }
 
-            if let idx = groups.firstIndex(where: { $0.id == group.id }) {
-                var updatedGroup = groups[idx]
-                updatedGroup.members.removeAll { $0.id == memberId }
-
-                let remaining = updatedGroup.members.filter { !isCurrentUser($0) }
-                if remaining.isEmpty {
-                    groupsToDelete.append(group.id)
-                    expenses.removeAll { $0.groupId == group.id }
-                } else {
-                    groups[idx] = updatedGroup
-                }
+        friends.removeAll { $0.memberId == memberId }
+        for record in groupRecords {
+            for expense in record.removedExpenses { expenses.removeAll { $0.id == expense.id } }
+            if record.wasDeleted {
+                expenses.removeAll { $0.groupId == record.original.id }
+                groups.removeAll { $0.id == record.original.id }
+            } else if let idx = groups.firstIndex(where: { $0.id == record.original.id }) {
+                groups[idx].members.removeAll { $0.id == memberId }
             }
         }
-        groups.removeAll { groupsToDelete.contains($0.id) }
         persistCurrentState()
 
         do {
@@ -1159,7 +1154,30 @@ func completeAuthentication(id: String, email: String, name: String?) {
             scheduleFriendSync()
             return result
         } catch {
-            restoreDeleteState(snapshot)
+            // Surgical rollback: restore only the specific items removed.
+            if let friend = removedFriend, !friends.contains(where: { $0.memberId == memberId }) {
+                friends.append(friend)
+            }
+            for record in groupRecords {
+                if record.wasDeleted {
+                    if !groups.contains(where: { $0.id == record.original.id }) {
+                        groups.append(record.original)
+                    }
+                    for expense in record.removedExpenses where !expenses.contains(where: { $0.id == expense.id }) {
+                        expenses.append(expense)
+                    }
+                } else {
+                    if let idx = groups.firstIndex(where: { $0.id == record.original.id }),
+                       !groups[idx].members.contains(where: { $0.id == memberId }),
+                       let originalMember = record.original.members.first(where: { $0.id == memberId }) {
+                        groups[idx].members.append(originalMember)
+                    }
+                    for expense in record.removedExpenses where !expenses.contains(where: { $0.id == expense.id }) {
+                        expenses.append(expense)
+                    }
+                }
+            }
+            persistCurrentState()
             print("🔴 Backend deleteUnlinkedFriend failed: \(error)")
             throw error
         }
@@ -1355,9 +1373,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
                     try await expenseCloudService.upsertExpense(expense, participants: participants)
                 }
             } catch {
-                await MainActor.run {
-                    self.pendingExpenseUpsertIds.remove(expense.id)
-                }
+                // Do not remove pendingExpenseUpsertIds here — concurrent in-flight writes
+                // for the same expense would lose their pending guard. The realtime reconciler
+                // clears the flag when it observes matching remote data.
                 #if DEBUG
                 print("⚠️ Failed to sync expense upsert \(expense.id): \(error.localizedDescription)")
                 #endif
@@ -1548,10 +1566,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
             persistCurrentState()
         } catch {
             pendingExpenseSettlementIds.remove(expenseId)
-            if let rollbackIndex = expenses.firstIndex(where: { $0.id == expenseId }) {
+            // Only rollback if current state still matches our optimistic write.
+            // A newer in-flight settlement may have already superseded this state.
+            if let rollbackIndex = expenses.firstIndex(where: { $0.id == expenseId }),
+               expenses[rollbackIndex] == optimisticExpense {
                 expenses[rollbackIndex] = originalExpense
-            } else {
-                expenses.append(originalExpense)
             }
             persistCurrentState()
             throw error
