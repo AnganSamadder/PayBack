@@ -1053,83 +1053,111 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// 2. Removing them from ALL groups they're in
     /// 3. Deleting all expenses involving them in each group
     /// 4. Auto-deleting any groups that become single-member (only current user)
-    func deleteFriend(_ friend: GroupMember) {
-        Task {
-            await deleteUnlinkedFriend(memberId: friend.id)
+    func deleteFriend(_ friend: GroupMember) async throws {
+        guard let accountFriend = accountFriend(for: friend) else {
+            throw PayBackError.underlying(message: "Only confirmed friends can be deleted.")
+        }
+
+        if accountFriend.hasLinkedAccount {
+            try await deleteLinkedFriend(memberId: accountFriend.memberId)
+        } else {
+            _ = try await deleteUnlinkedFriend(memberId: accountFriend.memberId)
         }
     }
 
-    func deleteLinkedFriend(memberId: UUID) async {
+    func deleteFriend(_ friend: GroupMember) {
+        Task { try? await deleteFriend(friend) }
+    }
+
+    private struct DeleteStateSnapshot {
+        let friends: [AccountFriend]
+        let groups: [SpendingGroup]
+        let expenses: [Expense]
+    }
+
+    private func makeDeleteStateSnapshot() -> DeleteStateSnapshot {
+        DeleteStateSnapshot(friends: friends, groups: groups, expenses: expenses)
+    }
+
+    private func restoreDeleteState(_ snapshot: DeleteStateSnapshot) {
+        friends = snapshot.friends
+        groups = snapshot.groups
+        expenses = snapshot.expenses
+        persistCurrentState()
+    }
+
+    func deleteLinkedFriend(memberId: UUID) async throws {
         print("🔵 deleteLinkedFriend called for: \(memberId)")
+        let snapshot = makeDeleteStateSnapshot()
 
-        await MainActor.run {
-            friends.removeAll { $0.memberId == memberId }
+        friends.removeAll { $0.memberId == memberId }
 
-            if let directGroup = groups.first(where: {
-                ($0.isDirect ?? false) && $0.members.contains(where: { $0.id == memberId })
-            }) {
-                print("🟢 Deleting direct group: \(directGroup.id)")
-                expenses.removeAll { $0.groupId == directGroup.id }
-                groups.removeAll { $0.id == directGroup.id }
-            }
-
-            persistCurrentState()
+        if let directGroup = groups.first(where: {
+            ($0.isDirect ?? false) && $0.members.contains(where: { $0.id == memberId })
+        }) {
+            print("🟢 Deleting direct group: \(directGroup.id)")
+            expenses.removeAll { $0.groupId == directGroup.id }
+            groups.removeAll { $0.id == directGroup.id }
         }
+        persistCurrentState()
 
         do {
             try await accountService.deleteLinkedFriend(memberId: memberId)
             print("✅ Backend deleteLinkedFriend success")
-            await MainActor.run { scheduleFriendSync() }
+            scheduleFriendSync()
         } catch {
+            restoreDeleteState(snapshot)
             print("🔴 Backend deleteLinkedFriend failed: \(error)")
+            throw error
         }
     }
 
-    func deleteUnlinkedFriend(memberId: UUID) async {
+    @discardableResult
+    func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
         print("🔵 deleteUnlinkedFriend called for: \(memberId)")
+        let snapshot = makeDeleteStateSnapshot()
 
-        await MainActor.run {
-            friends.removeAll { $0.memberId == memberId }
+        friends.removeAll { $0.memberId == memberId }
 
-            let groupsWithFriend = groups.filter { group in
-                group.members.contains(where: { $0.id == memberId })
-            }
-
-            var groupsToDelete: [UUID] = []
-
-            for group in groupsWithFriend {
-                expenses.removeAll { expense in
-                    expense.groupId == group.id && (
-                        expense.paidByMemberId == memberId ||
-                        expense.involvedMemberIds.contains(memberId)
-                    )
-                }
-
-                if let idx = groups.firstIndex(where: { $0.id == group.id }) {
-                    var updatedGroup = groups[idx]
-                    updatedGroup.members.removeAll { $0.id == memberId }
-
-                    let remaining = updatedGroup.members.filter { !isCurrentUser($0) }
-                    if remaining.isEmpty {
-                        groupsToDelete.append(group.id)
-                        expenses.removeAll { $0.groupId == group.id }
-                    } else {
-                        groups[idx] = updatedGroup
-                    }
-                }
-            }
-
-            groups.removeAll { groupsToDelete.contains($0.id) }
-
-            persistCurrentState()
+        let groupsWithFriend = groups.filter { group in
+            group.members.contains(where: { $0.id == memberId })
         }
 
+        var groupsToDelete: [UUID] = []
+
+        for group in groupsWithFriend {
+            expenses.removeAll { expense in
+                expense.groupId == group.id && (
+                    expense.paidByMemberId == memberId ||
+                    expense.involvedMemberIds.contains(memberId)
+                )
+            }
+
+            if let idx = groups.firstIndex(where: { $0.id == group.id }) {
+                var updatedGroup = groups[idx]
+                updatedGroup.members.removeAll { $0.id == memberId }
+
+                let remaining = updatedGroup.members.filter { !isCurrentUser($0) }
+                if remaining.isEmpty {
+                    groupsToDelete.append(group.id)
+                    expenses.removeAll { $0.groupId == group.id }
+                } else {
+                    groups[idx] = updatedGroup
+                }
+            }
+        }
+        groups.removeAll { groupsToDelete.contains($0.id) }
+        persistCurrentState()
+
         do {
-            try await accountService.deleteUnlinkedFriend(memberId: memberId)
+            let result = try await accountService.deleteUnlinkedFriend(memberId: memberId)
             print("✅ Backend deleteUnlinkedFriend success")
-            await MainActor.run { scheduleFriendSync() }
+            scheduleFriendSync()
+            return result
         } catch {
+            restoreDeleteState(snapshot)
             print("🔴 Backend deleteUnlinkedFriend failed: \(error)")
+            throw error
         }
     }
 
@@ -2003,6 +2031,39 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         let tokens = Set(nameTokens(name))
         return tokensMatchCurrentUser(tokens)
+    }
+
+    func accountFriend(for friend: GroupMember) -> AccountFriend? {
+        friends.first { candidate in
+            if areSamePerson(candidate.memberId, friend.id) { return true }
+            if let accountFriendMemberId = friend.accountFriendMemberId {
+                return areSamePerson(candidate.memberId, accountFriendMemberId)
+            }
+            return false
+        }
+    }
+
+    var confirmedFriendMembers: [GroupMember] {
+        let overrides = friendNameOverrides()
+        var seenCanonicalIds = Set<UUID>()
+        var result: [GroupMember] = []
+
+        for friend in friends {
+            guard !isCurrentUserFriend(friend) else { continue }
+            let canonicalId = memberAliasMap[friend.memberId] ?? friend.memberId
+            guard seenCanonicalIds.insert(canonicalId).inserted else { continue }
+
+            var member = GroupMember(
+                id: friend.memberId,
+                name: sanitizedFriendName(friend, overrides: overrides),
+                accountFriendMemberId: friend.memberId
+            )
+            member.profileColorHex = friend.profileColorHex
+            member.profileImageUrl = friend.profileImageUrl
+            result.append(member)
+        }
+
+        return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     var friendMembers: [GroupMember] {
@@ -3565,26 +3626,17 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Checks if a friend has a linked account
     func friendHasLinkedAccount(_ friend: GroupMember) -> Bool {
-        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
-            return false
-        }
-        return accountFriend.hasLinkedAccount
+        accountFriend(for: friend)?.hasLinkedAccount ?? false
     }
 
     /// Gets the linked account email for a friend
     func linkedAccountEmail(for friend: GroupMember) -> String? {
-        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
-            return nil
-        }
-        return accountFriend.linkedAccountEmail
+        accountFriend(for: friend)?.linkedAccountEmail
     }
 
     /// Gets the linked account ID for a friend
     func linkedAccountId(for friend: GroupMember) -> String? {
-        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
-            return nil
-        }
-        return accountFriend.linkedAccountId
+        accountFriend(for: friend)?.linkedAccountId
     }
 
     // MARK: - Duplicate Prevention
