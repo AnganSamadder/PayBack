@@ -652,14 +652,11 @@ export const deleteUnlinkedFriend = mutation({
       .unique();
 
     if (!friend) {
-      return { success: false, message: "Friend not found" };
+      throw new Error("Friend not found");
     }
 
     if (friend.has_linked_account) {
-      return {
-        success: false,
-        message: "Friend is linked. Use deleteLinkedFriend instead."
-      };
+      throw new Error("Friend is linked. Use deleteLinkedFriend instead.");
     }
 
     const equivalentIds = await getAllEquivalentMemberIds(ctx.db, friendMemberId);
