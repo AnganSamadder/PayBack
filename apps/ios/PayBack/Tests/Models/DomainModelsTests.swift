@@ -175,6 +175,16 @@ final class DomainModelsTests: XCTestCase {
         XCTAssertEqual(expense.totalAmount, 100.0)
         XCTAssertEqual(expense.isSettled, false, "isSettled should default to false")
         XCTAssertNil(expense.participantNames, "participantNames should default to nil")
+        XCTAssertEqual(expense.contextKind, .group)
+    }
+
+    func test_expenseContextKind_codable_roundTrip_preservesGroupedIndividual() throws {
+        let original = ExpenseContextKind.groupedIndividual
+
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ExpenseContextKind.self, from: encoded)
+
+        XCTAssertEqual(decoded, .groupedIndividual)
     }
 
     func test_expense_allSplitsSettled_allSettled_returnsTrue() {
@@ -228,6 +238,23 @@ final class DomainModelsTests: XCTestCase {
         )
 
         XCTAssertTrue(expense.allSplitsSettled, "allSplitsSettled should return true when there are no splits")
+    }
+
+    func test_expense_codable_roundTrip_preservesContextKind() throws {
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Context Test",
+            totalAmount: 42,
+            paidByMemberId: UUID(),
+            involvedMemberIds: [UUID(), UUID()],
+            splits: [],
+            contextKind: .groupedIndividual
+        )
+
+        let encoded = try JSONEncoder().encode(expense)
+        let decoded = try JSONDecoder().decode(Expense.self, from: encoded)
+
+        XCTAssertEqual(decoded.contextKind, .groupedIndividual)
     }
 
     func test_expense_unsettledSplits_filtersCorrectly() {

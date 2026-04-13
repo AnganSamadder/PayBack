@@ -8,6 +8,7 @@ import Foundation
 struct ConvexExpenseDTO: Decodable, Sendable {
     let id: String
     let group_id: String
+    let context_kind: String?
     let description: String
     let date: Double
     let total_amount: Double
@@ -24,6 +25,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
     init(
         id: String,
         group_id: String,
+        context_kind: String? = nil,
         description: String,
         date: Double,
         total_amount: Double,
@@ -39,6 +41,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
     ) {
         self.id = id
         self.group_id = group_id
+        self.context_kind = context_kind
         self.description = description
         self.date = date
         self.total_amount = total_amount
@@ -69,6 +72,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
         }
 
         let participantNames = buildParticipantNamesMap()
+        let contextKind = ExpenseContextKind(rawValue: context_kind ?? "") ?? .group
 
         return Expense(
             id: UUID(uuidString: id) ?? UUID(),
@@ -80,6 +84,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
             involvedMemberIds: involved_member_ids.compactMap { UUID(uuidString: $0) },
             splits: splits.map { $0.toExpenseSplit() },
             isSettled: is_settled,
+            contextKind: contextKind,
             participantNames: participantNames,
             subexpenses: subexpenses?.map { $0.toSubexpense() }
         )

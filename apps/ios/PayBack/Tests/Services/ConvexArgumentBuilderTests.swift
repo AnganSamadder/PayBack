@@ -116,7 +116,8 @@ final class ConvexArgumentBuilderTests: XCTestCase {
             paidByMemberId: paidById,
             involvedMemberIds: [paidById, memberId],
             splits: [ExpenseSplit(memberId: paidById, amount: 50), ExpenseSplit(memberId: memberId, amount: 50)],
-            isSettled: false
+            isSettled: false,
+            contextKind: .groupedIndividual
         )
 
         let participants = [ExpenseParticipant(memberId: memberId, name: "Alice", linkedAccountId: nil, linkedAccountEmail: nil)]
@@ -128,6 +129,7 @@ final class ConvexArgumentBuilderTests: XCTestCase {
         XCTAssertEqual(result["description"] as? String, "Dinner")
         XCTAssertEqual(result["total_amount"] as? Double, 100.0)
         XCTAssertEqual(result["is_settled"] as? Bool, false)
+        XCTAssertEqual(result["context_kind"] as? String, "grouped_individual")
         XCTAssertNotNil(result["splits"] ?? nil)
         XCTAssertNotNil(result["participants"] ?? nil)
     }

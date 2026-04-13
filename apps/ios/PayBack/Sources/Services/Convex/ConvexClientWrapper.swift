@@ -150,6 +150,7 @@ enum ExpenseArgumentBuilder {
         var args: [String: Any?] = [
             "id": expense.id.uuidString,
             "group_id": expense.groupId.uuidString,
+            "context_kind": expense.contextKind.rawValue,
             "description": expense.description,
             "date": expense.date.timeIntervalSince1970 * 1000,
             "total_amount": expense.totalAmount,

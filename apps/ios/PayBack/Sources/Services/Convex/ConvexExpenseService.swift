@@ -12,7 +12,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
 
     func fetchExpenses() async throws -> [Expense] {
         // Subscribe to the expenses:list query and get the first value
-        for try await expenses in client.subscribe(to: "expenses:list", yielding: [ExpenseDTO].self).values {
+        for try await expenses in client.subscribe(to: "expenses:list", yielding: [ConvexExpenseDTO].self).values {
             return expenses.map { $0.toExpense() }
         }
         return []
@@ -32,89 +32,6 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
             return (items: result.items.map { $0.toExpense() }, nextCursor: result.nextCursor)
         }
         return (items: [], nextCursor: nil)
-    }
-
-    private struct ExpenseDTO: Decodable {
-        let id: String
-        let group_id: String
-        let description: String
-        let date: Double
-        let total_amount: Double
-        let paid_by_member_id: String
-        let involved_member_ids: [String]
-        let splits: [SplitDTO]
-        let is_settled: Bool
-        let owner_email: String?
-        let owner_account_id: String?
-        let participant_member_ids: [String]
-        let participants: [ParticipantDTO]
-        let subexpenses: [SubexpenseDTO]?
-
-        struct SplitDTO: Decodable {
-            let id: String
-            let member_id: String
-            let amount: Double
-            let is_settled: Bool
-        }
-
-        struct ParticipantDTO: Decodable {
-            let member_id: String
-            let name: String
-            let linked_account_id: String?
-            let linked_account_email: String?
-        }
-
-        struct SubexpenseDTO: Decodable {
-            let id: String
-            let amount: Double
-
-            func toSubexpense() -> Subexpense {
-                Subexpense(
-                    id: UUID(uuidString: id) ?? UUID(),
-                    amount: amount
-                )
-            }
-        }
-
-        func toExpense() -> Expense {
-            func buildParticipantNamesMap() -> [UUID: String]? {
-                guard !participants.isEmpty else { return nil }
-                var map: [UUID: String] = [:]
-                for p in participants {
-                    guard let memberId = UUID(uuidString: p.member_id) else { continue }
-                    let trimmedName = p.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmedName.isEmpty {
-                        map[memberId] = trimmedName
-                    }
-                }
-                return map.isEmpty ? nil : map
-            }
-
-            let participantNames = buildParticipantNamesMap()
-
-            return Expense(
-                id: UUID(uuidString: id) ?? UUID(),
-                groupId: UUID(uuidString: group_id) ?? UUID(),
-                description: description,
-                date: Date(timeIntervalSince1970: date / 1000),
-                totalAmount: total_amount,
-                paidByMemberId: UUID(uuidString: paid_by_member_id) ?? UUID(),
-                involvedMemberIds: involved_member_ids.compactMap { UUID(uuidString: $0) },
-                splits: splits.map {
-                    ExpenseSplit(
-                        id: UUID(uuidString: $0.id) ?? UUID(),
-                        memberId: UUID(uuidString: $0.member_id) ?? UUID(),
-                        amount: $0.amount,
-                        isSettled: $0.is_settled
-                    )
-                },
-                isSettled: is_settled,
-                participantNames: participantNames,
-                subexpenses: subexpenses?.map { $0.toSubexpense() },
-                ownerEmail: owner_email,
-                ownerAccountId: owner_account_id
-            )
-        }
     }
 
     private struct SplitArg: Codable, ConvexEncodable {
@@ -167,6 +84,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         var args: [String: ConvexEncodable?] = [
             "id": expense.id.uuidString,
             "group_id": expense.groupId.uuidString,
+            "context_kind": expense.contextKind.rawValue,
             "description": expense.description,
             "date": expense.date.timeIntervalSince1970 * 1000, // Ms
             "total_amount": expense.totalAmount,
@@ -217,6 +135,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         var args: [String: ConvexEncodable?] = [
             "id": expense.id.uuidString,
             "group_id": expense.groupId.uuidString,
+            "context_kind": expense.contextKind.rawValue,
             "description": expense.description,
             "date": expense.date.timeIntervalSince1970 * 1000,
             "total_amount": expense.totalAmount,
