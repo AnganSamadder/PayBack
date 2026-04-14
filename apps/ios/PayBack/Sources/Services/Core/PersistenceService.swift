@@ -8,6 +8,7 @@ protocol PersistenceServiceProtocol {
 
 final class PersistenceService: PersistenceServiceProtocol {
     static let shared = PersistenceService()
+    private let lock = NSLock()
 
     private let fileURL: URL = {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -17,13 +18,16 @@ final class PersistenceService: PersistenceServiceProtocol {
     private init() {}
 
     func load() -> AppData {
+        lock.lock()
+        defer { lock.unlock() }
+
         let start = Date()
         do {
             let data = try Data(contentsOf: fileURL)
             let decoded = try JSONDecoder().decode(AppData.self, from: data)
             let elapsed = Date().timeIntervalSince(start) * 1000
             if elapsed > 10.0 { // Log if slower than 10ms
-                 AppConfig.log("Persistence load took \(String(format: "%.1f", elapsed))ms")
+                AppConfig.log("Persistence load took \(String(format: "%.1f", elapsed))ms")
             }
             return decoded
         } catch {
@@ -32,6 +36,9 @@ final class PersistenceService: PersistenceServiceProtocol {
     }
 
     func save(_ data: AppData) {
+        lock.lock()
+        defer { lock.unlock() }
+
         do {
             let encoded = try JSONEncoder().encode(data)
             try encoded.write(to: fileURL, options: .atomic)
@@ -41,6 +48,9 @@ final class PersistenceService: PersistenceServiceProtocol {
     }
 
     func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+
         do {
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 try FileManager.default.removeItem(at: fileURL)

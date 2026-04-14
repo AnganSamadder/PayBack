@@ -452,11 +452,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testCompleteAuthentication_WithOrphanExpensesRequiringSynthesis() async throws {
         // Given: Expenses without a group (orphans)
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        _ = UserSession(account: account)
-
-        // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let bob = GroupMember(name: "Bob")
         let charlie = GroupMember(name: "Charlie")
@@ -484,9 +480,8 @@ final class AppStoreRemoteDataTests: XCTestCase {
 
         await mockExpenseCloudService.addExpense(expense1)
 
-        // When: Trigger reload (triggers group synthesis)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+        // When: Reload remote data explicitly (triggers group synthesis)
+        await sut.loadRemoteData()
 
         // Then: Group should be synthesized
         XCTAssertGreaterThan(sut.expenses.count, 0, "Should have loaded expenses")
@@ -511,6 +506,40 @@ final class AppStoreRemoteDataTests: XCTestCase {
         // Then: Should handle gracefully
         XCTAssertEqual(sut.groups.count, 0)
         XCTAssertEqual(sut.expenses.count, 0)
+    }
+
+    func testLoadRemoteData_PreservesOwnerMetadataForDeletePermissions() async throws {
+        let account = UserAccount(id: "test-123", email: "owner@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let remoteGroup = SpendingGroup(
+            name: "Trip",
+            members: [GroupMember(id: sut.currentUser.id, name: sut.currentUser.name), GroupMember(name: "Alice")],
+            isDirect: true
+        )
+        await mockGroupCloudService.addGroup(remoteGroup)
+
+        let remoteExpense = Expense(
+            groupId: remoteGroup.id,
+            description: "Owned remote expense",
+            totalAmount: 40,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: remoteGroup.members.map(\.id),
+            splits: remoteGroup.members.map { member in
+                ExpenseSplit(memberId: member.id, amount: 20, isSettled: false)
+            },
+            ownerEmail: account.email,
+            ownerAccountId: account.id
+        )
+        await mockExpenseCloudService.addExpense(remoteExpense)
+
+        await sut.loadRemoteData()
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        let loadedExpense = try XCTUnwrap(sut.expenses.first(where: { $0.id == remoteExpense.id }))
+        XCTAssertEqual(loadedExpense.ownerEmail, account.email)
+        XCTAssertEqual(loadedExpense.ownerAccountId, account.id)
+        XCTAssertTrue(sut.canDeleteExpense(loadedExpense))
     }
 
     func testCompleteAuthentication_WithLargeDataSet() async throws {

@@ -38,6 +38,8 @@ final class ConvexDTOsTests: XCTestCase {
         XCTAssertEqual(expense.involvedMemberIds.count, 2)
         XCTAssertEqual(expense.splits.count, 2)
         XCTAssertEqual(expense.contextKind, .groupedIndividual)
+        XCTAssertEqual(expense.ownerEmail, "owner@test.com")
+        XCTAssertEqual(expense.ownerAccountId, "owner-account-id")
     }
 
     func testConvexExpenseDTO_toExpense_InvalidUUID_GeneratesNewUUID() {

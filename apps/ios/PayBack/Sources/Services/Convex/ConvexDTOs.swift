@@ -86,7 +86,9 @@ struct ConvexExpenseDTO: Decodable, Sendable {
             isSettled: is_settled,
             contextKind: contextKind,
             participantNames: participantNames,
-            subexpenses: subexpenses?.map { $0.toSubexpense() }
+            subexpenses: subexpenses?.map { $0.toSubexpense() },
+            ownerEmail: owner_email,
+            ownerAccountId: owner_account_id
         )
     }
 }
