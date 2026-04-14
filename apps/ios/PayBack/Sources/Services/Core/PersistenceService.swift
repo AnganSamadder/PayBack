@@ -9,13 +9,16 @@ protocol PersistenceServiceProtocol {
 final class PersistenceService: PersistenceServiceProtocol {
     static let shared = PersistenceService()
     private let lock = NSLock()
+    private let fileURL: URL
 
-    private let fileURL: URL = {
+    init(fileURL: URL = PersistenceService.defaultFileURL) {
+        self.fileURL = fileURL
+    }
+
+    private static let defaultFileURL: URL = {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         return dir.appendingPathComponent("payback.json")
     }()
-
-    private init() {}
 
     func load() -> AppData {
         lock.lock()
