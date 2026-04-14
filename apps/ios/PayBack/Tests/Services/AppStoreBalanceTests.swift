@@ -283,6 +283,73 @@ final class AppStoreBalanceTests: XCTestCase {
         XCTAssertEqual(sut.overallNetBalance(), 45, accuracy: 0.01)
     }
 
+    func testNetBalanceForFriend_IncludesSharedGroupAndIndividualExpenses() {
+        sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
+        let sharedGroup = sut.groups.last!
+        let alice = sharedGroup.members.first(where: { $0.name == "Alice" })!
+        let bob = sharedGroup.members.first(where: { $0.name == "Bob" })!
+
+        let directGroup = sut.directGroup(with: alice)
+
+        sut.addExpense(
+            Expense(
+                groupId: directGroup.id,
+                description: "Coffee",
+                totalAmount: 10,
+                paidByMemberId: sut.currentUser.id,
+                involvedMemberIds: [sut.currentUser.id, alice.id],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 5, isSettled: false),
+                    ExpenseSplit(memberId: alice.id, amount: 5, isSettled: false)
+                ],
+                contextKind: .direct
+            )
+        )
+
+        sut.addExpense(
+            Expense(
+                groupId: UUID(),
+                description: "Ad hoc dinner",
+                totalAmount: 60,
+                paidByMemberId: alice.id,
+                involvedMemberIds: [sut.currentUser.id, alice.id, UUID()],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 20, isSettled: false),
+                    ExpenseSplit(memberId: alice.id, amount: 20, isSettled: false),
+                    ExpenseSplit(memberId: UUID(), amount: 20, isSettled: false)
+                ],
+                contextKind: .groupedIndividual,
+                participantNames: [
+                    sut.currentUser.id: sut.currentUser.name,
+                    alice.id: "Alice"
+                ]
+            )
+        )
+
+        sut.addExpense(
+            Expense(
+                groupId: sharedGroup.id,
+                description: "Trip dinner",
+                totalAmount: 90,
+                paidByMemberId: alice.id,
+                involvedMemberIds: [sut.currentUser.id, alice.id, bob.id],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 30, isSettled: false),
+                    ExpenseSplit(memberId: alice.id, amount: 30, isSettled: false),
+                    ExpenseSplit(memberId: bob.id, amount: 30, isSettled: false)
+                ],
+                contextKind: .group
+            )
+        )
+
+        XCTAssertEqual(
+            sut.netBalance(forFriend: alice),
+            -45,
+            accuracy: 0.01,
+            "Friend balance should include shared-group, direct, and grouped-individual expenses."
+        )
+    }
+
     func testNetBalance_WithEquivalentMemberIds_ReturnsCorrectBalance() {
         let primaryId = sut.currentUser.id
         let equivalentId = UUID()

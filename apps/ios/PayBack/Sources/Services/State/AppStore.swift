@@ -1642,6 +1642,30 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return paidByUser - owes
     }
 
+    func netBalance(forFriend friend: GroupMember) -> Double {
+        var balance: Double = 0
+
+        for expense in expenses where expenseInvolves(friend: friend, in: expense) {
+            if isMe(expense.paidByMemberId) {
+                if let friendSplit = expense.splits.first(where: {
+                    isFriendMember($0.memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
+                }), !friendSplit.isSettled {
+                    balance += friendSplit.amount
+                }
+            } else if isFriendMember(
+                expense.paidByMemberId,
+                friendId: friend.id,
+                accountFriendMemberId: friend.accountFriendMemberId
+            ) {
+                if let userSplit = expense.splits.first(where: { isMe($0.memberId) }), !userSplit.isSettled {
+                    balance -= userSplit.amount
+                }
+            }
+        }
+
+        return balance
+    }
+
     // MARK: - Friend Sync
 
     private func scheduleFriendSync() {
@@ -1920,6 +1944,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
             let resolvedKind: ExpenseContextKind
             if expense.contextKind == .groupedIndividual {
                 resolvedKind = .groupedIndividual
+            } else if expense.contextKind == .direct {
+                resolvedKind = .direct
             } else if groupMap[expense.groupId]?.isDirect == true {
                 resolvedKind = .direct
             } else {
@@ -2612,13 +2638,17 @@ func completeAuthentication(id: String, email: String, name: String?) {
     func expenses(forFriend friend: GroupMember) -> [Expense] {
         expenses
             .filter { expense in
-                guard expense.involvedMemberIds.contains(where: { isMe($0) }) else { return false }
-                guard expense.involvedMemberIds.contains(where: {
-                    isFriendMember($0, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
-                }) else { return false }
+                guard expenseInvolves(friend: friend, in: expense) else { return false }
                 return isDirectExpense(expense) || isGroupedIndividualExpense(expense)
             }
             .sorted(by: { $0.date > $1.date })
+    }
+
+    private func expenseInvolves(friend: GroupMember, in expense: Expense) -> Bool {
+        guard expense.involvedMemberIds.contains(where: { isMe($0) }) else { return false }
+        return expense.involvedMemberIds.contains(where: {
+            isFriendMember($0, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
+        })
     }
 
     func expensesInvolvingCurrentUser() -> [Expense] {

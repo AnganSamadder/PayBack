@@ -46,20 +46,7 @@ struct FriendDetailView: View {
     }
 
     private var netBalance: Double {
-        var balance: Double = 0
-
-        for expense in store.expenses(forFriend: friend) {
-            if isMe(expense.paidByMemberId) {
-                if let friendSplit = expense.splits.first(where: { isFriend($0.memberId) }), !friendSplit.isSettled {
-                    balance += friendSplit.amount
-                }
-            } else if isFriend(expense.paidByMemberId) {
-                if let userSplit = expense.splits.first(where: { isMe($0.memberId) }), !userSplit.isSettled {
-                    balance -= userSplit.amount
-                }
-            }
-        }
-        return balance
+        store.netBalance(forFriend: friend)
     }
 
     private var isSettled: Bool {
