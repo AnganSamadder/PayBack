@@ -94,7 +94,7 @@ function buildGroupedIndividualArgs(overrides: Partial<Record<string, unknown>> 
   return {
     id: "grouped_expense_1",
     context_kind: "grouped_individual",
-    group_id: "virtual_grouped_context_1",
+    group_id: "11111111-1111-4111-8111-111111111111",
     description: "Team dinner",
     date: 1_700_000_000_000,
     total_amount: 90,
@@ -142,7 +142,7 @@ test("expenses:create stores grouped_individual expense without group_ref and fa
 
   expect(expense).toBeDefined();
   expect(expense?.context_kind).toBe("grouped_individual");
-  expect(expense?.group_id).toBe("virtual_grouped_context_1");
+  expect(expense?.group_id).toBe("11111111-1111-4111-8111-111111111111");
   expect(expense?.group_ref).toBeUndefined();
   expect(expense?.participant_emails).toEqual(
     expect.arrayContaining(["owner@example.com", "alice@example.com", "bob@example.com"])
@@ -217,6 +217,20 @@ test("expenses:create rejects grouped_individual expense when participant sets d
       })
     )
   ).rejects.toThrow("same member set");
+});
+
+test("expenses:create rejects grouped_individual expense when group_id is not a UUID", async () => {
+  const t = await seedGroupedIndividualFixture();
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildGroupedIndividualArgs({
+        group_id: "virtual_grouped_context_1"
+      })
+    )
+  ).rejects.toThrow("group_id must be a UUID");
 });
 
 test("expenses:create allows grouped_individual participant to settle only their own split", async () => {

@@ -169,6 +169,8 @@ function canonicalizeSubexpenses(subexpenses: any[] | undefined): string {
 
 type ExpenseContextKind = "group" | "direct" | "grouped_individual";
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function canonicalizeUniqueMembers(values: string[]): string[] {
   return [...new Set(canonicalizeMembers(values))];
 }
@@ -446,6 +448,10 @@ export const create = mutation({
 
     if (requestedOrExistingContextKind === "grouped_individual") {
       contextKind = "grouped_individual";
+
+      if (!UUID_PATTERN.test(args.group_id)) {
+        throw new Error("Grouped individual expense group_id must be a UUID.");
+      }
 
       requireMatchingMemberSets({
         involvedMemberIds: normalizedInvolved,

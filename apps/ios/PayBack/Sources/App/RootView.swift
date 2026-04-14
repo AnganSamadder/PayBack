@@ -488,7 +488,7 @@ private struct TargetPicker: View {
     }
 
     private var directExpenseTargets: [GroupMember] {
-        store.friendMembers
+        store.confirmedFriendMembers
     }
 
     private func confirmSelectedFriends() {

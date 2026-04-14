@@ -279,7 +279,7 @@ describe("clearAllForUser", () => {
     await t.run(async (ctx) => {
       await ctx.db.insert("expenses", {
         id: "grouped_expense_owned_by_viewer",
-        group_id: "virtual_grouped_context_viewer",
+        group_id: "22222222-2222-4222-8222-222222222222",
         context_kind: "grouped_individual",
         description: "Viewer grouped expense",
         date: now,
@@ -314,7 +314,7 @@ describe("clearAllForUser", () => {
 
       await ctx.db.insert("expenses", {
         id: "grouped_expense_shared_owned_by_owner",
-        group_id: "virtual_grouped_context_owner",
+        group_id: "33333333-3333-4333-8333-333333333333",
         context_kind: "grouped_individual",
         description: "Owner grouped expense",
         date: now,

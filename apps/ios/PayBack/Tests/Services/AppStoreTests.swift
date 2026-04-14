@@ -1016,6 +1016,26 @@ final class AppStoreTests: XCTestCase {
         XCTAssertFalse(friends.contains { $0.id == sut.currentUser.id })
     }
 
+    func testConfirmedFriendMembers_ExcludeGroupDerivedMembers() async throws {
+        let aliceId = UUID()
+        let bobId = UUID()
+        sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false))
+        sut.groups = [
+            SpendingGroup(
+                name: "Trip",
+                members: [
+                    GroupMember(id: sut.currentUser.id, name: sut.currentUser.name, isCurrentUser: true),
+                    GroupMember(id: aliceId, name: "Alice"),
+                    GroupMember(id: bobId, name: "Bob")
+                ]
+            )
+        ]
+
+        let confirmedFriends = sut.confirmedFriendMembers
+
+        XCTAssertEqual(confirmedFriends.map(\.id), [aliceId])
+    }
+
     // MARK: - Generate Expense Preview Tests
 
     func testGenerateExpensePreview_NoExpenses_ReturnsEmpty() async throws {
@@ -1139,6 +1159,31 @@ final class AppStoreTests: XCTestCase {
         // When/Then
         await XCTAssertThrowsError(try await sut.addExpenseAndSync(expense))
         XCTAssertTrue(sut.expenses.isEmpty)
+    }
+
+    func testAddExpenseAndSync_NormalizesLegacyDirectExpenseContextBeforeCloudUpsert() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let alice = GroupMember(name: "Alice")
+        let directGroup = sut.directGroup(with: alice)
+        let legacyDirectExpense = Expense(
+            groupId: directGroup.id,
+            description: "Coffee",
+            totalAmount: 12,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, alice.id],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 6),
+                ExpenseSplit(memberId: alice.id, amount: 6)
+            ]
+        )
+
+        try await sut.addExpenseAndSync(legacyDirectExpense)
+
+        let cloudExpenses = try await mockExpenseCloudService.fetchExpenses()
+        let cloudExpense = try XCTUnwrap(cloudExpenses.first)
+        XCTAssertEqual(cloudExpense.contextKind, .direct)
     }
 
     // MARK: - Link Request Error Path Tests

@@ -1216,12 +1216,13 @@ func completeAuthentication(id: String, email: String, name: String?) {
         var failedExpenses: [(Expense, Error)] = []
 
         for expense in expenses {
-            let participants = makeParticipants(for: expense)
+            let expenseToSync = expenseForCloudSync(expense)
+            let participants = makeParticipants(for: expenseToSync)
             do {
-                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                try await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
                 successCount += 1
             } catch {
-                failedExpenses.append((expense, error))
+                failedExpenses.append((expenseToSync, error))
             }
         }
 
@@ -1254,14 +1255,15 @@ func completeAuthentication(id: String, email: String, name: String?) {
         var stillFailed: [(Expense, Error)] = []
 
         for (expense, _) in failedExpenses {
-            let participants = makeParticipants(for: expense)
+            let expenseToSync = expenseForCloudSync(expense)
+            let participants = makeParticipants(for: expenseToSync)
             do {
-                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                try await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
                 #if DEBUG
-                print("✅ Retried expense \(expense.id) successfully on attempt \(attempt)")
+                print("✅ Retried expense \(expenseToSync.id) successfully on attempt \(attempt)")
                 #endif
             } catch {
-                stillFailed.append((expense, error))
+                stillFailed.append((expenseToSync, error))
             }
         }
 
@@ -1308,17 +1310,18 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// Sends expense upsert to Convex and marks it pending for realtime reconciliation.
     private func queueExpenseUpsert(_ expense: Expense, participants: [ExpenseParticipant]) {
         guard session != nil, !isImporting else { return }
+        let expenseToSync = expenseForCloudSync(expense)
         pendingExpenseDeleteIds.remove(expense.id)
         pendingExpenseUpsertIds.insert(expense.id)
 
-        Task { [retryPolicy, expenseCloudService, expense, participants] in
+        Task { [retryPolicy, expenseCloudService, expenseToSync, participants] in
             do {
                 try await retryPolicy.execute {
-                    try await expenseCloudService.upsertExpense(expense, participants: participants)
+                    try await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
                 }
             } catch {
                 #if DEBUG
-                print("⚠️ Failed to sync expense upsert \(expense.id): \(error.localizedDescription)")
+                print("⚠️ Failed to sync expense upsert \(expenseToSync.id): \(error.localizedDescription)")
                 #endif
             }
         }
@@ -1365,6 +1368,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         #endif
 
+        expenseToStore = expenseForCloudSync(expenseToStore)
         let participants = makeParticipants(for: expenseToStore)
         pendingExpenseDeleteIds.remove(expenseToStore.id)
         pendingExpenseUpsertIds.insert(expenseToStore.id)
@@ -1390,8 +1394,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses.append(expenseToStore)
         persistCurrentState()
         if !isImporting {
-            let participants = makeParticipants(for: expenseToStore)
-            queueExpenseUpsert(expenseToStore, participants: participants)
+            let expenseToSync = expenseForCloudSync(expenseToStore)
+            let participants = makeParticipants(for: expenseToSync)
+            queueExpenseUpsert(expenseToSync, participants: participants)
         }
     }
 
@@ -1404,8 +1409,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         expenses[idx] = expenseToStore
         persistCurrentState()
-        let participants = makeParticipants(for: expenseToStore)
-        queueExpenseUpsert(expenseToStore, participants: participants)
+        let expenseToSync = expenseForCloudSync(expenseToStore)
+        let participants = makeParticipants(for: expenseToSync)
+        queueExpenseUpsert(expenseToSync, participants: participants)
     }
 
     func deleteExpenses(groupId: UUID, at offsets: IndexSet) {
@@ -1567,6 +1573,20 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     func hasBackingGroup(for expense: Expense) -> Bool {
         group(by: expense.groupId) != nil
+    }
+
+    private func expenseForCloudSync(_ expense: Expense) -> Expense {
+        var normalizedExpense = expense
+        normalizedExpense.contextKind = resolvedContextKind(for: expense)
+
+        if normalizedExpense.ownerEmail == nil {
+            normalizedExpense.ownerEmail = session?.account.email
+        }
+        if normalizedExpense.ownerAccountId == nil {
+            normalizedExpense.ownerAccountId = session?.account.id
+        }
+
+        return normalizedExpense
     }
 
     func participantDisplayName(memberId: UUID, in expense: Expense) -> String {
@@ -1748,8 +1768,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
             Task { [weak self] in
                 guard let self else { return }
                 for expense in normalization.dirtyExpenses {
-                    let participants = await MainActor.run { self.makeParticipants(for: expense) }
-                    try? await self.expenseCloudService.upsertExpense(expense, participants: participants)
+                    let expenseToSync = await MainActor.run { self.expenseForCloudSync(expense) }
+                    let participants = await MainActor.run { self.makeParticipants(for: expenseToSync) }
+                    try? await self.expenseCloudService.upsertExpense(expenseToSync, participants: participants)
                 }
             }
 
@@ -2184,6 +2205,27 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
 
         return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var confirmedFriendMembers: [GroupMember] {
+        let preferNicknames = session?.account.preferNicknames ?? false
+        let preferWholeNames = session?.account.preferWholeNames ?? false
+
+        return friends
+            .filter { !areSamePerson($0.memberId, currentUser.id) }
+            .map { friend in
+                GroupMember(
+                    id: friend.memberId,
+                    name: friend.displayName(
+                        preferNicknames: preferNicknames,
+                        preferWholeNames: preferWholeNames
+                    ),
+                    profileImageUrl: friend.profileImageUrl,
+                    profileColorHex: friend.profileColorHex,
+                    accountFriendMemberId: friend.memberId
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func purgeCurrentUserFriendRecords() {
@@ -3461,8 +3503,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         // Sync affected expenses
         for expense in affectedExpenses {
             do {
-                let participants = await MainActor.run { makeParticipants(for: expense) }
-                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                let expenseToSync = await MainActor.run { expenseForCloudSync(expense) }
+                let participants = await MainActor.run { makeParticipants(for: expenseToSync) }
+                try await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
             } catch {
                 #if DEBUG
                 print("[AppStore] Failed to sync expense \(expense.id): \(error.localizedDescription)")
@@ -3504,8 +3547,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         var expenseErrors: [Error] = []
         for expense in affectedExpenses {
             do {
-                let participants = await MainActor.run { makeParticipants(for: expense) }
-                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                let expenseToSync = await MainActor.run { expenseForCloudSync(expense) }
+                let participants = await MainActor.run { makeParticipants(for: expenseToSync) }
+                try await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
             } catch {
                 expenseErrors.append(error)
                 #if DEBUG
