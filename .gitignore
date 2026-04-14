@@ -118,6 +118,9 @@ Artifacts/
 
 # Local build/deploy caches
 .turbo/
+
+# Local design artifacts
+apps/ios/designs/
 .vercel/
 
 # Editor directories and files
