@@ -27,16 +27,16 @@ Repository structure:
 
 ### Where to look first
 
-| Task | Location | Notes |
-| --- | --- | --- |
-| iOS UI/Views | `apps/ios/PayBack/Sources/Features` | Organized by domain |
-| iOS State | `apps/ios/PayBack/Sources/Services/State` | `AppStore.swift` is the God Object |
-| Backend Schema | `apps/backend/convex/schema.ts` | Source of truth for data model |
-| Backend Logic | `apps/backend/convex/` | Mutations, queries, actions |
-| Backend Tests | `apps/backend/convex/tests/` | Integration focused |
-| iOS Tests | `apps/ios/PayBack/Tests` | Unit + integration |
-| Web App | `apps/web/src/` | Vite + React + TanStack Router |
-| iOS Design System | `apps/ios/PayBack/Sources/DesignSystem` | Shared iOS components |
+| Task              | Location                                  | Notes                              |
+| ----------------- | ----------------------------------------- | ---------------------------------- |
+| iOS UI/Views      | `apps/ios/PayBack/Sources/Features`       | Organized by domain                |
+| iOS State         | `apps/ios/PayBack/Sources/Services/State` | `AppStore.swift` is the God Object |
+| Backend Schema    | `apps/backend/convex/schema.ts`           | Source of truth for data model     |
+| Backend Logic     | `apps/backend/convex/`                    | Mutations, queries, actions        |
+| Backend Tests     | `apps/backend/convex/tests/`              | Integration focused                |
+| iOS Tests         | `apps/ios/PayBack/Tests`                  | Unit + integration                 |
+| Web App           | `apps/web/src/`                           | Vite + React + TanStack Router     |
+| iOS Design System | `apps/ios/PayBack/Sources/DesignSystem`   | Shared iOS components              |
 
 ### Operational notes
 
@@ -119,18 +119,18 @@ This applies to build numbers, versions, flags, Info.plist, entitlements, scheme
 
 ### Common mapping
 
-| Change needed | Where in `project.yml` | Example |
-| --- | --- | --- |
-| Build number | `settings.base.CURRENT_PROJECT_VERSION` | `95` |
-| App version | `settings.base.MARKETING_VERSION` | `1.2.0` |
-| Project-wide build setting | `settings.base` | `SWIFT_VERSION: "5.10"` |
-| Config-specific setting | `settings.configs.Debug` | `GCC_OPTIMIZATION_LEVEL: 0` |
-| Target-specific setting | `targets.PayBack.settings.base` | `PRODUCT_BUNDLE_IDENTIFIER` |
-| Info.plist key | `targets.PayBack.info.properties` | `ITSAppUsesNonExemptEncryption: false` |
-| Add SPM dependency | `packages` | `url: https://github.com/...` |
-| New build configuration | `configs` | `Internal: release` |
-| Scheme settings | `schemes.PayBack` | `archive.config: Release` |
-| Entitlements | `targets.PayBack.entitlements.properties` | `com.apple.developer.associated-domains` |
+| Change needed              | Where in `project.yml`                    | Example                                  |
+| -------------------------- | ----------------------------------------- | ---------------------------------------- |
+| Build number               | `settings.base.CURRENT_PROJECT_VERSION`   | `95`                                     |
+| App version                | `settings.base.MARKETING_VERSION`         | `1.2.0`                                  |
+| Project-wide build setting | `settings.base`                           | `SWIFT_VERSION: "5.10"`                  |
+| Config-specific setting    | `settings.configs.Debug`                  | `GCC_OPTIMIZATION_LEVEL: 0`              |
+| Target-specific setting    | `targets.PayBack.settings.base`           | `PRODUCT_BUNDLE_IDENTIFIER`              |
+| Info.plist key             | `targets.PayBack.info.properties`         | `ITSAppUsesNonExemptEncryption: false`   |
+| Add SPM dependency         | `packages`                                | `url: https://github.com/...`            |
+| New build configuration    | `configs`                                 | `Internal: release`                      |
+| Scheme settings            | `schemes.PayBack`                         | `archive.config: Release`                |
+| Entitlements               | `targets.PayBack.entitlements.properties` | `com.apple.developer.associated-domains` |
 
 ## 5) CI Parity, Warnings, Simulator, Coverage
 
