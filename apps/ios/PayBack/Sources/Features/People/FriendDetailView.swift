@@ -1245,7 +1245,7 @@ struct DirectExpenseCard: View {
     }
 
     private var groupedIndividualContextText: String? {
-        guard expense.contextKind == .groupedIndividual else { return nil }
+        guard store.resolvedContextKind(for: expense) == .groupedIndividual else { return nil }
 
         let otherNames = expense.involvedMemberIds.compactMap { memberId -> String? in
             guard !isMe(memberId), !isFriend(memberId) else { return nil }
