@@ -1019,7 +1019,7 @@ final class AppStoreTests: XCTestCase {
     func testConfirmedFriendMembers_ExcludeGroupDerivedMembers() async throws {
         let aliceId = UUID()
         let bobId = UUID()
-        sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false))
+        sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false, status: "friend"))
         sut.groups = [
             SpendingGroup(
                 name: "Trip",

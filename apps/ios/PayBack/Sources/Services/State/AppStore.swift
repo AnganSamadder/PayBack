@@ -1887,6 +1887,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
             print("[AppStore] ✅ Remote data sync complete")
             #endif
         } catch {
+            await MainActor.run {
+                // If the initial fetch fails after a valid session exists, allow later realtime
+                // snapshots to repopulate the store once connectivity/auth recovers.
+                self.hasCompletedInitialRemoteLoad = true
+            }
             #if DEBUG
             print("⚠️ Failed to load remote data: \(error.localizedDescription)")
             #endif

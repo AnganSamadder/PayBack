@@ -428,7 +428,8 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
             nickname: nil,
             hasLinkedAccount: false,
             linkedAccountId: nil,
-            linkedAccountEmail: nil
+            linkedAccountEmail: nil,
+            status: "friend"
         )
         try await mockAccountService.syncFriends(accountEmail: account.email, friends: [realFriend])
         sut.friends = [realFriend]
