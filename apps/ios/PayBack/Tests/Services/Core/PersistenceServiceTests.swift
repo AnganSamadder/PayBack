@@ -7,7 +7,7 @@ final class PersistenceServiceTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        sut = PersistenceService.shared
+        sut = PersistenceService.isolatedForTesting()
         // Clear any existing data before each test
         sut.clear()
     }
@@ -317,8 +317,7 @@ final class PersistenceServiceTests: XCTestCase {
 
     func testLoad_corruptedData_returnsEmptyAppData() {
         // Write invalid JSON to the file
-        let fileURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("payback.json")
+        let fileURL = sut.persistenceBackingURL
 
         let corruptedData = "{ invalid json }".data(using: .utf8)!
         try? corruptedData.write(to: fileURL)
@@ -331,8 +330,7 @@ final class PersistenceServiceTests: XCTestCase {
     }
 
     func testLoad_partiallyCorruptedData_returnsEmptyAppData() {
-        let fileURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("payback.json")
+        let fileURL = sut.persistenceBackingURL
 
         // Write partially valid JSON
         let partialData = """
@@ -349,8 +347,7 @@ final class PersistenceServiceTests: XCTestCase {
     }
 
     func testLoad_emptyFile_returnsEmptyAppData() {
-        let fileURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("payback.json")
+        let fileURL = sut.persistenceBackingURL
 
         // Write empty data
         let emptyData = Data()
@@ -363,8 +360,7 @@ final class PersistenceServiceTests: XCTestCase {
     }
 
     func testLoad_wrongDataStructure_returnsEmptyAppData() {
-        let fileURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("payback.json")
+        let fileURL = sut.persistenceBackingURL
 
         // Write valid JSON but wrong structure
         let wrongData = """
@@ -544,8 +540,7 @@ final class PersistenceServiceTests: XCTestCase {
         let group = SpendingGroup(name: "Test", members: [GroupMember(name: "Alice")])
         sut.save(AppData(groups: [group], expenses: []))
 
-        let fileURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("payback.json")
+        let fileURL = sut.persistenceBackingURL
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
 
@@ -729,7 +724,7 @@ final class PersistenceServiceTests: XCTestCase {
     }
 
     func testProtocolMethods_allCallable() {
-        let service: PersistenceServiceProtocol = PersistenceService.shared
+        let service: PersistenceServiceProtocol = PersistenceService.isolatedForTesting()
 
         service.clear()
         let loaded = service.load()
