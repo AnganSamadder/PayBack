@@ -580,9 +580,14 @@ final class AppStoreRemoteDataTests: XCTestCase {
 
         // When: Trigger reload
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds for large dataset
 
-        // Then: All data should be loaded
+        // Then: Wait until loaded (parallel CI can exceed fixed sleeps)
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if sut.groups.count >= 5, sut.expenses.count >= 10 { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
         XCTAssertGreaterThanOrEqual(sut.groups.count, 5, "Should load multiple groups")
         XCTAssertGreaterThanOrEqual(sut.expenses.count, 10, "Should load multiple expenses")
     }

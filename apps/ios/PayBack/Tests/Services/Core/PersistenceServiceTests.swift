@@ -8,18 +8,13 @@ final class PersistenceServiceTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        testFileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PersistenceServiceTests-\(UUID().uuidString)")
-            .appendingPathComponent("payback.json")
-        sut = PersistenceService(fileURL: testFileURL)
+        sut = PersistenceService.isolatedForTesting()
+        testFileURL = sut.persistenceBackingURL
         sut.clear()
     }
 
     override func tearDown() {
         sut.clear()
-        if let directoryURL = testFileURL?.deletingLastPathComponent() {
-            try? FileManager.default.removeItem(at: directoryURL)
-        }
         sut = nil
         testFileURL = nil
         super.tearDown()
@@ -720,7 +715,7 @@ final class PersistenceServiceTests: XCTestCase {
     }
 
     func testProtocolMethods_allCallable() {
-        let service: PersistenceServiceProtocol = PersistenceService.shared
+        let service: PersistenceServiceProtocol = PersistenceService.isolatedForTesting()
 
         service.clear()
         let loaded = service.load()
@@ -797,8 +792,8 @@ final class PersistenceServiceTests: XCTestCase {
 
     // MARK: - File URL Tests
 
-    func testFileURL_isInDocumentsDirectory() {
-        XCTAssertEqual(testFileURL.lastPathComponent, "payback.json")
-        XCTAssertTrue(testFileURL.path.contains("PersistenceServiceTests-"))
+    func testFileURL_isIsolatedTestFile() {
+        XCTAssertTrue(testFileURL.lastPathComponent.hasPrefix("payback-test-"))
+        XCTAssertTrue(testFileURL.lastPathComponent.hasSuffix(".json"))
     }
 }

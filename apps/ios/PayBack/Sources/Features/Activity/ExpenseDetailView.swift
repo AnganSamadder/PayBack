@@ -8,6 +8,8 @@ struct ExpenseDetailView: View {
 
     @State private var showSettleSheet = false
     @State private var settleMode: SettleMode = .settle
+    @State private var settlementError: PayBackError?
+    @State private var showSettlementError = false
 
     // True when the current user paid for this expense
     private var iAmPayer: Bool { store.isMe(expense.paidByMemberId) }
@@ -89,6 +91,11 @@ struct ExpenseDetailView: View {
         .sheet(isPresented: $showSettleSheet) {
             // selfOnly = true for non-payers unsettling their own share only
             SettleExpenseSheet(expense: expense, mode: settleMode, selfOnly: !iAmPayer)
+        }
+        .alert("Unable to Update Settlement", isPresented: $showSettlementError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(settlementError?.errorDescription ?? "Please try again.")
         }
     }
 
@@ -222,7 +229,12 @@ struct ExpenseDetailView: View {
                 Button(action: {
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     if isDirect {
-                        store.settleExpenseForMembers(expense, memberIds: Set(debtSplits.map { $0.memberId }))
+                        runSettlementAction {
+                            try await store.settleExpenseForMembers(
+                                expense,
+                                memberIds: Set(debtSplits.map(\.memberId))
+                            )
+                        }
                     } else {
                         settleMode = .settle
                         showSettleSheet = true
@@ -257,7 +269,12 @@ struct ExpenseDetailView: View {
                 Button(action: {
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     if isDirect {
-                        store.unsettleExpenseForMembers(expense, memberIds: Set(debtSplits.filter { $0.isSettled }.map { $0.memberId }))
+                        runSettlementAction {
+                            try await store.unsettleExpenseForMembers(
+                                expense,
+                                memberIds: Set(debtSplits.filter(\.isSettled).map(\.memberId))
+                            )
+                        }
                     } else {
                         settleMode = .unsettle
                         showSettleSheet = true
@@ -301,7 +318,9 @@ struct ExpenseDetailView: View {
                     // Unsettle my share — immediate, no sheet
                     Button(action: {
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        store.unsettleExpenseForCurrentUser(expense)
+                        runSettlementAction {
+                            try await store.unsettleExpenseForCurrentUser(expense)
+                        }
                     }) {
                         HStack(spacing: 6) {
                             Image(systemName: "arrow.uturn.backward.circle")
@@ -318,7 +337,9 @@ struct ExpenseDetailView: View {
                 } else {
                     Button(action: {
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        store.settleExpenseForCurrentUser(expense)
+                        runSettlementAction {
+                            try await store.settleExpenseForCurrentUser(expense)
+                        }
                     }) {
                         HStack {
                             Image(systemName: "checkmark.circle.fill")
@@ -345,6 +366,20 @@ struct ExpenseDetailView: View {
 
     private func currency(_ amount: Double) -> String {
         amount.formatted(.currency(code: Locale.current.currency?.identifier ?? "USD"))
+    }
+
+    private func runSettlementAction(_ action: @escaping () async throws -> Void) {
+        Task {
+            do {
+                try await action()
+            } catch let error as PayBackError {
+                settlementError = error
+                showSettlementError = true
+            } catch {
+                settlementError = .underlying(message: error.localizedDescription)
+                showSettlementError = true
+            }
+        }
     }
 }
 
@@ -396,6 +431,8 @@ struct SettleExpenseSheet: View {
 
     @State private var selectedMemberIds: Set<UUID> = []
     @State private var showDeleteConfirm = false
+    @State private var settlementError: PayBackError?
+    @State private var showSettlementError = false
 
     // All non-payer splits shown in the list (filtered to self when selfOnly)
     private var debtSplits: [ExpenseSplit] {
@@ -479,6 +516,11 @@ struct SettleExpenseSheet: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This will permanently remove \"\(expense.description)\" for all participants.")
+            }
+            .alert("Unable to Update Settlement", isPresented: $showSettlementError) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(settlementError?.errorDescription ?? "Please try again.")
             }
         }
     }
@@ -660,12 +702,14 @@ struct SettleExpenseSheet: View {
         switch mode {
         case .settle:
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            store.settleExpenseForMembers(expense, memberIds: selectedMemberIds)
-            dismiss()
+            runSettlementAction {
+                try await store.settleExpenseForMembers(expense, memberIds: selectedMemberIds)
+            }
         case .unsettle:
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            store.unsettleExpenseForMembers(expense, memberIds: selectedMemberIds)
-            dismiss()
+            runSettlementAction {
+                try await store.unsettleExpenseForMembers(expense, memberIds: selectedMemberIds)
+            }
         case .delete:
             showDeleteConfirm = true
         }
@@ -673,6 +717,21 @@ struct SettleExpenseSheet: View {
 
     private func memberName(for id: UUID) -> String {
         store.participantDisplayName(memberId: id, in: expense)
+    }
+
+    private func runSettlementAction(_ action: @escaping () async throws -> Void) {
+        Task {
+            do {
+                try await action()
+                dismiss()
+            } catch let error as PayBackError {
+                settlementError = error
+                showSettlementError = true
+            } catch {
+                settlementError = .underlying(message: error.localizedDescription)
+                showSettlementError = true
+            }
+        }
     }
 }
 

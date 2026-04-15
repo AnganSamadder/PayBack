@@ -116,13 +116,7 @@ struct FriendDetailView: View {
     // MARK: - Nickname Properties
 
     private var accountFriend: AccountFriend? {
-        return store.friends.first { candidate in
-            if store.areSamePerson(candidate.memberId, friend.id) { return true }
-            if let accountFriendMemberId = friend.accountFriendMemberId {
-                return store.areSamePerson(candidate.memberId, accountFriendMemberId)
-            }
-            return false
-        }
+        store.accountFriend(for: friend)
     }
 
     private var isFriend: Bool {
@@ -732,8 +726,18 @@ struct FriendDetailView: View {
         .confirmationDialog("Delete Friend?", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
             Button("Delete \(friend.name)", role: .destructive) {
                 Haptics.notify(.warning)
-                store.deleteFriend(friend)
-                handleBack()
+                Task {
+                    do {
+                        try await store.deleteFriend(friend)
+                        handleBack()
+                    } catch let error as PayBackError {
+                        linkError = error
+                        showErrorAlert = true
+                    } catch {
+                        linkError = .underlying(message: error.localizedDescription)
+                        showErrorAlert = true
+                    }
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -985,15 +989,17 @@ struct FriendDetailView: View {
                 )
         )
         .overlay(alignment: .topTrailing) {
-            Button(action: {
-                Haptics.selection()
-                showDeleteConfirmation = true
-            }) {
-                Image(systemName: "trash.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.white, .red)
-                    .padding(12)
-                    .shadow(radius: 2)
+            if isFriend {
+                Button(action: {
+                    Haptics.selection()
+                    showDeleteConfirmation = true
+                }) {
+                    Image(systemName: "trash.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.white, .red)
+                        .padding(12)
+                        .shadow(radius: 2)
+                }
             }
         }
         .shadow(color: AppTheme.brand.opacity(0.1), radius: AppMetrics.FriendDetail.heroCardShadowRadius, x: 0, y: AppMetrics.FriendDetail.heroCardShadowY)

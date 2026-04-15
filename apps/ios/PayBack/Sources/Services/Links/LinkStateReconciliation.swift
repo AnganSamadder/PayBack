@@ -31,12 +31,6 @@ actor LinkStateReconciliation {
                     localFriend.linkedAccountEmail != remoteFriend.linkedAccountEmail
 
                 if hasInconsistency {
-                    #if DEBUG
-                    print("[Reconciliation] Detected inconsistency for member \(remoteFriend.memberId)")
-                    print("  Local: linked=\(localFriend.hasLinkedAccount), id=\(localFriend.linkedAccountId ?? "nil")")
-                    print("  Remote: linked=\(remoteFriend.hasLinkedAccount), id=\(remoteFriend.linkedAccountId ?? "nil")")
-                    #endif
-
                     // Remote is source of truth - update local with remote data
                     localFriend.hasLinkedAccount = remoteFriend.hasLinkedAccount
                     localFriend.linkedAccountId = remoteFriend.linkedAccountId
@@ -88,14 +82,6 @@ actor LinkStateReconciliation {
         let isValid = friend.hasLinkedAccount &&
                      friend.linkedAccountId == accountId
 
-        #if DEBUG
-        if !isValid {
-            print("[Reconciliation] Validation failed for member \(memberId)")
-            print("  Expected: linked=true, accountId=\(accountId)")
-            print("  Actual: linked=\(friend.hasLinkedAccount), accountId=\(friend.linkedAccountId ?? "nil")")
-        }
-        #endif
-
         return isValid
     }
 }
@@ -146,10 +132,6 @@ actor LinkFailureTracker {
                 retryCount: 1
             )
         }
-
-        #if DEBUG
-        print("[LinkFailure] Recorded failure for member \(memberId): \(reason)")
-        #endif
     }
 
     /// Retrieves pending failed operations
@@ -166,10 +148,6 @@ actor LinkFailureTracker {
     func markResolved(memberId: UUID) {
         failedOperations.removeValue(forKey: memberId)
         recentlyResolved[memberId] = Date()
-
-        #if DEBUG
-        print("[LinkFailure] Marked failure as resolved for member \(memberId)")
-        #endif
     }
 
     /// Clears all failure records

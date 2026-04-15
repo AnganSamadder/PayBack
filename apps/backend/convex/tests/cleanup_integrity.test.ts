@@ -335,6 +335,91 @@ test("cleanup.deleteUnlinkedFriend only deletes aliases for the caller account",
   expect(ownerAccount?.alias_member_ids ?? []).not.toContain("friend_member");
 });
 
+test("cleanup.deleteUnlinkedFriend throws for a group-derived non-friend and leaves data unchanged", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.run(async (ctx) => {
+    const ownerDoc = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "owner_member"
+    });
+
+    const groupDoc = await ctx.db.insert("groups", {
+      id: "shared_group",
+      name: "Shared Group",
+      is_direct: false,
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "group_only_member", name: "Group Only" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerDoc,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+
+    await ctx.db.insert("expenses", {
+      id: "shared_expense",
+      group_id: "shared_group",
+      group_ref: groupDoc,
+      description: "Trip",
+      date: Date.now(),
+      total_amount: 20,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "group_only_member"],
+      splits: [
+        { id: "s1", member_id: "owner_member", amount: 10, is_settled: false },
+        { id: "s2", member_id: "group_only_member", amount: 10, is_settled: false }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerDoc,
+      participant_member_ids: ["owner_member", "group_only_member"],
+      participant_emails: ["owner@test.com"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "group_only_member", name: "Group Only" }
+      ],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await expect(
+    ownerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
+      friendMemberId: "group_only_member"
+    })
+  ).rejects.toThrow("Friend not found");
+
+  const [groupsAfter, expensesAfter, friendsAfter] = await t.run(async (ctx) => {
+    const groups = await ctx.db
+      .query("groups")
+      .withIndex("by_owner_email", (q) => q.eq("owner_email", "owner@test.com"))
+      .collect();
+    const expenses = await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_email", (q) => q.eq("owner_email", "owner@test.com"))
+      .collect();
+    const friends = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email", (q) => q.eq("account_email", "owner@test.com"))
+      .collect();
+    return [groups, expenses, friends] as const;
+  });
+
+  expect(groupsAfter).toHaveLength(1);
+  expect(groupsAfter[0].members.map((member) => member.id)).toContain("group_only_member");
+  expect(expensesAfter).toHaveLength(1);
+  expect(expensesAfter[0].participant_member_ids).toContain("group_only_member");
+  expect(friendsAfter).toHaveLength(0);
+});
+
 test("cleanup.selfDeleteAccount clears owned groups and expenses before account deletion", async () => {
   const t = convexTest(schema, modules);
 

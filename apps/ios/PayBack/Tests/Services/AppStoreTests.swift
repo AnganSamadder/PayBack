@@ -1348,7 +1348,7 @@ final class AppStoreTests: XCTestCase {
         sut.addExpense(expense)
 
         // When - settle Bob's split (the last one)
-        sut.settleExpenseForMember(expense, memberId: bob.id)
+        try await sut.settleExpenseForMember(expense, memberId: bob.id)
 
         // Then - entire expense should be marked as settled
         let updatedExpense = sut.expenses[0]

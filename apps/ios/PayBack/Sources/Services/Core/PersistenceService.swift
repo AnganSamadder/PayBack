@@ -7,18 +7,28 @@ protocol PersistenceServiceProtocol {
 }
 
 final class PersistenceService: PersistenceServiceProtocol {
-    static let shared = PersistenceService()
+    static let shared = PersistenceService(fileURL: PersistenceService.defaultStorageURL())
     private let lock = NSLock()
     private let fileURL: URL
 
-    init(fileURL: URL = PersistenceService.defaultFileURL) {
+    private static func defaultStorageURL() -> URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return dir.appendingPathComponent("payback.json")
+    }
+
+    init(fileURL: URL) {
         self.fileURL = fileURL
     }
 
-    private static let defaultFileURL: URL = {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        return dir.appendingPathComponent("payback.json")
-    }()
+    /// For tests that assert on-disk paths while using isolated storage.
+    internal var persistenceBackingURL: URL { fileURL }
+
+    /// Isolated file URL per instance so parallel `xcodebuild test` workers do not contend on `payback.json`.
+    static func isolatedForTesting() -> PersistenceService {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("payback-test-\(UUID().uuidString).json")
+        return PersistenceService(fileURL: url)
+    }
 
     func load() -> AppData {
         lock.lock()

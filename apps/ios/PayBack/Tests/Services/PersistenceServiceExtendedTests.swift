@@ -8,18 +8,13 @@ final class PersistenceServiceExtendedTests: XCTestCase {
     var testFileURL: URL!
 
     override func setUp() async throws {
-        testFileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PersistenceServiceExtendedTests-\(UUID().uuidString)")
-            .appendingPathComponent("payback.json")
-        service = PersistenceService(fileURL: testFileURL)
+        service = PersistenceService.isolatedForTesting()
+        testFileURL = service.persistenceBackingURL
         service.clear()
     }
 
     override func tearDown() async throws {
         service.clear()
-        if let directoryURL = testFileURL?.deletingLastPathComponent() {
-            try? FileManager.default.removeItem(at: directoryURL)
-        }
         service = nil
         testFileURL = nil
     }
