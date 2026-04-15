@@ -1439,8 +1439,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
             }
         } catch {
             pendingExpenseUpsertIds.remove(expenseToStore.id)
-            expenses.removeAll { $0.id == expenseToStore.id }
-            persistCurrentState()
+            // Keep the expense in local state on transient failures (network, timeout)
+            // so the user doesn't lose data. Queue it for retry via the normal upsert
+            // pipeline instead of deleting it. The next sync cycle will attempt to
+            // reconcile it with the backend.
+            queueExpenseUpsert(expenseToStore, participants: participants)
             throw error
         }
     }
@@ -1763,7 +1766,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
     func netBalance(forFriend friend: GroupMember) -> Double {
         var balance: Double = 0
 
-        for expense in expenses where expenseInvolves(friend: friend, in: expense) {
+        for expense in expenses where expenseInvolves(friend: friend, in: expense)
+            && (isDirectExpense(expense) || isGroupedIndividualExpense(expense)) {
             if isMe(expense.paidByMemberId) {
                 if let friendSplit = expense.splits.first(where: {
                     isFriendMember($0.memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
@@ -2344,6 +2348,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         return friends
             .filter { !areSamePerson($0.memberId, currentUser.id) }
+            .filter { isEligibleFriend($0) }
             .map { friend in
                 GroupMember(
                     id: friend.memberId,
@@ -2642,6 +2647,17 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         // Pre-auth fallback used only in local/no-session contexts.
         return friendName == currentName
+    }
+
+    /// Mirrors the backend `isEligibleDirectFriendRecord` predicate: accepts confirmed,
+    /// accepted, linked, or legacy (nil status) friends; rejects explicitly rejected rows.
+    private func isEligibleFriend(_ friend: AccountFriend) -> Bool {
+        let normalized = friend.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "rejected" { return false }
+        return normalized == "friend"
+            || normalized == "accepted"
+            || friend.hasLinkedAccount
+            || normalized == nil || (normalized?.isEmpty ?? false)
     }
 
     func makeParticipants(for expense: Expense) -> [ExpenseParticipant] {

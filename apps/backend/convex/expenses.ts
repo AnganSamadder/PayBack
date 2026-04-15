@@ -497,7 +497,10 @@ export const create = mutation({
         throw new Error("Expense payer must be one of the involved member IDs.");
       }
 
-      if (!existing || callerOwnsExistingExpense) {
+      // Only validate friend confirmation on new expenses. Existing expenses were
+      // already validated at creation; re-checking would break when friends are later
+      // unfriended, making historical expenses unmaintainable.
+      if (!existing) {
         const ownerFriendIdentityRows = await buildOwnerFriendIdentityRows();
         for (const participant of normalizedParticipants) {
           const memberEquivalentIds = await getEquivalentIdSet(participant.member_id);
@@ -513,17 +516,10 @@ export const create = mutation({
             continue;
           }
 
-          const normalizedParticipantName = normalizePersonName(participant.name);
-          if (normalizedParticipantName) {
-            const byNameMatches = ownerFriendIdentityRows.filter(
-              ({ friend }) =>
-                isEligibleDirectFriendRecord(friend) &&
-                normalizePersonName(friend.name) === normalizedParticipantName
-            );
-            if (byNameMatches.length === 1) {
-              continue;
-            }
-          }
+          // No name-only fallback for grouped_individual — unlike legacy direct expenses,
+          // this is a new feature with no ID-drift history. Name-only matching would allow
+          // a crafted payload to pair a bogus member_id with a victim's linked metadata
+          // and pass validation, causing unintended expense fan-out.
 
           throw new Error(
             `Cannot create grouped individual expense: Member ${participant.name || participant.member_id} is not a confirmed friend.`
