@@ -624,12 +624,6 @@ export const create = mutation({
       }
     }
 
-    // Deduplication check: Check if expense with this ID already exists
-    const existing = await ctx.db
-      .query("expenses")
-      .withIndex("by_client_id", (q) => q.eq("id", args.id))
-      .unique();
-
     if (existing) {
       const existingContextKind = inferExpenseContextKind(existing, existingGroup);
       const existingGroupRef = existing.group_ref ? String(existing.group_ref) : undefined;
