@@ -2342,28 +2342,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    var confirmedFriendMembers: [GroupMember] {
-        let preferNicknames = session?.account.preferNicknames ?? false
-        let preferWholeNames = session?.account.preferWholeNames ?? false
-
-        return friends
-            .filter { !areSamePerson($0.memberId, currentUser.id) }
-            .filter { isEligibleFriend($0) }
-            .map { friend in
-                GroupMember(
-                    id: friend.memberId,
-                    name: friend.displayName(
-                        preferNicknames: preferNicknames,
-                        preferWholeNames: preferWholeNames
-                    ),
-                    profileImageUrl: friend.profileImageUrl,
-                    profileColorHex: friend.profileColorHex,
-                    accountFriendMemberId: friend.memberId
-                )
-            }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
     func purgeCurrentUserFriendRecords() {
         let sanitized = friends.filter { !isCurrentUserFriend($0) }
         if sanitized.count != friends.count {
