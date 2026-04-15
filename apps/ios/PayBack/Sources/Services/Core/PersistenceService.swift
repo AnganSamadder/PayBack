@@ -53,6 +53,7 @@ final class PersistenceService: PersistenceServiceProtocol {
         defer { lock.unlock() }
 
         do {
+            try ensureParentDirectoryExists()
             let encoded = try JSONEncoder().encode(data)
             try encoded.write(to: fileURL, options: .atomic)
         } catch {
@@ -71,5 +72,13 @@ final class PersistenceService: PersistenceServiceProtocol {
         } catch {
             // noop
         }
+    }
+
+    private func ensureParentDirectoryExists() throws {
+        let directoryURL = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
     }
 }
