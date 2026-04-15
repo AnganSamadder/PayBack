@@ -136,6 +136,16 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         let amount: Double
     }
 
+    func setSettlementState(expenseId: UUID, memberIds: Set<UUID>, settled: Bool) async throws -> Expense {
+        let args: [String: ConvexEncodable?] = [
+            "expenseId": expenseId.uuidString,
+            "memberIds": memberIds.map(\.uuidString),
+            "settled": settled
+        ]
+        let expenseDTO: ConvexExpenseDTO = try await client.mutation("expenses:setSettlementState", with: args)
+        return expenseDTO.toExpense()
+    }
+
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
         let splitArgs: [ConvexEncodable?] = expense.splits.map {
             SplitArg(

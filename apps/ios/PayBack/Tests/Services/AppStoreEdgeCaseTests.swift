@@ -197,7 +197,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         sut.addExpense(expense)
 
         // When - settle Alice's split
-        sut.settleExpenseForMember(expense, memberId: alice.id)
+        try await sut.settleExpenseForMember(expense, memberId: alice.id)
 
         // Then
         let updatedExpense = sut.expenses[0]
@@ -640,7 +640,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
     // MARK: - Settle Expense For Member Tests
 
-    func testSettleExpenseForMember_WithNonExistentExpense_DoesNothing() async throws {
+    func testSettleExpenseForMember_WithNonExistentExpense_Throws() async throws {
         // Given
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let group = sut.groups[0]
@@ -655,16 +655,16 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             splits: [ExpenseSplit(memberId: group.members[0].id, amount: 100)]
         )
 
-        // When
-        sut.settleExpenseForMember(nonExistentExpense, memberId: group.members[0].id)
-
-        // Then
+        // When / Then: async version throws for an expense not in store
+        await XCTAssertThrowsErrorAsync(
+            try await sut.settleExpenseForMember(nonExistentExpense, memberId: group.members[0].id)
+        )
         XCTAssertEqual(sut.expenses.count, 0)
     }
 
     // MARK: - Mark Expense As Settled Tests
 
-    func testMarkExpenseAsSettled_WithNonExistentExpense_DoesNothing() async throws {
+    func testMarkExpenseAsSettled_WithNonExistentExpense_Throws() async throws {
         // Given
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let group = sut.groups[0]
@@ -679,10 +679,8 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             splits: [ExpenseSplit(memberId: group.members[0].id, amount: 100)]
         )
 
-        // When
-        sut.markExpenseAsSettled(nonExistentExpense)
-
-        // Then
+        // When / Then: async version throws for an expense not in store
+        await XCTAssertThrowsErrorAsync(try await sut.markExpenseAsSettled(nonExistentExpense))
         XCTAssertEqual(sut.expenses.count, 0)
     }
 

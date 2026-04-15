@@ -17,6 +17,7 @@ struct ExpenseParticipant {
 protocol ExpenseCloudService: Sendable {
     func fetchExpenses() async throws -> [Expense]
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws
+    func setSettlementState(expenseId: UUID, memberIds: Set<UUID>, settled: Bool) async throws -> Expense
     func upsertDebugExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws
     func deleteExpense(_ id: UUID) async throws
     func deleteDebugExpenses() async throws
@@ -26,6 +27,9 @@ protocol ExpenseCloudService: Sendable {
 struct NoopExpenseCloudService: ExpenseCloudService {
     func fetchExpenses() async throws -> [Expense] { [] }
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {}
+    func setSettlementState(expenseId: UUID, memberIds: Set<UUID>, settled: Bool) async throws -> Expense {
+        throw PayBackError.configurationMissing(service: "Convex expense sync")
+    }
     func upsertDebugExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {}
     func deleteExpense(_ id: UUID) async throws {}
     func deleteDebugExpenses() async throws {}

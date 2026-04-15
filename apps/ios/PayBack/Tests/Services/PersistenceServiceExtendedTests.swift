@@ -7,7 +7,7 @@ final class PersistenceServiceExtendedTests: XCTestCase {
     var service: PersistenceService!
 
     override func setUp() async throws {
-        service = PersistenceService.shared
+        service = PersistenceService.isolatedForTesting()
         service.clear()
     }
 

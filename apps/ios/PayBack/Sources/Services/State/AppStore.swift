@@ -38,6 +38,8 @@ final class AppStore: ObservableObject {
     private var remoteLoadTask: Task<Void, Never>?
     /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseUpsertIds: Set<UUID> = []
+    /// Local settlement writes that have been sent to cloud but not yet observed in realtime snapshots.
+    private var pendingExpenseSettlementIds: Set<UUID> = []
     /// Local expense deletes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseDeleteIds: Set<UUID> = []
     private let retryPolicy: RetryPolicy = .linkingDefault
@@ -693,6 +695,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses = []
         friends = []
         pendingExpenseUpsertIds.removeAll()
+        pendingExpenseSettlementIds.removeAll()
         pendingExpenseDeleteIds.removeAll()
 
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
@@ -732,6 +735,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         groups = []
         friends = []
         pendingExpenseUpsertIds.removeAll()
+        pendingExpenseSettlementIds.removeAll()
         pendingExpenseDeleteIds.removeAll()
 
         // Persist locally
@@ -1049,83 +1053,133 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// 2. Removing them from ALL groups they're in
     /// 3. Deleting all expenses involving them in each group
     /// 4. Auto-deleting any groups that become single-member (only current user)
-    func deleteFriend(_ friend: GroupMember) {
-        Task {
-            await deleteUnlinkedFriend(memberId: friend.id)
+    @MainActor
+    func deleteFriend(_ friend: GroupMember) async throws {
+        guard let accountFriend = accountFriend(for: friend) else {
+            throw PayBackError.underlying(message: "Only confirmed friends can be deleted.")
+        }
+
+        if accountFriend.hasLinkedAccount {
+            try await deleteLinkedFriend(memberId: accountFriend.memberId)
+        } else {
+            _ = try await deleteUnlinkedFriend(memberId: accountFriend.memberId)
         }
     }
 
-    func deleteLinkedFriend(memberId: UUID) async {
+    func deleteFriend(_ friend: GroupMember) {
+        Task { try? await self.deleteFriend(friend) }
+    }
+
+    @MainActor
+    func deleteLinkedFriend(memberId: UUID) async throws {
         print("🔵 deleteLinkedFriend called for: \(memberId)")
 
-        await MainActor.run {
-            friends.removeAll { $0.memberId == memberId }
+        // Capture only what we'll remove so rollback doesn't clobber concurrent realtime updates.
+        let removedFriend = friends.first { $0.memberId == memberId }
+        let directGroup = groups.first(where: {
+            ($0.isDirect ?? false) && $0.members.contains(where: { $0.id == memberId })
+        })
+        let removedGroupExpenses = directGroup.map { g in expenses.filter { $0.groupId == g.id } } ?? []
 
-            if let directGroup = groups.first(where: {
-                ($0.isDirect ?? false) && $0.members.contains(where: { $0.id == memberId })
-            }) {
-                print("🟢 Deleting direct group: \(directGroup.id)")
-                expenses.removeAll { $0.groupId == directGroup.id }
-                groups.removeAll { $0.id == directGroup.id }
-            }
-
-            persistCurrentState()
+        friends.removeAll { $0.memberId == memberId }
+        if let g = directGroup {
+            print("🟢 Deleting direct group: \(g.id)")
+            expenses.removeAll { $0.groupId == g.id }
+            groups.removeAll { $0.id == g.id }
         }
+        persistCurrentState()
 
         do {
             try await accountService.deleteLinkedFriend(memberId: memberId)
             print("✅ Backend deleteLinkedFriend success")
-            await MainActor.run { scheduleFriendSync() }
+            scheduleFriendSync()
         } catch {
+            // Surgical rollback: restore only the specific items removed, preserving
+            // any concurrent realtime updates that arrived while the request was in flight.
+            if let friend = removedFriend, !friends.contains(where: { $0.memberId == memberId }) {
+                friends.append(friend)
+            }
+            if let g = directGroup, !groups.contains(where: { $0.id == g.id }) {
+                groups.append(g)
+                for expense in removedGroupExpenses where !expenses.contains(where: { $0.id == expense.id }) {
+                    expenses.append(expense)
+                }
+            }
+            persistCurrentState()
             print("🔴 Backend deleteLinkedFriend failed: \(error)")
+            throw error
         }
     }
 
-    func deleteUnlinkedFriend(memberId: UUID) async {
+    @MainActor @discardableResult
+    func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
         print("🔵 deleteUnlinkedFriend called for: \(memberId)")
 
-        await MainActor.run {
-            friends.removeAll { $0.memberId == memberId }
-
-            let groupsWithFriend = groups.filter { group in
-                group.members.contains(where: { $0.id == memberId })
+        // Capture what will change for surgical rollback.
+        struct GroupDeleteRecord {
+            let original: SpendingGroup
+            let removedExpenses: [Expense]
+            let wasDeleted: Bool
+        }
+        let removedFriend = friends.first { $0.memberId == memberId }
+        let groupsWithFriend = groups.filter { $0.members.contains(where: { $0.id == memberId }) }
+        let groupRecords: [GroupDeleteRecord] = groupsWithFriend.map { group in
+            let removed = expenses.filter { expense in
+                expense.groupId == group.id && (
+                    expense.paidByMemberId == memberId ||
+                    expense.involvedMemberIds.contains(memberId)
+                )
             }
+            var updated = group
+            updated.members.removeAll { $0.id == memberId }
+            let remaining = updated.members.filter { !isCurrentUser($0) }
+            return GroupDeleteRecord(original: group, removedExpenses: removed, wasDeleted: remaining.isEmpty)
+        }
 
-            var groupsToDelete: [UUID] = []
+        friends.removeAll { $0.memberId == memberId }
+        for record in groupRecords {
+            for expense in record.removedExpenses { expenses.removeAll { $0.id == expense.id } }
+            if record.wasDeleted {
+                expenses.removeAll { $0.groupId == record.original.id }
+                groups.removeAll { $0.id == record.original.id }
+            } else if let idx = groups.firstIndex(where: { $0.id == record.original.id }) {
+                groups[idx].members.removeAll { $0.id == memberId }
+            }
+        }
+        persistCurrentState()
 
-            for group in groupsWithFriend {
-                expenses.removeAll { expense in
-                    expense.groupId == group.id && (
-                        expense.paidByMemberId == memberId ||
-                        expense.involvedMemberIds.contains(memberId)
-                    )
-                }
-
-                if let idx = groups.firstIndex(where: { $0.id == group.id }) {
-                    var updatedGroup = groups[idx]
-                    updatedGroup.members.removeAll { $0.id == memberId }
-
-                    let remaining = updatedGroup.members.filter { !isCurrentUser($0) }
-                    if remaining.isEmpty {
-                        groupsToDelete.append(group.id)
-                        expenses.removeAll { $0.groupId == group.id }
-                    } else {
-                        groups[idx] = updatedGroup
+        do {
+            let result = try await accountService.deleteUnlinkedFriend(memberId: memberId)
+            print("✅ Backend deleteUnlinkedFriend success")
+            scheduleFriendSync()
+            return result
+        } catch {
+            // Surgical rollback: restore only the specific items removed.
+            if let friend = removedFriend, !friends.contains(where: { $0.memberId == memberId }) {
+                friends.append(friend)
+            }
+            for record in groupRecords {
+                if record.wasDeleted {
+                    if !groups.contains(where: { $0.id == record.original.id }) {
+                        groups.append(record.original)
+                    }
+                    for expense in record.removedExpenses where !expenses.contains(where: { $0.id == expense.id }) {
+                        expenses.append(expense)
+                    }
+                } else {
+                    if let idx = groups.firstIndex(where: { $0.id == record.original.id }),
+                       !groups[idx].members.contains(where: { $0.id == memberId }),
+                       let originalMember = record.original.members.first(where: { $0.id == memberId }) {
+                        groups[idx].members.append(originalMember)
+                    }
+                    for expense in record.removedExpenses where !expenses.contains(where: { $0.id == expense.id }) {
+                        expenses.append(expense)
                     }
                 }
             }
-
-            groups.removeAll { groupsToDelete.contains($0.id) }
-
             persistCurrentState()
-        }
-
-        do {
-            try await accountService.deleteUnlinkedFriend(memberId: memberId)
-            print("✅ Backend deleteUnlinkedFriend success")
-            await MainActor.run { scheduleFriendSync() }
-        } catch {
             print("🔴 Backend deleteUnlinkedFriend failed: \(error)")
+            throw error
         }
     }
 
@@ -1280,10 +1334,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
 
         // Keep local optimistic writes until realtime snapshot reflects the same payload.
-        for localExpense in expenses where pendingExpenseUpsertIds.contains(localExpense.id) {
+        let pendingLocalExpenseIds = pendingExpenseUpsertIds.union(pendingExpenseSettlementIds)
+        for localExpense in expenses where pendingLocalExpenseIds.contains(localExpense.id) {
             if let remoteIndex = remoteIndexById[localExpense.id] {
                 if merged[remoteIndex] == localExpense {
                     pendingExpenseUpsertIds.remove(localExpense.id)
+                    pendingExpenseSettlementIds.remove(localExpense.id)
                 } else {
                     merged[remoteIndex] = localExpense
                 }
@@ -1317,6 +1373,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
                     try await expenseCloudService.upsertExpense(expense, participants: participants)
                 }
             } catch {
+                // Do not remove pendingExpenseUpsertIds here — concurrent in-flight writes
+                // for the same expense would lose their pending guard. The realtime reconciler
+                // clears the flag when it observes matching remote data.
                 #if DEBUG
                 print("⚠️ Failed to sync expense upsert \(expense.id): \(error.localizedDescription)")
                 #endif
@@ -1328,6 +1387,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     private func queueExpenseDelete(_ expenseId: UUID) {
         guard session != nil, !isImporting else { return }
         pendingExpenseUpsertIds.remove(expenseId)
+        pendingExpenseSettlementIds.remove(expenseId)
         pendingExpenseDeleteIds.insert(expenseId)
 
         Task { [retryPolicy, expenseCloudService, expenseId] in
@@ -1440,61 +1500,99 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     // MARK: - Settlement Methods
 
-    func markExpenseAsSettled(_ expense: Expense) {
-        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
-
-        // Find the current user's split(s) to settle
-        let updatedSplits = expense.splits.map { split in
-            if isMe(split.memberId) {
-                var newSplit = split
-                newSplit.isSettled = true
-                return newSplit
-            }
-            return split
-        }
-
-        // Only mark expense as fully settled when ALL splits are settled
-        let allSplitsSettled = updatedSplits.allSatisfy { $0.isSettled }
-
+    @MainActor
+    private func applyingSettlementState(
+        to expense: Expense,
+        memberIds: Set<UUID>,
+        settled: Bool
+    ) -> Expense {
         var updatedExpense = expense
-        updatedExpense.splits = updatedSplits
-        updatedExpense.isSettled = allSplitsSettled
-
-        expenses[idx] = updatedExpense
-        persistCurrentState()
-        let participants = makeParticipants(for: updatedExpense)
-        queueExpenseUpsert(updatedExpense, participants: participants)
+        updatedExpense.splits = expense.splits.map { split in
+            guard memberIds.contains(where: { areSamePerson(split.memberId, $0) }) else {
+                return split
+            }
+            var updatedSplit = split
+            updatedSplit.isSettled = settled
+            return updatedSplit
+        }
+        updatedExpense.isSettled = updatedExpense.splits.allSatisfy(\.isSettled)
+        return updatedExpense
     }
 
-    func settleExpenseForMember(_ expense: Expense, memberId: UUID) {
-        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else {
+    @MainActor
+    private func performSettlementMutation(
+        expenseId: UUID,
+        memberIds: Set<UUID>,
+        settled: Bool
+    ) async throws {
+        guard let idx = expenses.firstIndex(where: { $0.id == expenseId }) else {
+            throw PayBackError.expenseNotFound(id: expenseId)
+        }
+        guard !memberIds.isEmpty else { return }
+
+        let originalExpense = expenses[idx]
+        let optimisticExpense = applyingSettlementState(
+            to: originalExpense,
+            memberIds: memberIds,
+            settled: settled
+        )
+
+        expenses[idx] = optimisticExpense
+        pendingExpenseSettlementIds.insert(expenseId)
+        persistCurrentState()
+
+        guard session != nil, !isImporting else {
+            pendingExpenseSettlementIds.remove(expenseId)
+            persistCurrentState()
             return
         }
 
-        let updatedSplits = expense.splits.map { split in
-            if areSamePerson(split.memberId, memberId) {
-                var newSplit = split
-                newSplit.isSettled = true
-                return newSplit
+        do {
+            let canonicalExpense = try await retryPolicy.execute {
+                try await self.expenseCloudService.setSettlementState(
+                    expenseId: expenseId,
+                    memberIds: memberIds,
+                    settled: settled
+                )
             }
-            return split
+
+            if let canonicalIndex = expenses.firstIndex(where: { $0.id == expenseId }) {
+                expenses[canonicalIndex] = canonicalExpense
+            } else {
+                expenses.append(canonicalExpense)
+            }
+            // Keep pendingExpenseSettlementIds until the realtime snapshot confirms the
+            // remote payload matches our local state — same pattern as pendingExpenseUpsertIds.
+            persistCurrentState()
+        } catch {
+            pendingExpenseSettlementIds.remove(expenseId)
+            // Only rollback if current state still matches our optimistic write.
+            // A newer in-flight settlement may have already superseded this state.
+            if let rollbackIndex = expenses.firstIndex(where: { $0.id == expenseId }),
+               expenses[rollbackIndex] == optimisticExpense {
+                expenses[rollbackIndex] = originalExpense
+            }
+            persistCurrentState()
+            throw error
         }
+    }
 
-        let allSplitsSettled = updatedSplits.allSatisfy { $0.isSettled }
+    @MainActor
+    func markExpenseAsSettled(_ expense: Expense) async throws {
+        try await settleExpenseForCurrentUser(expense)
+    }
 
-        var updatedExpense = expense
-        updatedExpense.splits = updatedSplits
-        updatedExpense.isSettled = allSplitsSettled
+    @MainActor
+    func settleExpenseForMember(_ expense: Expense, memberId: UUID) async throws {
+        try await settleExpenseForMembers(expense, memberIds: [memberId])
+    }
 
-        print("   📊 Expense fully settled: \(updatedExpense.isSettled)")
+    func markExpenseAsSettled(_ expense: Expense) {
+        Task { try? await markExpenseAsSettled(expense) }
+    }
 
-        // Replace the entire expense in the array
-        expenses[idx] = updatedExpense
-
-        // Force immediate persistence
-        persistCurrentState()
-        let participants = makeParticipants(for: updatedExpense)
-        queueExpenseUpsert(updatedExpense, participants: participants)
+    func settleExpenseForMember(_ expense: Expense, memberId: UUID) {
+        Task { try? await settleExpenseForMember(expense, memberId: memberId) }
     }
 
     // MARK: - Balance Calculations
@@ -1963,6 +2061,39 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return tokensMatchCurrentUser(tokens)
     }
 
+    func accountFriend(for friend: GroupMember) -> AccountFriend? {
+        friends.first { candidate in
+            if areSamePerson(candidate.memberId, friend.id) { return true }
+            if let accountFriendMemberId = friend.accountFriendMemberId {
+                return areSamePerson(candidate.memberId, accountFriendMemberId)
+            }
+            return false
+        }
+    }
+
+    var confirmedFriendMembers: [GroupMember] {
+        let overrides = friendNameOverrides()
+        var seenCanonicalIds = Set<UUID>()
+        var result: [GroupMember] = []
+
+        for friend in friends {
+            guard !isCurrentUserFriend(friend) else { continue }
+            let canonicalId = memberAliasMap[friend.memberId] ?? friend.memberId
+            guard seenCanonicalIds.insert(canonicalId).inserted else { continue }
+
+            var member = GroupMember(
+                id: friend.memberId,
+                name: sanitizedFriendName(friend, overrides: overrides),
+                accountFriendMemberId: friend.memberId
+            )
+            member.profileColorHex = friend.profileColorHex
+            member.profileImageUrl = friend.profileImageUrl
+            result.append(member)
+        }
+
+        return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     var friendMembers: [GroupMember] {
         let overrides = friendNameOverrides()
 
@@ -2385,80 +2516,48 @@ func completeAuthentication(id: String, email: String, name: String?) {
         )
     }
 
-    func settleExpenseForCurrentUser(_ expense: Expense) {
-        markExpenseAsSettled(expense)
+    @MainActor
+    func settleExpenseForCurrentUser(_ expense: Expense) async throws {
+        let myMemberIds = Set(expense.splits.compactMap { split in
+            isMe(split.memberId) ? split.memberId : nil
+        })
+        try await performSettlementMutation(expenseId: expense.id, memberIds: myMemberIds, settled: true)
     }
 
     /// Settle specific members' splits by member ID set.
-    func settleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) {
-        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
-
-        let updatedSplits = expense.splits.map { split in
-            let shouldSettle = memberIds.contains { areSamePerson(split.memberId, $0) }
-            if shouldSettle {
-                var newSplit = split
-                newSplit.isSettled = true
-                return newSplit
-            }
-            return split
-        }
-
-        let allSplitsSettled = updatedSplits.allSatisfy { $0.isSettled }
-
-        var updatedExpense = expense
-        updatedExpense.splits = updatedSplits
-        updatedExpense.isSettled = allSplitsSettled
-
-        expenses[idx] = updatedExpense
-        persistCurrentState()
-        let participants = makeParticipants(for: updatedExpense)
-        queueExpenseUpsert(updatedExpense, participants: participants)
+    @MainActor
+    func settleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) async throws {
+        try await performSettlementMutation(expenseId: expense.id, memberIds: memberIds, settled: true)
     }
 
     /// Unsettle specific members' splits by member ID set.
+    @MainActor
+    func unsettleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) async throws {
+        try await performSettlementMutation(expenseId: expense.id, memberIds: memberIds, settled: false)
+    }
+
+    @MainActor
+    func unsettleExpenseForCurrentUser(_ expense: Expense) async throws {
+        let myMemberIds = Set(expense.splits.compactMap { split in
+            isMe(split.memberId) ? split.memberId : nil
+        })
+        try await performSettlementMutation(expenseId: expense.id, memberIds: myMemberIds, settled: false)
+    }
+
+    func settleExpenseForCurrentUser(_ expense: Expense) {
+        Task { try? await settleExpenseForCurrentUser(expense) }
+    }
+
+    func settleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) {
+        Task { try? await settleExpenseForMembers(expense, memberIds: memberIds) }
+    }
+
     func unsettleExpenseForMembers(_ expense: Expense, memberIds: Set<UUID>) {
-        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
-
-        let updatedSplits = expense.splits.map { split in
-            let shouldUnsettle = memberIds.contains { areSamePerson(split.memberId, $0) }
-            if shouldUnsettle {
-                var newSplit = split
-                newSplit.isSettled = false
-                return newSplit
-            }
-            return split
-        }
-
-        var updatedExpense = expense
-        updatedExpense.splits = updatedSplits
-        updatedExpense.isSettled = updatedSplits.allSatisfy { $0.isSettled }
-
-        expenses[idx] = updatedExpense
-        persistCurrentState()
-        let participants = makeParticipants(for: updatedExpense)
-        queueExpenseUpsert(updatedExpense, participants: participants)
+        Task { try? await unsettleExpenseForMembers(expense, memberIds: memberIds) }
     }
 
     func unsettleExpenseForCurrentUser(_ expense: Expense) {
-        guard let idx = expenses.firstIndex(where: { $0.id == expense.id }) else { return }
-
-        let updatedSplits = expense.splits.map { split in
-            if isMe(split.memberId) {
-                var newSplit = split
-                newSplit.isSettled = false
-                return newSplit
-            }
-            return split
-        }
-
-        var updatedExpense = expense
-        updatedExpense.splits = updatedSplits
-        updatedExpense.isSettled = false
-
-        expenses[idx] = updatedExpense
-        persistCurrentState()
-        let participants = makeParticipants(for: updatedExpense)
-        queueExpenseUpsert(updatedExpense, participants: participants)
+        Task { try? await unsettleExpenseForCurrentUser(expense) }
     }
 
     func canSettleExpenseForAll(_ expense: Expense) -> Bool {
@@ -2648,6 +2747,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses.removeAll()
         friends.removeAll()
         pendingExpenseUpsertIds.removeAll()
+        pendingExpenseSettlementIds.removeAll()
         pendingExpenseDeleteIds.removeAll()
         persistCurrentState()
         Task {
@@ -3558,26 +3658,17 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Checks if a friend has a linked account
     func friendHasLinkedAccount(_ friend: GroupMember) -> Bool {
-        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
-            return false
-        }
-        return accountFriend.hasLinkedAccount
+        accountFriend(for: friend)?.hasLinkedAccount ?? false
     }
 
     /// Gets the linked account email for a friend
     func linkedAccountEmail(for friend: GroupMember) -> String? {
-        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
-            return nil
-        }
-        return accountFriend.linkedAccountEmail
+        accountFriend(for: friend)?.linkedAccountEmail
     }
 
     /// Gets the linked account ID for a friend
     func linkedAccountId(for friend: GroupMember) -> String? {
-        guard let accountFriend = friends.first(where: { areSamePerson($0.memberId, friend.id) }) else {
-            return nil
-        }
-        return accountFriend.linkedAccountId
+        accountFriend(for: friend)?.linkedAccountId
     }
 
     // MARK: - Duplicate Prevention

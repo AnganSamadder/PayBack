@@ -22,6 +22,25 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         return Array(expenses.values)
     }
 
+    func setSettlementState(expenseId: UUID, memberIds: Set<UUID>, settled: Bool) async throws -> Expense {
+        if shouldFail {
+            throw PayBackError.authSessionMissing
+        }
+        guard var expense = expenses[expenseId] else {
+            throw PayBackError.expenseNotFound(id: expenseId)
+        }
+
+        expense.splits = expense.splits.map { split in
+            guard memberIds.contains(split.memberId) else { return split }
+            var updatedSplit = split
+            updatedSplit.isSettled = settled
+            return updatedSplit
+        }
+        expense.isSettled = expense.splits.allSatisfy(\.isSettled)
+        expenses[expenseId] = expense
+        return expense
+    }
+
     func deleteExpense(_ expenseId: UUID) async throws {
         if shouldFail {
             throw PayBackError.authSessionMissing

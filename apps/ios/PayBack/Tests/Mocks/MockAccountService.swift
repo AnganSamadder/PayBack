@@ -135,7 +135,7 @@ actor MockAccountServiceForAppStore: AccountService {
         }
     }
 
-    func deleteUnlinkedFriend(memberId: UUID) async throws {
+    func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
         if shouldFail { throw PayBackError.networkUnavailable }
         for (email, var friendList) in friends {
             if let idx = friendList.firstIndex(where: { $0.memberId == memberId }) {
@@ -143,6 +143,7 @@ actor MockAccountServiceForAppStore: AccountService {
                 friends[email] = friendList
             }
         }
+        return DeleteFriendResult(groupsModified: 0, expensesDeleted: 0, expensesModified: 0, aliasesDeleted: 0)
     }
 
     func selfDeleteAccount() async throws {
