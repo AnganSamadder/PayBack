@@ -191,6 +191,25 @@ function requireMatchingMemberSets(values: {
   splitMemberIds: string[];
   participantRows: { member_id: string }[];
 }) {
+  const allInvolved = canonicalizeMembers(values.involvedMemberIds);
+  const allParticipantIds = canonicalizeMembers(values.participantMemberIds);
+  const allSplitIds = canonicalizeMembers(values.splitMemberIds);
+  const allParticipantRowIds = canonicalizeMembers(
+    values.participantRows.map((participant) => participant.member_id)
+  );
+
+  const hasDuplicateMembers =
+    allInvolved.length !== new Set(allInvolved).size ||
+    allParticipantIds.length !== new Set(allParticipantIds).size ||
+    allSplitIds.length !== new Set(allSplitIds).size ||
+    allParticipantRowIds.length !== new Set(allParticipantRowIds).size;
+
+  if (hasDuplicateMembers) {
+    throw new Error(
+      "Grouped individual expense cannot contain duplicate participant, involved member, or split rows."
+    );
+  }
+
   const involved = canonicalizeUniqueMembers(values.involvedMemberIds);
   const participantIds = canonicalizeUniqueMembers(values.participantMemberIds);
   const splitIds = canonicalizeUniqueMembers(values.splitMemberIds);
@@ -458,6 +477,42 @@ export const create = mutation({
 
       return ownerFriendIdentityRows;
     };
+    const validateGroupedIndividualParticipants = async ({
+      participants,
+      currentUserEquivalentIds
+    }: {
+      participants: {
+        member_id: string;
+        name: string;
+        linked_account_id?: string;
+        linked_account_email?: string;
+      }[];
+      currentUserEquivalentIds: Set<string>;
+    }) => {
+      if (participants.length === 0) {
+        return;
+      }
+
+      const ownerFriendIdentityRows = await buildOwnerFriendIdentityRows();
+      for (const participant of participants) {
+        const memberEquivalentIds = await getEquivalentIdSet(participant.member_id);
+        if (intersects(memberEquivalentIds, currentUserEquivalentIds)) {
+          continue;
+        }
+
+        const matchingFriend = ownerFriendIdentityRows.find(
+          ({ friend, identityIds }) =>
+            isEligibleDirectFriendRecord(friend) && intersects(identityIds, memberEquivalentIds)
+        );
+        if (matchingFriend) {
+          continue;
+        }
+
+        throw new Error(
+          `Cannot create grouped individual expense: Member ${participant.name || participant.member_id} is not a confirmed friend.`
+        );
+      }
+    };
 
     let group: any = null;
     let callerEquivalentIds = await buildUserEquivalentMemberIds(ctx.db, user);
@@ -468,6 +523,15 @@ export const create = mutation({
 
       if (!UUID_PATTERN.test(args.group_id)) {
         throw new Error("Grouped individual expense group_id must be a UUID.");
+      }
+      if (!existing || existing.group_id !== args.group_id) {
+        const collidingGroup = await ctx.db
+          .query("groups")
+          .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
+          .unique();
+        if (collidingGroup) {
+          throw new Error("Grouped individual expense group_id cannot match an existing group.");
+        }
       }
 
       requireMatchingMemberSets({
@@ -497,34 +561,34 @@ export const create = mutation({
         throw new Error("Expense payer must be one of the involved member IDs.");
       }
 
-      // Only validate friend confirmation on new expenses. Existing expenses were
-      // already validated at creation; re-checking would break when friends are later
-      // unfriended, making historical expenses unmaintainable.
       if (!existing) {
-        const ownerFriendIdentityRows = await buildOwnerFriendIdentityRows();
-        for (const participant of normalizedParticipants) {
-          const memberEquivalentIds = await getEquivalentIdSet(participant.member_id);
-          if (intersects(memberEquivalentIds, currentUserEquivalentIds)) {
-            continue;
-          }
+        await validateGroupedIndividualParticipants({
+          participants: nonSelfParticipants,
+          currentUserEquivalentIds
+        });
+      } else if (callerOwnsExistingExpense) {
+        const existingParticipantIds = canonicalizeUniqueMembers(
+          existing.participant_member_ids ?? existing.involved_member_ids
+        );
+        const existingParticipantEquivalentSets = await Promise.all(
+          existingParticipantIds.map((memberId) => getEquivalentIdSet(memberId))
+        );
+        const participantsNeedingValidation: typeof nonSelfParticipants = [];
 
-          const matchingFriend = ownerFriendIdentityRows.find(
-            ({ friend, identityIds }) =>
-              isEligibleDirectFriendRecord(friend) && intersects(identityIds, memberEquivalentIds)
+        for (const participant of nonSelfParticipants) {
+          const participantEquivalentIds = await getEquivalentIdSet(participant.member_id);
+          const existedPreviously = existingParticipantEquivalentSets.some((equivalentIds) =>
+            intersects(equivalentIds, participantEquivalentIds)
           );
-          if (matchingFriend) {
-            continue;
+          if (!existedPreviously) {
+            participantsNeedingValidation.push(participant);
           }
-
-          // No name-only fallback for grouped_individual — unlike legacy direct expenses,
-          // this is a new feature with no ID-drift history. Name-only matching would allow
-          // a crafted payload to pair a bogus member_id with a victim's linked metadata
-          // and pass validation, causing unintended expense fan-out.
-
-          throw new Error(
-            `Cannot create grouped individual expense: Member ${participant.name || participant.member_id} is not a confirmed friend.`
-          );
         }
+
+        await validateGroupedIndividualParticipants({
+          participants: participantsNeedingValidation,
+          currentUserEquivalentIds
+        });
       }
     } else {
       const groupAccess = await requireGroupByClientIdWithAccess(

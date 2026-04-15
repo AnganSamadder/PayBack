@@ -1036,6 +1036,22 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(confirmedFriends.map(\.id), [aliceId])
     }
 
+    func testConfirmedFriendMembers_ExcludeNonSelectableStatuses() async throws {
+        let acceptedId = UUID()
+        let pendingId = UUID()
+        let rejectedId = UUID()
+
+        sut.friends = [
+            AccountFriend(memberId: acceptedId, name: "Accepted", status: "friend"),
+            AccountFriend(memberId: pendingId, name: "Pending", status: "pending"),
+            AccountFriend(memberId: rejectedId, name: "Rejected", status: "rejected")
+        ]
+
+        let confirmedFriends = sut.confirmedFriendMembers
+
+        XCTAssertEqual(confirmedFriends.map(\.id), [acceptedId])
+    }
+
     // MARK: - Generate Expense Preview Tests
 
     func testGenerateExpensePreview_NoExpenses_ReturnsEmpty() async throws {

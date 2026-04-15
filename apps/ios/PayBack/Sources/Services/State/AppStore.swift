@@ -42,6 +42,10 @@ final class AppStore: ObservableObject {
     private var pendingExpenseSettlementIds: Set<UUID> = []
     /// Local expense deletes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseDeleteIds: Set<UUID> = []
+    /// Realtime payloads should not replace local state until the current session has completed
+    /// an explicit remote hydration. This prevents empty startup snapshots from clobbering
+    /// locally restored or test-seeded state.
+    private var hasCompletedInitialRemoteLoad = false
     private let retryPolicy: RetryPolicy = .linkingDefault
     private let stateReconciliation = LinkStateReconciliation()
     private let failureTracker = LinkFailureTracker()
@@ -301,7 +305,7 @@ final class AppStore: ObservableObject {
                 guard !self.isImporting else { return }
                 // Ignore realtime payloads before authentication to avoid
                 // clobbering local state with empty remote snapshots.
-                guard self.session != nil else { return }
+                guard self.session != nil, self.hasCompletedInitialRemoteLoad else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenGroupIds = Set<UUID>()
                 let uniqueGroups = remoteGroups.filter { seenGroupIds.insert($0.id).inserted }
@@ -331,7 +335,7 @@ final class AppStore: ObservableObject {
             .sink { [weak self] remoteExpenses in
                 guard let self = self else { return }
                 guard !self.isImporting else { return }
-                guard self.session != nil else { return }
+                guard self.session != nil, self.hasCompletedInitialRemoteLoad else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenExpenseIds = Set<UUID>()
                 let uniqueExpenses = remoteExpenses.filter { seenExpenseIds.insert($0.id).inserted }
@@ -354,7 +358,7 @@ final class AppStore: ObservableObject {
             .sink { [weak self] remoteFriends in
                 guard let self = self else { return }
                 guard !self.isImporting else { return }
-                guard self.session != nil else { return }
+                guard self.session != nil, self.hasCompletedInitialRemoteLoad else { return }
 
                 self.processFriendsUpdate(remoteFriends)
             }
@@ -648,6 +652,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         print("[AuthDebug] signOut called. Current User: \(currentUser.name) (\(currentUser.id))")
         remoteLoadTask?.cancel()
         friendSyncTask?.cancel()
+        hasCompletedInitialRemoteLoad = false
 
         // Stop real-time sync
         #if !PAYBACK_CI_NO_CONVEX
@@ -1439,11 +1444,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
             }
         } catch {
             pendingExpenseUpsertIds.remove(expenseToStore.id)
-            // Keep the expense in local state on transient failures (network, timeout)
-            // so the user doesn't lose data. Queue it for retry via the normal upsert
-            // pipeline instead of deleting it. The next sync cycle will attempt to
-            // reconcile it with the backend.
-            queueExpenseUpsert(expenseToStore, participants: participants)
+            expenses.removeAll { $0.id == expenseToStore.id }
+            persistCurrentState()
             throw error
         }
     }
@@ -1766,8 +1768,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     func netBalance(forFriend friend: GroupMember) -> Double {
         var balance: Double = 0
 
-        for expense in expenses where expenseInvolves(friend: friend, in: expense)
-            && (isDirectExpense(expense) || isGroupedIndividualExpense(expense)) {
+        for expense in expenses where expenseInvolves(friend: friend, in: expense) {
             if isMe(expense.paidByMemberId) {
                 if let friendSplit = expense.splits.first(where: {
                     isFriendMember($0.memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
@@ -1846,6 +1847,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             let mergedFriends = await MainActor.run { () -> [AccountFriend] in
                 self.groups = normalization.groups
                 self.expenses = normalization.expenses
+                self.hasCompletedInitialRemoteLoad = true
                 self.persistCurrentState()
                 self.logFetchedData(groups: normalization.groups, expenses: normalization.expenses)
                 self.processFriendsUpdate(remoteFriends)
@@ -2239,6 +2241,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         for friend in friends {
             guard !isCurrentUserFriend(friend) else { continue }
+            guard isSelectableDirectExpenseFriend(friend) else { continue }
             let canonicalId = memberAliasMap[friend.memberId] ?? friend.memberId
             guard seenCanonicalIds.insert(canonicalId).inserted else { continue }
 

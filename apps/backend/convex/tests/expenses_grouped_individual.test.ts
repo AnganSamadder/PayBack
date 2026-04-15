@@ -219,6 +219,31 @@ test("expenses:create rejects grouped_individual expense when participant sets d
   ).rejects.toThrow("same member set");
 });
 
+test("expenses:create rejects grouped_individual expense when participants contain duplicate member rows", async () => {
+  const t = await seedGroupedIndividualFixture();
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildGroupedIndividualArgs({
+        participant_member_ids: ["owner_member", "alice_member", "alice_member"],
+        participants: [
+          { member_id: "owner_member", name: "Owner" },
+          { member_id: "alice_member", name: "Alice" },
+          { member_id: "alice_member", name: "Alice Again" }
+        ],
+        involved_member_ids: ["owner_member", "alice_member", "alice_member"],
+        splits: [
+          { id: "split_owner", member_id: "owner_member", amount: 45, is_settled: false },
+          { id: "split_alice_1", member_id: "alice_member", amount: 15, is_settled: false },
+          { id: "split_alice_2", member_id: "alice_member", amount: 30, is_settled: false }
+        ]
+      })
+    )
+  ).rejects.toThrow("duplicate participant");
+});
+
 test("expenses:create rejects grouped_individual expense when group_id is not a UUID", async () => {
   const t = await seedGroupedIndividualFixture();
   const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
@@ -231,6 +256,41 @@ test("expenses:create rejects grouped_individual expense when group_id is not a 
       })
     )
   ).rejects.toThrow("group_id must be a UUID");
+});
+
+test("expenses:create rejects grouped_individual expense when group_id collides with a real group", async () => {
+  const t = await seedGroupedIndividualFixture();
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+  const collidingGroupId = "22222222-2222-4222-8222-222222222222";
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("groups", {
+      id: collidingGroupId,
+      name: "Colliding Group",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "alice_member", name: "Alice" }
+      ],
+      owner_email: "owner@example.com",
+      owner_account_id: "owner_auth_id",
+      owner_id: (await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) => q.eq("email", "owner@example.com"))
+        .unique())!._id,
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildGroupedIndividualArgs({
+        group_id: collidingGroupId
+      })
+    )
+  ).rejects.toThrow("cannot match an existing group");
 });
 
 test("expenses:create allows grouped_individual participant to settle only their own split", async () => {
@@ -287,6 +347,70 @@ test("expenses:create keeps grouped_individual context on owner update when cont
   expect(expense?.description).toBe("Updated dinner");
   expect(expense?.context_kind).toBe("grouped_individual");
   expect(expense?.group_ref).toBeUndefined();
+});
+
+test("expenses:create rejects grouped_individual owner update when it adds a brand-new non-friend participant", async () => {
+  const t = await seedGroupedIndividualFixture();
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+
+  await ownerCtx.mutation(api.expenses.create, buildGroupedIndividualArgs());
+
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildGroupedIndividualArgs({
+        involved_member_ids: ["owner_member", "alice_member", "stranger_member"],
+        participant_member_ids: ["owner_member", "alice_member", "stranger_member"],
+        splits: [
+          { id: "split_owner", member_id: "owner_member", amount: 30, is_settled: false },
+          { id: "split_alice", member_id: "alice_member", amount: 30, is_settled: false },
+          { id: "split_stranger", member_id: "stranger_member", amount: 30, is_settled: false }
+        ],
+        participants: [
+          { member_id: "owner_member", name: "Owner" },
+          { member_id: "alice_member", name: "Alice" },
+          { member_id: "stranger_member", name: "Stranger" }
+        ]
+      })
+    )
+  ).rejects.toThrow("confirmed friend");
+});
+
+test("expenses:create allows grouped_individual owner update after a historical participant is no longer a friend", async () => {
+  const t = await seedGroupedIndividualFixture();
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+
+  await ownerCtx.mutation(api.expenses.create, buildGroupedIndividualArgs());
+
+  await t.run(async (ctx) => {
+    const bobFriendRow = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email", (q) => q.eq("account_email", "owner@example.com"))
+      .collect()
+      .then((rows) => rows.find((row) => row.member_id === "bob_member"));
+    if (bobFriendRow) {
+      await ctx.db.delete(bobFriendRow._id);
+    }
+  });
+
+  await ownerCtx.mutation(
+    api.expenses.create,
+    buildGroupedIndividualArgs({
+      description: "Updated historical dinner"
+    })
+  );
+
+  const expense = await t.run(async (ctx) =>
+    ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "grouped_expense_1"))
+      .unique()
+  );
+
+  expect(expense?.description).toBe("Updated historical dinner");
+  expect(expense?.participant_member_ids).toEqual(
+    expect.arrayContaining(["owner_member", "alice_member", "bob_alias_member"])
+  );
 });
 
 test("expenses:create infers direct context for legacy rows without context_kind targeting a direct group", async () => {
