@@ -178,34 +178,26 @@ struct RootView: View {
                         TargetPicker(
                             onClose: closeAdd,
                             onSelectGroup: { group in
-                                // Fast fade transition between TargetPicker and AddExpenseView
                                 withAnimation(.easeInOut(duration: 0.2)) {
-                                    selectedGroupForNewExpense = group
-                                }
-                                // Keep background visible during transition, hide after
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                                    withAnimation(.easeInOut(duration: 0.15)) {
-                                        showPickerUI = false
-                                    }
-                                }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    showPickerUI = false
                                     showAddOverlay = false
+                                    selectedGroupForNewExpense = group
                                 }
                             },
                             onSelectFriend: { friend in
                                 let g = store.directGroup(with: friend)
-                                // Fast fade transition between TargetPicker and AddExpenseView
                                 withAnimation(.easeInOut(duration: 0.2)) {
+                                    showPickerUI = false
+                                    showAddOverlay = false
                                     selectedGroupForNewExpense = g
                                 }
-                                // Keep background visible during transition, hide after
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                                    withAnimation(.easeInOut(duration: 0.15)) {
-                                        showPickerUI = false
-                                    }
-                                }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            },
+                            onSelectFriends: { friends in
+                                let group = store.groupedIndividualDraftGroup(with: friends)
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showPickerUI = false
                                     showAddOverlay = false
+                                    selectedGroupForNewExpense = group
                                 }
                             }
                         )
@@ -351,22 +343,65 @@ private struct TargetPicker: View {
     let onClose: () -> Void
     let onSelectGroup: (SpendingGroup) -> Void
     let onSelectFriend: (GroupMember) -> Void
+    let onSelectFriends: ([GroupMember]) -> Void
+    @State private var isSelectingPeople = false
+    @State private var selectedFriendIds: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
-                                HStack {
-                        Text("Choose target")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(AppTheme.chooseTargetTextColor)
-                        Spacer()
-                        Button(action: onClose) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 16, weight: .bold))
+            HStack {
+                Text("Choose target")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(AppTheme.chooseTargetTextColor)
+                Spacer()
+                if AppConfig.groupedIndividualCreationEnabled {
+                    if isSelectingPeople {
+                        Button(action: confirmSelectedFriends) {
+                            Text("Continue")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(selectedFriendIds.count >= 2 ? .white : AppTheme.chooseTargetTextColor.opacity(0.6))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(
+                                    Capsule().fill(
+                                        selectedFriendIds.count >= 2
+                                            ? AppTheme.brand
+                                            : AppTheme.chooseTargetTextColor.opacity(0.15)
+                                    )
+                                )
+                        }
+                        .disabled(selectedFriendIds.count < 2)
+
+                        Button(action: {
+                            isSelectingPeople = false
+                            selectedFriendIds.removeAll()
+                        }) {
+                            Text("Cancel")
+                                .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(AppTheme.chooseTargetTextColor)
-                                .padding(8)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
                                 .background(Capsule().fill(AppTheme.chooseTargetTextColor.opacity(0.15)))
                         }
+                    } else {
+                        Button(action: { isSelectingPeople = true }) {
+                            Text("Select People")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Capsule().fill(AppTheme.brand))
+                        }
                     }
+                }
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(AppTheme.chooseTargetTextColor)
+                        .padding(8)
+                        .background(Capsule().fill(AppTheme.chooseTargetTextColor.opacity(0.15)))
+                }
+            }
             .padding(.horizontal)
             .padding(.top, 24)
             .padding(.bottom, 8)
@@ -375,16 +410,42 @@ private struct TargetPicker: View {
                 VStack(alignment: .leading, spacing: 20) {
                     // Friends section (cards on white background)
                     if !directExpenseTargets.isEmpty {
-                        SectionHeader(text: "Friends")
+                        SectionHeader(text: isSelectingPeople ? "People" : "Friends")
                         VStack(spacing: 12) {
                             ForEach(directExpenseTargets) { m in
-                                Button { onSelectFriend(m) } label: {
+                                Button {
+                                    if isSelectingPeople {
+                                        if selectedFriendIds.contains(m.id) {
+                                            selectedFriendIds.remove(m.id)
+                                        } else {
+                                            selectedFriendIds.insert(m.id)
+                                        }
+                                    } else {
+                                        onSelectFriend(m)
+                                    }
+                                } label: {
                                     HStack(spacing: 12) {
                                         AvatarView(name: m.name)
-                                        Text(m.name)
-                                            .font(.headline)
-                                            .foregroundStyle(AppTheme.brandTextColor)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(m.name)
+                                                .font(.headline)
+                                                .foregroundStyle(AppTheme.brandTextColor)
+                                            if isSelectingPeople {
+                                                Text(selectedFriendIds.contains(m.id) ? "Selected" : "Tap to add")
+                                                    .font(.caption)
+                                                    .foregroundStyle(AppTheme.brandTextColor.opacity(0.65))
+                                            }
+                                        }
                                         Spacer()
+                                        if isSelectingPeople {
+                                            Image(systemName: selectedFriendIds.contains(m.id) ? "checkmark.circle.fill" : "circle")
+                                                .font(.system(size: 20, weight: .semibold))
+                                                .foregroundStyle(
+                                                    selectedFriendIds.contains(m.id)
+                                                        ? AppTheme.brand
+                                                        : AppTheme.brandTextColor.opacity(0.35)
+                                                )
+                                        }
                                     }
                                     .padding(.horizontal)
                                     .padding(.vertical, 14)
@@ -397,7 +458,7 @@ private struct TargetPicker: View {
 
                     // Groups section (cards on white background)
                     let nonDirectGroups = store.groups.filter { !($0.isDirect ?? false) }
-                    if !nonDirectGroups.isEmpty {
+                    if !isSelectingPeople && !nonDirectGroups.isEmpty {
                         SectionHeader(text: "Groups")
                         VStack(spacing: 12) {
                             ForEach(nonDirectGroups) { g in
@@ -427,7 +488,13 @@ private struct TargetPicker: View {
     }
 
     private var directExpenseTargets: [GroupMember] {
-        store.friendMembers
+        store.confirmedFriendMembers
+    }
+
+    private func confirmSelectedFriends() {
+        let selectedFriends = directExpenseTargets.filter { selectedFriendIds.contains($0.id) }
+        guard selectedFriends.count >= 2 else { return }
+        onSelectFriends(selectedFriends)
     }
 }
 

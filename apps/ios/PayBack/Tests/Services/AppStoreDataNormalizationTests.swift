@@ -1833,6 +1833,38 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         }
     }
 
+    func testNormalizeExpenseContextKinds_PreservesExplicitDirectWithoutBackingGroup() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let orphanGroupId = UUID()
+        let friendId = UUID()
+        let expense = Expense(
+            groupId: orphanGroupId,
+            description: "Direct orphan expense",
+            totalAmount: 50,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, friendId],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 25),
+                ExpenseSplit(memberId: friendId, amount: 25)
+            ],
+            contextKind: .direct,
+            participantNames: [friendId: "Alice"]
+        )
+
+        await mockExpenseCloudService.addExpense(expense)
+
+        await sut.loadRemoteData()
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        let normalizedExpense = try XCTUnwrap(sut.expenses.first(where: { $0.id == expense.id }))
+        XCTAssertEqual(normalizedExpense.contextKind, .direct)
+
+        let synthesizedGroup = try XCTUnwrap(sut.groups.first(where: { $0.id == orphanGroupId }))
+        XCTAssertTrue(synthesizedGroup.isDirect == true)
+    }
+
     func testSynthesizeGroup_WithOrphanExpensesCreatesGroup() async throws {
         // Given: expenses without corresponding group
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")

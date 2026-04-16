@@ -11,9 +11,6 @@ struct ExpenseDetailView: View {
     @State private var settlementError: PayBackError?
     @State private var showSettlementError = false
 
-    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
-    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
-
     // True when the current user paid for this expense
     private var iAmPayer: Bool { store.isMe(expense.paidByMemberId) }
 
@@ -22,9 +19,8 @@ struct ExpenseDetailView: View {
         expense.splits.filter { !store.areSamePerson($0.memberId, expense.paidByMemberId) }
     }
 
-    // True when this expense belongs to a direct (2-person) group
     private var isDirect: Bool {
-        store.group(by: expense.groupId)?.isDirect == true
+        store.resolvedContextKind(for: expense) == .direct
     }
 
     // At least one debtor has settled — show unsettle option
@@ -365,16 +361,7 @@ struct ExpenseDetailView: View {
     // MARK: - Helpers
 
     private func memberName(for id: UUID) -> String {
-        if store.isMe(id) { return store.currentUser.name }
-        if let friend = store.friends.first(where: { $0.memberId == id }) {
-            return friend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
-        }
-        if let group = store.group(by: expense.groupId),
-           let member = group.members.first(where: { $0.id == id }) {
-            return member.name
-        }
-        if let cachedName = expense.participantNames?[id] { return cachedName }
-        return "Unknown"
+        store.participantDisplayName(memberId: id, in: expense)
     }
 
     private func currency(_ amount: Double) -> String {
@@ -446,9 +433,6 @@ struct SettleExpenseSheet: View {
     @State private var showDeleteConfirm = false
     @State private var settlementError: PayBackError?
     @State private var showSettlementError = false
-
-    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
-    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
 
     // All non-payer splits shown in the list (filtered to self when selfOnly)
     private var debtSplits: [ExpenseSplit] {
@@ -732,16 +716,7 @@ struct SettleExpenseSheet: View {
     }
 
     private func memberName(for id: UUID) -> String {
-        if store.isMe(id) { return store.currentUser.name }
-        if let friend = store.friends.first(where: { $0.memberId == id }) {
-            return friend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
-        }
-        if let group = store.group(by: expense.groupId),
-           let member = group.members.first(where: { $0.id == id }) {
-            return member.name
-        }
-        if let cachedName = expense.participantNames?[id] { return cachedName }
-        return "Unknown"
+        store.participantDisplayName(memberId: id, in: expense)
     }
 
     private func runSettlementAction(_ action: @escaping () async throws -> Void) {

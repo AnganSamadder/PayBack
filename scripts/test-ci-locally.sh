@@ -69,7 +69,7 @@ bun run ci
 
 if [ "$RUN_WEB_E2E" = "1" ]; then
 	echo "Running web e2e smoke tests..."
-	( cd "$PROJECT_ROOT/apps/web" && bunx playwright install chromium >/dev/null )
+	( cd "$PROJECT_ROOT/apps/web" && bunx playwright install --with-deps chromium >/dev/null )
 	bun run --filter @payback/web test:e2e
 else
 	echo "Skipping web e2e smoke tests (RUN_WEB_E2E=$RUN_WEB_E2E)"

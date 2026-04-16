@@ -5,14 +5,18 @@ import XCTest
 final class PersistenceServiceExtendedTests: XCTestCase {
 
     var service: PersistenceService!
+    var testFileURL: URL!
 
     override func setUp() async throws {
         service = PersistenceService.isolatedForTesting()
+        testFileURL = service.persistenceBackingURL
         service.clear()
     }
 
     override func tearDown() async throws {
         service.clear()
+        service = nil
+        testFileURL = nil
     }
 
     // MARK: - Save Tests

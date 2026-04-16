@@ -4,18 +4,19 @@ import XCTest
 final class PersistenceServiceTests: XCTestCase {
 
     var sut: PersistenceService!
+    var testFileURL: URL!
 
     override func setUp() {
         super.setUp()
         sut = PersistenceService.isolatedForTesting()
-        // Clear any existing data before each test
+        testFileURL = sut.persistenceBackingURL
         sut.clear()
     }
 
     override func tearDown() {
-        // Clean up after each test
         sut.clear()
         sut = nil
+        testFileURL = nil
         super.tearDown()
     }
 
@@ -317,10 +318,8 @@ final class PersistenceServiceTests: XCTestCase {
 
     func testLoad_corruptedData_returnsEmptyAppData() {
         // Write invalid JSON to the file
-        let fileURL = sut.persistenceBackingURL
-
         let corruptedData = "{ invalid json }".data(using: .utf8)!
-        try? corruptedData.write(to: fileURL)
+        try? corruptedData.write(to: testFileURL)
 
         let loaded = sut.load()
 
@@ -330,15 +329,13 @@ final class PersistenceServiceTests: XCTestCase {
     }
 
     func testLoad_partiallyCorruptedData_returnsEmptyAppData() {
-        let fileURL = sut.persistenceBackingURL
-
         // Write partially valid JSON
         let partialData = """
         {
             "groups": [
                 {"name": "Test"
         """.data(using: .utf8)!
-        try? partialData.write(to: fileURL)
+        try? partialData.write(to: testFileURL)
 
         let loaded = sut.load()
 
@@ -347,11 +344,9 @@ final class PersistenceServiceTests: XCTestCase {
     }
 
     func testLoad_emptyFile_returnsEmptyAppData() {
-        let fileURL = sut.persistenceBackingURL
-
         // Write empty data
         let emptyData = Data()
-        try? emptyData.write(to: fileURL)
+        try? emptyData.write(to: testFileURL)
 
         let loaded = sut.load()
 
@@ -360,15 +355,13 @@ final class PersistenceServiceTests: XCTestCase {
     }
 
     func testLoad_wrongDataStructure_returnsEmptyAppData() {
-        let fileURL = sut.persistenceBackingURL
-
         // Write valid JSON but wrong structure
         let wrongData = """
         {
             "wrongField": "value"
         }
         """.data(using: .utf8)!
-        try? wrongData.write(to: fileURL)
+        try? wrongData.write(to: testFileURL)
 
         let loaded = sut.load()
 
@@ -540,13 +533,11 @@ final class PersistenceServiceTests: XCTestCase {
         let group = SpendingGroup(name: "Test", members: [GroupMember(name: "Alice")])
         sut.save(AppData(groups: [group], expenses: []))
 
-        let fileURL = sut.persistenceBackingURL
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: testFileURL.path))
 
         sut.clear()
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: testFileURL.path))
     }
 
     func testClear_concurrentCalls_handlesGracefully() async {
@@ -801,11 +792,8 @@ final class PersistenceServiceTests: XCTestCase {
 
     // MARK: - File URL Tests
 
-    func testFileURL_isInDocumentsDirectory() {
-        let fileURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("payback.json")
-
-        XCTAssertTrue(fileURL.path.contains("Documents"))
-        XCTAssertTrue(fileURL.lastPathComponent == "payback.json")
+    func testFileURL_isIsolatedTestFile() {
+        XCTAssertTrue(testFileURL.lastPathComponent.hasPrefix("payback-test-"))
+        XCTAssertTrue(testFileURL.lastPathComponent.hasSuffix(".json"))
     }
 }

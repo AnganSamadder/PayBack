@@ -99,9 +99,16 @@ public struct Subexpense: Codable, Identifiable, Equatable, Hashable, Sendable {
     }
 }
 
+enum ExpenseContextKind: String, Codable, Hashable, Sendable {
+    case group
+    case direct
+    case groupedIndividual = "grouped_individual"
+}
+
 struct Expense: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     let groupId: UUID
+    var contextKind: ExpenseContextKind
     var description: String
     var date: Date
     var totalAmount: Double
@@ -116,13 +123,14 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
     var ownerAccountId: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, groupId, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug, subexpenses, ownerEmail, ownerAccountId
+        case id, groupId, contextKind, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug, subexpenses, ownerEmail, ownerAccountId
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         groupId = try container.decode(UUID.self, forKey: .groupId)
+        contextKind = try container.decodeIfPresent(ExpenseContextKind.self, forKey: .contextKind) ?? .group
         description = try container.decode(String.self, forKey: .description)
         date = try container.decode(Date.self, forKey: .date)
         totalAmount = try container.decode(Double.self, forKey: .totalAmount)
@@ -144,6 +152,7 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(groupId, forKey: .groupId)
+        try container.encode(contextKind, forKey: .contextKind)
         try container.encode(description, forKey: .description)
         try container.encode(date, forKey: .date)
         try container.encode(totalAmount, forKey: .totalAmount)
@@ -181,6 +190,7 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         involvedMemberIds: [UUID],
         splits: [ExpenseSplit],
         isSettled: Bool = false,
+        contextKind: ExpenseContextKind = .group,
         participantNames: [UUID: String]? = nil,
         isDebug: Bool = false,
         subexpenses: [Subexpense]? = nil,
@@ -189,6 +199,7 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
     ) {
         self.id = id
         self.groupId = groupId
+        self.contextKind = contextKind
         self.description = description
         self.date = date
         self.totalAmount = totalAmount

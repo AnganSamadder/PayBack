@@ -42,6 +42,10 @@ final class AppStore: ObservableObject {
     private var pendingExpenseSettlementIds: Set<UUID> = []
     /// Local expense deletes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseDeleteIds: Set<UUID> = []
+    /// Realtime payloads should not replace local state until the current session has completed
+    /// an explicit remote hydration. This prevents empty startup snapshots from clobbering
+    /// locally restored or test-seeded state.
+    private var hasCompletedInitialRemoteLoad = false
     private let retryPolicy: RetryPolicy = .linkingDefault
     private let stateReconciliation = LinkStateReconciliation()
     private let failureTracker = LinkFailureTracker()
@@ -301,7 +305,7 @@ final class AppStore: ObservableObject {
                 guard !self.isImporting else { return }
                 // Ignore realtime payloads before authentication to avoid
                 // clobbering local state with empty remote snapshots.
-                guard self.session != nil else { return }
+                guard self.session != nil, self.hasCompletedInitialRemoteLoad else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenGroupIds = Set<UUID>()
                 let uniqueGroups = remoteGroups.filter { seenGroupIds.insert($0.id).inserted }
@@ -331,7 +335,7 @@ final class AppStore: ObservableObject {
             .sink { [weak self] remoteExpenses in
                 guard let self = self else { return }
                 guard !self.isImporting else { return }
-                guard self.session != nil else { return }
+                guard self.session != nil, self.hasCompletedInitialRemoteLoad else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenExpenseIds = Set<UUID>()
                 let uniqueExpenses = remoteExpenses.filter { seenExpenseIds.insert($0.id).inserted }
@@ -354,7 +358,7 @@ final class AppStore: ObservableObject {
             .sink { [weak self] remoteFriends in
                 guard let self = self else { return }
                 guard !self.isImporting else { return }
-                guard self.session != nil else { return }
+                guard self.session != nil, self.hasCompletedInitialRemoteLoad else { return }
 
                 self.processFriendsUpdate(remoteFriends)
             }
@@ -648,6 +652,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         print("[AuthDebug] signOut called. Current User: \(currentUser.name) (\(currentUser.id))")
         remoteLoadTask?.cancel()
         friendSyncTask?.cancel()
+        hasCompletedInitialRemoteLoad = false
 
         // Stop real-time sync
         #if !PAYBACK_CI_NO_CONVEX
@@ -1270,12 +1275,13 @@ func completeAuthentication(id: String, email: String, name: String?) {
         var failedExpenses: [(Expense, Error)] = []
 
         for expense in expenses {
-            let participants = makeParticipants(for: expense)
+            let expenseToSync = expenseForCloudSync(expense)
+            let participants = makeParticipants(for: expenseToSync)
             do {
-                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                try await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
                 successCount += 1
             } catch {
-                failedExpenses.append((expense, error))
+                failedExpenses.append((expenseToSync, error))
             }
         }
 
@@ -1308,14 +1314,15 @@ func completeAuthentication(id: String, email: String, name: String?) {
         var stillFailed: [(Expense, Error)] = []
 
         for (expense, _) in failedExpenses {
-            let participants = makeParticipants(for: expense)
+            let expenseToSync = expenseForCloudSync(expense)
+            let participants = makeParticipants(for: expenseToSync)
             do {
-                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                try await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
                 #if DEBUG
-                print("✅ Retried expense \(expense.id) successfully on attempt \(attempt)")
+                print("✅ Retried expense \(expenseToSync.id) successfully on attempt \(attempt)")
                 #endif
             } catch {
-                stillFailed.append((expense, error))
+                stillFailed.append((expenseToSync, error))
             }
         }
 
@@ -1364,20 +1371,21 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// Sends expense upsert to Convex and marks it pending for realtime reconciliation.
     private func queueExpenseUpsert(_ expense: Expense, participants: [ExpenseParticipant]) {
         guard session != nil, !isImporting else { return }
+        let expenseToSync = expenseForCloudSync(expense)
         pendingExpenseDeleteIds.remove(expense.id)
         pendingExpenseUpsertIds.insert(expense.id)
 
-        Task { [retryPolicy, expenseCloudService, expense, participants] in
+        Task { [retryPolicy, expenseCloudService, expenseToSync, participants] in
             do {
                 try await retryPolicy.execute {
-                    try await expenseCloudService.upsertExpense(expense, participants: participants)
+                    try await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
                 }
             } catch {
                 // Do not remove pendingExpenseUpsertIds here — concurrent in-flight writes
                 // for the same expense would lose their pending guard. The realtime reconciler
                 // clears the flag when it observes matching remote data.
                 #if DEBUG
-                print("⚠️ Failed to sync expense upsert \(expense.id): \(error.localizedDescription)")
+                print("⚠️ Failed to sync expense upsert \(expenseToSync.id): \(error.localizedDescription)")
                 #endif
             }
         }
@@ -1425,6 +1433,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         #endif
 
+        expenseToStore = expenseForCloudSync(expenseToStore)
         let participants = makeParticipants(for: expenseToStore)
         pendingExpenseDeleteIds.remove(expenseToStore.id)
         pendingExpenseUpsertIds.insert(expenseToStore.id)
@@ -1450,8 +1459,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses.append(expenseToStore)
         persistCurrentState()
         if !isImporting {
-            let participants = makeParticipants(for: expenseToStore)
-            queueExpenseUpsert(expenseToStore, participants: participants)
+            let expenseToSync = expenseForCloudSync(expenseToStore)
+            let participants = makeParticipants(for: expenseToSync)
+            queueExpenseUpsert(expenseToSync, participants: participants)
         }
     }
 
@@ -1464,8 +1474,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         expenses[idx] = expenseToStore
         persistCurrentState()
-        let participants = makeParticipants(for: expenseToStore)
-        queueExpenseUpsert(expenseToStore, participants: participants)
+        let expenseToSync = expenseForCloudSync(expenseToStore)
+        let participants = makeParticipants(for: expenseToSync)
+        queueExpenseUpsert(expenseToSync, participants: participants)
     }
 
     func deleteExpenses(groupId: UUID, at offsets: IndexSet) {
@@ -1634,11 +1645,100 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     public func overallNetBalance() -> Double {
-        var totalBalance: Double = 0
-        for group in groups {
-            totalBalance += netBalance(for: group)
+        var paidByUser: Double = 0
+        var owes: Double = 0
+
+        for expense in expenses {
+            if isMe(expense.paidByMemberId) {
+                for split in expense.splits where !isMe(split.memberId) && !split.isSettled {
+                    paidByUser += split.amount
+                }
+            } else if let split = expense.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
+                owes += split.amount
+            }
         }
-        return totalBalance
+
+        return paidByUser - owes
+    }
+
+    func resolvedContextKind(for expense: Expense) -> ExpenseContextKind {
+        if expense.contextKind == .groupedIndividual {
+            return .groupedIndividual
+        }
+        if expense.contextKind == .direct {
+            return .direct
+        }
+        if group(by: expense.groupId)?.isDirect == true {
+            return .direct
+        }
+        return .group
+    }
+
+    func hasBackingGroup(for expense: Expense) -> Bool {
+        group(by: expense.groupId) != nil
+    }
+
+    private func expenseForCloudSync(_ expense: Expense) -> Expense {
+        var normalizedExpense = expense
+        normalizedExpense.contextKind = resolvedContextKind(for: expense)
+
+        if normalizedExpense.ownerEmail == nil {
+            normalizedExpense.ownerEmail = session?.account.email
+        }
+        if normalizedExpense.ownerAccountId == nil {
+            normalizedExpense.ownerAccountId = session?.account.id
+        }
+
+        return normalizedExpense
+    }
+
+    func participantDisplayName(memberId: UUID, in expense: Expense) -> String {
+        if let cachedName = expense.participantNames?.first(where: { areSamePerson($0.key, memberId) })?.value {
+            return cachedName
+        }
+        if let groupMember = group(by: expense.groupId)?.members.first(where: { areSamePerson($0.id, memberId) }) {
+            return groupMember.name
+        }
+        if let friend = friends.first(where: { areSamePerson($0.memberId, memberId) }) {
+            let preferNicknames = session?.account.preferNicknames ?? false
+            let preferWholeNames = session?.account.preferWholeNames ?? false
+            return friend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
+        }
+        if isMe(memberId) {
+            return currentUser.name
+        }
+        return "Participant"
+    }
+
+    func expenseDisplayContextName(_ expense: Expense) -> String? {
+        switch resolvedContextKind(for: expense) {
+        case .groupedIndividual:
+            let otherNames = expense.involvedMemberIds
+                .filter { !isMe($0) }
+                .map { participantDisplayName(memberId: $0, in: expense) }
+                .filter { !$0.isEmpty && $0 != "Participant" }
+
+            guard !otherNames.isEmpty else { return nil }
+            switch otherNames.count {
+            case 1...3:
+                return otherNames.joined(separator: ", ")
+            default:
+                return "\(otherNames.prefix(2).joined(separator: ", ")) + \(otherNames.count - 2) more"
+            }
+        case .direct:
+            if let group = group(by: expense.groupId) {
+                return groupDisplayName(group)
+            }
+            if let otherMemberId = expense.involvedMemberIds.first(where: { !isMe($0) }) {
+                return participantDisplayName(memberId: otherMemberId, in: expense)
+            }
+            return nil
+        case .group:
+            if let group = group(by: expense.groupId) {
+                return groupDisplayName(group)
+            }
+            return nil
+        }
     }
 
     public func netBalance(for group: SpendingGroup) -> Double {
@@ -1663,6 +1763,30 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
 
         return paidByUser - owes
+    }
+
+    func netBalance(forFriend friend: GroupMember) -> Double {
+        var balance: Double = 0
+
+        for expense in expenses where expenseInvolves(friend: friend, in: expense) {
+            if isMe(expense.paidByMemberId) {
+                if let friendSplit = expense.splits.first(where: {
+                    isFriendMember($0.memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
+                }), !friendSplit.isSettled {
+                    balance += friendSplit.amount
+                }
+            } else if isFriendMember(
+                expense.paidByMemberId,
+                friendId: friend.id,
+                accountFriendMemberId: friend.accountFriendMemberId
+            ) {
+                if let userSplit = expense.splits.first(where: { isMe($0.memberId) }), !userSplit.isSettled {
+                    balance -= userSplit.amount
+                }
+            }
+        }
+
+        return balance
     }
 
     // MARK: - Friend Sync
@@ -1723,6 +1847,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             let mergedFriends = await MainActor.run { () -> [AccountFriend] in
                 self.groups = normalization.groups
                 self.expenses = normalization.expenses
+                self.hasCompletedInitialRemoteLoad = true
                 self.persistCurrentState()
                 self.logFetchedData(groups: normalization.groups, expenses: normalization.expenses)
                 self.processFriendsUpdate(remoteFriends)
@@ -1747,8 +1872,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
             Task { [weak self] in
                 guard let self else { return }
                 for expense in normalization.dirtyExpenses {
-                    let participants = await MainActor.run { self.makeParticipants(for: expense) }
-                    try? await self.expenseCloudService.upsertExpense(expense, participants: participants)
+                    let expenseToSync = await MainActor.run { self.expenseForCloudSync(expense) }
+                    let participants = await MainActor.run { self.makeParticipants(for: expenseToSync) }
+                    try? await self.expenseCloudService.upsertExpense(expenseToSync, participants: participants)
                 }
             }
 
@@ -1761,6 +1887,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
             print("[AppStore] ✅ Remote data sync complete")
             #endif
         } catch {
+            await MainActor.run {
+                // If the initial fetch fails after a valid session exists, allow later realtime
+                // snapshots to repopulate the store once connectivity/auth recovers.
+                self.hasCompletedInitialRemoteLoad = true
+            }
             #if DEBUG
             print("⚠️ Failed to load remote data: \(error.localizedDescription)")
             #endif
@@ -1786,7 +1917,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
             }
         }
 
-        let (normalizedExpenses, dirtyExpenses) = normalizeExpenses(expenses, aliasIds: aliasIds)
+        let (aliasNormalizedExpenses, aliasDirtyExpenses) = normalizeExpenses(expenses, aliasIds: aliasIds)
+        let (normalizedExpenses, contextDirtyExpenses) = normalizeExpenseContextKinds(
+            aliasNormalizedExpenses,
+            groups: normalizedGroups
+        )
 
         synthesizeGroupsIfNeeded(expenses: normalizedExpenses, groups: &normalizedGroups, dirtyGroups: &dirtyGroups)
 
@@ -1794,7 +1929,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             groups: normalizedGroups,
             expenses: normalizedExpenses,
             dirtyGroups: dirtyGroups,
-            dirtyExpenses: dirtyExpenses
+            dirtyExpenses: aliasDirtyExpenses + contextDirtyExpenses
         )
     }
 
@@ -1930,8 +2065,41 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return (normalized, dirty)
     }
 
+    private func normalizeExpenseContextKinds(_ expenses: [Expense], groups: [SpendingGroup]) -> ([Expense], [Expense]) {
+        let groupMap = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+        var normalized: [Expense] = []
+        var dirty: [Expense] = []
+
+        for expense in expenses {
+            let resolvedKind: ExpenseContextKind
+            if expense.contextKind == .groupedIndividual {
+                resolvedKind = .groupedIndividual
+            } else if expense.contextKind == .direct {
+                resolvedKind = .direct
+            } else if groupMap[expense.groupId]?.isDirect == true {
+                resolvedKind = .direct
+            } else {
+                resolvedKind = .group
+            }
+
+            if expense.contextKind == resolvedKind {
+                normalized.append(expense)
+            } else {
+                var updated = expense
+                updated.contextKind = resolvedKind
+                normalized.append(updated)
+                dirty.append(updated)
+            }
+        }
+
+        return (normalized, dirty)
+    }
+
     private func synthesizeGroupsIfNeeded(expenses: [Expense], groups: inout [SpendingGroup], dirtyGroups: inout [SpendingGroup]) {
-        let expensesByGroup = Dictionary(grouping: expenses, by: { $0.groupId })
+        let expensesByGroup = Dictionary(
+            grouping: expenses.filter { $0.contextKind != .groupedIndividual },
+            by: { $0.groupId }
+        )
         var existingIds: Set<UUID> = Set(groups.map(\.id))
         var nameCache: [UUID: String] = [:]
         for group in groups {
@@ -2078,6 +2246,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         for friend in friends {
             guard !isCurrentUserFriend(friend) else { continue }
+            guard isSelectableDirectExpenseFriend(friend) else { continue }
             let canonicalId = memberAliasMap[friend.memberId] ?? friend.memberId
             guard seenCanonicalIds.insert(canonicalId).inserted else { continue }
 
@@ -2466,30 +2635,24 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return friendName == currentName
     }
 
-    private func makeParticipants(for expense: Expense) -> [ExpenseParticipant] {
-        let group = group(by: expense.groupId)
-        return expense.involvedMemberIds.map { memberId in
-            // Try multiple sources for the name, in order of preference:
-            // 1. From the group members
-            // 2. From cached participantNames in the expense
-            // 3. From friends list
-            // 4. Fallback to "Participant"
-            let name: String
-            if let groupMember = group?.members.first(where: { $0.id == memberId }) {
-                name = groupMember.name
-            } else if let cachedName = expense.participantNames?[memberId] {
-                name = cachedName
-            } else if let friend = friends.first(where: { $0.memberId == memberId }) {
-                name = friend.name
-            } else {
-                name = "Participant"
-            }
+    /// Mirrors the backend `isEligibleDirectFriendRecord` predicate: accepts confirmed,
+    /// accepted, linked, or legacy (nil status) friends; rejects explicitly rejected rows.
+    private func isEligibleFriend(_ friend: AccountFriend) -> Bool {
+        let normalized = friend.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "rejected" { return false }
+        return normalized == "friend"
+            || normalized == "accepted"
+            || friend.hasLinkedAccount
+            || normalized == nil || (normalized?.isEmpty ?? false)
+    }
 
+    func makeParticipants(for expense: Expense) -> [ExpenseParticipant] {
+        return expense.involvedMemberIds.map { memberId in
             let linkedMetadata = linkedAccountMetadata(for: memberId)
 
             return ExpenseParticipant(
                 memberId: memberId,
-                name: name,
+                name: participantDisplayName(memberId: memberId, in: expense),
                 linkedAccountId: linkedMetadata.id,
                 linkedAccountEmail: linkedMetadata.email
             )
@@ -2603,6 +2766,34 @@ func completeAuthentication(id: String, email: String, name: String?) {
             .sorted(by: { $0.date > $1.date })
     }
 
+    func isGroupedIndividualExpense(_ expense: Expense) -> Bool {
+        resolvedContextKind(for: expense) == .groupedIndividual
+    }
+
+    func isDirectExpense(_ expense: Expense) -> Bool {
+        resolvedContextKind(for: expense) == .direct
+    }
+
+    func isGroupExpense(_ expense: Expense) -> Bool {
+        resolvedContextKind(for: expense) == .group
+    }
+
+    func expenses(forFriend friend: GroupMember) -> [Expense] {
+        expenses
+            .filter { expense in
+                guard expenseInvolves(friend: friend, in: expense) else { return false }
+                return isDirectExpense(expense) || isGroupedIndividualExpense(expense)
+            }
+            .sorted(by: { $0.date > $1.date })
+    }
+
+    private func expenseInvolves(friend: GroupMember, in expense: Expense) -> Bool {
+        guard expense.involvedMemberIds.contains(where: { isMe($0) }) else { return false }
+        return expense.involvedMemberIds.contains(where: {
+            isFriendMember($0, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
+        })
+    }
+
     func expensesInvolvingCurrentUser() -> [Expense] {
         let userIds = currentUserMemberIds
         return expenses
@@ -2703,6 +2894,39 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         scheduleFriendSync()
         return directGroup
+    }
+
+    func groupedIndividualDraftGroup(with friends: [GroupMember]) -> SpendingGroup {
+        var members: [GroupMember] = [
+            GroupMember(
+                id: currentUser.id,
+                name: currentUser.name,
+                profileImageUrl: currentUser.profileImageUrl,
+                profileColorHex: currentUser.profileColorHex,
+                isCurrentUser: true
+            )
+        ]
+        var seenIds: Set<UUID> = [currentUser.id]
+
+        for friend in friends where seenIds.insert(friend.id).inserted {
+            members.append(friend)
+        }
+
+        let nonSelfNames = members
+            .filter { !isCurrentUser($0) }
+            .map(\.name)
+
+        let name: String
+        switch nonSelfNames.count {
+        case 0:
+            name = currentUser.name
+        case 1...3:
+            name = nonSelfNames.joined(separator: ", ")
+        default:
+            name = "\(nonSelfNames.prefix(2).joined(separator: ", ")) + \(nonSelfNames.count - 2) more"
+        }
+
+        return SpendingGroup(name: name, members: members, isDirect: false)
     }
 
     // MARK: - Debug helpers
@@ -3085,17 +3309,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         // Separate personal (direct) and group expenses
         let personalExpenses = memberExpenses.filter { expense in
-            if let group = group(by: expense.groupId) {
-                return isDirectGroup(group)
-            }
-            return false
+            let kind = resolvedContextKind(for: expense)
+            return kind == .direct || kind == .groupedIndividual
         }
 
         let groupExpenses = memberExpenses.filter { expense in
-            if let group = group(by: expense.groupId) {
-                return !isDirectGroup(group)
-            }
-            return false
+            isGroupExpense(expense)
         }
 
         // Calculate total balance for this member
@@ -3117,10 +3336,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
 
         // Get unique group names
-        let groupIds = Set(memberExpenses.map { $0.groupId })
-        let groupNames = groupIds.compactMap { groupId in
-            group(by: groupId)?.name
-        }
+        let groupNames = Array(Set(memberExpenses.compactMap { expenseDisplayContextName($0) })).sorted()
 
         return ExpensePreview(
             personalExpenses: personalExpenses,
@@ -3389,8 +3605,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         // Sync affected expenses
         for expense in affectedExpenses {
             do {
-                let participants = await MainActor.run { makeParticipants(for: expense) }
-                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                let expenseToSync = await MainActor.run { expenseForCloudSync(expense) }
+                let participants = await MainActor.run { makeParticipants(for: expenseToSync) }
+                try await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
             } catch {
                 #if DEBUG
                 print("[AppStore] Failed to sync expense \(expense.id): \(error.localizedDescription)")
@@ -3432,8 +3649,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         var expenseErrors: [Error] = []
         for expense in affectedExpenses {
             do {
-                let participants = await MainActor.run { makeParticipants(for: expense) }
-                try await expenseCloudService.upsertExpense(expense, participants: participants)
+                let expenseToSync = await MainActor.run { expenseForCloudSync(expense) }
+                let participants = await MainActor.run { makeParticipants(for: expenseToSync) }
+                try await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
             } catch {
                 expenseErrors.append(error)
                 #if DEBUG

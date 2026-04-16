@@ -251,4 +251,145 @@ describe("clearAllForUser", () => {
       )
     ).toBe(true);
   });
+
+  test("expenses.clearAllForUser removes grouped_individual expenses and preserves other viewers", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    const ownerId = await t.run(async (ctx) => {
+      return await ctx.db.insert("accounts", {
+        id: "grouped_owner_auth",
+        email: "grouped-owner@example.com",
+        display_name: "Grouped Owner",
+        member_id: "grouped_owner_member",
+        created_at: now
+      });
+    });
+
+    const viewerId = await t.run(async (ctx) => {
+      return await ctx.db.insert("accounts", {
+        id: "grouped_viewer_auth",
+        email: "grouped-viewer@example.com",
+        display_name: "Grouped Viewer",
+        member_id: "grouped_viewer_member",
+        created_at: now
+      });
+    });
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("expenses", {
+        id: "grouped_expense_owned_by_viewer",
+        group_id: "22222222-2222-4222-8222-222222222222",
+        context_kind: "grouped_individual",
+        description: "Viewer grouped expense",
+        date: now,
+        total_amount: 18,
+        paid_by_member_id: "grouped_viewer_member",
+        involved_member_ids: ["grouped_viewer_member", "grouped_owner_member"],
+        splits: [
+          { id: "gv1", member_id: "grouped_viewer_member", amount: 9, is_settled: false },
+          { id: "go1", member_id: "grouped_owner_member", amount: 9, is_settled: false }
+        ],
+        is_settled: false,
+        owner_email: "grouped-viewer@example.com",
+        owner_account_id: "grouped_viewer_auth",
+        owner_id: viewerId,
+        participant_member_ids: ["grouped_viewer_member", "grouped_owner_member"],
+        participant_emails: ["grouped-viewer@example.com", "grouped-owner@example.com"],
+        participants: [
+          {
+            member_id: "grouped_viewer_member",
+            name: "Grouped Viewer",
+            linked_account_email: "grouped-viewer@example.com"
+          },
+          {
+            member_id: "grouped_owner_member",
+            name: "Grouped Owner",
+            linked_account_email: "grouped-owner@example.com"
+          }
+        ],
+        created_at: now,
+        updated_at: now
+      });
+
+      await ctx.db.insert("expenses", {
+        id: "grouped_expense_shared_owned_by_owner",
+        group_id: "33333333-3333-4333-8333-333333333333",
+        context_kind: "grouped_individual",
+        description: "Owner grouped expense",
+        date: now,
+        total_amount: 22,
+        paid_by_member_id: "grouped_owner_member",
+        involved_member_ids: ["grouped_viewer_member", "grouped_owner_member"],
+        splits: [
+          { id: "gv2", member_id: "grouped_viewer_member", amount: 11, is_settled: false },
+          { id: "go2", member_id: "grouped_owner_member", amount: 11, is_settled: false }
+        ],
+        is_settled: false,
+        owner_email: "grouped-owner@example.com",
+        owner_account_id: "grouped_owner_auth",
+        owner_id: ownerId,
+        participant_member_ids: ["grouped_viewer_member", "grouped_owner_member"],
+        participant_emails: ["grouped-viewer@example.com", "grouped-owner@example.com"],
+        participants: [
+          {
+            member_id: "grouped_viewer_member",
+            name: "Grouped Viewer",
+            linked_account_email: "grouped-viewer@example.com"
+          },
+          {
+            member_id: "grouped_owner_member",
+            name: "Grouped Owner",
+            linked_account_email: "grouped-owner@example.com"
+          }
+        ],
+        created_at: now,
+        updated_at: now
+      });
+
+      await ctx.db.insert("user_expenses", {
+        user_id: "grouped_viewer_auth",
+        expense_id: "grouped_expense_owned_by_viewer",
+        updated_at: now
+      });
+      await ctx.db.insert("user_expenses", {
+        user_id: "grouped_owner_auth",
+        expense_id: "grouped_expense_owned_by_viewer",
+        updated_at: now
+      });
+      await ctx.db.insert("user_expenses", {
+        user_id: "grouped_viewer_auth",
+        expense_id: "grouped_expense_shared_owned_by_owner",
+        updated_at: now
+      });
+      await ctx.db.insert("user_expenses", {
+        user_id: "grouped_owner_auth",
+        expense_id: "grouped_expense_shared_owned_by_owner",
+        updated_at: now
+      });
+    });
+
+    const viewerCtx = t.withIdentity(
+      identityFor("grouped-viewer@example.com", "grouped_viewer_auth")
+    );
+    await viewerCtx.mutation(api.expenses.clearAllForUser, {});
+
+    const expenses = await t.run(async (ctx) => await ctx.db.query("expenses").collect());
+    expect(
+      expenses.find((expense) => expense.id === "grouped_expense_owned_by_viewer")
+    ).toBeUndefined();
+    expect(
+      expenses.find((expense) => expense.id === "grouped_expense_shared_owned_by_owner")
+    ).toBeDefined();
+
+    const userExpenses = await t.run(async (ctx) => await ctx.db.query("user_expenses").collect());
+    expect(userExpenses.some((row) => row.user_id === "grouped_viewer_auth")).toBe(false);
+    expect(
+      userExpenses.some(
+        (row) =>
+          row.user_id === "grouped_owner_auth" &&
+          row.expense_id === "grouped_expense_shared_owned_by_owner"
+      )
+    ).toBe(true);
+  });
 });

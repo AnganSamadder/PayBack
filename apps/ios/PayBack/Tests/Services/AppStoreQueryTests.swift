@@ -160,6 +160,35 @@ final class AppStoreQueryTests: XCTestCase {
         XCTAssertEqual(preview.groupExpenses.count, 1)
     }
 
+    func testGenerateExpensePreview_TreatsGroupedIndividualAsPersonalWithoutBackingGroup() async throws {
+        let alice = GroupMember(name: "Alice")
+        sut.friends = [AccountFriend(memberId: alice.id, name: "Alice", status: "friend")]
+
+        let groupedExpense = Expense(
+            groupId: UUID(),
+            description: "Ad hoc dinner",
+            totalAmount: 30,
+            paidByMemberId: alice.id,
+            involvedMemberIds: [alice.id, sut.currentUser.id],
+            splits: [
+                ExpenseSplit(memberId: alice.id, amount: 15),
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 15)
+            ],
+            contextKind: .groupedIndividual,
+            participantNames: [
+                alice.id: "Alice",
+                sut.currentUser.id: sut.currentUser.name
+            ]
+        )
+        sut.addExpense(groupedExpense)
+
+        let preview = sut.generateExpensePreview(forMemberId: alice.id)
+
+        XCTAssertEqual(preview.personalExpenses.map(\.description), ["Ad hoc dinner"])
+        XCTAssertTrue(preview.groupExpenses.isEmpty)
+        XCTAssertEqual(preview.groupNames, ["Alice"])
+    }
+
     func testGenerateExpensePreview_IncludesGroupNames() async throws {
         // Given
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
@@ -195,6 +224,70 @@ final class AppStoreQueryTests: XCTestCase {
         // Then
         XCTAssertTrue(preview.groupNames.contains("Trip"))
         XCTAssertTrue(preview.groupNames.contains("Work"))
+    }
+
+    func testExpensesForFriend_IncludesDirectAndGroupedIndividualButExcludesRealGroupExpenses() async throws {
+        let alice = GroupMember(name: "Alice")
+        sut.friends = [AccountFriend(memberId: alice.id, name: "Alice", status: "friend")]
+
+        let directGroup = sut.directGroup(with: alice)
+        sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
+        let realGroup = sut.groups.first { $0.name == "Trip" }!
+        let aliceInRealGroup = realGroup.members.first { $0.name == "Alice" }!
+
+        sut.addExpense(
+            Expense(
+                groupId: directGroup.id,
+                description: "Coffee",
+                totalAmount: 10,
+                paidByMemberId: sut.currentUser.id,
+                involvedMemberIds: [sut.currentUser.id, alice.id],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 5),
+                    ExpenseSplit(memberId: alice.id, amount: 5)
+                ],
+                contextKind: .direct
+            )
+        )
+
+        sut.addExpense(
+            Expense(
+                groupId: UUID(),
+                description: "Ad hoc dinner",
+                totalAmount: 60,
+                paidByMemberId: alice.id,
+                involvedMemberIds: [sut.currentUser.id, alice.id, UUID()],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 20),
+                    ExpenseSplit(memberId: alice.id, amount: 20),
+                    ExpenseSplit(memberId: UUID(), amount: 20)
+                ],
+                contextKind: .groupedIndividual,
+                participantNames: [
+                    sut.currentUser.id: sut.currentUser.name,
+                    alice.id: "Alice"
+                ]
+            )
+        )
+
+        sut.addExpense(
+            Expense(
+                groupId: realGroup.id,
+                description: "Trip dinner",
+                totalAmount: 90,
+                paidByMemberId: aliceInRealGroup.id,
+                involvedMemberIds: [sut.currentUser.id, aliceInRealGroup.id],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 45),
+                    ExpenseSplit(memberId: aliceInRealGroup.id, amount: 45)
+                ],
+                contextKind: .group
+            )
+        )
+
+        let result = sut.expenses(forFriend: alice)
+
+        XCTAssertEqual(result.map(\.description), ["Ad hoc dinner", "Coffee"])
     }
 
     // MARK: - Friend Status Tests

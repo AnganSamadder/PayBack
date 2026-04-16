@@ -108,6 +108,9 @@ export default defineSchema({
     id: v.string(), // UUID string from client
     /** @deprecated Use group_ref instead */
     group_id: v.string(), // UUID string
+    context_kind: v.optional(
+      v.union(v.literal("group"), v.literal("direct"), v.literal("grouped_individual"))
+    ),
     description: v.string(),
     date: v.number(),
     total_amount: v.number(),
@@ -126,7 +129,7 @@ export default defineSchema({
     /** @deprecated Use owner_id instead */
     owner_account_id: v.string(),
     owner_id: v.id("accounts"),
-    group_ref: v.id("groups"),
+    group_ref: v.optional(v.id("groups")),
     participant_member_ids: v.array(v.string()),
     participant_emails: v.array(v.string()),
     participants: v.array(

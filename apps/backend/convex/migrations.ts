@@ -859,3 +859,73 @@ export const backfillFirstLastNames = internalMutation({
     return { accountsUpdated, friendsUpdated };
   }
 });
+
+/**
+ * Backfill context_kind on all expenses.
+ *
+ * Legacy expenses predate the context_kind field. Without it, the iOS client
+ * defaults to `.group`, which causes direct expenses to be re-sent with
+ * `context_kind: "group"` — the backend then rejects the upsert with
+ * "Group expenses cannot target a direct group."
+ *
+ * Resolution logic (mirrors `inferExpenseContextKind` in expenses.ts):
+ *   1. Already has context_kind → skip
+ *   2. Backing group has is_direct=true → "direct"
+ *   3. Otherwise → "group"
+ *
+ * Run via:  npx convex run --no-push migrations:backfillExpenseContextKind
+ */
+export const backfillExpenseContextKind = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const expenses = await ctx.db.query("expenses").collect();
+
+    let skipped = 0;
+    let patchedDirect = 0;
+    let patchedGroup = 0;
+
+    for (const expense of expenses) {
+      if (expense.context_kind) {
+        skipped++;
+        continue;
+      }
+
+      let contextKind: "group" | "direct" = "group";
+
+      // Look up the backing group to determine if it's a direct expense
+      if (expense.group_ref) {
+        const group = await ctx.db.get(expense.group_ref);
+        if (group?.is_direct === true) {
+          contextKind = "direct";
+        }
+      } else if (expense.group_id) {
+        // Fallback: resolve group by client id when group_ref is missing
+        const group = await ctx.db
+          .query("groups")
+          .withIndex("by_client_id", (q: any) => q.eq("id", expense.group_id))
+          .unique();
+        if (group?.is_direct === true) {
+          contextKind = "direct";
+        }
+      }
+
+      await ctx.db.patch(expense._id, {
+        context_kind: contextKind,
+        updated_at: Date.now()
+      });
+
+      if (contextKind === "direct") {
+        patchedDirect++;
+      } else {
+        patchedGroup++;
+      }
+    }
+
+    return {
+      total: expenses.length,
+      skipped,
+      patchedDirect,
+      patchedGroup
+    };
+  }
+});

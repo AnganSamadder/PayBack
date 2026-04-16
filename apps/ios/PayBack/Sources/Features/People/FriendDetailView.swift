@@ -30,7 +30,7 @@ struct FriendDetailView: View {
     }
 
     enum FriendDetailTab: String, CaseIterable, Identifiable {
-        case direct = "Direct"
+        case direct = "Individual"
         case groups = "Groups"
 
         var id: String { rawValue }
@@ -46,33 +46,7 @@ struct FriendDetailView: View {
     }
 
     private var netBalance: Double {
-        var balance: Double = 0
-
-        // Debug logging for troubleshooting
-
-        // TODO: DATABASE_INTEGRATION - Replace store.groups with database query
-        // Example: SELECT * FROM groups WHERE member_ids CONTAINS friend.id
-        for group in store.groups {
-            if group.members.contains(where: { isFriend($0.id) }) {
-                // TODO: DATABASE_INTEGRATION - Replace store.expenses(in:) with database query
-                // Example: SELECT * FROM expenses WHERE group_id = group.id AND settled = false
-                let groupExpenses = store.expenses(in: group.id)
-                for expense in groupExpenses {
-                    if isMe(expense.paidByMemberId) {
-                        // Current user paid, check if friend owes anything (only unsettled)
-                        if let friendSplit = expense.splits.first(where: { isFriend($0.memberId) }), !friendSplit.isSettled {
-                            balance += friendSplit.amount
-                        }
-                    } else if isFriend(expense.paidByMemberId) {
-                        // Friend paid, check if current user owes anything (only unsettled)
-                        if let userSplit = expense.splits.first(where: { isMe($0.memberId) }), !userSplit.isSettled {
-                            balance -= userSplit.amount
-                        }
-                    }
-                }
-            }
-        }
-        return balance
+        store.netBalance(forFriend: friend)
     }
 
     private var isSettled: Bool {
@@ -1118,20 +1092,7 @@ struct DirectExpensesView: View {
     }
 
     fileprivate var directExpenses: [Expense] {
-        // TODO: DATABASE_INTEGRATION - Replace with database query
-        // Example: SELECT * FROM groups WHERE is_direct = true AND member_ids = [currentUser.id, friend.id]
-        let directGroup = store.groups.first { group in
-            (group.isDirect ?? false) &&
-            group.members.count == 2 &&
-            group.members.contains(where: { isMe($0.id) }) &&
-            group.members.contains(where: { isFriend($0.id) })
-        }
-
-        guard let directGroup = directGroup else { return [] }
-
-        // TODO: DATABASE_INTEGRATION - Replace store.expenses(in:) with database query
-        // Example: SELECT * FROM expenses WHERE group_id = directGroup.id
-        return store.expenses(in: directGroup.id)
+        store.expenses(forFriend: friend)
     }
 
     var body: some View {
@@ -1262,6 +1223,36 @@ struct DirectExpenseCard: View {
         }
     }
 
+    private var primaryAmount: Double {
+        if isMe(expense.paidByMemberId) {
+            return friendSplit?.amount ?? 0
+        }
+        return mySplit?.amount ?? 0
+    }
+
+    private var relationshipText: String {
+        if isMe(expense.paidByMemberId) {
+            return isRelevantSplitSettled ? "\(friend.name) paid \(currency(primaryAmount))" : "\(friend.name) owes me \(currency(primaryAmount))"
+        }
+        return isRelevantSplitSettled ? "You paid \(currencyPositive(primaryAmount))" : "You owe \(friend.name) \(currencyPositive(primaryAmount))"
+    }
+
+    private var groupedIndividualContextText: String? {
+        guard store.resolvedContextKind(for: expense) == .groupedIndividual else { return nil }
+
+        let otherNames = expense.involvedMemberIds.compactMap { memberId -> String? in
+            guard !isMe(memberId), !isFriend(memberId) else { return nil }
+            let name = store.participantDisplayName(memberId: memberId, in: expense)
+            return name == "Participant" ? nil : name
+        }
+
+        guard let firstName = otherNames.first else { return nil }
+        if otherNames.count == 1 {
+            return "with \(firstName)"
+        }
+        return "with \(firstName) and \(otherNames.count - 1) other"
+    }
+
     var body: some View {
         let content = VStack(spacing: AppMetrics.FriendDetail.expenseCardInternalSpacing) {
             HStack {
@@ -1283,41 +1274,26 @@ struct DirectExpenseCard: View {
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.expenseAmountSpacing) {
-                    Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    Text(primaryAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                         .font(.system(.body, design: .rounded, weight: .semibold))
                         .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
 
-                    if isMe(expense.paidByMemberId) {
-                        if let split = friendSplit {
-                            if split.isSettled {
-                                HStack(spacing: 4) {
-                                    Text("\(friend.name) paid \(currency(split.amount))")
-                                        .font(.system(.caption, design: .rounded, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.green)
-                                }
-                            } else {
-                                Text("\(friend.name) owes \(currency(split.amount))")
-                                    .font(.system(.caption, design: .rounded, weight: .medium))
-                                    .foregroundStyle(.green)
-                            }
-                        }
-                    } else if let split = mySplit {
-                        if split.isSettled {
-                            HStack(spacing: 4) {
-                                Text("You paid \(currencyPositive(split.amount))")
-                                    .font(.system(.caption, design: .rounded, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.green)
-                            }
-                        } else {
-                            Text("You owe \(currencyPositive(split.amount))")
-                                .font(.system(.caption, design: .rounded, weight: .medium))
-                                .foregroundStyle(.red)
+                    Text(relationshipText)
+                        .font(.system(.caption, design: .rounded, weight: .medium))
+                        .foregroundStyle(isMe(expense.paidByMemberId) ? .green : .red)
+
+                    if let groupedIndividualContextText {
+                        Text(groupedIndividualContextText)
+                            .font(.system(.caption2, design: .rounded, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    } else if isRelevantSplitSettled {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.green)
+                            Text("Settled")
+                                .font(.system(.caption2, design: .rounded, weight: .medium))
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -1358,8 +1334,7 @@ struct DirectExpenseCard: View {
 
     private func memberName(for id: UUID) -> String {
         if isMe(id) { return "You" }
-        guard let group = store.group(by: expense.groupId) else { return "Unknown" }
-        return group.members.first { $0.id == id }?.name ?? "Unknown"
+        return store.participantDisplayName(memberId: id, in: expense)
     }
 }
 
@@ -1514,8 +1489,7 @@ struct GroupExpenseRow: View {
     }
 
     private func memberName(for id: UUID) -> String {
-        guard let group = store.group(by: expense.groupId) else { return "Unknown" }
-        return group.members.first { $0.id == id }?.name ?? "Unknown"
+        store.participantDisplayName(memberId: id, in: expense)
     }
 }
 

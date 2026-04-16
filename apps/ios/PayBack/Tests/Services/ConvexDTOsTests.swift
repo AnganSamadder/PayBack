@@ -10,6 +10,7 @@ final class ConvexDTOsTests: XCTestCase {
         let dto = ConvexExpenseDTO(
             id: "550e8400-e29b-41d4-a716-446655440001",
             group_id: "550e8400-e29b-41d4-a716-446655440002",
+            context_kind: "grouped_individual",
             description: "Dinner",
             date: 1704067200000, // 2024-01-01 00:00:00 UTC in ms
             total_amount: 100.50,
@@ -36,12 +37,16 @@ final class ConvexDTOsTests: XCTestCase {
         XCTAssertEqual(expense.isSettled, false)
         XCTAssertEqual(expense.involvedMemberIds.count, 2)
         XCTAssertEqual(expense.splits.count, 2)
+        XCTAssertEqual(expense.contextKind, .groupedIndividual)
+        XCTAssertEqual(expense.ownerEmail, "owner@test.com")
+        XCTAssertEqual(expense.ownerAccountId, "owner-account-id")
     }
 
     func testConvexExpenseDTO_toExpense_InvalidUUID_GeneratesNewUUID() {
         let dto = ConvexExpenseDTO(
             id: "invalid-uuid",
             group_id: "also-invalid",
+            context_kind: nil,
             description: "Test",
             date: 1704067200000,
             total_amount: 50.0,
@@ -62,12 +67,14 @@ final class ConvexDTOsTests: XCTestCase {
         XCTAssertNotNil(expense.id)
         XCTAssertNotNil(expense.groupId)
         XCTAssertNotNil(expense.paidByMemberId)
+        XCTAssertEqual(expense.contextKind, .group)
     }
 
     func testConvexExpenseDTO_toExpense_DateConversion() {
         let dto = ConvexExpenseDTO(
             id: "550e8400-e29b-41d4-a716-446655440001",
             group_id: "550e8400-e29b-41d4-a716-446655440002",
+            context_kind: nil,
             description: "Test",
             date: 1704067200000, // 2024-01-01 00:00:00 UTC
             total_amount: 10.0,
@@ -86,6 +93,28 @@ final class ConvexDTOsTests: XCTestCase {
 
         // Verify date is correctly converted from ms to Date
         XCTAssertEqual(expense.date.timeIntervalSince1970, 1704067200.0, accuracy: 1.0)
+    }
+
+    func testConvexExpenseDTO_toExpense_MissingContextKindDefaultsToGroup() {
+        let dto = ConvexExpenseDTO(
+            id: "550e8400-e29b-41d4-a716-446655440001",
+            group_id: "550e8400-e29b-41d4-a716-446655440002",
+            context_kind: nil,
+            description: "Legacy Expense",
+            date: 1704067200000,
+            total_amount: 25.0,
+            paid_by_member_id: "550e8400-e29b-41d4-a716-446655440003",
+            involved_member_ids: [],
+            splits: [],
+            is_settled: false,
+            owner_email: nil,
+            owner_account_id: nil,
+            participant_member_ids: nil,
+            participants: nil,
+            subexpenses: nil
+        )
+
+        XCTAssertEqual(dto.toExpense().contextKind, .group)
     }
 
     // MARK: - ConvexSplitDTO Tests
