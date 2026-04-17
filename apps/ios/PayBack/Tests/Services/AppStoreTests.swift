@@ -1417,11 +1417,9 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Group", memberNames: ["Alice", "Bob"])
-        try await Task.sleep(nanoseconds: 200_000_000)
 
         guard let group = sut.groups.first else {
             XCTFail("Group not created")
@@ -1458,11 +1456,9 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Old Name", memberNames: ["Alice"])
-        try await Task.sleep(nanoseconds: 200_000_000)
 
         guard let group = sut.groups.first else {
             XCTFail("Group not created")
@@ -1483,11 +1479,9 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Group", memberNames: ["Alice"])
-        try await Task.sleep(nanoseconds: 200_000_000)
 
         guard let group = sut.groups.first else {
             XCTFail("Group not created")
@@ -1535,12 +1529,10 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Group 1", memberNames: ["Alice"])
         sut.addGroup(name: "Group 2", memberNames: ["Bob"])
-        try await Task.sleep(nanoseconds: 200_000_000)
 
         guard sut.groups.count == 2 else {
             XCTFail("Groups not created")
@@ -1589,11 +1581,9 @@ final class AppStoreTests: XCTestCase {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         sut.addGroup(name: "Group", memberNames: ["Alice", "Bob"])
-        try await Task.sleep(nanoseconds: 200_000_000)
 
         guard let group = sut.groups.first else {
             XCTFail("Group not created")
