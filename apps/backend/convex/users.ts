@@ -383,6 +383,14 @@ export const store = mutation({
 
     await checkRateLimit(ctx, identity.subject, "users:store", 10);
 
+    const deletionReceipt = await ctx.db
+      .query("account_deletion_receipts")
+      .withIndex("by_auth_subject", (q) => q.eq("auth_subject", identity.subject))
+      .unique();
+    if (deletionReceipt) {
+      throw new Error("This authenticated account has been deleted");
+    }
+
     // Check if we already have an account for this user
 
     const user = await ctx.db
@@ -391,6 +399,9 @@ export const store = mutation({
       .unique();
 
     if (user !== null) {
+      if (user.status === "deleted") {
+        throw new Error("This authenticated account has been deleted");
+      }
       // Update existing user if needed (e.g. name changed)
       if (user.display_name !== identity.name && identity.name) {
         await ctx.db.patch(user._id, {
@@ -449,7 +460,7 @@ export const viewer = query({
       .withIndex("by_email", (q) => q.eq("email", identity.email!))
       .unique();
 
-    if (!user) {
+    if (!user || user.status === "deleted") {
       return null;
     }
 

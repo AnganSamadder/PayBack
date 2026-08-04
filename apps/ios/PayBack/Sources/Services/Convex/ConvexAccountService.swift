@@ -57,9 +57,12 @@ actor ConvexAccountService: AccountService {
     }
 
     func lookupAccount(byEmail email: String) async throws -> UserAccount? {
-        // We use the 'users:viewer' query which returns the account for the authenticated user.
+        let requestedEmail = try normalizedEmail(from: email)
+        // `users:viewer` is intentionally self-only. Never return the viewer for a
+        // different requested email, which would create an account-enumeration API.
         for try await value in client.subscribe(to: "users:viewer", yielding: UserViewerDTO?.self).values {
              guard let dto = value else { return nil }
+             guard dto.email.lowercased() == requestedEmail else { return nil }
              return UserAccount(
                  id: dto.id,
                  email: dto.email,
@@ -322,7 +325,27 @@ actor ConvexAccountService: AccountService {
     }
 
     func selfDeleteAccount() async throws {
-        _ = try await client.mutation("cleanup:selfDeleteAccount", with: [:])
+        let receipt: ConvexSelfDeletionReceiptDTO = try await client.mutation(
+            "cleanup:selfDeleteAccount",
+            with: [:]
+        )
+        guard receipt.success, receipt.expensesPreserved else {
+            throw PayBackError.underlying(message: "Account deletion was not acknowledged.")
+        }
+    }
+
+    private struct SelfDeletionStatusDTO: Decodable {
+        let completed: Bool
+    }
+
+    func hasCompletedSelfDeletion() async throws -> Bool {
+        for try await status in client.subscribe(
+            to: "cleanup:selfDeletionStatus",
+            yielding: SelfDeletionStatusDTO.self
+        ).values {
+            return status.completed
+        }
+        return false
     }
 
     /// Monitors the current user's session status in real-time

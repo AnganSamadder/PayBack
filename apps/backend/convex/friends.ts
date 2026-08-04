@@ -115,14 +115,16 @@ export const list = query({
             ? await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id)
             : null);
 
-        if (!linkedAccount) {
+        if (!linkedAccount || linkedAccount.status === "deleted") {
           validatedFriends.push({
             ...friend,
             member_id: friend.normalizedMemberId,
             has_linked_account: false,
             linked_account_id: undefined,
             linked_account_email: undefined,
-            linked_member_id: undefined,
+            linked_member_id:
+              linkedAccount?.status === "deleted" ? friend.linked_member_id : undefined,
+            link_state: linkedAccount?.status === "deleted" ? "ghost" : "unlinked",
             alias_member_ids: []
           });
           continue;
@@ -154,14 +156,16 @@ export const list = query({
         const linkedByMemberId =
           context?.account ?? (await findAccountByMemberId(ctx.db, friend.linked_member_id));
 
-        if (!linkedByMemberId) {
+        if (!linkedByMemberId || linkedByMemberId.status === "deleted") {
           validatedFriends.push({
             ...friend,
             member_id: friend.normalizedMemberId,
             has_linked_account: false,
             linked_account_id: undefined,
             linked_account_email: undefined,
-            linked_member_id: undefined,
+            linked_member_id:
+              linkedByMemberId?.status === "deleted" ? friend.linked_member_id : undefined,
+            link_state: linkedByMemberId?.status === "deleted" ? "ghost" : "unlinked",
             alias_member_ids: []
           });
           continue;

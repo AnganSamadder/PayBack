@@ -3,6 +3,26 @@ import XCTest
 
 /// Comprehensive tests for Convex DTO mapping logic
 final class ConvexDTOsTests: XCTestCase {
+    func testSelfDeletionReceiptDecodesStructuredMutationResult() throws {
+        let data = """
+        {
+          "success": true,
+          "state": "deleted",
+          "requestId": "user_123",
+          "deletedAt": 1722384000000,
+          "friendshipsUnlinked": 2,
+          "expensesPreserved": true
+        }
+        """.data(using: .utf8)!
+
+        let receipt = try JSONDecoder().decode(ConvexSelfDeletionReceiptDTO.self, from: data)
+
+        XCTAssertTrue(receipt.success)
+        XCTAssertEqual(receipt.state, "deleted")
+        XCTAssertEqual(receipt.requestId, "user_123")
+        XCTAssertEqual(receipt.friendshipsUnlinked, 2)
+        XCTAssertTrue(receipt.expensesPreserved)
+    }
 
     // MARK: - ConvexExpenseDTO Tests
 

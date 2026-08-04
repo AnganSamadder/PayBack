@@ -1,8 +1,9 @@
-import { mutation, internalMutation } from "./_generated/server";
+import { mutation, internalMutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { Doc } from "./_generated/dataModel";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { findAccountByAuthIdOrDocId, findAccountByMemberId, normalizeMemberId } from "./identity";
-import { reconcileUserExpenses } from "./helpers";
+import { reconcileExpenseVisibility, reconcileUserExpenses } from "./helpers";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -157,6 +158,60 @@ async function pruneAliasMemberIdsFromAccount(
     alias_member_ids: nextAliasIds,
     updated_at: Date.now()
   });
+}
+
+async function findDeterministicSteward(
+  ctx: any,
+  memberIds: Iterable<string>,
+  excludedAccountId: string
+): Promise<Doc<"accounts"> | null> {
+  const candidates = new Map<string, Doc<"accounts">>();
+  for (const memberId of memberIds) {
+    const account = await findAccountByMemberId(ctx.db, memberId);
+    if (account && account.id !== excludedAccountId && account.status !== "deleted") {
+      candidates.set(account.id, account);
+    }
+  }
+  return (
+    Array.from(candidates.values()).sort((left, right) => left.id.localeCompare(right.id))[0] ??
+    null
+  );
+}
+
+function scrubDeletedAccountFromExpense(
+  expense: Doc<"expenses">,
+  deletedMemberIds: ReadonlySet<string>,
+  deletedAccountId: string,
+  deletedEmail: string,
+  steward: Doc<"accounts"> | null
+) {
+  const normalizedDeletedEmail = deletedEmail.toLowerCase().trim();
+  const ownedByDeletedAccount =
+    expense.owner_account_id === deletedAccountId ||
+    expense.owner_email.toLowerCase().trim() === normalizedDeletedEmail;
+
+  return {
+    owner_id: ownedByDeletedAccount && steward ? steward._id : expense.owner_id,
+    owner_account_id: ownedByDeletedAccount && steward ? steward.id : expense.owner_account_id,
+    owner_email: ownedByDeletedAccount && steward ? steward.email : expense.owner_email,
+    participant_emails: expense.participant_emails.filter(
+      (email) => email.toLowerCase().trim() !== normalizedDeletedEmail
+    ),
+    participants: expense.participants.map((participant) => {
+      const isDeletedParticipant =
+        deletedMemberIds.has(normalizeMemberId(participant.member_id)) ||
+        participant.linked_account_id === deletedAccountId ||
+        participant.linked_account_email?.toLowerCase().trim() === normalizedDeletedEmail;
+      if (!isDeletedParticipant) return participant;
+      return {
+        ...participant,
+        name: "Deleted User",
+        linked_account_id: undefined,
+        linked_account_email: undefined
+      };
+    }),
+    updated_at: Date.now()
+  };
 }
 
 const MAX_SAMPLE_IDS = 10;
@@ -778,10 +833,49 @@ export const hardDeleteAccount = internalMutation({
   }
 });
 
+export const selfDeletionStatus = query({
+  args: {},
+  returns: v.object({ completed: v.boolean() }),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Unauthenticated");
+    }
+
+    const receipt = await ctx.db
+      .query("account_deletion_receipts")
+      .withIndex("by_auth_subject", (q) => q.eq("auth_subject", identity.subject))
+      .unique();
+    return { completed: receipt !== null };
+  }
+});
+
 export const selfDeleteAccount = mutation({
   args: { accountEmail: v.optional(v.string()) },
+  returns: v.object({
+    success: v.boolean(),
+    state: v.union(v.literal("deleted"), v.literal("already_deleted")),
+    requestId: v.string(),
+    deletedAt: v.number(),
+    friendshipsUnlinked: v.number(),
+    expensesPreserved: v.boolean()
+  }),
   handler: async (ctx, args) => {
-    const { user } = await getCurrentUser(ctx);
+    const { identity, user } = await getCurrentUser(ctx);
+    const priorReceipt = await ctx.db
+      .query("account_deletion_receipts")
+      .withIndex("by_auth_subject", (q: any) => q.eq("auth_subject", identity.subject))
+      .unique();
+    if (priorReceipt) {
+      return {
+        success: true,
+        state: "already_deleted" as const,
+        requestId: priorReceipt.request_id,
+        deletedAt: priorReceipt.deleted_at,
+        friendshipsUnlinked: priorReceipt.friendships_unlinked,
+        expensesPreserved: priorReceipt.expenses_preserved
+      };
+    }
     if (!user) {
       throw new Error("User not found");
     }
@@ -791,164 +885,275 @@ export const selfDeleteAccount = mutation({
       throw new Error("Can only delete your own account");
     }
 
+    const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id ?? user.id);
+    const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalId);
+    const linkedRows = new Map<string, any>();
+    const rowsByAccountId = await ctx.db
+      .query("account_friends")
+      .withIndex("by_linked_account_id", (q: any) => q.eq("linked_account_id", user.id))
+      .collect();
+    const rowsByEmail = await ctx.db
+      .query("account_friends")
+      .withIndex("by_linked_account_email", (q: any) => q.eq("linked_account_email", accountEmail))
+      .collect();
+    for (const row of [...rowsByAccountId, ...rowsByEmail]) {
+      linkedRows.set(row._id, row);
+    }
+    for (const memberId of new Set([
+      canonicalId,
+      ...equivalentIds,
+      ...(user.alias_member_ids ?? [])
+    ])) {
+      const rows = await ctx.db
+        .query("account_friends")
+        .withIndex("by_linked_member_id", (q: any) =>
+          q.eq("linked_member_id", normalizeMemberId(memberId))
+        )
+        .collect();
+      for (const row of rows) linkedRows.set(row._id, row);
+    }
+
     let friendshipsUnlinked = 0;
+    const deletedAt = Date.now();
+    for (const friendRecord of linkedRows.values()) {
+      if (friendRecord.account_email === accountEmail) continue;
+      await ctx.db.patch(friendRecord._id, {
+        has_linked_account: false,
+        linked_account_id: undefined,
+        linked_account_email: undefined,
+        link_state: "ghost",
+        status: "ghost",
+        updated_at: deletedAt
+      });
+      friendshipsUnlinked++;
+    }
 
-    if (user.member_id) {
-      const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id);
-      const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalId);
+    const deletedMemberIds = new Set(
+      [canonicalId, ...equivalentIds, ...(user.alias_member_ids ?? [])].map(normalizeMemberId)
+    );
+    const excludedAccountIds = new Set([user.id]);
+    const handledExpenseIds = new Set<string>();
 
-      const allFriends = await ctx.db.query("account_friends").collect();
+    const myUserExpenses = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_user_id", (q: any) => q.eq("user_id", user.id))
+      .collect();
 
-      for (const friendRecord of allFriends) {
-        if (friendRecord.account_email === accountEmail) continue;
+    const ownedGroups = new Map<string, Doc<"groups">>();
+    for (const group of await ctx.db
+      .query("groups")
+      .withIndex("by_owner_id", (q: any) => q.eq("owner_id", user._id))
+      .collect()) {
+      ownedGroups.set(group._id, group);
+    }
+    for (const group of await ctx.db
+      .query("groups")
+      .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", user.id))
+      .collect()) {
+      ownedGroups.set(group._id, group);
+    }
+    for (const group of await ctx.db
+      .query("groups")
+      .withIndex("by_owner_email", (q: any) => q.eq("owner_email", accountEmail))
+      .collect()) {
+      ownedGroups.set(group._id, group);
+    }
 
-        const pointsToMe =
-          friendRecord.linked_account_email === accountEmail ||
-          friendRecord.linked_account_id === user.id ||
-          equivalentIds.includes(friendRecord.member_id);
+    for (const group of ownedGroups.values()) {
+      const steward = await findDeterministicSteward(
+        ctx,
+        group.members
+          .map((member) => member.id)
+          .filter((memberId) => !deletedMemberIds.has(normalizeMemberId(memberId))),
+        user.id
+      );
+      const groupExpensesByClientId = await ctx.db
+        .query("expenses")
+        .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
+        .collect();
+      const groupExpensesByReference = await ctx.db
+        .query("expenses")
+        .withIndex("by_group_ref", (q: any) => q.eq("group_ref", group._id))
+        .collect();
+      const groupExpenses = Array.from(
+        new Map(
+          [...groupExpensesByClientId, ...groupExpensesByReference].map((expense) => [
+            expense._id,
+            expense
+          ])
+        ).values()
+      );
 
-        if (pointsToMe && friendRecord.has_linked_account) {
-          await ctx.db.patch(friendRecord._id, {
-            has_linked_account: false,
-            linked_account_id: undefined,
-            linked_account_email: undefined,
-            updated_at: Date.now()
-          });
-          friendshipsUnlinked++;
+      if (!steward) {
+        for (const expense of groupExpenses) {
+          await reconcileUserExpenses(ctx, expense.id, []);
+          await ctx.db.delete(expense._id);
+          handledExpenseIds.add(expense.id);
         }
+        await ctx.db.delete(group._id);
+        continue;
       }
+
+      await ctx.db.patch(group._id, {
+        owner_id: steward._id,
+        owner_account_id: steward.id,
+        owner_email: steward.email,
+        members: group.members.map((member) =>
+          deletedMemberIds.has(normalizeMemberId(member.id))
+            ? {
+                ...member,
+                name: "Deleted User",
+                profile_image_url: undefined,
+                profile_avatar_color: undefined,
+                is_current_user: undefined
+              }
+            : member
+        ),
+        updated_at: deletedAt
+      });
+
+      for (const expense of groupExpenses) {
+        const patch = scrubDeletedAccountFromExpense(
+          expense,
+          deletedMemberIds,
+          user.id,
+          accountEmail,
+          steward
+        );
+        await ctx.db.patch(expense._id, patch);
+        await reconcileExpenseVisibility(ctx, { ...expense, ...patch }, excludedAccountIds);
+        handledExpenseIds.add(expense.id);
+      }
+    }
+
+    for (const visibilityRow of myUserExpenses) {
+      if (handledExpenseIds.has(visibilityRow.expense_id)) continue;
+      const expense = await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q: any) => q.eq("id", visibilityRow.expense_id))
+        .unique();
+      if (!expense) continue;
+
+      const ownedByDeletedAccount =
+        expense.owner_id === user._id ||
+        expense.owner_account_id === user.id ||
+        expense.owner_email.toLowerCase().trim() === accountEmail;
+      const steward = ownedByDeletedAccount
+        ? await findDeterministicSteward(
+            ctx,
+            [
+              ...expense.participant_member_ids,
+              ...expense.involved_member_ids,
+              ...expense.participants.map((participant) => participant.member_id)
+            ].filter((memberId) => !deletedMemberIds.has(normalizeMemberId(memberId))),
+            user.id
+          )
+        : null;
+
+      if (ownedByDeletedAccount && !steward) {
+        await reconcileUserExpenses(ctx, expense.id, []);
+        await ctx.db.delete(expense._id);
+        continue;
+      }
+
+      const patch = scrubDeletedAccountFromExpense(
+        expense,
+        deletedMemberIds,
+        user.id,
+        accountEmail,
+        steward
+      );
+      await ctx.db.patch(expense._id, patch);
+      await reconcileExpenseVisibility(ctx, { ...expense, ...patch }, excludedAccountIds);
+    }
+
+    const ephemeralRows = new Map<string, { _id: any }>();
+    for (const request of await ctx.db
+      .query("link_requests")
+      .withIndex("by_requester_id", (q: any) => q.eq("requester_id", user.id))
+      .collect()) {
+      ephemeralRows.set(request._id, request);
+    }
+    for (const request of await ctx.db
+      .query("link_requests")
+      .withIndex("by_recipient_email", (q: any) => q.eq("recipient_email", accountEmail))
+      .collect()) {
+      ephemeralRows.set(request._id, request);
+    }
+    for (const request of await ctx.db
+      .query("link_requests")
+      .withIndex("by_requester_email", (q: any) => q.eq("requester_email", accountEmail))
+      .collect()) {
+      ephemeralRows.set(request._id, request);
+    }
+    for (const invite of await ctx.db
+      .query("invite_tokens")
+      .withIndex("by_creator_id", (q: any) => q.eq("creator_id", user.id))
+      .collect()) {
+      ephemeralRows.set(invite._id, invite);
+    }
+    for (const invite of await ctx.db
+      .query("invite_tokens")
+      .withIndex("by_creator_email", (q: any) => q.eq("creator_email", accountEmail))
+      .collect()) {
+      ephemeralRows.set(invite._id, invite);
+    }
+    for (const request of await ctx.db
+      .query("friend_requests")
+      .withIndex("by_sender_id", (q: any) => q.eq("sender_id", user._id))
+      .collect()) {
+      ephemeralRows.set(request._id, request);
+    }
+    for (const request of await ctx.db
+      .query("friend_requests")
+      .withIndex("by_recipient_email", (q: any) => q.eq("recipient_email", accountEmail))
+      .collect()) {
+      ephemeralRows.set(request._id, request);
+    }
+    for (const row of ephemeralRows.values()) await ctx.db.delete(row._id);
+
+    const tombstoneEmail = `deleted+${user._id}@payback.invalid`;
+    const ownedAliases = await ctx.db
+      .query("member_aliases")
+      .withIndex("by_account_email", (q: any) => q.eq("account_email", accountEmail))
+      .collect();
+    for (const alias of ownedAliases) {
+      await ctx.db.patch(alias._id, { account_email: tombstoneEmail });
     }
 
     const myFriends = await ctx.db
       .query("account_friends")
       .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
       .collect();
+    for (const friend of myFriends) await ctx.db.delete(friend._id);
 
-    for (const friend of myFriends) {
-      await ctx.db.delete(friend._id);
-    }
+    for (const ue of myUserExpenses) await ctx.db.delete(ue._id);
 
-    const membershipCanonical = await resolveCanonicalMemberIdInternal(
-      ctx.db,
-      user.member_id ?? user.id
-    );
-    const membershipEquivalent = await getAllEquivalentMemberIds(ctx.db, membershipCanonical);
-    const membershipIds = new Set([
-      normalizeMemberId(membershipCanonical),
-      ...membershipEquivalent.map((id) => normalizeMemberId(id)),
-      ...(user.alias_member_ids || []).map((id: string) => normalizeMemberId(id))
-    ]);
-
-    const ownedGroupsByAccount = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", user.id))
-      .collect();
-    const ownedGroupsByEmail = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_email", (q: any) => q.eq("owner_email", accountEmail))
-      .collect();
-    const ownedGroupMap = new Map<string, any>();
-    for (const group of ownedGroupsByAccount) {
-      ownedGroupMap.set(group._id, group);
-    }
-    for (const group of ownedGroupsByEmail) {
-      ownedGroupMap.set(group._id, group);
-    }
-
-    let ownedGroupsDeleted = 0;
-    let ownedExpensesDeleted = 0;
-
-    for (const group of ownedGroupMap.values()) {
-      const groupExpenses = await ctx.db
-        .query("expenses")
-        .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-        .collect();
-      for (const expense of groupExpenses) {
-        await reconcileUserExpenses(ctx, expense.id, []);
-        await ctx.db.delete(expense._id);
-        ownedExpensesDeleted++;
-      }
-      await ctx.db.delete(group._id);
-      ownedGroupsDeleted++;
-    }
-
-    const ownedExpensesByAccount = await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", user.id))
-      .collect();
-    const ownedExpensesByEmail = await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_email", (q: any) => q.eq("owner_email", accountEmail))
-      .collect();
-    const ownedExpenseMap = new Map<string, any>();
-    for (const expense of ownedExpensesByAccount) {
-      ownedExpenseMap.set(expense._id, expense);
-    }
-    for (const expense of ownedExpensesByEmail) {
-      ownedExpenseMap.set(expense._id, expense);
-    }
-    for (const expense of ownedExpenseMap.values()) {
-      await reconcileUserExpenses(ctx, expense.id, []);
-      await ctx.db.delete(expense._id);
-      ownedExpensesDeleted++;
-    }
-
-    // Leave shared groups by removing all IDs equivalent to the current user.
-    const allGroups = await ctx.db.query("groups").collect();
-    let sharedGroupsUpdated = 0;
-    for (const group of allGroups) {
-      if (ownedGroupMap.has(group._id)) continue;
-
-      const hasMembership = group.members.some((member: any) =>
-        membershipIds.has(normalizeMemberId(member.id))
-      );
-      if (!hasMembership) continue;
-
-      const remainingMembers = group.members.filter(
-        (member: any) => !membershipIds.has(normalizeMemberId(member.id))
-      );
-      if (remainingMembers.length === group.members.length) continue;
-
-      if (remainingMembers.length === 0) {
-        const groupExpenses = await ctx.db
-          .query("expenses")
-          .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-          .collect();
-        for (const expense of groupExpenses) {
-          await reconcileUserExpenses(ctx, expense.id, []);
-          await ctx.db.delete(expense._id);
-          ownedExpensesDeleted++;
-        }
-        await ctx.db.delete(group._id);
-        ownedGroupsDeleted++;
-      } else {
-        await ctx.db.patch(group._id, {
-          members: remainingMembers,
-          updated_at: Date.now()
-        });
-        sharedGroupsUpdated++;
-      }
-    }
-
-    // FAN-OUT CLEANUP: Delete my user_expenses visibility view
-    const myUserExpenses = await ctx.db
-      .query("user_expenses")
-      .withIndex("by_user_id", (q: any) => q.eq("user_id", user.id))
-      .collect();
-    for (const ue of myUserExpenses) {
-      await ctx.db.delete(ue._id);
-    }
-
-    await ctx.db.delete(user._id);
+    await ctx.db.insert("account_deletion_receipts", {
+      auth_subject: identity.subject,
+      request_id: user.id,
+      deleted_at: deletedAt,
+      friendships_unlinked: friendshipsUnlinked,
+      expenses_preserved: true
+    });
+    await ctx.db.patch(user._id, {
+      email: tombstoneEmail,
+      display_name: "Deleted User",
+      first_name: undefined,
+      last_name: undefined,
+      profile_image_url: undefined,
+      status: "deleted",
+      deleted_at: deletedAt,
+      updated_at: deletedAt
+    });
 
     return {
       success: true,
-      message: "Account deleted with owned data and visibility cleanup",
+      state: "deleted" as const,
+      requestId: user.id,
+      deletedAt,
       friendshipsUnlinked,
-      ownedGroupsDeleted,
-      ownedExpensesDeleted,
-      sharedGroupsUpdated,
-      expensesPreserved: false
+      expensesPreserved: true
     };
   }
 });

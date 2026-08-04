@@ -1,6 +1,15 @@
 // swiftlint:disable identifier_name
 import Foundation
 
+struct ConvexSelfDeletionReceiptDTO: Decodable, Sendable {
+    let success: Bool
+    let state: String
+    let requestId: String
+    let deletedAt: Double
+    let friendshipsUnlinked: Int
+    let expensesPreserved: Bool
+}
+
 // MARK: - Expense DTOs
 
 /// Internal DTO for Convex expense data - used for mapping from backend to domain models

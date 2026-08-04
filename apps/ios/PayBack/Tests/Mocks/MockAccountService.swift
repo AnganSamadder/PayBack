@@ -8,6 +8,8 @@ actor MockAccountServiceForAppStore: AccountService {
     private var friends: [String: [AccountFriend]] = [:] // email -> friends
     private var friendSyncHistory: [String: [[AccountFriend]]] = [:] // email -> sync snapshots
     private var shouldFail: Bool = false
+    private var selfDeleteCallCount = 0
+    private var completedSelfDeletion = false
 
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -95,6 +97,8 @@ actor MockAccountServiceForAppStore: AccountService {
         friends.removeAll()
         friendSyncHistory.removeAll()
         shouldFail = false
+        selfDeleteCallCount = 0
+        completedSelfDeletion = false
     }
 
     func latestSyncedFriends(accountEmail: String) -> [AccountFriend]? {
@@ -147,9 +151,21 @@ actor MockAccountServiceForAppStore: AccountService {
     }
 
     func selfDeleteAccount() async throws {
+        selfDeleteCallCount += 1
         if shouldFail { throw PayBackError.networkUnavailable }
-        // Mock implementation: could remove the account from internal storage if we tracked "current user",
-        // but for now just succeeding is enough for most tests unless we test the side effects explicitly.
+    }
+
+    func selfDeleteCalls() -> Int {
+        selfDeleteCallCount
+    }
+
+    func hasCompletedSelfDeletion() async throws -> Bool {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        return completedSelfDeletion
+    }
+
+    func setCompletedSelfDeletion(_ completed: Bool) {
+        completedSelfDeletion = completed
     }
 
     nonisolated func monitorSession() -> AsyncStream<UserAccount?> {

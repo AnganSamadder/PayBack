@@ -1,4 +1,6 @@
 import { MutationCtx, QueryCtx } from "./_generated/server";
+import { Doc } from "./_generated/dataModel";
+import { findAccountByAuthIdOrDocId, findAccountByMemberId } from "./identity";
 
 export async function getCurrentUserOrThrow(ctx: QueryCtx | MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
@@ -50,6 +52,87 @@ export async function reconcileUserExpenses(
   );
 
   await Promise.all(toRemoveRows.map((row) => ctx.db.delete(row._id)));
+}
+
+type ExpenseVisibilitySource = Pick<
+  Doc<"expenses">,
+  | "id"
+  | "owner_id"
+  | "owner_account_id"
+  | "owner_email"
+  | "participant_emails"
+  | "participant_member_ids"
+  | "involved_member_ids"
+  | "participants"
+  | "splits"
+>;
+
+export async function resolveActiveExpenseParticipantUserIds(
+  ctx: MutationCtx,
+  expense: ExpenseVisibilitySource,
+  excludedAccountIds: ReadonlySet<string> = new Set()
+): Promise<string[]> {
+  const accounts = new Map<string, Doc<"accounts">>();
+
+  const addAccount = (account: Doc<"accounts"> | null) => {
+    if (account && account.status !== "deleted" && excludedAccountIds.has(account.id) === false) {
+      accounts.set(account.id, account);
+    }
+  };
+
+  if (expense.owner_id) {
+    addAccount(await ctx.db.get(expense.owner_id));
+  }
+  if (expense.owner_account_id) {
+    addAccount(await findAccountByAuthIdOrDocId(ctx.db, expense.owner_account_id));
+  }
+
+  const emails = new Set(
+    [expense.owner_email, ...(expense.participant_emails ?? [])]
+      .filter((email): email is string => Boolean(email?.trim()))
+      .map((email) => email.trim().toLowerCase())
+  );
+  for (const participant of expense.participants) {
+    if (participant.linked_account_email?.trim()) {
+      emails.add(participant.linked_account_email.trim().toLowerCase());
+    }
+    if (participant.linked_account_id?.trim()) {
+      addAccount(await findAccountByAuthIdOrDocId(ctx.db, participant.linked_account_id));
+    }
+  }
+  for (const email of emails) {
+    addAccount(
+      await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) => q.eq("email", email))
+        .unique()
+    );
+  }
+
+  const memberIds = new Set([
+    ...expense.participant_member_ids,
+    ...expense.involved_member_ids,
+    ...expense.participants.map((participant) => participant.member_id),
+    ...expense.splits.map((split) => split.member_id)
+  ]);
+  for (const memberId of memberIds) {
+    addAccount(await findAccountByMemberId(ctx.db, memberId));
+  }
+
+  return Array.from(accounts.keys());
+}
+
+export async function reconcileExpenseVisibility(
+  ctx: MutationCtx,
+  expense: ExpenseVisibilitySource,
+  excludedAccountIds: ReadonlySet<string> = new Set()
+) {
+  const participantUserIds = await resolveActiveExpenseParticipantUserIds(
+    ctx,
+    expense,
+    excludedAccountIds
+  );
+  await reconcileUserExpenses(ctx, expense.id, participantUserIds);
 }
 
 /**

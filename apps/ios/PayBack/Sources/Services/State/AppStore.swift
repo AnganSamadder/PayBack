@@ -5,6 +5,18 @@ import Clerk
 
 enum LogoutAlert: Identifiable { case accountDeleted; var id: Int { hashValue } }
 
+enum AccountDeletionState: Equatable {
+    case idle
+    case deletingBackendAccount
+    case deletingAuthenticationAccount
+    case awaitingAuthenticationDeletion
+}
+
+struct AuthenticationSessionIdentity: Sendable, Equatable {
+    let email: String
+    let displayName: String
+}
+
 final class AppStore: ObservableObject {
     private struct NormalizedRemoteData {
         let groups: [SpendingGroup]
@@ -33,6 +45,7 @@ final class AppStore: ObservableObject {
     private let inviteLinkService: InviteLinkService
     private let emailAuthService: EmailAuthService
     private let skipClerkInit: Bool
+    private let authenticationSessionLoader: @Sendable () async throws -> AuthenticationSessionIdentity?
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
@@ -52,6 +65,22 @@ final class AppStore: ObservableObject {
 
     @Published var isCheckingAuth = true
     @Published var logoutAlert: LogoutAlert?
+    @Published private(set) var accountDeletionState: AccountDeletionState = .idle
+    @Published private(set) var authenticationSessionRecoveryMessage: String?
+    private var isAuthenticationSessionCheckInProgress = false
+
+    var isAuthenticationSessionRecoveryBlocking: Bool {
+        authenticationSessionRecoveryMessage != nil
+    }
+
+    var canPresentAuthenticationFlow: Bool {
+        !isCheckingAuth && session == nil && !isAuthenticationSessionRecoveryBlocking
+    }
+
+    var isAccountDeletionBlocking: Bool {
+        accountDeletionState == .deletingAuthenticationAccount ||
+            accountDeletionState == .awaitingAuthenticationDeletion
+    }
 
     /// When true, suppresses all cloud writes (friend sync, group upsert, expense upsert).
     /// Used during CSV import to batch local changes before syncing.
@@ -67,7 +96,8 @@ final class AppStore: ObservableObject {
         linkRequestService: LinkRequestService = Dependencies.current.linkRequestService,
         inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService,
         emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
-        skipClerkInit: Bool = false
+        skipClerkInit: Bool = false,
+        authenticationSessionLoader: (@Sendable () async throws -> AuthenticationSessionIdentity?)? = nil
     ) {
         AppConfig.markTiming("AppStore init started")
 
@@ -79,6 +109,21 @@ final class AppStore: ObservableObject {
         self.inviteLinkService = inviteLinkService
         self.emailAuthService = emailAuthService
         self.skipClerkInit = skipClerkInit
+        self.authenticationSessionLoader = authenticationSessionLoader ?? {
+            let clerk = Clerk.shared
+            await MainActor.run {
+                clerk.configure(publishableKey: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA")
+            }
+            try await clerk.load()
+            return await MainActor.run {
+                guard let user = clerk.user else { return nil }
+                let email = user.primaryEmailAddress?.emailAddress ?? ""
+                let displayName = [user.firstName, user.lastName]
+                    .compactMap { $0 }
+                    .joined(separator: " ")
+                return AuthenticationSessionIdentity(email: email, displayName: displayName)
+            }
+        }
 
         // Load local data
         let localData = persistence.load()
@@ -162,101 +207,76 @@ final class AppStore: ObservableObject {
         }
     }
 
-    /// Runs off the main actor to avoid blocking UI startup
+    /// Restores a persisted authentication session without allowing an unresolved
+    /// identity to fall through to the unauthenticated UI.
     func checkSession() async {
+        let shouldStart = await MainActor.run {
+            guard self.isAuthenticationSessionCheckInProgress == false else { return false }
+            self.isAuthenticationSessionCheckInProgress = true
+            self.isCheckingAuth = true
+            return true
+        }
+        guard shouldStart else { return }
+
         AppConfig.markTiming("AppStore.checkSession started")
         print("[AuthDebug] AppStore.checkSession started")
 
-        let clerk = Clerk.shared
-        // Configure Clerk (safe to call from background)
-        await MainActor.run {
-             clerk.configure(publishableKey: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA")
-        }
-
         do {
-            try await clerk.load()
-            AppConfig.markTiming("Clerk loaded (in AppStore)")
+            let identity = try await authenticationSessionLoader()
+            AppConfig.markTiming("Authentication session loaded")
 
-            await MainActor.run {
-                if let user = clerk.user {
-                    print("[AuthDebug] Clerk loaded. User found: \(user.id) (\(user.primaryEmailAddress?.emailAddress ?? "no email"))")
-                } else {
-                    print("[AuthDebug] Clerk loaded. No user found.")
-                }
+            guard let identity else {
+                AppConfig.markTiming("No authentication user found")
+                await finishAuthenticationSessionCheck(recoveryError: nil)
+                return
             }
-        } catch {
-            AppConfig.markTiming("Clerk load failed: \(error.localizedDescription)")
-            print("[AuthDebug] Clerk load failed: \(error)")
-        }
 
-        // Fetch user info on MainActor (Clerk properties are isolated)
-        let userInfo = await MainActor.run { () -> (String, String)? in
-            guard let user = clerk.user else { return nil }
-            let email = user.primaryEmailAddress?.emailAddress ?? ""
-            let displayName = [user.firstName, user.lastName].compactMap { $0 }.joined(separator: " ")
-            return (email, displayName)
-        }
+            let email = identity.email
+            print("[AuthDebug] Authentication user found: \(email)")
 
-        if let (email, _) = userInfo {
             #if !PAYBACK_CI_NO_CONVEX
-            // Concurrent execution: Authenticate Convex AND prepare logic
-            async let convexAuth: Void = Dependencies.authenticateConvex()
+            await Dependencies.authenticateConvex()
+            #endif
 
-            // Wait for Convex auth
-            await convexAuth
-
-            // Avoid startup races where queries run before the server recognizes auth.
-            // This is especially important for `users:viewer`, which returns null when unauthenticated.
-            do {
-                try await waitForServerAuthentication()
-            } catch {
-                #if DEBUG
-                print("[AuthDebug] Server auth confirmation timed out: \(error)")
-                #endif
+            let accountService = self.accountService
+            let account: UserAccount? = try await RetryPolicy.startup.execute {
+                try await self.waitForServerAuthentication()
+                return try await accountService.lookupAccount(byEmail: email)
             }
 
-            // 3. Convex Account Lookup
-            let accountService = self.accountService // Capture service
-
-            do {
-                let account = try await RetryPolicy.startup.execute {
-                    #if !PAYBACK_CI_NO_CONVEX
-                    // Ensure we are authenticated on the server before account lookup/creation.
-                    try await self.waitForServerAuthentication()
-                    #endif
-
-                    if let account = try await accountService.lookupAccount(byEmail: email) {
-                        AppConfig.markTiming("Account lookup complete (found)")
-                        return account
-                    } else {
-                        AppConfig.markTiming("Account lookup complete (not found)")
-                        // Account deleted/missing. Do not auto-create on session restore.
-                        // Force sign out to ensure clean state next time.
-                        await self.signOut()
-                        throw PayBackError.accountNotFound(email: email)
-                    }
-                }
-
-                // Complete login securely
+            if let account {
+                AppConfig.markTiming("Account lookup complete (found)")
                 await finishLogin(account: account)
-
                 await MainActor.run {
                     self.migrateLegacyDisplaySettingsIfNeeded()
                 }
-
-            } catch {
-                AppConfig.markTiming("Session restore failed: \(error.localizedDescription)")
+            } else {
+                AppConfig.markTiming("Account lookup complete (not found)")
+                if try await completePendingAccountDeletionIfNeeded() == false {
+                    try await signOutMissingAccountDuringSessionRecovery()
+                }
             }
-            #endif
-        } else {
-            AppConfig.markTiming("No Clerk user found")
-        }
 
-        await MainActor.run {
-            self.isCheckingAuth = false
-            AppConfig.markTiming("AppStore.checkSession completed (isCheckingAuth = false)")
-            AppConfig.printTimingSummary()
+            await finishAuthenticationSessionCheck(recoveryError: nil)
+        } catch {
+            AppConfig.markTiming("Session restore failed: \(error.localizedDescription)")
+            await finishAuthenticationSessionCheck(recoveryError: error)
         }
+    }
+
+    @MainActor
+    private func finishAuthenticationSessionCheck(recoveryError: Error?) {
+        if let recoveryError {
+            authenticationSessionRecoveryMessage = recoveryError.userFacingMessage(
+                fallback: "We couldn't verify your existing sign-in. Check your connection and try again."
+            )
+        } else {
+            authenticationSessionRecoveryMessage = nil
+        }
+        isAuthenticationSessionCheckInProgress = false
+        isCheckingAuth = false
+        AppConfig.markTiming("AppStore.checkSession completed (isCheckingAuth = false)")
+        AppConfig.printTimingSummary()
     }
 
     private func finishLogin(account: UserAccount) async {
@@ -459,7 +479,7 @@ final class AppStore: ObservableObject {
                     if previousSession?.account != self.session?.account {
                         self.persistCurrentState()
                     }
-                } else if self.session != nil {
+                } else if self.session != nil, self.accountDeletionState == .idle {
                     self.handleForcedLogout(reason: "Account deleted")
                 }
             }
@@ -649,7 +669,20 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     func signOut() async {
+        await finishSignOut(signOutIdentity: true)
+    }
+
+    @MainActor
+    private func signOutMissingAccountDuringSessionRecovery() async throws {
+        try await emailAuthService.signOut()
+        await finishSignOut(signOutIdentity: false)
+    }
+
+    @MainActor
+    private func finishSignOut(signOutIdentity: Bool) async {
         print("[AuthDebug] signOut called. Current User: \(currentUser.name) (\(currentUser.id))")
+        sessionMonitorTask?.cancel()
+        sessionMonitorTask = nil
         remoteLoadTask?.cancel()
         friendSyncTask?.cancel()
         hasCompletedInitialRemoteLoad = false
@@ -661,36 +694,39 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         // 1. Sign out from Clerk/Backend FIRST
         // This ensures the persistent session is cleared from Keychain before we update UI
-        do {
-            try await emailAuthService.signOut()
+        if signOutIdentity {
+            do {
+                try await emailAuthService.signOut()
             #if DEBUG
-            print("[AppStore] Clerk/Backend signed out successfully")
-            print("[AuthDebug] Clerk/Backend signed out successfully")
+                print("[AppStore] Clerk/Backend signed out successfully")
+                print("[AuthDebug] Clerk/Backend signed out successfully")
             #endif
 
             #if DEBUG
-            // Verify sign out (skip in tests when Clerk isn't configured).
-            if !skipClerkInit {
-                try? await Clerk.shared.load()
-                if let user = Clerk.shared.user {
-                    print("[AuthDebug] CRITICAL: Clerk still has user after signOut: \(user.id)")
-                } else {
-                    print("[AuthDebug] Clerk user is nil after signOut (Correct).")
+                // Verify sign out (skip in tests when Clerk isn't configured).
+                if !skipClerkInit {
+                    try? await Clerk.shared.load()
+                    if let user = Clerk.shared.user {
+                        print("[AuthDebug] CRITICAL: Clerk still has user after signOut: \(user.id)")
+                    } else {
+                        print("[AuthDebug] Clerk user is nil after signOut (Correct).")
+                    }
                 }
-            }
             #endif
 
-            // Explicitly logout from Convex to clear its state
-            #if !PAYBACK_CI_NO_CONVEX
-            await Dependencies.logoutConvex()
-            #endif
-
-        } catch {
+            } catch {
             #if DEBUG
-            print("[AppStore] Warning: Backend sign out failed: \(error)")
-            print("[AuthDebug] Backend sign out failed: \(error)")
+                print("[AppStore] Warning: Backend sign out failed: \(error)")
+                print("[AuthDebug] Backend sign out failed: \(error)")
             #endif
+            }
         }
+
+        // Always clear Convex authentication, even if the upstream auth provider
+        // reports a sign-out error.
+        #if !PAYBACK_CI_NO_CONVEX
+        await Dependencies.logoutConvex()
+        #endif
 
         // 2. Clear local state and UI
         // Doing this last prevents the user from logging in again before the old session is dead
@@ -1188,19 +1224,67 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
     }
 
-    func selfDeleteAccount() async {
+    @MainActor
+    func selfDeleteAccount() async throws {
         print("🔵 selfDeleteAccount called")
-        do {
-            try await accountService.selfDeleteAccount()
-            print("✅ Backend selfDeleteAccount success")
-            await signOut()
-        } catch {
-            print("🔴 Backend selfDeleteAccount failed: \(error)")
-            // We might still want to sign out locally even if backend fails,
-            // but for safety/consistency let's alert user (handled in View)
-            // or just force signout if it's a "user not found" error?
-            // For now, assume if it fails, we don't sign out so they can try again.
+        guard
+            accountDeletionState != .deletingBackendAccount,
+            accountDeletionState != .deletingAuthenticationAccount
+        else {
+            throw PayBackError.underlying(message: "Account deletion is already in progress.")
         }
+
+        if accountDeletionState == .idle {
+            accountDeletionState = .deletingBackendAccount
+        }
+        sessionMonitorTask?.cancel()
+        sessionMonitorTask = nil
+
+        if accountDeletionState != .awaitingAuthenticationDeletion {
+            do {
+                try await accountService.selfDeleteAccount()
+                print("✅ Backend selfDeleteAccount success")
+            } catch {
+                accountDeletionState = .idle
+                startSessionMonitoring()
+                throw error
+            }
+        }
+
+        accountDeletionState = .deletingAuthenticationAccount
+        do {
+            try await emailAuthService.deleteCurrentUser()
+        } catch {
+            accountDeletionState = .awaitingAuthenticationDeletion
+            throw error
+        }
+
+        await finishSignOut(signOutIdentity: false)
+        accountDeletionState = .idle
+        authenticationSessionRecoveryMessage = nil
+    }
+
+    @MainActor
+    @discardableResult
+    func completePendingAccountDeletionIfNeeded() async throws -> Bool {
+        guard try await accountService.hasCompletedSelfDeletion() else {
+            return false
+        }
+
+        sessionMonitorTask?.cancel()
+        sessionMonitorTask = nil
+        accountDeletionState = .deletingAuthenticationAccount
+        do {
+            try await emailAuthService.deleteCurrentUser()
+        } catch {
+            accountDeletionState = .awaitingAuthenticationDeletion
+            throw error
+        }
+
+        await finishSignOut(signOutIdentity: false)
+        accountDeletionState = .idle
+        authenticationSessionRecoveryMessage = nil
+        return true
     }
 
     func directGroup(with memberId: UUID) -> SpendingGroup? {
@@ -3776,6 +3860,17 @@ func completeAuthentication(id: String, email: String, name: String?) {
         #if DEBUG
         print("[AppStore] Network recovered - triggering link state reconciliation")
         #endif
+
+        let needsAuthenticationRecovery = await MainActor.run {
+            self.isAuthenticationSessionRecoveryBlocking
+        }
+        if needsAuthenticationRecovery {
+            await checkSession()
+            let remainsBlocked = await MainActor.run {
+                self.isAuthenticationSessionRecoveryBlocking
+            }
+            guard remainsBlocked == false else { return }
+        }
 
         // Invalidate reconciliation timer to force immediate check
         await stateReconciliation.invalidate()

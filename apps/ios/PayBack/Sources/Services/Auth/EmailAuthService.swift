@@ -24,6 +24,7 @@ protocol EmailAuthService: Sendable {
     func sendPasswordReset(email: String) async throws
     func resendConfirmationEmail(email: String) async throws
     func signOut() async throws
+    func deleteCurrentUser() async throws
 }
 
 final class MockEmailAuthService: EmailAuthService, @unchecked Sendable {
@@ -92,6 +93,10 @@ final class MockEmailAuthService: EmailAuthService, @unchecked Sendable {
     }
 
     func signOut() async throws {
+        // No-op
+    }
+
+    func deleteCurrentUser() async throws {
         // No-op
     }
 }

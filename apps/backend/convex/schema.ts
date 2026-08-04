@@ -20,12 +20,22 @@ export default defineSchema({
     // Maintained in sync with member_aliases table for denormalized lookup.
     alias_member_ids: v.optional(v.array(v.string())),
 
+    status: v.optional(v.union(v.literal("active"), v.literal("deleted"))),
+    deleted_at: v.optional(v.number()),
     created_at: v.number(),
     updated_at: v.optional(v.number())
   })
     .index("by_email", ["email"])
     .index("by_member_id", ["member_id"])
     .index("by_auth_id", ["id"]),
+
+  account_deletion_receipts: defineTable({
+    auth_subject: v.string(),
+    request_id: v.string(),
+    deleted_at: v.number(),
+    friendships_unlinked: v.number(),
+    expenses_preserved: v.boolean()
+  }).index("by_auth_subject", ["auth_subject"]),
 
   friend_requests: defineTable({
     sender_id: v.id("accounts"),
@@ -54,6 +64,7 @@ export default defineSchema({
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
     linked_member_id: v.optional(v.string()), // Canonical Member ID link
+    link_state: v.optional(v.union(v.literal("linked"), v.literal("unlinked"), v.literal("ghost"))),
     status: v.optional(v.string()),
     profile_image_url: v.optional(v.string()),
     updated_at: v.number()
@@ -75,7 +86,8 @@ export default defineSchema({
     created_at: v.number()
   })
     .index("by_alias_member_id", ["alias_member_id"])
-    .index("by_canonical_member_id", ["canonical_member_id"]),
+    .index("by_canonical_member_id", ["canonical_member_id"])
+    .index("by_account_email", ["account_email"]),
 
   groups: defineTable({
     id: v.string(), // UUID string from client

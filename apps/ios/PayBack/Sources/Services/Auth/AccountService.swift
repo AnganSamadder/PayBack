@@ -33,6 +33,9 @@ protocol AccountService: Actor {
     /// Deletes the current user's account (unlinks from friends, keeps expenses, signs out)
     func selfDeleteAccount() async throws
 
+    /// Returns whether the authenticated identity has a durable deletion receipt.
+    func hasCompletedSelfDeletion() async throws -> Bool
+
     /// Monitors the current user's session status in real-time
     nonisolated func monitorSession() -> AsyncStream<UserAccount?>
 
@@ -57,6 +60,10 @@ protocol AccountService: Actor {
     /// Performs a bulk import of friends, groups, and expenses
     func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult
     #endif
+}
+
+extension AccountService {
+    func hasCompletedSelfDeletion() async throws -> Bool { false }
 }
 
 struct LinkedAccountInfo: Codable, Sendable, Equatable {

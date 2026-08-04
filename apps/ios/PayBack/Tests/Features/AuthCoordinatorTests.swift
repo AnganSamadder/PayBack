@@ -938,6 +938,10 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
         }
     }
 
+    func deleteCurrentUser() async throws {
+        try await signOut()
+    }
+
     func resendConfirmationEmail(email: String) async throws {
         // Mock implementation for testing
     }

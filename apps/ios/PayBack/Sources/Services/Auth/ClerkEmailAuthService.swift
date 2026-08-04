@@ -213,6 +213,11 @@ final class ClerkEmailAuthService: EmailAuthService {
         print("[AuthDebug] ClerkEmailAuthService.signOut completed")
     }
 
+    func deleteCurrentUser() async throws {
+        guard let user = Clerk.shared.user else { return }
+        try await user.delete()
+    }
+
     private func mapClerkError(_ error: Error) -> Error {
         print("[ClerkEmailAuthService] Error: \(error)")
         return error
