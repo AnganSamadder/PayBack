@@ -1,5 +1,5 @@
 import { internalMutation } from "./_generated/server";
-import { assertIdentityMaterializationReady, ensureStandaloneAlias } from "./identity";
+import { assertIdentityMaterializationReady } from "./identity";
 
 export const repairAlias = internalMutation({
   args: {},
@@ -102,15 +102,9 @@ export const repairAlias = internalMutation({
     }
 
     await assertIdentityMaterializationReady(ctx.db);
-    const aliasCreated = await ensureStandaloneAlias(ctx, {
-      provenanceEmail: mainUserEmail,
-      aliasMemberId: idA,
-      canonicalMemberId: idB
-    });
-
     return {
-      success: true,
-      message: aliasCreated ? "Alias created" : "Alias already materialized",
+      success: false,
+      message: "Global alias repair is disabled; use the owner-scoped friend merge flow",
       alias_member_id: idA,
       canonical_member_id: idB
     };

@@ -41,6 +41,34 @@ function normalizeEmail(value: string | undefined | null): string | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function matchesEquivalentMemberId(
+  memberId: string,
+  normalizedEquivalentIds: ReadonlySet<string>
+): boolean {
+  return normalizedEquivalentIds.has(normalizeMemberId(memberId));
+}
+
+function expenseReferencesEquivalentMember(
+  expense: Doc<"expenses">,
+  normalizedEquivalentIds: ReadonlySet<string>
+): boolean {
+  return (
+    matchesEquivalentMemberId(expense.paid_by_member_id, normalizedEquivalentIds) ||
+    expense.involved_member_ids.some((memberId) =>
+      matchesEquivalentMemberId(memberId, normalizedEquivalentIds)
+    ) ||
+    expense.participant_member_ids.some((memberId) =>
+      matchesEquivalentMemberId(memberId, normalizedEquivalentIds)
+    ) ||
+    expense.splits.some((split) =>
+      matchesEquivalentMemberId(split.member_id, normalizedEquivalentIds)
+    ) ||
+    expense.participants.some((participant) =>
+      matchesEquivalentMemberId(participant.member_id, normalizedEquivalentIds)
+    )
+  );
+}
+
 async function buildResolvedParticipantEmails(
   ctx: any,
   ownerEmail: string | undefined,
@@ -617,6 +645,7 @@ export const deleteLinkedFriend = mutation({
 
     await assertIdentityMaterializationReady(ctx.db);
     const equivalentIds = await getAllEquivalentMemberIds(ctx.db, friendMemberId);
+    const normalizedEquivalentIds = new Set(equivalentIds.map(normalizeMemberId));
 
     const userAccount = await ctx.db
       .query("accounts")
@@ -638,7 +667,9 @@ export const deleteLinkedFriend = mutation({
     for (const group of ownedGroups) {
       if (!group.is_direct) continue;
 
-      const hasFriend = group.members.some((m) => equivalentIds.includes(m.id));
+      const hasFriend = group.members.some((member) =>
+        matchesEquivalentMemberId(member.id, normalizedEquivalentIds)
+      );
       if (!hasFriend) continue;
 
       const groupExpenses = await ctx.db
@@ -706,6 +737,7 @@ export const deleteUnlinkedFriend = mutation({
 
     await assertIdentityMaterializationReady(ctx.db);
     const equivalentIds = await getAllEquivalentMemberIds(ctx.db, friendMemberId);
+    const normalizedEquivalentIds = new Set(equivalentIds.map(normalizeMemberId));
 
     let groupsModified = 0;
     let expensesDeleted = 0;
@@ -718,10 +750,14 @@ export const deleteUnlinkedFriend = mutation({
       .collect();
 
     for (const group of ownedGroups) {
-      const hasFriend = group.members.some((m) => equivalentIds.includes(m.id));
+      const hasFriend = group.members.some((member) =>
+        matchesEquivalentMemberId(member.id, normalizedEquivalentIds)
+      );
       if (!hasFriend) continue;
 
-      const remainingMembers = group.members.filter((m) => !equivalentIds.includes(m.id));
+      const remainingMembers = group.members.filter(
+        (member) => !matchesEquivalentMemberId(member.id, normalizedEquivalentIds)
+      );
 
       if (remainingMembers.length <= 1) {
         const groupExpenses = await ctx.db
@@ -748,27 +784,30 @@ export const deleteUnlinkedFriend = mutation({
           .collect();
 
         for (const expense of groupExpenses) {
-          const involvesFriend =
-            equivalentIds.includes(expense.paid_by_member_id) ||
-            expense.involved_member_ids.some((id) => equivalentIds.includes(id));
-
-          if (!involvesFriend) continue;
+          if (!expenseReferencesEquivalentMember(expense, normalizedEquivalentIds)) continue;
 
           const remainingParticipants = expense.participant_member_ids.filter(
-            (id) => !equivalentIds.includes(id)
+            (memberId) => !matchesEquivalentMemberId(memberId, normalizedEquivalentIds)
+          );
+          const removedFriendWasPayer = matchesEquivalentMemberId(
+            expense.paid_by_member_id,
+            normalizedEquivalentIds
           );
 
-          if (remainingParticipants.length <= 1) {
+          if (removedFriendWasPayer || remainingParticipants.length <= 1) {
             await deleteUserExpensesForExpense(ctx, expense.id);
             await ctx.db.delete(expense._id);
             expensesDeleted++;
           } else {
-            const newSplits = expense.splits.filter((s) => !equivalentIds.includes(s.member_id));
+            const newSplits = expense.splits.filter(
+              (split) => !matchesEquivalentMemberId(split.member_id, normalizedEquivalentIds)
+            );
             const newParticipants = expense.participants.filter(
-              (p) => !equivalentIds.includes(p.member_id)
+              (participant) =>
+                !matchesEquivalentMemberId(participant.member_id, normalizedEquivalentIds)
             );
             const newInvolvedIds = expense.involved_member_ids.filter(
-              (id) => !equivalentIds.includes(id)
+              (memberId) => !matchesEquivalentMemberId(memberId, normalizedEquivalentIds)
             );
             const newIsSettled =
               newSplits.length > 0 && newSplits.every((split) => split.is_settled);

@@ -51,6 +51,7 @@ describe("Hard Delete Cleanup", () => {
         linked_account_id: "user_b",
         linked_account_email: "user_b@test.com",
         linked_member_id: "member_b",
+        link_state: "linked",
         updated_at: Date.now()
       });
     });
@@ -113,7 +114,9 @@ describe("Hard Delete Cleanup", () => {
         name: "User B (imported)",
         profile_avatar_color: "#FF0000",
         has_linked_account: true,
+        linked_account_id: "user_b",
         linked_member_id: "member_b",
+        link_state: "linked",
         updated_at: Date.now()
       });
     });

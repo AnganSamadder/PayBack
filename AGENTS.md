@@ -490,11 +490,19 @@ Failure impact:
 Rules:
 
 1. Ignore client-provided linked account IDs/emails when creating or promoting friend links.
-2. Preserve a link only when the existing server row has `link_state: "linked"` and its persisted
-   `linked_account_id` resolves to an active account; canonicalize linked email/member ID from that account.
-3. New, legacy-unproven, deleted-account, and invalid links import as `link_state: "unlinked"`.
-4. Never create `member_aliases` from bulk import.
-5. Derive expense participant metadata, `participant_emails`, and `user_expenses` fanout only from
+2. Preserve a link when the existing server row has `link_state: "linked"` and its persisted
+   `linked_account_id` resolves to an active account, provided the friend identity matches the
+   account canonical ID or a trusted materialized account alias.
+3. During the legacy-marker transition, an unmarked row may be promoted only when indexed server
+   provenance ties the owner, friend identity, and active linked account through a completed invite,
+   accepted link request, or trusted account-alias materialization.
+4. Canonicalize the preserved account ID, email, and member ID from the live `accounts` row; never
+   preserve the client or legacy tuple verbatim.
+5. Every successful invite claim and link-request acceptance must stamp both directions with
+   `link_state: "linked"`.
+6. New, legacy-unproven, deleted-account, and invalid links import as `link_state: "unlinked"`.
+7. Never create `member_aliases` from bulk import.
+8. Derive expense participant metadata, `participant_emails`, and `user_expenses` fanout only from
    the authenticated account and server-proven linked friends; never trust participant payload IDs/emails.
 
 Failure impact:

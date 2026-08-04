@@ -31,11 +31,15 @@ describe("identity lookup query budgets", () => {
     expect(migrationSource).toContain("MAX_ALIAS_ROWS_PER_MEMBER_ID + 1");
   });
 
-  test.each(["convex/debug.ts", "convex/fix_alias.ts"])(
-    "%s gates operational alias writers on rollout readiness",
-    (file) => {
-      const source = readFileSync(resolve(process.cwd(), file), "utf-8");
-      expect(source).toContain("assertIdentityMaterializationReady(ctx.db)");
-    }
-  );
+  test("gates the operational alias repair on rollout readiness", () => {
+    const source = readFileSync(resolve(process.cwd(), "convex/fix_alias.ts"), "utf-8");
+    expect(source).toContain("assertIdentityMaterializationReady(ctx.db)");
+  });
+
+  test("keeps the name-based debug identity repair retired", () => {
+    const source = readFileSync(resolve(process.cwd(), "convex/debug.ts"), "utf-8");
+    const repairSource = source.slice(source.indexOf("export const fixIdsByName"));
+    expect(repairSource).toContain("Name-based identity repair is disabled");
+    expect(repairSource).not.toContain("ctx.db.patch(expense._id");
+  });
 });

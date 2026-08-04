@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
@@ -478,10 +478,12 @@ describe("Security Authorization", () => {
         account_email: "historical@test.com",
         alias_member_id: "claimed_member",
         canonical_member_id: "existing_canonical",
+        materialization_source: "account_alias",
+        source_account_id: "existing_auth",
         created_at: Date.now()
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v2",
+        key: "member_identity_v3",
         status: "ready",
         phase: "complete",
         updated_at: Date.now()
@@ -537,7 +539,7 @@ describe("Security Authorization", () => {
         alias_member_ids: ["Legacy_Alias"]
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v2",
+        key: "member_identity_v3",
         status: "ready",
         phase: "complete",
         updated_at: Date.now()
@@ -607,7 +609,7 @@ describe("Security Authorization", () => {
         is_direct: false
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v2",
+        key: "member_identity_v3",
         status: "ready",
         phase: "complete",
         updated_at: Date.now()
@@ -676,7 +678,7 @@ describe("Security Authorization", () => {
         is_direct: false
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v2",
+        key: "member_identity_v3",
         status: "ready",
         phase: "complete",
         updated_at: Date.now()
@@ -740,7 +742,7 @@ describe("Security Authorization", () => {
         is_direct: false
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v2",
+        key: "member_identity_v3",
         status: "ready",
         phase: "complete",
         updated_at: Date.now()
@@ -1349,5 +1351,63 @@ describe("Security Authorization", () => {
 
     expect(senderFriendRows).toHaveLength(1);
     expect(senderFriendRows[0].linked_account_id).toBe("recipient_auth_id");
+  });
+
+  test("debug.fixIdsByName is retired and cannot rewrite identity from matching names", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "owner_auth",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: now,
+        member_id: "owner_canonical"
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: now
+      });
+      await ctx.db.insert("expenses", {
+        id: "name_only_repair_expense",
+        group_id: "name_only_group",
+        description: "Must remain unchanged",
+        date: now,
+        total_amount: 10,
+        paid_by_member_id: "untrusted_same_name_id",
+        involved_member_ids: ["untrusted_same_name_id"],
+        splits: [
+          {
+            id: "name_only_split",
+            member_id: "untrusted_same_name_id",
+            amount: 10,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        participant_member_ids: ["untrusted_same_name_id"],
+        participants: [{ member_id: "untrusted_same_name_id", name: "Owner" }],
+        participant_emails: ["owner@test.com"],
+        created_at: now,
+        updated_at: now
+      });
+    });
+
+    await expect(t.mutation(internal.debug.fixIdsByName, {})).rejects.toThrow(
+      "Name-based identity repair is disabled"
+    );
+    const expense = await t.run((ctx) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "name_only_repair_expense"))
+        .unique()
+    );
+    expect(expense?.paid_by_member_id).toBe("untrusted_same_name_id");
+    expect(expense?.splits[0].member_id).toBe("untrusted_same_name_id");
   });
 });

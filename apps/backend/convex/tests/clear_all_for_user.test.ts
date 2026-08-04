@@ -38,6 +38,7 @@ describe("clearAllForUser", () => {
         email: "owner-b@example.com",
         display_name: "Owner B",
         member_id: "owner_b_member",
+        alias_member_ids: ["owner_b_legacy"],
         created_at: now
       });
     });
@@ -47,6 +48,8 @@ describe("clearAllForUser", () => {
         canonical_member_id: "owner_b_member",
         alias_member_id: "owner_b_legacy",
         account_email: "owner-b@example.com",
+        materialization_source: "account_alias",
+        source_account_id: "owner_b_auth",
         created_at: now
       });
 

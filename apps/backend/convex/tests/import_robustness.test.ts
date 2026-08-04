@@ -20,6 +20,12 @@ test("import_robustness: handles aliases and id mismatches", async () => {
       created_at: Date.now(),
       member_id: "member_angan"
     });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: Date.now()
+    });
   });
 
   // 2. Setup Existing Friend (Canonical)
@@ -30,27 +36,12 @@ test("import_robustness: handles aliases and id mismatches", async () => {
       name: "Test User",
       profile_avatar_color: "#000000",
       has_linked_account: false,
+      local_alias_member_ids: [aliasFriendId],
       updated_at: Date.now()
     });
   });
 
-  // 3. Setup Alias (Simulating knowledge that ALIAS -> CANONICAL)
-  await t.run(async (ctx) => {
-    await ctx.db.insert("member_aliases", {
-      account_email: ownerEmail,
-      alias_member_id: aliasFriendId,
-      canonical_member_id: canonicalFriendId,
-      created_at: Date.now()
-    });
-  });
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const result = await t.mutation(internal.migrations.runIdentityMaterializationMigration, {
-      batchSize: 10
-    });
-    if (result.status === "ready") break;
-  }
-
-  // 4. Run Import with ALIAS ID
+  // 3. Run Import with an owner-local alias ID.
   // Scenario: CSV has old ID "C7EA...", but DB has "1C7F...". Alias links them.
   const importPayload = {
     friends: [
@@ -87,7 +78,7 @@ test("import_robustness: handles aliases and id mismatches", async () => {
 
   await ctxA.mutation(api.bulkImport.bulkImport, importPayload);
 
-  // 5. VERIFY: No duplicates created
+  // 4. VERIFY: No duplicates created
   const friends = await t.run(async (ctx) => {
     return await ctx.db.query("account_friends").collect();
   });
@@ -97,7 +88,7 @@ test("import_robustness: handles aliases and id mismatches", async () => {
   expect(friends[0].member_id).toBe(canonicalFriendId);
   // Name might update if we allowed it, but here we expect it to match the canonical record
 
-  // 6. VERIFY: Group Member Remapping
+  // 5. VERIFY: Group Member Remapping
   const groups = await t.run(async (ctx) => {
     return await ctx.db.query("groups").collect();
   });
@@ -123,7 +114,7 @@ test("bulkImport matches a normalized legacy friend at the compatibility boundar
       member_id: "owner_member"
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: now
@@ -195,7 +186,7 @@ test("bulkImport fails atomically when legacy friend compatibility exceeds its b
       member_id: "owner_member"
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: now
@@ -266,7 +257,7 @@ test("import_robustness: does not dedupe by name-only when id mismatches", async
       updated_at: Date.now()
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: Date.now()
@@ -351,7 +342,7 @@ test("import_robustness: updates existing friend status even without new link me
       updated_at: Date.now()
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: Date.now()
@@ -415,7 +406,7 @@ test("bulkImport ignores client link claims for new friends and expense particip
       member_id: "Friend_Canonical"
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: now
@@ -557,7 +548,7 @@ test("bulkImport rejects a group ID owned by another account", async () => {
       member_id: "attacker_member"
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: now
@@ -653,7 +644,7 @@ test("bulkImport rejects an expense ID owned by another account", async () => {
       member_id: "attacker_member"
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: now
@@ -767,7 +758,7 @@ test("bulkImport fans out from canonical participant IDs missing descriptive obj
       member_id: "friend_member"
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: now
@@ -839,14 +830,8 @@ test("bulkImport fans out from canonical participant IDs missing descriptive obj
       .withIndex("by_expense_id", (q) => q.eq("expense_id", "participant_union_expense"))
       .collect()
   }));
-  expect(state.expense?.participant_emails.sort()).toEqual([
-    "friend@test.com",
-    "owner@test.com"
-  ]);
-  expect(state.visibility.map((row) => row.user_id).sort()).toEqual([
-    "friend_auth",
-    "owner_auth"
-  ]);
+  expect(state.expense?.participant_emails.sort()).toEqual(["friend@test.com", "owner@test.com"]);
+  expect(state.visibility.map((row) => row.user_id).sort()).toEqual(["friend_auth", "owner_auth"]);
 });
 
 test("bulkImport does not trust an unproven linked row after client upsert", async () => {
@@ -868,7 +853,7 @@ test("bulkImport does not trust an unproven linked row after client upsert", asy
       member_id: "victim_member"
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: now
@@ -986,7 +971,7 @@ test.each([
         status: "active"
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v2",
+        key: "member_identity_v3",
         status: "ready",
         phase: "complete",
         updated_at: now
@@ -1063,6 +1048,189 @@ test.each([
   }
 );
 
+test("bulkImport preserves a soft-deleted ghost while refreshing display metadata", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "ghost_legacy",
+      name: "Original Ghost",
+      profile_avatar_color: "#111111",
+      has_linked_account: false,
+      linked_member_id: "deleted_canonical",
+      link_state: "ghost",
+      status: "ghost",
+      updated_at: now
+    });
+  });
+
+  const owner = t.withIdentity({
+    subject: "owner_auth",
+    email: "owner@test.com",
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+  await owner.mutation(api.bulkImport.bulkImport, {
+    friends: [
+      {
+        member_id: "ghost_legacy",
+        name: "Restored Ghost Name",
+        profile_avatar_color: "#222222",
+        has_linked_account: false,
+        status: "manual"
+      }
+    ],
+    groups: [],
+    expenses: []
+  });
+
+  const ghost = await t.run((ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "ghost_legacy")
+      )
+      .unique()
+  );
+  expect(ghost).toMatchObject({
+    name: "Restored Ghost Name",
+    has_linked_account: false,
+    linked_member_id: "deleted_canonical",
+    link_state: "ghost",
+    status: "ghost"
+  });
+  expect(ghost?.linked_account_id).toBeUndefined();
+  expect(ghost?.linked_account_email).toBeUndefined();
+});
+
+test("bulkImport normalizes a new status-only ghost and detaches contradictory link fields", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+  });
+
+  const owner = t.withIdentity({
+    subject: "owner_auth",
+    email: "owner@test.com",
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+  await owner.mutation(api.bulkImport.bulkImport, {
+    friends: [
+      {
+        member_id: "new_ghost",
+        name: "Imported Ghost",
+        profile_avatar_color: "#222222",
+        has_linked_account: true,
+        linked_account_id: "forged_auth",
+        linked_account_email: "forged@test.com",
+        status: " GhOsT "
+      }
+    ],
+    groups: [],
+    expenses: []
+  });
+
+  const ghost = await t.run((ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "new_ghost")
+      )
+      .unique()
+  );
+  expect(ghost).toMatchObject({
+    has_linked_account: false,
+    link_state: "ghost",
+    status: "ghost"
+  });
+  expect(ghost?.linked_account_id).toBeUndefined();
+  expect(ghost?.linked_account_email).toBeUndefined();
+  expect(ghost?.linked_member_id).toBeUndefined();
+});
+
+test("friends.list treats legacy status-only ghosts as detached ghosts", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "legacy_status_ghost",
+      name: "Legacy Ghost",
+      profile_avatar_color: "#111111",
+      has_linked_account: true,
+      linked_account_id: "deleted_auth",
+      linked_account_email: "deleted@test.com",
+      linked_member_id: "deleted_member",
+      status: " GHOST ",
+      updated_at: now
+    });
+  });
+
+  const owner = t.withIdentity({
+    subject: "owner_auth",
+    email: "owner@test.com",
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+  const friends = await owner.query(api.friends.list, {});
+  expect(friends).toHaveLength(1);
+  expect(friends[0]).toMatchObject({
+    member_id: "legacy_status_ghost",
+    has_linked_account: false,
+    linked_member_id: "deleted_member",
+    link_state: "ghost"
+  });
+  expect(friends[0].linked_account_id).toBeUndefined();
+  expect(friends[0].linked_account_email).toBeUndefined();
+});
+
 test("bulkImport keeps new group and expense identities canonical when updating a linked legacy friend", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
@@ -1083,7 +1251,7 @@ test("bulkImport keeps new group and expense identities canonical when updating 
       status: "active"
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: now
@@ -1307,7 +1475,7 @@ test.each([
         status: linkedAccountStatus
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v2",
+        key: "member_identity_v3",
         status: "ready",
         phase: "complete",
         updated_at: now

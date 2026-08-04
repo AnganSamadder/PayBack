@@ -52,16 +52,21 @@ Run the internal migration repeatedly after deploying the schema/backend change:
 bunx convex run migrations:runIdentityMaterializationMigration '{"batchSize":128}'
 ```
 
-Repeat until the response reports `status: "ready"`. The migration first normalizes standalone
-alias rows, then normalizes accounts and materializes account aliases in resumable batches. State
-stores the current account and alias offset, so a large account never requires one transaction.
+Repeat until the response reports `status: "ready"`. The migration uses three explicit passes:
+
+1. normalize and deduplicate standalone alias rows;
+2. normalize and validate every account canonical/alias array;
+3. materialize account aliases with normalized, indexed-only conflict checks.
+
+The third pass batches alias-light account pages and stores the current account and alias offset for
+dense pages, so neither a large deployment nor a large valid account requires one transaction.
 If `lastError` reports conflicting canonical ownership or an identity maintenance bound, repair the
-named identity and resume. Before advancing each account, the migration also verifies that no
-normalized alias shadows its canonical member ID. Account-phase errors remain recorded without
-advancing the account cursor or committing a partial alias batch.
+named identity and resume. The account pass rejects alias arrays above the live 256-alias limit and
+verifies that no normalized alias shadows a canonical member ID. Errors remain recorded without
+advancing the active cursor; each materialization batch is fully preflighted before writes.
 
 For a clean installation, run the same command until ready; an empty database normally completes
-in two calls. Do not manually insert or flip the readiness row. Rollback requires removing the
+in three calls. Do not manually insert or flip the readiness row. Rollback requires removing the
 merge gate together with this schema version; deleting only the marker intentionally disables
 merge operations.
 
@@ -118,7 +123,8 @@ Core steps:
 3. Reject deterministic conflict if target already resolves to different canonical.
 4. Insert alias mapping when required.
 5. Update claimant `accounts.alias_member_ids`.
-6. Update owner `account_friends` row for target member.
+6. Update both users' `account_friends` rows from live account data and stamp
+   `link_state: "linked"`.
 7. Canonicalize group membership and expense participant/split IDs from target -> canonical.
 8. Reconcile `user_expenses` visibility fanout for impacted participants.
 9. Return contract v2 payload.
@@ -218,9 +224,14 @@ Rules:
 - Never perform name-only auto merge as a canonical identity decision.
 - Treat imported `linked_account_id`, `linked_account_email`, and participant metadata as
   untrusted hints; they cannot create a link, alias, or expense visibility row.
-- Preserve a linked friend only when its existing server row has `link_state: "linked"` and its
-  persisted `linked_account_id` resolves to an active account. Canonicalize email and member ID
-  from that account; otherwise import the friend as unlinked.
+- Preserve a linked friend when its existing server row has `link_state: "linked"` and its
+  persisted `linked_account_id` resolves to an active account, and the friend member ID matches
+  that account's canonical ID or a trusted materialized account alias.
+- For unmarked legacy rows only, accept indexed server evidence from a completed invite, accepted
+  link request, or trusted account-alias materialization that ties the owner, friend member ID, and
+  linked account together. Promote the row to the marker during the next sync/import.
+- Always canonicalize the linked ID/email/member tuple from the active `accounts` row; otherwise
+  import the friend as unlinked.
 - Derive imported expense participant metadata and fanout only from the authenticated account and
   server-proven linked friends.
 

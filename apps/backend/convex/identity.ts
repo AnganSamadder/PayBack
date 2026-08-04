@@ -2,12 +2,13 @@ import { Doc } from "./_generated/dataModel";
 import { DatabaseReader, MutationCtx } from "./_generated/server";
 
 export const LINKING_CONTRACT_VERSION = 2;
-export const IDENTITY_MATERIALIZATION_KEY = "member_identity_v2";
+export const IDENTITY_MATERIALIZATION_KEY = "member_identity_v3";
 export const MAX_LIVE_ACCOUNT_ALIASES = 256;
 export const MAX_LIVE_ALIAS_DELTA = 16;
 export const MAX_ALIAS_ROWS_PER_MEMBER_ID = 8;
 
 const MAX_PENDING_IDENTITY_ROWS = 512;
+const ACCOUNT_ALIAS_PREFLIGHT = Symbol("accountAliasPreflight");
 
 export const LINKING_ERROR_CODES = {
   aliasConflict: "ALIAS_CONFLICT",
@@ -119,6 +120,23 @@ async function assertAliasDoesNotShadowCanonicalAccount(
   );
 }
 
+async function assertAliasDoesNotShadowNormalizedCanonicalAccount(
+  db: DatabaseReader,
+  aliasMemberId: string
+): Promise<void> {
+  const normalizedAlias = normalizeMemberId(aliasMemberId);
+  const accounts = await db
+    .query("accounts")
+    .withIndex("by_member_id", (q) => q.eq("member_id", normalizedAlias))
+    .take(2);
+  if (accounts.length === 0) return;
+
+  throw deterministicLinkingError(
+    LINKING_ERROR_CODES.aliasConflict,
+    `alias_member_id=${normalizedAlias},canonical_account_id=${accounts[0].id}`
+  );
+}
+
 /**
  * Resolves canonical and materialized alias identities using bounded indexed reads.
  */
@@ -189,32 +207,22 @@ export async function findAliasByAliasMemberId(
   const normalized = normalizeMemberId(memberId);
   const exact = await db
     .query("member_aliases")
-    .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", normalized))
+    .withIndex("by_alias_member_id_and_source", (q) =>
+      q.eq("alias_member_id", normalized).eq("materialization_source", "account_alias")
+    )
     .first();
 
   let legacyExact: typeof exact = null;
   if (memberId !== normalized) {
     legacyExact = await db
       .query("member_aliases")
-      .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", memberId))
+      .withIndex("by_alias_member_id_and_source", (q) =>
+        q.eq("alias_member_id", memberId).eq("materialization_source", "account_alias")
+      )
       .first();
   }
 
-  if (await isIdentityMaterializationReady(db)) return exact ?? legacyExact;
-  const aliases = await db.query("member_aliases").take(MAX_PENDING_IDENTITY_ROWS + 1);
-  if (aliases.length > MAX_PENDING_IDENTITY_ROWS) {
-    throw pendingIdentityMaintenanceError("aliases");
-  }
-  const matches = aliases.filter(
-    (alias) => normalizeMemberId(alias.alias_member_id) === normalized
-  );
-  const canonicalIds = new Set(
-    matches.map((alias) => normalizeMemberId(alias.canonical_member_id))
-  );
-  if (canonicalIds.size > 1) {
-    throw new Error(`Identity maintenance required: conflicting alias identity ${normalized}`);
-  }
-  return matches[0] ?? null;
+  return exact ?? legacyExact;
 }
 
 export async function getEquivalentAliasMemberIds(
@@ -225,7 +233,9 @@ export async function getEquivalentAliasMemberIds(
   const normalized = normalizeMemberId(canonicalMemberId);
   const indexedRows = await db
     .query("member_aliases")
-    .withIndex("by_canonical_member_id", (q) => q.eq("canonical_member_id", normalized))
+    .withIndex("by_canonical_member_id_and_source", (q) =>
+      q.eq("canonical_member_id", normalized).eq("materialization_source", "account_alias")
+    )
     .take(MAX_LIVE_ACCOUNT_ALIASES + 1);
   if (indexedRows.length > MAX_LIVE_ACCOUNT_ALIASES) {
     throw new Error("Identity maintenance required: too many aliases for a live lookup");
@@ -234,27 +244,18 @@ export async function getEquivalentAliasMemberIds(
   if (raw !== normalized) {
     const rawRows = await db
       .query("member_aliases")
-      .withIndex("by_canonical_member_id", (q) => q.eq("canonical_member_id", raw))
+      .withIndex("by_canonical_member_id_and_source", (q) =>
+        q.eq("canonical_member_id", raw).eq("materialization_source", "account_alias")
+      )
       .take(MAX_LIVE_ACCOUNT_ALIASES + 1);
     indexedRows.push(...rawRows);
   }
 
   const aliases = new Set(indexedRows.map((row) => normalizeMemberId(row.alias_member_id)));
   if (!(await isIdentityMaterializationReady(db))) {
-    const [legacyAliases, accounts] = await Promise.all([
-      db.query("member_aliases").take(MAX_PENDING_IDENTITY_ROWS + 1),
-      db.query("accounts").take(MAX_PENDING_IDENTITY_ROWS + 1)
-    ]);
-    if (legacyAliases.length > MAX_PENDING_IDENTITY_ROWS) {
-      throw pendingIdentityMaintenanceError("aliases");
-    }
+    const accounts = await db.query("accounts").take(MAX_PENDING_IDENTITY_ROWS + 1);
     if (accounts.length > MAX_PENDING_IDENTITY_ROWS) {
       throw pendingIdentityMaintenanceError("accounts");
-    }
-    for (const alias of legacyAliases) {
-      if (normalizeMemberId(alias.canonical_member_id) === normalized) {
-        aliases.add(normalizeMemberId(alias.alias_member_id));
-      }
     }
     for (const alias of aliases) {
       const canonicalShadow = accounts.find(
@@ -293,12 +294,16 @@ export async function getEquivalentAliasMemberIds(
             candidate.member_id &&
             normalizeMemberId(candidate.member_id) === accountAlias
         );
-        const conflictingAliasRow = legacyAliases.find(
-          (candidate) =>
-            normalizeMemberId(candidate.alias_member_id) === accountAlias &&
-            normalizeMemberId(candidate.canonical_member_id) !== normalized
-        );
-        if (canonicalShadow || conflictingAliasRow) {
+        if (canonicalShadow) {
+          throw new Error(
+            `Identity maintenance required: conflicting account alias ${accountAlias}`
+          );
+        }
+        const materializedAlias = await findAliasByAliasMemberId(db, accountAlias);
+        if (
+          materializedAlias &&
+          normalizeMemberId(materializedAlias.canonical_member_id) !== normalized
+        ) {
           throw new Error(
             `Identity maintenance required: conflicting account alias ${accountAlias}`
           );
@@ -336,21 +341,33 @@ async function boundedAliasRows(ctx: MutationCtx, aliasMemberId: string) {
   return rows;
 }
 
-export async function preflightAccountAliasMaterialization(
+async function preflightAccountAliasMaterializationWithLookup(
   ctx: MutationCtx,
   account: Pick<Doc<"accounts">, "id" | "email" | "member_id">,
-  aliasMemberId: string
-): Promise<{ canonicalMemberId: string; normalizedAlias: string; alreadyMaterialized: boolean }> {
+  aliasMemberId: string,
+  normalizedCanonicalIndexesOnly: boolean
+): Promise<AccountAliasMaterializationPreflight> {
   const canonicalMemberId = account.member_id ? normalizeMemberId(account.member_id) : undefined;
   const normalizedAlias = normalizeMemberId(aliasMemberId);
   if (!canonicalMemberId) {
     throw new Error("Cannot materialize aliases without a canonical member_id");
   }
   if (!normalizedAlias || normalizedAlias === canonicalMemberId) {
-    return { canonicalMemberId, normalizedAlias, alreadyMaterialized: true };
+    return {
+      [ACCOUNT_ALIAS_PREFLIGHT]: { consumed: false },
+      accountId: account.id,
+      accountEmail: account.email,
+      canonicalMemberId,
+      normalizedAlias,
+      alreadyMaterialized: true
+    };
   }
 
-  await assertAliasDoesNotShadowCanonicalAccount(ctx.db, aliasMemberId);
+  if (normalizedCanonicalIndexesOnly) {
+    await assertAliasDoesNotShadowNormalizedCanonicalAccount(ctx.db, aliasMemberId);
+  } else {
+    await assertAliasDoesNotShadowCanonicalAccount(ctx.db, aliasMemberId);
+  }
   const rows = await boundedAliasRows(ctx, normalizedAlias);
   const conflictingRow = rows.find(
     (row) => normalizeMemberId(row.canonical_member_id) !== canonicalMemberId
@@ -372,10 +389,38 @@ export async function preflightAccountAliasMaterialization(
     throw aliasMaintenanceError(`duplicate account materializations for ${normalizedAlias}`);
   }
   return {
+    [ACCOUNT_ALIAS_PREFLIGHT]: { consumed: false },
+    accountId: account.id,
+    accountEmail: account.email,
     canonicalMemberId,
     normalizedAlias,
     alreadyMaterialized: sourceRows.length === 1
   };
+}
+
+export type AccountAliasMaterializationPreflight = {
+  readonly [ACCOUNT_ALIAS_PREFLIGHT]: { consumed: boolean };
+  accountId: string;
+  accountEmail: string;
+  canonicalMemberId: string;
+  normalizedAlias: string;
+  alreadyMaterialized: boolean;
+};
+
+export async function preflightAccountAliasMaterialization(
+  ctx: MutationCtx,
+  account: Pick<Doc<"accounts">, "id" | "email" | "member_id">,
+  aliasMemberId: string
+) {
+  return await preflightAccountAliasMaterializationWithLookup(ctx, account, aliasMemberId, false);
+}
+
+export async function preflightNormalizedAccountAliasMaterialization(
+  ctx: MutationCtx,
+  account: Pick<Doc<"accounts">, "id" | "email" | "member_id">,
+  aliasMemberId: string
+) {
+  return await preflightAccountAliasMaterializationWithLookup(ctx, account, aliasMemberId, true);
 }
 
 export async function ensureAccountAliasMaterialization(
@@ -384,54 +429,50 @@ export async function ensureAccountAliasMaterialization(
   aliasMemberId: string,
   now = Date.now()
 ): Promise<boolean> {
-  const { canonicalMemberId, normalizedAlias, alreadyMaterialized } =
-    await preflightAccountAliasMaterialization(ctx, account, aliasMemberId);
-  if (alreadyMaterialized) return false;
-
-  await ctx.db.insert("member_aliases", {
-    canonical_member_id: canonicalMemberId,
-    alias_member_id: normalizedAlias,
-    account_email: account.email.toLowerCase().trim(),
-    materialization_source: "account_alias",
-    source_account_id: account.id,
-    created_at: now
-  });
-  return true;
+  const preflight = await preflightAccountAliasMaterialization(ctx, account, aliasMemberId);
+  return await applyPreflightedAccountAliasMaterialization(ctx, preflight, now);
 }
 
-export async function ensureStandaloneAlias(
+export async function ensureNormalizedAccountAliasMaterialization(
   ctx: MutationCtx,
-  input: {
-    aliasMemberId: string;
-    canonicalMemberId: string;
-    provenanceEmail: string;
-    createdAt?: number;
-  }
+  account: Pick<Doc<"accounts">, "id" | "email" | "member_id">,
+  aliasMemberId: string,
+  now = Date.now()
 ): Promise<boolean> {
-  const aliasMemberId = normalizeMemberId(input.aliasMemberId);
-  const canonicalMemberId = normalizeMemberId(input.canonicalMemberId);
-  if (!aliasMemberId || aliasMemberId === canonicalMemberId) return false;
-
-  await assertAliasDoesNotShadowCanonicalAccount(ctx.db, input.aliasMemberId);
-  const rows = await boundedAliasRows(ctx, aliasMemberId);
-  const conflict = rows.find(
-    (row) => normalizeMemberId(row.canonical_member_id) !== canonicalMemberId
+  const preflight = await preflightNormalizedAccountAliasMaterialization(
+    ctx,
+    account,
+    aliasMemberId
   );
-  if (conflict) {
-    throw deterministicLinkingError(
-      LINKING_ERROR_CODES.aliasConflict,
-      `alias_member_id=${aliasMemberId},existing_canonical=${conflict.canonical_member_id}`
-    );
-  }
-  if (rows.some((row) => !row.source_account_id)) return false;
+  return await applyPreflightedAccountAliasMaterialization(ctx, preflight, now);
+}
 
-  await ctx.db.insert("member_aliases", {
-    alias_member_id: aliasMemberId,
-    canonical_member_id: canonicalMemberId,
-    account_email: input.provenanceEmail.trim().toLowerCase(),
-    created_at: input.createdAt ?? Date.now()
-  });
-  return true;
+export async function applyPreflightedAccountAliasMaterialization(
+  ctx: Pick<MutationCtx, "db">,
+  preflight: AccountAliasMaterializationPreflight,
+  now = Date.now()
+): Promise<boolean> {
+  const preflightState = preflight[ACCOUNT_ALIAS_PREFLIGHT];
+  if (!preflightState) {
+    throw new Error("Account alias materialization requires a validated preflight");
+  }
+  if (preflight.alreadyMaterialized || preflightState.consumed) return false;
+
+  preflightState.consumed = true;
+  try {
+    await ctx.db.insert("member_aliases", {
+      canonical_member_id: preflight.canonicalMemberId,
+      alias_member_id: preflight.normalizedAlias,
+      account_email: preflight.accountEmail.toLowerCase().trim(),
+      materialization_source: "account_alias",
+      source_account_id: preflight.accountId,
+      created_at: now
+    });
+    return true;
+  } catch (error) {
+    preflightState.consumed = false;
+    throw error;
+  }
 }
 
 export async function removeAccountAliasMaterialization(

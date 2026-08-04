@@ -16,7 +16,7 @@ import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { resolveCanonicalMemberIdInternal } from "./aliases";
-import { ensureStandaloneAlias } from "./identity";
+import { ensureAccountAliasMaterialization } from "./identity";
 
 // ============================================================================
 // HELPER: Assertion function for test failures
@@ -489,12 +489,20 @@ export const test_import_legacy_ids_resolves_to_canonical = internalMutation({
     });
 
     // 3. Create alias record (simulating migration state)
-    await ensureStandaloneAlias(ctx, {
-      canonicalMemberId: canonicalId,
-      aliasMemberId: aliasId,
-      provenanceEmail: ownerEmail,
-      createdAt: now
+    await ctx.db.patch(friendAccountId, {
+      alias_member_ids: [aliasId],
+      updated_at: now
     });
+    await ensureAccountAliasMaterialization(
+      ctx,
+      {
+        id: `test-import-friend-acc-${now}`,
+        email: `test-import-friend-${now}@example.com`,
+        member_id: canonicalId
+      },
+      aliasId,
+      now
+    );
 
     // 4. Run bulkImport with legacy ALIAS IDs
     // We mock the bulkImport logic by calling the resolver directly or

@@ -9,6 +9,7 @@ import {
   normalizeMemberId,
   normalizeMemberIds
 } from "./identity";
+import { isGhostFriendIdentity, resolveProvenFriendLink } from "./friendLinkProvenance";
 
 const friendValidator = v.object({
   member_id: v.string(),
@@ -100,54 +101,14 @@ function hasServerLinkedMarker(friend: Doc<"account_friends">): boolean {
 async function resolveServerProvenLinkedAccount(
   ctx: MutationCtx,
   friend: Doc<"account_friends">,
-  accountCache: Map<string, Doc<"accounts"> | null>
+  friendCache: Map<string, Doc<"accounts"> | null>
 ): Promise<Doc<"accounts"> | null> {
-  const linkedAccountId = friend.linked_account_id?.trim();
-  if (friend.link_state !== "linked" || !linkedAccountId) return null;
-
-  const cached = accountCache.get(linkedAccountId);
-  const account =
-    cached === undefined
-      ? await ctx.db
-          .query("accounts")
-          .withIndex("by_auth_id", (q) => q.eq("id", linkedAccountId))
-          .unique()
-      : cached;
-  const activeAccount =
-    account && account.status !== "deleted" && account.member_id ? account : null;
-  if (!activeAccount) {
-    accountCache.set(linkedAccountId, null);
-    return null;
-  }
-  accountCache.set(linkedAccountId, activeAccount);
-
-  const canonicalMemberId = normalizeMemberId(activeAccount.member_id!);
-  const friendIdentityIds = normalizeMemberIds(
-    [friend.member_id, friend.linked_member_id, ...(friend.local_alias_member_ids ?? [])].filter(
-      (memberId): memberId is string => Boolean(memberId)
-    )
-  );
-  const hasCanonicalIdentity = friendIdentityIds.includes(canonicalMemberId);
-  const hasMaterializedAlias = hasCanonicalIdentity
-    ? true
-    : await Promise.all(
-        friendIdentityIds.map(async (memberId) => {
-          const alias = await ctx.db
-            .query("member_aliases")
-            .withIndex("by_source_account_and_alias", (q) =>
-              q.eq("source_account_id", activeAccount.id).eq("alias_member_id", memberId)
-            )
-            .first();
-          return (
-            alias !== null &&
-            normalizeMemberId(alias.canonical_member_id) === canonicalMemberId &&
-            alias.materialization_source === "account_alias"
-          );
-        })
-      ).then((matches) => matches.some(Boolean));
-
-  if (!hasMaterializedAlias) return null;
-  return activeAccount;
+  const cacheKey = String(friend._id);
+  if (friendCache.has(cacheKey)) return friendCache.get(cacheKey) ?? null;
+  const provenLink = await resolveProvenFriendLink(ctx, friend);
+  const account = provenLink?.account ?? null;
+  friendCache.set(cacheKey, account);
+  return account;
 }
 
 function registerTrustedLinkedAccount(
@@ -205,7 +166,10 @@ async function findExistingImportedFriend(
       (friend) =>
         identityIdSet.has(normalizeMemberId(friend.member_id)) ||
         (friend.linked_member_id !== undefined &&
-          identityIdSet.has(normalizeMemberId(friend.linked_member_id)))
+          identityIdSet.has(normalizeMemberId(friend.linked_member_id))) ||
+        normalizeMemberIds(friend.local_alias_member_ids).some((aliasMemberId) =>
+          identityIdSet.has(aliasMemberId)
+        )
     )
   ]) {
     candidatesById.set(String(candidate._id), candidate);
@@ -312,7 +276,7 @@ export const bulkImport = mutation({
     }
 
     const memberIdMap = new Map<string, string>();
-    const linkedAccountCache = new Map<string, Doc<"accounts"> | null>();
+    const linkedFriendCache = new Map<string, Doc<"accounts"> | null>();
 
     // Process Friends
     for (const [index, friend] of args.friends.entries()) {
@@ -329,18 +293,24 @@ export const bulkImport = mutation({
 
       let finalLinkedEmail: string | undefined;
       let finalLinkedAccountId: string | undefined;
-      let finalStatus = friend.status;
+      const incomingGhost = friend.status?.trim().toLowerCase() === "ghost";
+      let finalStatus = incomingGhost ? "ghost" : friend.status;
       let finalHasLinked = false;
-      let finalLinkState: "linked" | "unlinked" = "unlinked";
+      let finalLinkState: "linked" | "unlinked" | "ghost" = incomingGhost ? "ghost" : "unlinked";
       let linkedMemberId: string | undefined;
 
       if (match) {
-        const trustedLinkedAccount = await resolveServerProvenLinkedAccount(
-          ctx,
-          match,
-          linkedAccountCache
-        );
-        if (trustedLinkedAccount) {
+        const isGhost = isGhostFriendIdentity(match);
+        const trustedLinkedAccount = isGhost
+          ? null
+          : await resolveServerProvenLinkedAccount(ctx, match, linkedFriendCache);
+        if (isGhost) {
+          finalLinkState = "ghost";
+          finalStatus = "ghost";
+          linkedMemberId = match.linked_member_id
+            ? normalizeMemberId(match.linked_member_id)
+            : undefined;
+        } else if (trustedLinkedAccount) {
           finalHasLinked = true;
           finalLinkState = "linked";
           finalLinkedAccountId = trustedLinkedAccount.id;
@@ -348,12 +318,14 @@ export const bulkImport = mutation({
           linkedMemberId = normalizeMemberId(trustedLinkedAccount.member_id!);
           finalStatus = match.status;
         } else {
-          finalStatus = friend.status ?? match.status;
+          finalStatus = incomingGhost ? "ghost" : (friend.status ?? match.status);
         }
 
         // Keep the persisted legacy friend ID stable while promoting new financial data to the
         // linked canonical identity. Unlinked exact matches continue mapping to their own ID.
-        memberIdMap.set(friend.member_id, normalizeMemberId(linkedMemberId ?? friend.member_id));
+        const canonicalImportedMemberId = normalizeMemberId(linkedMemberId ?? match.member_id);
+        memberIdMap.set(friend.member_id, canonicalImportedMemberId);
+        memberIdMap.set(originalFriendMemberIds[index], canonicalImportedMemberId);
 
         // Keep friend metadata up-to-date for existing rows, even when there is no new linking event.
         const patch: Record<string, any> = {};
@@ -449,7 +421,7 @@ export const bulkImport = mutation({
       const linkedAccount = await resolveServerProvenLinkedAccount(
         ctx,
         existingFriend,
-        linkedAccountCache
+        linkedFriendCache
       );
       if (linkedAccount) {
         registerTrustedLinkedAccount(trustedAccountsByMemberId, existingFriend, linkedAccount);

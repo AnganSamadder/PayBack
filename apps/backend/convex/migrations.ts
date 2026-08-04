@@ -4,16 +4,17 @@ import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { reconcileUserExpenses } from "./helpers";
 import {
+  assertIdentityMaterializationReady,
+  applyPreflightedAccountAliasMaterialization,
   ensureAccountAliasMaterialization,
-  ensureStandaloneAlias,
-  findAliasByAliasMemberId,
   findAccountByAuthIdOrDocId,
   findAccountByMemberId,
   IDENTITY_MATERIALIZATION_KEY,
+  MAX_LIVE_ACCOUNT_ALIASES,
   MAX_ALIAS_ROWS_PER_MEMBER_ID,
   normalizeMemberId,
   normalizeMemberIds,
-  preflightAccountAliasMaterialization
+  preflightNormalizedAccountAliasMaterialization
 } from "./identity";
 
 function normalizeEmail(value: string | undefined | null): string | undefined {
@@ -105,6 +106,7 @@ export const createMemberAliasesFromClaimedTokens = internalMutation({
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new Error("limit must be an integer between 1 and 100");
     }
+    await assertIdentityMaterializationReady(ctx.db);
     const claimedTokens = await ctx.db
       .query("invite_tokens")
       .filter((q) => q.neq(q.field("claimed_by"), undefined))
@@ -128,14 +130,28 @@ export const createMemberAliasesFromClaimedTokens = internalMutation({
 
       if (canonicalId === aliasId) continue;
 
-      if (
-        await ensureStandaloneAlias(ctx, {
-          canonicalMemberId: canonicalId,
-          aliasMemberId: aliasId,
-          provenanceEmail: token.creator_email,
-          createdAt: token.claimed_at || Date.now()
-        })
-      ) {
+      const aliases = normalizeMemberIds([
+        ...(claimantAccount.alias_member_ids ?? []),
+        aliasId
+      ]).filter((memberId) => memberId !== canonicalId);
+      if (aliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+        throw new Error(`Account ${claimantAccount.id} has too many aliases`);
+      }
+      const created = await ensureAccountAliasMaterialization(
+        ctx,
+        {
+          id: claimantAccount.id,
+          email: claimantAccount.email,
+          member_id: canonicalId
+        },
+        aliasId,
+        token.claimed_at || Date.now()
+      );
+      await ctx.db.patch(claimantAccount._id, {
+        alias_member_ids: aliases,
+        updated_at: Date.now()
+      });
+      if (created) {
         aliasesCreated++;
       }
 
@@ -987,51 +1003,85 @@ export const runIdentityMaterializationMigration = internalMutation({
         cursor: state.cursor ?? null,
         numItems: batchSize
       });
-      const deletedIds = new Set<string>();
-      for (const alias of page.page) {
-        if (deletedIds.has(String(alias._id))) continue;
-        const aliasMemberId = normalizeMemberId(alias.alias_member_id);
-        const canonicalMemberId = normalizeMemberId(alias.canonical_member_id);
-        const accountEmail = alias.account_email.trim().toLowerCase();
-        const candidates = await ctx.db
+      const normalizedPage = page.page.map((row) => ({
+        row,
+        aliasMemberId: normalizeMemberId(row.alias_member_id),
+        canonicalMemberId: normalizeMemberId(row.canonical_member_id)
+      }));
+      const pageIds = new Set(page.page.map((row) => String(row._id)));
+      const pageCanonicalOwners = new Map<string, string>();
+      for (const entry of normalizedPage) {
+        const pageCanonical = pageCanonicalOwners.get(entry.aliasMemberId);
+        if (pageCanonical && pageCanonical !== entry.canonicalMemberId) {
+          const lastError = `Conflicting alias ownership for ${entry.aliasMemberId}`;
+          await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+          return { status: "pending" as const, phase: "aliases" as const, lastError };
+        }
+        pageCanonicalOwners.set(entry.aliasMemberId, entry.canonicalMemberId);
+      }
+
+      const deleteIds = new Set<Doc<"member_aliases">["_id"]>();
+      const survivorPatches = new Map<
+        Doc<"member_aliases">["_id"],
+        { alias_member_id: string; canonical_member_id: string; account_email: string }
+      >();
+      for (const aliasMemberId of pageCanonicalOwners.keys()) {
+        const indexedRows = await ctx.db
           .query("member_aliases")
           .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", aliasMemberId))
           .take(MAX_ALIAS_ROWS_PER_MEMBER_ID + 1);
-        if (candidates.length > MAX_ALIAS_ROWS_PER_MEMBER_ID) {
+        const rowsById = new Map<string, Doc<"member_aliases">>();
+        for (const row of indexedRows) rowsById.set(String(row._id), row);
+        for (const entry of normalizedPage) {
+          if (entry.aliasMemberId === aliasMemberId) {
+            rowsById.set(String(entry.row._id), entry.row);
+          }
+        }
+        const candidateRows = Array.from(rowsById.values());
+        if (candidateRows.length > MAX_ALIAS_ROWS_PER_MEMBER_ID) {
           const lastError = `Too many alias rows for ${aliasMemberId}`;
           await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
           return { status: "pending" as const, phase: "aliases" as const, lastError };
         }
-        const conflict = candidates.find(
-          (candidate) =>
-            candidate._id !== alias._id &&
-            normalizeMemberId(candidate.canonical_member_id) !== canonicalMemberId
+        const canonicalIds = new Set(
+          candidateRows.map((row) => normalizeMemberId(row.canonical_member_id))
         );
-        if (conflict) {
+        if (canonicalIds.size > 1) {
           const lastError = `Conflicting alias ownership for ${aliasMemberId}`;
           await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
           return { status: "pending" as const, phase: "aliases" as const, lastError };
         }
-        const sameSource = candidates.find(
-          (candidate) =>
-            candidate._id !== alias._id &&
-            (candidate.source_account_id ?? null) === (alias.source_account_id ?? null)
-        );
-        if (sameSource) {
-          const keepExisting =
-            sameSource._creationTime < alias._creationTime ||
-            (sameSource._creationTime === alias._creationTime &&
-              String(sameSource._id) < String(alias._id));
-          const deletedId = keepExisting ? alias._id : sameSource._id;
-          await ctx.db.delete(deletedId);
-          deletedIds.add(String(deletedId));
-          if (keepExisting) continue;
+
+        const rowsBySource = new Map<string | null, Doc<"member_aliases">[]>();
+        for (const row of candidateRows) {
+          const sourceKey = row.source_account_id ?? null;
+          const sourceRows = rowsBySource.get(sourceKey) ?? [];
+          sourceRows.push(row);
+          rowsBySource.set(sourceKey, sourceRows);
         }
-        await ctx.db.patch(alias._id, {
-          alias_member_id: aliasMemberId,
-          canonical_member_id: canonicalMemberId,
-          account_email: accountEmail
-        });
+        for (const sourceRows of rowsBySource.values()) {
+          sourceRows.sort(
+            (left, right) =>
+              left._creationTime - right._creationTime ||
+              String(left._id).localeCompare(String(right._id))
+          );
+          const survivor = sourceRows[0];
+          for (const duplicate of sourceRows.slice(1)) {
+            if (pageIds.has(String(duplicate._id))) deleteIds.add(duplicate._id);
+          }
+          if (pageIds.has(String(survivor._id))) {
+            survivorPatches.set(survivor._id, {
+              alias_member_id: aliasMemberId,
+              canonical_member_id: normalizeMemberId(survivor.canonical_member_id),
+              account_email: survivor.account_email.trim().toLowerCase()
+            });
+          }
+        }
+      }
+
+      for (const deleteId of deleteIds) await ctx.db.delete(deleteId);
+      for (const [survivorId, patch] of survivorPatches) {
+        if (!deleteIds.has(survivorId)) await ctx.db.patch(survivorId, patch);
       }
       await ctx.db.patch(state._id, {
         phase: page.isDone ? "accounts" : "aliases",
@@ -1044,6 +1094,354 @@ export const runIdentityMaterializationMigration = internalMutation({
         phase: page.isDone ? ("accounts" as const) : ("aliases" as const),
         lastError: undefined
       };
+    }
+
+    const persistError = async (
+      phase: "accounts" | "alias_provenance" | "account_aliases",
+      lastError: string
+    ) => {
+      await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+      return { status: "pending" as const, phase, lastError };
+    };
+
+    if (state.phase === "accounts") {
+      const page = await ctx.db.query("accounts").paginate({
+        cursor: state.cursor ?? null,
+        numItems: batchSize
+      });
+      const normalizedAccounts = page.page.map((account) => {
+        const canonicalMemberId = account.member_id
+          ? normalizeMemberId(account.member_id)
+          : undefined;
+        const aliases = normalizeMemberIds(account.alias_member_ids).filter(
+          (alias) => alias !== canonicalMemberId
+        );
+        return { account, canonicalMemberId, aliases };
+      });
+
+      const canonicalOwners = new Map<string, Doc<"accounts">["_id"]>();
+      for (const normalizedAccount of normalizedAccounts) {
+        const { account, canonicalMemberId, aliases } = normalizedAccount;
+        if (aliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+          return await persistError(
+            "accounts",
+            `Identity maintenance required: account ${account.id} has ${aliases.length} aliases; maximum is ${MAX_LIVE_ACCOUNT_ALIASES}`
+          );
+        }
+        if (!canonicalMemberId) {
+          if (aliases.length > 0) {
+            return await persistError(
+              "accounts",
+              `Identity maintenance required: account ${account.id} has aliases without a canonical member_id`
+            );
+          }
+          continue;
+        }
+
+        const pageOwner = canonicalOwners.get(canonicalMemberId);
+        if (pageOwner && pageOwner !== account._id) {
+          return await persistError(
+            "accounts",
+            `Conflicting canonical account identity ${canonicalMemberId}`
+          );
+        }
+        canonicalOwners.set(canonicalMemberId, account._id);
+
+        const collisions = await ctx.db
+          .query("accounts")
+          .withIndex("by_member_id", (q) => q.eq("member_id", canonicalMemberId))
+          .take(2);
+        if (collisions.some((candidate) => candidate._id !== account._id)) {
+          return await persistError(
+            "accounts",
+            `Conflicting canonical account identity ${canonicalMemberId}`
+          );
+        }
+      }
+
+      for (const { account, canonicalMemberId, aliases } of normalizedAccounts) {
+        await ctx.db.patch(account._id, {
+          member_id: canonicalMemberId,
+          alias_member_ids: aliases,
+          updated_at: Date.now()
+        });
+      }
+      await ctx.db.patch(state._id, {
+        phase: page.isDone ? "alias_provenance" : "accounts",
+        cursor: page.isDone ? undefined : page.continueCursor,
+        current_account_id: undefined,
+        next_account_cursor: undefined,
+        alias_offset: undefined,
+        last_error: undefined,
+        updated_at: Date.now()
+      });
+      return {
+        status: "pending" as const,
+        phase: page.isDone ? ("alias_provenance" as const) : ("accounts" as const),
+        lastError: undefined
+      };
+    }
+
+    if (state.phase === "alias_provenance") {
+      const page = await ctx.db.query("member_aliases").paginate({
+        cursor: state.cursor ?? null,
+        numItems: batchSize
+      });
+      const resolvedPage: Array<{
+        row: Doc<"member_aliases">;
+        aliasMemberId: string;
+        canonicalMemberId: string;
+        canonicalAccount: Doc<"accounts">;
+      }> = [];
+      const provenancePageIds = new Set(page.page.map((row) => String(row._id)));
+      for (const alias of page.page) {
+        const aliasMemberId = normalizeMemberId(alias.alias_member_id);
+        const canonicalMemberId = normalizeMemberId(alias.canonical_member_id);
+        const canonicalAccounts = await ctx.db
+          .query("accounts")
+          .withIndex("by_member_id", (q) => q.eq("member_id", canonicalMemberId))
+          .take(2);
+        const canonicalAccount = canonicalAccounts.length === 1 ? canonicalAccounts[0] : null;
+        const isCorroborated =
+          canonicalAccount !== null &&
+          normalizeMemberIds(canonicalAccount.alias_member_ids).includes(aliasMemberId);
+        if (!isCorroborated) {
+          return await persistError(
+            "alias_provenance",
+            `Unproven legacy alias ${aliasMemberId}; migrate it to an owner-local friend alias or remove it`
+          );
+        }
+
+        const canonicalShadow = await ctx.db
+          .query("accounts")
+          .withIndex("by_member_id", (q) => q.eq("member_id", aliasMemberId))
+          .first();
+        if (canonicalShadow) {
+          return await persistError(
+            "alias_provenance",
+            `Alias ${aliasMemberId} shadows canonical account identity ${aliasMemberId}`
+          );
+        }
+
+        resolvedPage.push({
+          row: alias,
+          aliasMemberId,
+          canonicalMemberId,
+          canonicalAccount
+        });
+      }
+
+      const pageProvenanceOwners = new Map<
+        string,
+        { canonicalMemberId: string; sourceAccountId: string }
+      >();
+      for (const entry of resolvedPage) {
+        const existingOwner = pageProvenanceOwners.get(entry.aliasMemberId);
+        if (
+          existingOwner &&
+          (existingOwner.canonicalMemberId !== entry.canonicalMemberId ||
+            existingOwner.sourceAccountId !== entry.canonicalAccount.id)
+        ) {
+          return await persistError(
+            "alias_provenance",
+            `Conflicting alias ownership for ${entry.aliasMemberId}`
+          );
+        }
+        pageProvenanceOwners.set(entry.aliasMemberId, {
+          canonicalMemberId: entry.canonicalMemberId,
+          sourceAccountId: entry.canonicalAccount.id
+        });
+      }
+
+      const provenanceDeleteIds = new Set<Doc<"member_aliases">["_id"]>();
+      const provenancePatches = new Map<
+        Doc<"member_aliases">["_id"],
+        {
+          canonical_member_id: string;
+          alias_member_id: string;
+          account_email: string;
+          materialization_source: "account_alias";
+          source_account_id: string;
+        }
+      >();
+      const provenanceGroups = new Map<string, typeof resolvedPage>();
+      for (const entry of resolvedPage) {
+        const key = `${entry.canonicalAccount.id}\u0000${entry.aliasMemberId}`;
+        const entries = provenanceGroups.get(key) ?? [];
+        entries.push(entry);
+        provenanceGroups.set(key, entries);
+      }
+      for (const entries of provenanceGroups.values()) {
+        const { canonicalAccount, aliasMemberId, canonicalMemberId } = entries[0];
+        const sourceRows = await ctx.db
+          .query("member_aliases")
+          .withIndex("by_source_account_and_alias", (q) =>
+            q.eq("source_account_id", canonicalAccount.id).eq("alias_member_id", aliasMemberId)
+          )
+          .take(MAX_ALIAS_ROWS_PER_MEMBER_ID + 1);
+        const rowsById = new Map<string, Doc<"member_aliases">>();
+        for (const sourceRow of sourceRows) rowsById.set(String(sourceRow._id), sourceRow);
+        for (const entry of entries) rowsById.set(String(entry.row._id), entry.row);
+        const convergingRows = Array.from(rowsById.values());
+        if (convergingRows.length > MAX_ALIAS_ROWS_PER_MEMBER_ID) {
+          return await persistError("alias_provenance", `Too many alias rows for ${aliasMemberId}`);
+        }
+        if (
+          convergingRows.some(
+            (row) => normalizeMemberId(row.canonical_member_id) !== canonicalMemberId
+          )
+        ) {
+          return await persistError(
+            "alias_provenance",
+            `Conflicting alias ownership for ${aliasMemberId}`
+          );
+        }
+        convergingRows.sort(
+          (left, right) =>
+            left._creationTime - right._creationTime ||
+            String(left._id).localeCompare(String(right._id))
+        );
+        const survivor = convergingRows[0];
+        for (const duplicate of convergingRows.slice(1)) {
+          if (provenancePageIds.has(String(duplicate._id))) {
+            provenanceDeleteIds.add(duplicate._id);
+          }
+        }
+        if (provenancePageIds.has(String(survivor._id))) {
+          provenancePatches.set(survivor._id, {
+            canonical_member_id: canonicalMemberId,
+            alias_member_id: aliasMemberId,
+            account_email: canonicalAccount.email.trim().toLowerCase(),
+            materialization_source: "account_alias",
+            source_account_id: canonicalAccount.id
+          });
+        }
+      }
+
+      for (const deleteId of provenanceDeleteIds) await ctx.db.delete(deleteId);
+      for (const [survivorId, patch] of provenancePatches) {
+        if (!provenanceDeleteIds.has(survivorId)) await ctx.db.patch(survivorId, patch);
+      }
+      await ctx.db.patch(state._id, {
+        phase: page.isDone ? "account_aliases" : "alias_provenance",
+        cursor: page.isDone ? undefined : page.continueCursor,
+        last_error: undefined,
+        updated_at: Date.now()
+      });
+      return {
+        status: "pending" as const,
+        phase: page.isDone ? ("account_aliases" as const) : ("alias_provenance" as const),
+        lastError: undefined
+      };
+    }
+
+    if (!state.current_account_id) {
+      const page = await ctx.db.query("accounts").paginate({
+        cursor: state.cursor ?? null,
+        numItems: batchSize
+      });
+      if (page.page.length === 0) {
+        await ctx.db.patch(state._id, {
+          status: "ready",
+          phase: "complete",
+          cursor: undefined,
+          current_account_id: undefined,
+          next_account_cursor: undefined,
+          alias_offset: undefined,
+          last_error: undefined,
+          updated_at: Date.now()
+        });
+        return { status: "ready" as const, phase: "complete" as const, lastError: undefined };
+      }
+
+      const normalizedAccounts = page.page.map((account) => {
+        const canonicalMemberId = account.member_id
+          ? normalizeMemberId(account.member_id)
+          : undefined;
+        const aliases = normalizeMemberIds(account.alias_member_ids).filter(
+          (alias) => alias !== canonicalMemberId
+        );
+        return { account, canonicalMemberId, aliases };
+      });
+      const aliasCount = normalizedAccounts.reduce(
+        (total, normalizedAccount) => total + normalizedAccount.aliases.length,
+        0
+      );
+
+      if (aliasCount <= batchSize) {
+        const materializations: Array<
+          Awaited<ReturnType<typeof preflightNormalizedAccountAliasMaterialization>>
+        > = [];
+        try {
+          const pageAliasOwners = new Map<
+            string,
+            { canonicalMemberId: string; accountId: string }
+          >();
+          for (const { account, canonicalMemberId, aliases } of normalizedAccounts) {
+            if (aliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+              throw new Error(
+                `Identity maintenance required: account ${account.id} has ${aliases.length} aliases; maximum is ${MAX_LIVE_ACCOUNT_ALIASES}`
+              );
+            }
+            if (!canonicalMemberId && aliases.length > 0) {
+              throw new Error(
+                `Identity maintenance required: account ${account.id} has aliases without a canonical member_id`
+              );
+            }
+            if (!canonicalMemberId) continue;
+            const accountIdentity = {
+              id: account.id,
+              email: account.email,
+              member_id: canonicalMemberId
+            };
+            for (const alias of aliases) {
+              const pageOwner = pageAliasOwners.get(alias);
+              if (
+                pageOwner &&
+                (pageOwner.canonicalMemberId !== canonicalMemberId ||
+                  pageOwner.accountId !== account.id)
+              ) {
+                throw new Error(`Conflicting account alias ownership for ${alias}`);
+              }
+              pageAliasOwners.set(alias, { canonicalMemberId, accountId: account.id });
+              materializations.push(
+                await preflightNormalizedAccountAliasMaterialization(ctx, accountIdentity, alias)
+              );
+            }
+          }
+          for (const materialization of materializations) {
+            await applyPreflightedAccountAliasMaterialization(ctx, materialization);
+          }
+        } catch (error) {
+          const lastError =
+            error instanceof Error ? error.message : "Unknown identity maintenance error";
+          return await persistError("account_aliases", lastError);
+        }
+
+        if (page.isDone) {
+          await ctx.db.patch(state._id, {
+            status: "ready",
+            phase: "complete",
+            cursor: undefined,
+            current_account_id: undefined,
+            next_account_cursor: undefined,
+            alias_offset: undefined,
+            last_error: undefined,
+            updated_at: Date.now()
+          });
+          return { status: "ready" as const, phase: "complete" as const, lastError: undefined };
+        }
+        await ctx.db.patch(state._id, {
+          cursor: page.continueCursor,
+          last_error: undefined,
+          updated_at: Date.now()
+        });
+        return {
+          status: "pending" as const,
+          phase: "account_aliases" as const,
+          lastError: undefined
+        };
+      }
     }
 
     let account: Doc<"accounts"> | null = state.current_account_id
@@ -1073,27 +1471,22 @@ export const runIdentityMaterializationMigration = internalMutation({
     }
 
     const canonicalMemberId = account.member_id ? normalizeMemberId(account.member_id) : undefined;
-    if (canonicalMemberId) {
-      const collisions = await ctx.db
-        .query("accounts")
-        .withIndex("by_member_id", (q) => q.eq("member_id", canonicalMemberId))
-        .take(2);
-      const collision = collisions.find((candidate) => candidate._id !== account!._id);
-      if (collision) {
-        const lastError = `Conflicting canonical account identity ${canonicalMemberId}`;
-        await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
-        return { status: "pending" as const, phase: "accounts" as const, lastError };
-      }
-
-      const shadowingAlias = await findAliasByAliasMemberId(ctx.db, account.member_id!);
-      if (shadowingAlias) {
-        const lastError = `Alias ${shadowingAlias.alias_member_id} shadows canonical account identity ${canonicalMemberId}`;
-        await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
-        return { status: "pending" as const, phase: "accounts" as const, lastError };
-      }
+    const aliases = normalizeMemberIds(account.alias_member_ids).filter(
+      (alias) => alias !== canonicalMemberId
+    );
+    if (aliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+      return await persistError(
+        "account_aliases",
+        `Identity maintenance required: account ${account.id} has ${aliases.length} aliases; maximum is ${MAX_LIVE_ACCOUNT_ALIASES}`
+      );
+    }
+    if (!canonicalMemberId && aliases.length > 0) {
+      return await persistError(
+        "account_aliases",
+        `Identity maintenance required: account ${account.id} has aliases without a canonical member_id`
+      );
     }
 
-    const aliases = normalizeMemberIds(account.alias_member_ids);
     const aliasOffset = state.current_account_id ? (state.alias_offset ?? 0) : 0;
     const batch = aliases.slice(aliasOffset, aliasOffset + batchSize);
     if (canonicalMemberId) {
@@ -1103,19 +1496,24 @@ export const runIdentityMaterializationMigration = internalMutation({
         member_id: canonicalMemberId
       };
       try {
+        const materializations: Array<
+          Awaited<ReturnType<typeof preflightNormalizedAccountAliasMaterialization>>
+        > = [];
         for (const alias of batch) {
-          await preflightAccountAliasMaterialization(ctx, accountIdentity, alias);
+          materializations.push(
+            await preflightNormalizedAccountAliasMaterialization(ctx, accountIdentity, alias)
+          );
+        }
+        for (const materialization of materializations) {
+          await applyPreflightedAccountAliasMaterialization(ctx, materialization);
         }
       } catch (error) {
         const lastError =
           error instanceof Error ? error.message : "Unknown identity maintenance error";
-        await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
-        return { status: "pending" as const, phase: "accounts" as const, lastError };
-      }
-      for (const alias of batch) {
-        await ensureAccountAliasMaterialization(ctx, accountIdentity, alias);
+        return await persistError("account_aliases", lastError);
       }
     }
+
     const nextOffset = aliasOffset + batch.length;
     if (nextOffset < aliases.length) {
       await ctx.db.patch(state._id, {
@@ -1126,11 +1524,6 @@ export const runIdentityMaterializationMigration = internalMutation({
         updated_at: Date.now()
       });
     } else {
-      await ctx.db.patch(account._id, {
-        member_id: canonicalMemberId,
-        alias_member_ids: aliases,
-        updated_at: Date.now()
-      });
       await ctx.db.patch(state._id, {
         cursor: nextAccountCursor,
         current_account_id: undefined,
@@ -1140,6 +1533,10 @@ export const runIdentityMaterializationMigration = internalMutation({
         updated_at: Date.now()
       });
     }
-    return { status: "pending" as const, phase: "accounts" as const, lastError: undefined };
+    return {
+      status: "pending" as const,
+      phase: "account_aliases" as const,
+      lastError: undefined
+    };
   }
 });

@@ -90,14 +90,22 @@ export default defineSchema({
     created_at: v.number()
   })
     .index("by_alias_member_id", ["alias_member_id"])
+    .index("by_alias_member_id_and_source", ["alias_member_id", "materialization_source"])
     .index("by_canonical_member_id", ["canonical_member_id"])
+    .index("by_canonical_member_id_and_source", ["canonical_member_id", "materialization_source"])
     .index("by_account_email", ["account_email"])
     .index("by_source_account_and_alias", ["source_account_id", "alias_member_id"]),
 
   identity_materialization_state: defineTable({
     key: v.string(),
     status: v.union(v.literal("pending"), v.literal("ready")),
-    phase: v.union(v.literal("aliases"), v.literal("accounts"), v.literal("complete")),
+    phase: v.union(
+      v.literal("aliases"),
+      v.literal("accounts"),
+      v.literal("alias_provenance"),
+      v.literal("account_aliases"),
+      v.literal("complete")
+    ),
     cursor: v.optional(v.string()),
     current_account_id: v.optional(v.id("accounts")),
     next_account_cursor: v.optional(v.string()),
@@ -225,6 +233,7 @@ export default defineSchema({
     creator_id: v.string(),
     creator_email: v.string(),
     target_member_id: v.string(),
+    target_friend_id: v.optional(v.id("account_friends")),
     target_member_name: v.string(),
     created_at: v.number(),
     expires_at: v.number(),
@@ -234,6 +243,7 @@ export default defineSchema({
     .index("by_creator_id", ["creator_id"])
     .index("by_creator_email", ["creator_email"])
     .index("by_claimed_by", ["claimed_by"])
+    .index("by_creator_id_and_claimed_by", ["creator_id", "claimed_by"])
     .index("by_client_id", ["id"]),
 
   janitor_state: defineTable({

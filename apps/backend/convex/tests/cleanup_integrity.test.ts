@@ -20,7 +20,7 @@ function identity(email: string, subject: string) {
 async function markIdentityReady(t: any) {
   await t.run(async (ctx) => {
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: "ready",
       phase: "complete",
       updated_at: Date.now()
@@ -39,7 +39,6 @@ test("cleanup.deleteLinkedFriend removes all matching direct groups", async () =
       created_at: Date.now(),
       member_id: "owner_member"
     });
-
     await ctx.db.insert("account_friends", {
       account_email: "owner@test.com",
       member_id: "friend_member",
@@ -153,6 +152,136 @@ test("cleanup.deleteLinkedFriend removes all matching direct groups", async () =
       .collect()
   );
   expect(remainingGroups.filter((group) => group.is_direct)).toHaveLength(0);
+});
+
+test("cleanup.deleteLinkedFriend normalizes equivalent Swift UUIDs before deleting direct history", async () => {
+  const t = convexTest(schema, modules);
+  const friendAlias = "11111111-1111-4111-8111-111111111111";
+  const canonicalFriendId = "22222222-2222-4222-8222-222222222222";
+  const storedCanonicalFriendId = `  ${canonicalFriendId.toUpperCase()}  `;
+
+  await t.run(async (ctx) => {
+    const ownerDoc = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "friend_auth",
+      email: "friend@test.com",
+      display_name: "Friend",
+      created_at: Date.now(),
+      member_id: canonicalFriendId,
+      alias_member_ids: [friendAlias]
+    });
+
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: friendAlias,
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: true,
+      linked_account_id: "friend_auth",
+      linked_account_email: "friend@test.com",
+      linked_member_id: canonicalFriendId,
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("member_aliases", {
+      account_email: "owner@test.com",
+      canonical_member_id: canonicalFriendId,
+      alias_member_id: friendAlias,
+      materialization_source: "account_alias",
+      source_account_id: "friend_auth",
+      created_at: Date.now()
+    });
+
+    const directGroup = await ctx.db.insert("groups", {
+      id: "normalized_direct_group",
+      name: "Friend",
+      is_direct: true,
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: storedCanonicalFriendId, name: "Friend" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerDoc,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+
+    await ctx.db.insert("expenses", {
+      id: "normalized_direct_expense",
+      group_id: "normalized_direct_group",
+      group_ref: directGroup,
+      description: "Dinner",
+      date: Date.now(),
+      total_amount: 20,
+      paid_by_member_id: storedCanonicalFriendId,
+      involved_member_ids: ["owner_member", storedCanonicalFriendId],
+      splits: [
+        { id: "owner_split", member_id: "owner_member", amount: 10, is_settled: false },
+        {
+          id: "friend_split",
+          member_id: storedCanonicalFriendId,
+          amount: 10,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerDoc,
+      participant_member_ids: ["owner_member", storedCanonicalFriendId],
+      participant_emails: ["owner@test.com", "friend@test.com"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: storedCanonicalFriendId, name: "Friend" }
+      ],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("user_expenses", {
+      user_id: "owner_auth",
+      expense_id: "normalized_direct_expense",
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("user_expenses", {
+      user_id: "friend_auth",
+      expense_id: "normalized_direct_expense",
+      updated_at: Date.now()
+    });
+  });
+
+  await markIdentityReady(t);
+  const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  const result = await ownerCtx.mutation(api.cleanup.deleteLinkedFriend, {
+    friendMemberId: friendAlias
+  });
+
+  expect(result.success).toBe(true);
+  expect(result.directGroupDeleted).toBe(true);
+  expect(result.expensesDeleted).toBe(1);
+
+  const remaining = await t.run(async (ctx) => ({
+    groups: await ctx.db
+      .query("groups")
+      .withIndex("by_owner_email", (q) => q.eq("owner_email", "owner@test.com"))
+      .collect(),
+    expenses: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "normalized_direct_expense"))
+      .collect(),
+    visibility: await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "normalized_direct_expense"))
+      .collect()
+  }));
+  expect(remaining.groups).toHaveLength(0);
+  expect(remaining.expenses).toHaveLength(0);
+  expect(remaining.visibility).toHaveLength(0);
 });
 
 test("cleanup.deleteUnlinkedFriend reconciles user_expenses after patching shared expenses", async () => {
@@ -279,6 +408,215 @@ test("cleanup.deleteUnlinkedFriend reconciles user_expenses after patching share
   );
   const visibilityUserIds = visibilityRows.map((row) => row.user_id).sort();
   expect(visibilityUserIds).toEqual(["owner_auth", "watcher_auth"]);
+});
+
+test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across every expense identity surface", async () => {
+  const t = convexTest(schema, modules);
+  const friendAlias = "33333333-3333-4333-8333-333333333333";
+  const canonicalFriendId = "44444444-4444-4444-8444-444444444444";
+  const storedCanonicalFriendId = ` ${canonicalFriendId.toUpperCase()} `;
+
+  await t.run(async (ctx) => {
+    const ownerDoc = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "watcher_auth",
+      email: "watcher@test.com",
+      display_name: "Watcher",
+      created_at: Date.now(),
+      member_id: "watcher_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "removed_auth",
+      email: "removed@test.com",
+      display_name: "Removed",
+      created_at: Date.now(),
+      member_id: canonicalFriendId,
+      alias_member_ids: [friendAlias]
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: friendAlias,
+      name: "Friend",
+      profile_avatar_color: "#654321",
+      has_linked_account: false,
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("member_aliases", {
+      account_email: "owner@test.com",
+      canonical_member_id: canonicalFriendId,
+      alias_member_id: friendAlias,
+      materialization_source: "account_alias",
+      source_account_id: "removed_auth",
+      created_at: Date.now()
+    });
+
+    const sharedGroup = await ctx.db.insert("groups", {
+      id: "normalized_shared_group",
+      name: "Shared",
+      is_direct: false,
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: storedCanonicalFriendId, name: "Friend" },
+        { id: "watcher_member", name: "Watcher" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerDoc,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+
+    const baseExpense = {
+      group_id: "normalized_shared_group",
+      group_ref: sharedGroup,
+      date: Date.now(),
+      total_amount: 60,
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerDoc,
+      participant_emails: ["owner@test.com", "watcher@test.com", "removed@test.com"],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    };
+
+    await ctx.db.insert("expenses", {
+      ...baseExpense,
+      id: "split_participant_only_expense",
+      description: "Legacy split and participant",
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "watcher_member"],
+      splits: [
+        { id: "s1", member_id: "owner_member", amount: 20, is_settled: false },
+        { id: "s2", member_id: storedCanonicalFriendId, amount: 20, is_settled: false },
+        { id: "s3", member_id: "watcher_member", amount: 20, is_settled: false }
+      ],
+      participant_member_ids: ["owner_member", "watcher_member"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: storedCanonicalFriendId, name: "Friend" },
+        { member_id: "watcher_member", name: "Watcher", linked_account_email: "watcher@test.com" }
+      ]
+    });
+
+    await ctx.db.insert("expenses", {
+      ...baseExpense,
+      id: "participant_ids_only_expense",
+      description: "Legacy participant IDs",
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "watcher_member"],
+      splits: [
+        { id: "s4", member_id: "owner_member", amount: 30, is_settled: false },
+        { id: "s5", member_id: "watcher_member", amount: 30, is_settled: false }
+      ],
+      participant_member_ids: ["owner_member", storedCanonicalFriendId, "watcher_member"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "watcher_member", name: "Watcher", linked_account_email: "watcher@test.com" }
+      ]
+    });
+
+    await ctx.db.insert("expenses", {
+      ...baseExpense,
+      id: "removed_payer_expense",
+      description: "Removed payer",
+      paid_by_member_id: storedCanonicalFriendId,
+      involved_member_ids: ["owner_member", "watcher_member"],
+      splits: [
+        { id: "s6", member_id: "owner_member", amount: 30, is_settled: false },
+        { id: "s7", member_id: "watcher_member", amount: 30, is_settled: false }
+      ],
+      participant_member_ids: ["owner_member", "watcher_member"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "watcher_member", name: "Watcher", linked_account_email: "watcher@test.com" }
+      ]
+    });
+
+    for (const expenseId of [
+      "split_participant_only_expense",
+      "participant_ids_only_expense",
+      "removed_payer_expense"
+    ]) {
+      for (const userId of ["owner_auth", "watcher_auth", "removed_auth"]) {
+        await ctx.db.insert("user_expenses", {
+          user_id: userId,
+          expense_id: expenseId,
+          updated_at: Date.now()
+        });
+      }
+    }
+  });
+
+  await markIdentityReady(t);
+  const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  const result = await ownerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
+    friendMemberId: friendAlias
+  });
+
+  expect(result.success).toBe(true);
+  expect(result.groupsModified).toBe(1);
+  expect(result.expensesModified).toBe(2);
+  expect(result.expensesDeleted).toBe(1);
+
+  const normalizedRemovedIds = new Set([friendAlias, canonicalFriendId]);
+  const normalized = (memberId: string) => memberId.trim().toLowerCase();
+  const remaining = await t.run(async (ctx) => {
+    const group = await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "normalized_shared_group"))
+      .unique();
+    const expenses = await ctx.db
+      .query("expenses")
+      .withIndex("by_group_id", (q) => q.eq("group_id", "normalized_shared_group"))
+      .collect();
+    const visibility = await ctx.db.query("user_expenses").collect();
+    return { group, expenses, visibility };
+  });
+
+  expect(
+    remaining.group?.members.some((member) => normalizedRemovedIds.has(normalized(member.id)))
+  ).toBe(false);
+  expect(remaining.expenses.map((expense) => expense.id).sort()).toEqual([
+    "participant_ids_only_expense",
+    "split_participant_only_expense"
+  ]);
+  for (const expense of remaining.expenses) {
+    expect(normalizedRemovedIds.has(normalized(expense.paid_by_member_id))).toBe(false);
+    expect(
+      expense.involved_member_ids.some((memberId) => normalizedRemovedIds.has(normalized(memberId)))
+    ).toBe(false);
+    expect(
+      expense.participant_member_ids.some((memberId) =>
+        normalizedRemovedIds.has(normalized(memberId))
+      )
+    ).toBe(false);
+    expect(
+      expense.splits.some((split) => normalizedRemovedIds.has(normalized(split.member_id)))
+    ).toBe(false);
+    expect(
+      expense.participants.some((participant) =>
+        normalizedRemovedIds.has(normalized(participant.member_id))
+      )
+    ).toBe(false);
+    expect(expense.participant_emails).not.toContain("removed@test.com");
+  }
+  expect(remaining.visibility.some((row) => row.expense_id === "removed_payer_expense")).toBe(
+    false
+  );
+  expect(
+    remaining.visibility.some(
+      (row) =>
+        row.user_id === "removed_auth" &&
+        ["split_participant_only_expense", "participant_ids_only_expense"].includes(row.expense_id)
+    )
+  ).toBe(false);
 });
 
 test("cleanup.deleteUnlinkedFriend preserves standalone aliases while pruning account materialization", async () => {

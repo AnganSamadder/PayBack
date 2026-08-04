@@ -21,11 +21,11 @@ async function markIdentityReady(t: any) {
   await t.run(async (ctx) => {
     const existing = await ctx.db
       .query("identity_materialization_state")
-      .withIndex("by_key", (q) => q.eq("key", "member_identity_v2"))
+      .withIndex("by_key", (q) => q.eq("key", "member_identity_v3"))
       .unique();
     if (!existing) {
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v2",
+        key: "member_identity_v3",
         status: "ready",
         phase: "complete",
         updated_at: Date.now()
@@ -42,7 +42,7 @@ type FriendEligibilityOverrides = {
 
 type EligibilityScenarioOptions = {
   omitSource?: boolean;
-  sourceIdentity?: "registered" | "global_alias" | "account_alias";
+  sourceIdentity?: "registered" | "account_alias";
   targetAliases?: string[];
   identityStatus?: "pending" | "ready";
 };
@@ -50,7 +50,7 @@ type EligibilityScenarioOptions = {
 async function createEligibilityScenario(
   source: FriendEligibilityOverrides = {},
   target: FriendEligibilityOverrides = {},
-  targetIdentity?: "registered" | "global_alias" | "account_alias",
+  targetIdentity?: "registered" | "account_alias",
   options: EligibilityScenarioOptions = {}
 ) {
   const t = convexTest(schema, modules);
@@ -66,7 +66,7 @@ async function createEligibilityScenario(
     });
     const identityStatus = options.identityStatus ?? "ready";
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v2",
+      key: "member_identity_v3",
       status: identityStatus,
       phase: identityStatus === "ready" ? "complete" : "aliases",
       updated_at: now
@@ -78,13 +78,6 @@ async function createEligibilityScenario(
         display_name: "Registered Target",
         created_at: now,
         member_id: "canonical_friend"
-      });
-    } else if (targetIdentity === "global_alias") {
-      await ctx.db.insert("member_aliases", {
-        alias_member_id: "canonical_friend",
-        canonical_member_id: "global_canonical",
-        account_email: "another@test.com",
-        created_at: now
       });
     } else if (targetIdentity === "account_alias") {
       await ctx.db.insert("accounts", {
@@ -103,13 +96,6 @@ async function createEligibilityScenario(
         display_name: "Registered Source",
         created_at: now,
         member_id: "local_alias"
-      });
-    } else if (options.sourceIdentity === "global_alias") {
-      await ctx.db.insert("member_aliases", {
-        alias_member_id: "local_alias",
-        canonical_member_id: "source_global_canonical",
-        account_email: "another@test.com",
-        created_at: now
       });
     } else if (options.sourceIdentity === "account_alias") {
       await ctx.db.insert("accounts", {
@@ -186,7 +172,7 @@ async function createEligibilityScenario(
 async function mergeEligibilityScenario(
   source: FriendEligibilityOverrides = {},
   target: FriendEligibilityOverrides = {},
-  targetIdentity?: "registered" | "global_alias" | "account_alias",
+  targetIdentity?: "registered" | "account_alias",
   options: EligibilityScenarioOptions = {}
 ) {
   const { ownerCtx } = await createEligibilityScenario(source, target, targetIdentity, options);
@@ -223,7 +209,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
     await expect(mergeEligibilityScenario(source, target)).rejects.toThrow("not mergeable");
   });
 
-  test.each(["registered", "global_alias", "account_alias"] as const)(
+  test.each(["registered", "account_alias"] as const)(
     "rejects %s target identities",
     async (targetIdentity) => {
       await expect(mergeEligibilityScenario({}, {}, targetIdentity)).rejects.toThrow(
@@ -232,7 +218,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
     }
   );
 
-  test.each(["registered", "global_alias", "account_alias"] as const)(
+  test.each(["registered", "account_alias"] as const)(
     "rejects %s source identities",
     async (sourceIdentity) => {
       await expect(mergeEligibilityScenario({}, {}, undefined, { sourceIdentity })).rejects.toThrow(
@@ -275,7 +261,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
     ).rejects.toThrow("has a linked account");
   });
 
-  test.each(["registered", "global_alias", "account_alias"] as const)(
+  test.each(["registered", "account_alias"] as const)(
     "validates a %s same-ID identity before returning success",
     async (targetIdentity) => {
       const { ownerCtx } = await createEligibilityScenario({}, {}, targetIdentity);
@@ -301,7 +287,6 @@ describe("mergeUnlinkedFriends eligibility", () => {
     ["blocked target", { status: "pending" }, undefined],
     ["linked target", { linked: true }, undefined],
     ["registered source", {}, "registered"],
-    ["globally linked source", {}, "global_alias"],
     ["account alias source", {}, "account_alias"]
   ] as const)("validates %s on an already-merged retry", async (_, target, sourceIdentity) => {
     await expect(

@@ -2,6 +2,7 @@ import { query, mutation, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { assertIdentityMaterializationReady, normalizeMemberId } from "./identity";
+import { isGhostFriendIdentity } from "./friendLinkProvenance";
 
 function isUnlinkedFriend(friend: {
   has_linked_account: boolean;
@@ -9,10 +10,11 @@ function isUnlinkedFriend(friend: {
   linked_account_id?: string;
   linked_account_email?: string;
   linked_member_id?: string;
+  status?: string;
 }) {
   return (
     friend.has_linked_account === false &&
-    friend.link_state !== "ghost" &&
+    !isGhostFriendIdentity(friend) &&
     !friend.linked_account_id &&
     !friend.linked_account_email &&
     !friend.linked_member_id
@@ -253,6 +255,7 @@ export const accept = mutation({
     return await ctx.runMutation(internal.inviteTokens._internalClaimTargetMemberForAccount, {
       userAccountId: user._id,
       targetMemberId: request.target_member_id,
+      targetFriendId: targetFriend._id,
       creatorEmail: request.requester_email,
       creatorId: request.requester_id
     });

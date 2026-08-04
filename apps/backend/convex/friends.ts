@@ -1,12 +1,12 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
+import { findAccountByAuthIdOrDocId, normalizeMemberId, normalizeMemberIds } from "./identity";
 import {
-  findAccountByAuthIdOrDocId,
-  findAccountByMemberId,
-  normalizeMemberId,
-  normalizeMemberIds
-} from "./identity";
+  isGhostFriendIdentity,
+  ProvenFriendLink,
+  resolveProvenFriendLink
+} from "./friendLinkProvenance";
 
 export const list = query({
   args: {},
@@ -27,7 +27,7 @@ export const list = query({
       .collect();
 
     type LinkedIdentityContext = {
-      account: Awaited<ReturnType<typeof findAccountByMemberId>> | null;
+      provenLink: ProvenFriendLink;
       aliasSet: Set<string>;
       memberIds: Set<string>;
     };
@@ -36,62 +36,40 @@ export const list = query({
     // Each context tracks canonical + alias IDs and any member IDs currently
     // present in account_friends for this owner.
     const linkedIdentityContexts = new Map<string, LinkedIdentityContext>();
+    const provenLinksByFriendId = new Map<string, ProvenFriendLink>();
     const normalizedFriends = friends.map((friend) => ({
       ...friend,
       normalizedMemberId: normalizeMemberId(friend.member_id)
     }));
 
-    const linkedFriends = normalizedFriends.filter((friend) => friend.has_linked_account);
+    const linkedFriends = normalizedFriends.filter(
+      (friend) => friend.has_linked_account || friend.link_state === "linked"
+    );
     for (const friend of linkedFriends) {
-      const identityKey =
-        friend.linked_account_email?.trim().toLowerCase() ||
-        friend.linked_account_id ||
-        friend.linked_member_id;
-      if (!identityKey) continue;
-
-      let linkedAccount: any = null;
-      if (friend.linked_account_email) {
-        linkedAccount = await ctx.db
-          .query("accounts")
-          .withIndex("by_email", (q) => q.eq("email", friend.linked_account_email!))
-          .unique();
-      }
-      if (!linkedAccount && friend.linked_account_id) {
-        linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id);
-      }
-      // linked_member_id is on account_friends, not accounts.
-      // If we only have linked_member_id, we need to find the account that has this member_id.
-      if (!linkedAccount && friend.linked_member_id) {
-        // This assumes findAccountByMemberId queries 'accounts' by 'member_id'
-        linkedAccount = await findAccountByMemberId(ctx.db, friend.linked_member_id);
-      }
-
-      if (!linkedAccount && friend.linked_account_id) {
-        linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id);
-      }
-      // linked_member_id is on account_friends, not accounts.
-      // If we only have linked_member_id, we need to find the account that has this member_id.
-      if (!linkedAccount && friend.linked_member_id) {
-        // This assumes findAccountByMemberId queries 'accounts' by 'member_id'
-        linkedAccount = await findAccountByMemberId(ctx.db, friend.linked_member_id);
-      }
+      const provenLink = await resolveProvenFriendLink(ctx, friend);
+      if (!provenLink) continue;
+      provenLinksByFriendId.set(String(friend._id), provenLink);
 
       const aliasSet = new Set<string>();
-      if (linkedAccount?.member_id) {
-        aliasSet.add(normalizeMemberId(linkedAccount.member_id));
-      }
-      for (const alias of linkedAccount?.alias_member_ids || []) {
+      aliasSet.add(provenLink.linkedMemberId);
+      for (const alias of provenLink.account.alias_member_ids || []) {
         aliasSet.add(normalizeMemberId(alias));
       }
       for (const alias of friend.local_alias_member_ids || []) {
         aliasSet.add(normalizeMemberId(alias));
       }
 
-      linkedIdentityContexts.set(identityKey, {
-        account: linkedAccount,
-        aliasSet,
-        memberIds: new Set<string>([friend.normalizedMemberId])
-      });
+      const existingContext = linkedIdentityContexts.get(provenLink.linkedAccountId);
+      if (existingContext) {
+        for (const alias of aliasSet) existingContext.aliasSet.add(alias);
+        existingContext.memberIds.add(friend.normalizedMemberId);
+      } else {
+        linkedIdentityContexts.set(provenLink.linkedAccountId, {
+          provenLink,
+          aliasSet,
+          memberIds: new Set<string>([friend.normalizedMemberId])
+        });
+      }
     }
 
     // Pull in stale unlinked rows that actually belong to the same linked identity,
@@ -106,79 +84,50 @@ export const list = query({
 
     const validatedFriends: any[] = [];
     for (const friend of normalizedFriends) {
-      if (friend.has_linked_account && (friend.linked_account_email || friend.linked_account_id)) {
-        const identityKey =
-          friend.linked_account_email?.trim().toLowerCase() ||
-          friend.linked_account_id ||
-          friend.linked_member_id;
-        const context = identityKey ? linkedIdentityContexts.get(identityKey) : undefined;
-        const linkedAccount =
-          context?.account ||
-          (friend.linked_account_id
-            ? await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id)
-            : null);
-
-        if (!linkedAccount || linkedAccount.status === "deleted") {
-          validatedFriends.push({
-            ...friend,
-            member_id: friend.normalizedMemberId,
-            has_linked_account: false,
-            linked_account_id: undefined,
-            linked_account_email: undefined,
-            linked_member_id:
-              linkedAccount?.status === "deleted" ? friend.linked_member_id : undefined,
-            link_state: linkedAccount?.status === "deleted" ? "ghost" : "unlinked",
-            alias_member_ids: normalizeMemberIds(friend.local_alias_member_ids)
-          });
-          continue;
-        }
-
-        // Enrich with aliases from the linked account
-        const duplicateMemberIds = context ? Array.from(context.memberIds) : [];
-        const enrichedAliases = normalizeMemberIds([
-          ...(linkedAccount.alias_member_ids || []),
-          ...(friend.local_alias_member_ids || []),
-          ...duplicateMemberIds
-        ]);
-
+      if (isGhostFriendIdentity(friend)) {
         validatedFriends.push({
           ...friend,
           member_id: friend.normalizedMemberId,
-          first_name: friend.first_name ?? linkedAccount.first_name,
-          last_name: friend.last_name ?? linkedAccount.last_name,
-          linked_member_id: linkedAccount.member_id
-            ? normalizeMemberId(linkedAccount.member_id)
-            : undefined,
-          alias_member_ids: enrichedAliases
+          has_linked_account: false,
+          linked_account_id: undefined,
+          linked_account_email: undefined,
+          link_state: "ghost",
+          status: "ghost",
+          alias_member_ids: normalizeMemberIds(friend.local_alias_member_ids)
         });
-      } else if (friend.has_linked_account && friend.linked_member_id) {
-        const identityKey =
-          friend.linked_account_email?.trim().toLowerCase() ||
-          friend.linked_account_id ||
-          friend.linked_member_id;
-        const context = identityKey ? linkedIdentityContexts.get(identityKey) : undefined;
-        const linkedByMemberId =
-          context?.account ?? (await findAccountByMemberId(ctx.db, friend.linked_member_id));
+        continue;
+      }
 
-        if (!linkedByMemberId || linkedByMemberId.status === "deleted") {
+      const provenLink = provenLinksByFriendId.get(String(friend._id));
+      const hasPersistedLinkClaim =
+        friend.has_linked_account ||
+        friend.link_state === "linked" ||
+        Boolean(friend.linked_account_id) ||
+        Boolean(friend.linked_account_email) ||
+        Boolean(friend.linked_member_id);
+      if (hasPersistedLinkClaim) {
+        if (!provenLink) {
+          const persistedAccount = friend.linked_account_id
+            ? await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id)
+            : null;
+          const isGhost = persistedAccount?.status === "deleted";
           validatedFriends.push({
             ...friend,
             member_id: friend.normalizedMemberId,
             has_linked_account: false,
             linked_account_id: undefined,
             linked_account_email: undefined,
-            linked_member_id:
-              linkedByMemberId?.status === "deleted" ? friend.linked_member_id : undefined,
-            link_state: linkedByMemberId?.status === "deleted" ? "ghost" : "unlinked",
+            linked_member_id: isGhost ? friend.linked_member_id : undefined,
+            link_state: isGhost ? "ghost" : "unlinked",
             alias_member_ids: normalizeMemberIds(friend.local_alias_member_ids)
           });
           continue;
         }
 
-        // Enrich with aliases from the linked account
+        const context = linkedIdentityContexts.get(provenLink.linkedAccountId);
         const duplicateMemberIds = context ? Array.from(context.memberIds) : [];
         const enrichedAliases = normalizeMemberIds([
-          ...(linkedByMemberId.alias_member_ids || []),
+          ...(provenLink.account.alias_member_ids || []),
           ...(friend.local_alias_member_ids || []),
           ...duplicateMemberIds
         ]);
@@ -186,11 +135,13 @@ export const list = query({
         validatedFriends.push({
           ...friend,
           member_id: friend.normalizedMemberId,
-          first_name: friend.first_name ?? linkedByMemberId.first_name,
-          last_name: friend.last_name ?? linkedByMemberId.last_name,
-          linked_member_id: linkedByMemberId.member_id
-            ? normalizeMemberId(linkedByMemberId.member_id)
-            : undefined,
+          has_linked_account: true,
+          link_state: "linked",
+          linked_account_id: provenLink.linkedAccountId,
+          linked_account_email: provenLink.linkedAccountEmail,
+          first_name: friend.first_name ?? provenLink.account.first_name,
+          last_name: friend.last_name ?? provenLink.account.last_name,
+          linked_member_id: provenLink.linkedMemberId,
           alias_member_ids: enrichedAliases
         });
       } else {
@@ -335,10 +286,8 @@ export const upsert = mutation({
       ).find((friend) => normalizeMemberId(friend.member_id) === normalizedMemberId);
 
     if (existingLegacy) {
-      const hasServerOwnedLinkState =
-        existingLegacy.has_linked_account ||
-        existingLegacy.link_state === "linked" ||
-        existingLegacy.link_state === "ghost";
+      const provenLink = await resolveProvenFriendLink(ctx, existingLegacy);
+      const isGhost = isGhostFriendIdentity(existingLegacy);
 
       await ctx.db.patch(existingLegacy._id, {
         member_id: normalizedMemberId,
@@ -353,26 +302,18 @@ export const upsert = mutation({
           args.display_preference === undefined
             ? existingLegacy.display_preference
             : args.display_preference,
-        has_linked_account: hasServerOwnedLinkState
-          ? existingLegacy.has_linked_account
-          : false,
-        linked_account_id: hasServerOwnedLinkState
-          ? existingLegacy.linked_account_id
-          : undefined,
-        linked_account_email: hasServerOwnedLinkState
-          ? existingLegacy.linked_account_email
-          : undefined,
-        linked_member_id: hasServerOwnedLinkState
-          ? existingLegacy.linked_member_id
-          : undefined,
-        link_state: hasServerOwnedLinkState
-          ? existingLegacy.link_state
-          : existingLegacy.link_state ?? "unlinked",
-        status: existingLegacy.status,
+        has_linked_account: provenLink !== null,
+        linked_account_id: provenLink?.linkedAccountId,
+        linked_account_email: provenLink?.linkedAccountEmail,
+        linked_member_id:
+          provenLink?.linkedMemberId ?? (isGhost ? existingLegacy.linked_member_id : undefined),
+        link_state: provenLink ? "linked" : isGhost ? "ghost" : "unlinked",
+        status: isGhost ? "ghost" : existingLegacy.status,
         updated_at: Date.now()
       });
       return existingLegacy._id;
     } else {
+      const isGhost = args.status?.trim().toLowerCase() === "ghost";
       return await ctx.db.insert("account_friends", {
         account_email: identity.email!,
         member_id: normalizedMemberId,
@@ -386,7 +327,8 @@ export const upsert = mutation({
         display_preference: args.display_preference,
         profile_avatar_color: getRandomAvatarColor(),
         has_linked_account: false,
-        link_state: "unlinked",
+        link_state: isGhost ? "ghost" : "unlinked",
+        status: isGhost ? "ghost" : undefined,
         updated_at: Date.now()
       });
     }

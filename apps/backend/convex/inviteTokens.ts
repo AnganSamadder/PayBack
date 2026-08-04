@@ -1,8 +1,8 @@
-import { mutation, query, internalMutation } from "./_generated/server";
+import { Doc, Id } from "./_generated/dataModel";
+import { mutation, query, internalMutation, MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { resolveCanonicalMemberIdInternal } from "./aliases";
-import { reconcileUserExpenses } from "./helpers";
+import { resolveCanonicalMemberIdInternal, rewriteClaimedFriendReferences } from "./aliases";
 import {
   assertIdentityMaterializationReady,
   deterministicLinkingError,
@@ -15,6 +15,7 @@ import {
   normalizeMemberId,
   normalizeMemberIds
 } from "./identity";
+import { isGhostFriendIdentity } from "./friendLinkProvenance";
 
 // Helper to get current authenticated user
 async function getCurrentUser(ctx: any) {
@@ -32,6 +33,7 @@ async function getCurrentUser(ctx: any) {
 
 type LinkClaimContext = {
   targetMemberId: string;
+  targetFriendId: Id<"account_friends">;
   creatorEmail: string;
   creatorId?: string;
 };
@@ -39,70 +41,120 @@ type LinkClaimContext = {
 function normalizeLinkClaimContext(input: LinkClaimContext): LinkClaimContext {
   return {
     targetMemberId: normalizeMemberId(input.targetMemberId),
+    targetFriendId: input.targetFriendId,
     creatorEmail: input.creatorEmail.toLowerCase().trim(),
     creatorId: input.creatorId
   };
 }
 
-async function findFriendRecordByMemberId(ctx: any, accountEmail: string, memberId: string) {
-  const normalizedMemberId = normalizeMemberId(memberId);
-  let record = await ctx.db
-    .query("account_friends")
-    .withIndex("by_account_email_and_member_id", (q: any) =>
-      q.eq("account_email", accountEmail).eq("member_id", normalizedMemberId)
-    )
-    .unique();
+const MAX_INVITE_TARGET_FRIENDS = 256;
 
-  if (record) return record;
-
-  if (memberId !== normalizedMemberId) {
-    record = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email_and_member_id", (q: any) =>
-        q.eq("account_email", accountEmail).eq("member_id", memberId)
-      )
-      .unique();
-    if (record) return record;
-  }
-
-  const allFriends = await ctx.db
-    .query("account_friends")
-    .withIndex("by_account_email", (q: any) => q.eq("account_email", accountEmail))
-    .collect();
-
-  return allFriends.find(
-    (friend: any) => normalizeMemberId(friend.member_id) === normalizedMemberId
+function isUnlinkedInviteTarget(friend: Doc<"account_friends">): boolean {
+  return (
+    friend.has_linked_account === false &&
+    !isGhostFriendIdentity(friend) &&
+    !friend.linked_account_id &&
+    !friend.linked_account_email &&
+    !friend.linked_member_id
   );
 }
 
-function mergeSplitsByMember(splits: any[], targetMemberId: string, canonicalMemberId: string) {
+async function findOwnedInviteTarget(
+  ctx: Pick<MutationCtx, "db">,
+  creatorEmail: string,
+  targetMemberId: string
+): Promise<Doc<"account_friends"> | null> {
+  const normalizedEmail = creatorEmail.trim().toLowerCase();
   const normalizedTarget = normalizeMemberId(targetMemberId);
-  const normalizedCanonical = normalizeMemberId(canonicalMemberId);
-  const merged = new Map<string, any>();
-
-  for (const split of splits) {
-    const normalizedSplitMember = normalizeMemberId(split.member_id);
-    const key =
-      normalizedSplitMember === normalizedTarget ? normalizedCanonical : normalizedSplitMember;
-    const existing = merged.get(key);
-
-    if (!existing) {
-      merged.set(key, {
-        ...split,
-        member_id: key
-      });
-      continue;
+  for (const candidateId of new Set([normalizedTarget, targetMemberId.trim()])) {
+    const exact = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", normalizedEmail).eq("member_id", candidateId)
+      )
+      .take(2);
+    if (exact.length > 1) {
+      throw new Error("Identity maintenance required: duplicate invite target identities");
     }
-
-    merged.set(key, {
-      ...existing,
-      amount: existing.amount + split.amount,
-      // If any duplicate split is unsettled, keep unsettled for safety.
-      is_settled: Boolean(existing.is_settled) && Boolean(split.is_settled)
-    });
+    if (exact[0]) return exact[0];
   }
 
-  return Array.from(merged.values());
+  const friends = await ctx.db
+    .query("account_friends")
+    .withIndex("by_account_email", (q) => q.eq("account_email", normalizedEmail))
+    .take(MAX_INVITE_TARGET_FRIENDS + 1);
+  if (friends.length > MAX_INVITE_TARGET_FRIENDS) {
+    throw new Error("Identity maintenance required: too many friends to resolve invite target");
+  }
+  const normalizedMatches = friends.filter(
+    (friend) => normalizeMemberId(friend.member_id) === normalizedTarget
+  );
+  if (normalizedMatches.length > 1) {
+    throw new Error("Identity maintenance required: duplicate invite target identities");
+  }
+  return normalizedMatches[0] ?? null;
+}
+
+async function validateBoundInviteTarget(
+  ctx: Pick<MutationCtx, "db">,
+  creator: Doc<"accounts">,
+  linkContext: LinkClaimContext
+): Promise<Doc<"account_friends">> {
+  const targetFriend = await readBoundInviteTarget(ctx, creator, linkContext);
+  if (!targetFriend) {
+    throw new Error("Invite target is no longer an unlinked friend owned by the creator");
+  }
+  return targetFriend;
+}
+
+async function readBoundInviteTarget(
+  ctx: Pick<QueryCtx, "db">,
+  creator: Doc<"accounts">,
+  linkContext: LinkClaimContext
+): Promise<Doc<"account_friends"> | null> {
+  const targetFriend = await ctx.db.get(linkContext.targetFriendId);
+  if (
+    !targetFriend ||
+    targetFriend.account_email.trim().toLowerCase() !== creator.email.trim().toLowerCase() ||
+    normalizeMemberId(targetFriend.member_id) !== linkContext.targetMemberId ||
+    !isUnlinkedInviteTarget(targetFriend)
+  ) {
+    return null;
+  }
+  return targetFriend;
+}
+
+async function findFriendRecordByMemberId(ctx: any, accountEmail: string, memberId: string) {
+  const normalizedEmail = accountEmail.trim().toLowerCase();
+  const normalizedMemberId = normalizeMemberId(memberId);
+  for (const candidateId of new Set([normalizedMemberId, memberId.trim()])) {
+    const exact = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q: any) =>
+        q.eq("account_email", normalizedEmail).eq("member_id", candidateId)
+      )
+      .take(2);
+    if (exact.length > 1) {
+      throw new Error("Identity maintenance required: duplicate friend identities");
+    }
+    if (exact[0]) return exact[0];
+  }
+
+  const ownerFriends = await ctx.db
+    .query("account_friends")
+    .withIndex("by_account_email", (q: any) => q.eq("account_email", normalizedEmail))
+    .take(MAX_INVITE_TARGET_FRIENDS + 1);
+  if (ownerFriends.length > MAX_INVITE_TARGET_FRIENDS) {
+    throw new Error("Identity maintenance required: too many friend identities");
+  }
+
+  const normalizedMatches = ownerFriends.filter(
+    (friend: any) => normalizeMemberId(friend.member_id) === normalizedMemberId
+  );
+  if (normalizedMatches.length > 1) {
+    throw new Error("Identity maintenance required: duplicate friend identities");
+  }
+  return normalizedMatches[0] ?? null;
 }
 
 /**
@@ -117,8 +169,13 @@ export const create = mutation({
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
-    if (!user) throw new Error("User not found");
+    if (!user || user.status === "deleted") throw new Error("User not found");
     const normalizedTargetMemberId = normalizeMemberId(args.target_member_id);
+
+    const targetFriend = await findOwnedInviteTarget(ctx, user.email, normalizedTargetMemberId);
+    if (!targetFriend || !isUnlinkedInviteTarget(targetFriend)) {
+      throw new Error("Target member must be an unlinked friend owned by the creator");
+    }
 
     // Deduplication check
     const existing = await ctx.db
@@ -127,6 +184,13 @@ export const create = mutation({
       .unique();
 
     if (existing) {
+      const isExactReplay =
+        existing.creator_id === user.id &&
+        normalizeMemberId(existing.target_member_id) === normalizedTargetMemberId &&
+        existing.target_friend_id === targetFriend._id;
+      if (!isExactReplay) {
+        throw new Error("Invite id is already used for a different target");
+      }
       return existing._id;
     }
 
@@ -139,6 +203,7 @@ export const create = mutation({
       creator_id: user.id,
       creator_email: user.email,
       target_member_id: normalizedTargetMemberId,
+      target_friend_id: targetFriend._id,
       target_member_name: args.target_member_name,
       created_at: now,
       expires_at: expiresAt
@@ -148,21 +213,46 @@ export const create = mutation({
   }
 });
 
-/**
- * Gets a single invite token by client ID.
- * Does NOT require authentication - used for validation before login.
- */
-export const get = query({
-  args: { id: v.string() },
-  handler: async (ctx, args) => {
-    const token = await ctx.db
-      .query("invite_tokens")
-      .withIndex("by_client_id", (q) => q.eq("id", args.id))
-      .unique();
+const MAX_PUBLIC_INVITE_PREVIEW_EXPENSES = 128;
 
-    return token;
-  }
+const publicInviteTokenValidator = v.object({
+  id: v.string(),
+  creator_email: v.string(),
+  creator_name: v.optional(v.string()),
+  creator_profile_image_url: v.optional(v.string()),
+  target_member_id: v.string(),
+  target_member_name: v.string(),
+  created_at: v.number(),
+  expires_at: v.number(),
+  claimed_at: v.optional(v.number())
 });
+
+const publicExpensePreviewValidator = v.object({
+  expense_count: v.number(),
+  group_names: v.array(v.string()),
+  total_balance: v.number()
+});
+
+const publicInviteValidationValidator = v.object({
+  is_valid: v.boolean(),
+  error: v.union(v.string(), v.null()),
+  token: v.union(publicInviteTokenValidator, v.null()),
+  expense_preview: v.union(publicExpensePreviewValidator, v.null())
+});
+
+function publicInviteToken(token: Doc<"invite_tokens">, creator?: Doc<"accounts"> | null) {
+  return {
+    id: token.id,
+    creator_email: token.creator_email,
+    creator_name: creator?.display_name,
+    creator_profile_image_url: creator?.profile_image_url,
+    target_member_id: token.target_member_id,
+    target_member_name: token.target_member_name,
+    created_at: token.created_at,
+    expires_at: token.expires_at,
+    claimed_at: token.claimed_at
+  };
+}
 
 /**
  * Validates an invite token and returns its status.
@@ -171,6 +261,7 @@ export const get = query({
  */
 export const validate = query({
   args: { id: v.string() },
+  returns: publicInviteValidationValidator,
   handler: async (ctx, args) => {
     const token = await ctx.db
       .query("invite_tokens")
@@ -189,20 +280,30 @@ export const validate = query({
     // Fetch creator's profile info
     const creatorAccount = await ctx.db
       .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", token.creator_email))
+      .withIndex("by_auth_id", (q) => q.eq("id", token.creator_id))
       .unique();
 
-    const now = Date.now();
-    const targetMemberId = normalizeMemberId(token.target_member_id);
+    if (
+      !creatorAccount ||
+      creatorAccount.status === "deleted" ||
+      creatorAccount.email.trim().toLowerCase() !== token.creator_email.trim().toLowerCase()
+    ) {
+      return {
+        is_valid: false,
+        error: "Invite creator account is unavailable",
+        token: null,
+        expense_preview: null
+      };
+    }
 
+    const publicToken = publicInviteToken(token, creatorAccount);
+    const now = Date.now();
     if (token.expires_at < now) {
       return {
         is_valid: false,
         error: "Token has expired",
         token: {
-          ...token,
-          creator_name: creatorAccount?.display_name,
-          creator_profile_image_url: creatorAccount?.profile_image_url
+          ...publicToken
         },
         expense_preview: null
       };
@@ -213,68 +314,88 @@ export const validate = query({
         is_valid: false,
         error: "Token has already been claimed",
         token: {
-          ...token,
-          creator_name: creatorAccount?.display_name,
-          creator_profile_image_url: creatorAccount?.profile_image_url
+          ...publicToken
         },
         expense_preview: null
       };
     }
 
-    // Generate expense preview - find all expenses involving this member
-    const allExpenses = await ctx.db.query("expenses").collect();
-    const memberExpenses = allExpenses.filter(
-      (e) =>
-        e.involved_member_ids.some((id: string) => normalizeMemberId(id) === targetMemberId) ||
-        normalizeMemberId(e.paid_by_member_id) === targetMemberId
-    );
+    if (!token.target_friend_id) {
+      return {
+        is_valid: false,
+        error: "Invite target is unavailable",
+        token: null,
+        expense_preview: null
+      };
+    }
 
-    // Get group names
-    const groupIds = [...new Set(memberExpenses.map((e) => e.group_id))];
-    const groups = await Promise.all(
-      groupIds.map(async (gid) => {
-        const g = await ctx.db
-          .query("groups")
-          .withIndex("by_client_id", (q) => q.eq("id", gid))
-          .first();
-        return g;
-      })
-    );
-    const groupNames = groups.filter((g) => g).map((g) => g!.name);
+    const linkContext = normalizeLinkClaimContext({
+      targetMemberId: token.target_member_id,
+      targetFriendId: token.target_friend_id,
+      creatorEmail: token.creator_email,
+      creatorId: token.creator_id
+    });
+    const targetFriend = await readBoundInviteTarget(ctx, creatorAccount, linkContext);
+    if (!targetFriend) {
+      return {
+        is_valid: false,
+        error: "Invite target is unavailable",
+        token: null,
+        expense_preview: null
+      };
+    }
 
-    // Calculate balance
-    let totalBalance = 0;
-    for (const expense of memberExpenses) {
-      if (normalizeMemberId(expense.paid_by_member_id) === targetMemberId) {
-        // They paid, others owe them
-        const othersOwe = expense.splits
-          .filter((s) => normalizeMemberId(s.member_id) !== targetMemberId)
-          .reduce((sum, s) => sum + s.amount, 0);
-        totalBalance += othersOwe;
-      } else {
-        // They owe someone
-        const theirSplit = expense.splits.find(
-          (s) => normalizeMemberId(s.member_id) === targetMemberId
-        );
-        if (theirSplit) {
-          totalBalance -= theirSplit.amount;
+    const creatorExpenses = await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_id", (q) => q.eq("owner_id", creatorAccount._id))
+      .take(MAX_PUBLIC_INVITE_PREVIEW_EXPENSES + 1);
+    let expensePreview: {
+      expense_count: number;
+      group_names: string[];
+      total_balance: number;
+    } | null = null;
+    if (creatorExpenses.length <= MAX_PUBLIC_INVITE_PREVIEW_EXPENSES) {
+      const targetMemberId = normalizeMemberId(token.target_member_id);
+      const memberExpenses = creatorExpenses.filter(
+        (expense) =>
+          expense.involved_member_ids.some(
+            (memberId) => normalizeMemberId(memberId) === targetMemberId
+          ) || normalizeMemberId(expense.paid_by_member_id) === targetMemberId
+      );
+      const groupNames = new Set<string>();
+      let totalBalance = 0;
+      for (const expense of memberExpenses) {
+        if (expense.group_ref) {
+          const group = await ctx.db.get(expense.group_ref);
+          if (group && group.owner_id === creatorAccount._id && group.id === expense.group_id) {
+            groupNames.add(group.name);
+          }
+        }
+        if (normalizeMemberId(expense.paid_by_member_id) === targetMemberId) {
+          totalBalance += expense.splits
+            .filter((split) => normalizeMemberId(split.member_id) !== targetMemberId)
+            .reduce((sum, split) => sum + split.amount, 0);
+        } else {
+          const targetSplit = expense.splits.find(
+            (split) => normalizeMemberId(split.member_id) === targetMemberId
+          );
+          totalBalance -= targetSplit?.amount ?? 0;
         }
       }
+      expensePreview = {
+        expense_count: memberExpenses.length,
+        group_names: Array.from(groupNames),
+        total_balance: totalBalance
+      };
     }
 
     return {
       is_valid: true,
       error: null,
       token: {
-        ...token,
-        creator_name: creatorAccount?.display_name,
-        creator_profile_image_url: creatorAccount?.profile_image_url
+        ...publicToken
       },
-      expense_preview: {
-        expense_count: memberExpenses.length,
-        group_names: groupNames,
-        total_balance: totalBalance
-      }
+      expense_preview: expensePreview
     };
   }
 });
@@ -297,6 +418,24 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
       `account_id=${user.id},target_member_id=${linkContext.targetMemberId}`
     );
   }
+
+  const creatorAccount = linkContext.creatorId
+    ? await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q: any) => q.eq("id", linkContext.creatorId!))
+        .unique()
+    : await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q: any) => q.eq("email", linkContext.creatorEmail))
+        .unique();
+  if (
+    !creatorAccount ||
+    creatorAccount.status === "deleted" ||
+    creatorAccount.email.trim().toLowerCase() !== linkContext.creatorEmail
+  ) {
+    throw new Error("Invite creator account is no longer active");
+  }
+  await validateBoundInviteTarget(ctx, creatorAccount, linkContext);
 
   const userCanonicalMemberId = user.member_id ? normalizeMemberId(user.member_id) : undefined;
   if (!userCanonicalMemberId) {
@@ -347,6 +486,8 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
       `Identity maintenance required: account ${user.id} has too many aliases for a live claim`
     );
   }
+  await rewriteClaimedFriendReferences(ctx, creatorAccount, linkContext.targetMemberId, user);
+
   await ensureAccountAliasMaterialization(
     ctx,
     { id: user.id, email: user.email, member_id: userCanonicalMemberId },
@@ -357,12 +498,6 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
     alias_member_ids: updatedAliases,
     updated_at: now
   });
-
-  // Get the creator's account info for creating the claimant's friend record
-  const creatorAccount = await ctx.db
-    .query("accounts")
-    .withIndex("by_email", (q: any) => q.eq("email", linkContext.creatorEmail))
-    .unique();
 
   // Update a friend row in an owner's account_friends table.
   const updateFriendRecord = async (accountEmail: string) => {
@@ -391,6 +526,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
     if (canonicalRow && canonicalRow._id !== friendRecord._id) {
       await ctx.db.patch(canonicalRow._id, {
         has_linked_account: true,
+        link_state: "linked",
         linked_account_id: user.id,
         linked_account_email: user.email,
         linked_member_id: userCanonicalMemberId,
@@ -411,6 +547,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         ...rest,
         member_id: normalizeMemberId(friendRecord.member_id),
         has_linked_account: true,
+        link_state: "linked",
         linked_account_id: user.id,
         linked_account_email: user.email,
         linked_member_id: userCanonicalMemberId,
@@ -424,6 +561,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
       await ctx.db.patch(friendRecord._id, {
         member_id: normalizeMemberId(friendRecord.member_id),
         has_linked_account: true,
+        link_state: "linked",
         linked_account_id: user.id,
         linked_account_email: user.email,
         linked_member_id: userCanonicalMemberId,
@@ -461,6 +599,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
           ...rest,
           member_id: normalizeMemberId(claimantFriendRecord.member_id),
           has_linked_account: true,
+          link_state: "linked",
           linked_account_id: creatorAccount.id,
           linked_account_email: creatorAccount.email,
           linked_member_id: creatorMemberId,
@@ -473,6 +612,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         await ctx.db.patch(claimantFriendRecord._id, {
           member_id: normalizeMemberId(claimantFriendRecord.member_id),
           has_linked_account: true,
+          link_state: "linked",
           linked_account_id: creatorAccount.id,
           linked_account_email: creatorAccount.email,
           linked_member_id: creatorMemberId,
@@ -491,6 +631,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         first_name: creatorFirstName,
         last_name: creatorLastName,
         has_linked_account: true,
+        link_state: "linked",
         linked_account_id: creatorAccount.id,
         linked_account_email: creatorAccount.email,
         linked_member_id: creatorMemberId,
@@ -498,207 +639,6 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         profile_avatar_color: creatorAccount.profile_avatar_color ?? getRandomAvatarColor(),
         updated_at: now
       });
-    }
-  }
-
-  // 3. Find all groups containing this identity (target or canonical)
-  const allGroups = await ctx.db.query("groups").collect();
-  const memberGroups = allGroups.filter((group: any) =>
-    group.members.some((member: any) => {
-      const memberId = normalizeMemberId(member.id);
-      return memberId === linkContext.targetMemberId || memberId === userCanonicalMemberId;
-    })
-  );
-
-  // 4. Collect all unique account emails that share a group with the linked member
-  const sharedAccountEmails = new Set<string>();
-  for (const group of memberGroups) {
-    if (group.owner_email && group.owner_email.toLowerCase() !== linkContext.creatorEmail) {
-      sharedAccountEmails.add(group.owner_email.toLowerCase());
-    }
-
-    for (const member of group.members) {
-      const normalizedMemberId = normalizeMemberId(member.id);
-      if (
-        normalizedMemberId === linkContext.targetMemberId ||
-        normalizedMemberId === userCanonicalMemberId
-      ) {
-        continue;
-      }
-
-      const linkedAccount = await findAccountByMemberId(ctx.db, normalizedMemberId);
-      if (linkedAccount?.email && linkedAccount.email.toLowerCase() !== linkContext.creatorEmail) {
-        sharedAccountEmails.add(linkedAccount.email.toLowerCase());
-      }
-    }
-  }
-
-  // 5. Update friend records for all shared users
-  for (const accountEmail of sharedAccountEmails) {
-    await updateFriendRecord(accountEmail);
-  }
-
-  // 6. Canonicalize group members to the claimer's canonical member ID
-  for (const group of memberGroups) {
-    let changed = false;
-    const dedupedMembers = new Map<string, any>();
-
-    for (const member of group.members) {
-      const normalizedMemberId = normalizeMemberId(member.id);
-      const canonicalizedMemberId =
-        normalizedMemberId === linkContext.targetMemberId
-          ? userCanonicalMemberId
-          : normalizedMemberId;
-
-      const nextMember = {
-        ...member,
-        id: canonicalizedMemberId,
-        name:
-          canonicalizedMemberId === userCanonicalMemberId
-            ? (user.display_name ?? user.email ?? member.name)
-            : member.name
-      };
-
-      const existing = dedupedMembers.get(canonicalizedMemberId);
-      if (!existing) {
-        dedupedMembers.set(canonicalizedMemberId, nextMember);
-      } else if (!existing.is_current_user && nextMember.is_current_user) {
-        dedupedMembers.set(canonicalizedMemberId, nextMember);
-      }
-
-      if (member.id !== nextMember.id || member.name !== nextMember.name) {
-        changed = true;
-      }
-    }
-
-    const updatedMembers = Array.from(dedupedMembers.values());
-    if (changed || updatedMembers.length !== group.members.length) {
-      await ctx.db.patch(group._id, {
-        members: updatedMembers,
-        updated_at: now
-      });
-    }
-  }
-
-  // 7. Canonicalize expenses and participant visibility for all impacted groups
-  const memberGroupIds = memberGroups.map((group: any) => group.id);
-  for (const groupId of memberGroupIds) {
-    const groupExpenses = await ctx.db
-      .query("expenses")
-      .withIndex("by_group_id", (q: any) => q.eq("group_id", groupId))
-      .collect();
-
-    for (const expense of groupExpenses) {
-      const hasTargetIdentity =
-        normalizeMemberId(expense.paid_by_member_id) === linkContext.targetMemberId ||
-        expense.involved_member_ids.some(
-          (memberId: string) => normalizeMemberId(memberId) === linkContext.targetMemberId
-        ) ||
-        expense.splits.some(
-          (split: any) => normalizeMemberId(split.member_id) === linkContext.targetMemberId
-        ) ||
-        expense.participant_member_ids.some(
-          (memberId: string) => normalizeMemberId(memberId) === linkContext.targetMemberId
-        );
-
-      if (!hasTargetIdentity) continue;
-
-      const paidByMemberId =
-        normalizeMemberId(expense.paid_by_member_id) === linkContext.targetMemberId
-          ? userCanonicalMemberId
-          : normalizeMemberId(expense.paid_by_member_id);
-
-      const involvedMemberIds = normalizeMemberIds(
-        expense.involved_member_ids.map((memberId: string) =>
-          normalizeMemberId(memberId) === linkContext.targetMemberId
-            ? userCanonicalMemberId
-            : normalizeMemberId(memberId)
-        )
-      );
-
-      const participantMemberIds = normalizeMemberIds(
-        expense.participant_member_ids.map((memberId: string) =>
-          normalizeMemberId(memberId) === linkContext.targetMemberId
-            ? userCanonicalMemberId
-            : normalizeMemberId(memberId)
-        )
-      );
-
-      const mergedSplits = mergeSplitsByMember(
-        expense.splits,
-        linkContext.targetMemberId,
-        userCanonicalMemberId
-      );
-
-      const participantsByMember = new Map<string, any>();
-      for (const participant of expense.participants) {
-        const normalizedMemberId = normalizeMemberId(participant.member_id);
-        const canonicalizedMemberId =
-          normalizedMemberId === linkContext.targetMemberId
-            ? userCanonicalMemberId
-            : normalizedMemberId;
-
-        const existing = participantsByMember.get(canonicalizedMemberId);
-        const nextParticipant = {
-          ...participant,
-          member_id: canonicalizedMemberId,
-          name:
-            canonicalizedMemberId === userCanonicalMemberId
-              ? (user.display_name ?? user.email ?? participant.name)
-              : participant.name,
-          linked_account_id:
-            canonicalizedMemberId === userCanonicalMemberId
-              ? user.id
-              : participant.linked_account_id,
-          linked_account_email:
-            canonicalizedMemberId === userCanonicalMemberId
-              ? user.email
-              : participant.linked_account_email
-        };
-
-        if (!existing) {
-          participantsByMember.set(canonicalizedMemberId, nextParticipant);
-        } else {
-          participantsByMember.set(canonicalizedMemberId, {
-            ...existing,
-            name: nextParticipant.name || existing.name,
-            linked_account_id: nextParticipant.linked_account_id || existing.linked_account_id,
-            linked_account_email:
-              nextParticipant.linked_account_email || existing.linked_account_email
-          });
-        }
-      }
-
-      const participantEmails = Array.from(
-        new Set(
-          [...(expense.participant_emails || []), user.email]
-            .map((email: string) => email.toLowerCase().trim())
-            .filter(Boolean)
-        )
-      );
-
-      await ctx.db.patch(expense._id, {
-        paid_by_member_id: paidByMemberId,
-        involved_member_ids: involvedMemberIds,
-        participant_member_ids: participantMemberIds,
-        splits: mergedSplits,
-        participants: Array.from(participantsByMember.values()),
-        participant_emails: participantEmails,
-        updated_at: now
-      });
-
-      const participantUsers = await Promise.all(
-        participantEmails.map((email: string) =>
-          ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q: any) => q.eq("email", email))
-            .unique()
-        )
-      );
-      const participantUserIds = participantUsers
-        .filter((u: any) => u !== null)
-        .map((u: any) => u.id);
-      await reconcileUserExpenses(ctx, expense.id, participantUserIds);
     }
   }
 
@@ -743,6 +683,10 @@ export const claim = mutation({
       throw new Error("Token has already been claimed");
     }
 
+    if (!token.target_friend_id) {
+      throw new Error("Invite must be recreated before it can be claimed");
+    }
+
     await ctx.db.patch(token._id, {
       claimed_by: user.id,
       claimed_at: now
@@ -750,6 +694,7 @@ export const claim = mutation({
 
     return await claimForUser(ctx, user, {
       targetMemberId: token.target_member_id,
+      targetFriendId: token.target_friend_id,
       creatorEmail: token.creator_email,
       creatorId: token.creator_id
     });
@@ -830,6 +775,10 @@ export const _internalClaimForAccount = internalMutation({
       throw new Error("Token has already been claimed");
     }
 
+    if (!token.target_friend_id) {
+      throw new Error("Invite must be recreated before it can be claimed");
+    }
+
     await assertIdentityMaterializationReady(ctx.db);
     await ctx.db.patch(token._id, {
       claimed_by: user.id,
@@ -838,6 +787,7 @@ export const _internalClaimForAccount = internalMutation({
 
     return await claimForUser(ctx, user, {
       targetMemberId: token.target_member_id,
+      targetFriendId: token.target_friend_id,
       creatorEmail: token.creator_email,
       creatorId: token.creator_id
     });
@@ -848,6 +798,7 @@ export const _internalClaimTargetMemberForAccount = internalMutation({
   args: {
     userAccountId: v.id("accounts"),
     targetMemberId: v.string(),
+    targetFriendId: v.id("account_friends"),
     creatorEmail: v.string(),
     creatorId: v.optional(v.string())
   },
@@ -857,6 +808,7 @@ export const _internalClaimTargetMemberForAccount = internalMutation({
 
     return await claimForUser(ctx, user, {
       targetMemberId: args.targetMemberId,
+      targetFriendId: args.targetFriendId,
       creatorEmail: args.creatorEmail,
       creatorId: args.creatorId
     });

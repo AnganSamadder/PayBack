@@ -21,6 +21,7 @@ async function setupClaimScenario() {
   const t = convexTest(schema, modules);
   const now = Date.now();
   let claimerAccountId: any;
+  let targetFriendId: any;
   await t.run(async (ctx) => {
     await ctx.db.insert("accounts", {
       id: "creator_auth",
@@ -36,17 +37,26 @@ async function setupClaimScenario() {
       created_at: now,
       member_id: "claimer_member"
     });
+    targetFriendId = await ctx.db.insert("account_friends", {
+      account_email: "creator@test.com",
+      member_id: "legacy_target",
+      name: "Claimer",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
     await ctx.db.insert("invite_tokens", {
       id: "pending_rollout_invite",
       creator_id: "creator_auth",
       creator_email: "creator@test.com",
       target_member_id: "Legacy_Target",
+      target_friend_id: targetFriendId,
       target_member_name: "Claimer",
       created_at: now,
       expires_at: now + 60_000
     });
   });
-  return { t, claimerAccountId };
+  return { t, claimerAccountId, targetFriendId };
 }
 
 async function expectClaimStateUnchanged(t: any) {
@@ -90,12 +100,13 @@ describe("identity mutation readiness gates", () => {
   });
 
   test("internal target claim fails atomically while materialization is pending", async () => {
-    const { t, claimerAccountId } = await setupClaimScenario();
+    const { t, claimerAccountId, targetFriendId } = await setupClaimScenario();
 
     await expect(
       t.mutation(internal.inviteTokens._internalClaimTargetMemberForAccount, {
         userAccountId: claimerAccountId,
         targetMemberId: "Legacy_Target",
+        targetFriendId,
         creatorEmail: "creator@test.com",
         creatorId: "creator_auth"
       })
@@ -358,7 +369,7 @@ describe("identity pending-read compatibility", () => {
           display_name: "Viewer",
           created_at: now,
           member_id: "Canonical_Member",
-          alias_member_ids: ["Account_Array_Alias"]
+          alias_member_ids: ["Account_Array_Alias", "Legacy_Alias"]
         });
         const owner = await ctx.db.insert("accounts", {
           id: "owner_auth",
@@ -368,7 +379,7 @@ describe("identity pending-read compatibility", () => {
           member_id: "owner_member"
         });
         await ctx.db.insert("identity_materialization_state", {
-          key: "member_identity_v2",
+          key: "member_identity_v3",
           status: "pending",
           phase,
           updated_at: now
@@ -377,6 +388,8 @@ describe("identity pending-read compatibility", () => {
           account_email: "viewer@test.com",
           alias_member_id: phase === "aliases" ? "Legacy_Alias" : "legacy_alias",
           canonical_member_id: phase === "aliases" ? "Canonical_Member" : "canonical_member",
+          materialization_source: "account_alias",
+          source_account_id: "viewer_auth",
           created_at: now
         });
         const membershipId = phase === "aliases" ? "Legacy_Alias" : "Account_Array_Alias";
@@ -465,10 +478,12 @@ describe("identity pending-read compatibility", () => {
         account_email: "b@test.com",
         alias_member_id: "shared_alias",
         canonical_member_id: "canonical_b",
+        materialization_source: "account_alias",
+        source_account_id: "account_b",
         created_at: Date.now()
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v2",
+        key: "member_identity_v3",
         status: "pending",
         phase: "accounts",
         updated_at: Date.now()
@@ -515,11 +530,13 @@ describe("identity pending-read compatibility", () => {
             account_email: "other@test.com",
             alias_member_id: "shared_alias",
             canonical_member_id: "other_member",
+            materialization_source: "account_alias",
+            source_account_id: "other_auth",
             created_at: Date.now()
           });
         }
         await ctx.db.insert("identity_materialization_state", {
-          key: "member_identity_v2",
+          key: "member_identity_v3",
           status: "pending",
           phase: "accounts",
           updated_at: Date.now()
@@ -553,10 +570,12 @@ describe("identity pending-read compatibility", () => {
         account_email: "historical@test.com",
         alias_member_id: "shadow_alias",
         canonical_member_id: "canonical_member",
+        materialization_source: "account_alias",
+        source_account_id: "canonical_auth",
         created_at: Date.now()
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v2",
+        key: "member_identity_v3",
         status: "pending",
         phase: "aliases",
         updated_at: Date.now()
@@ -582,8 +601,8 @@ describe("identity pending-read compatibility", () => {
       }
       await ctx.db.insert("identity_materialization_state", {
         key: "member_identity_v2",
-        status: "pending",
-        phase: "accounts",
+        status: "ready",
+        phase: "complete",
         updated_at: Date.now()
       });
     });
@@ -591,5 +610,27 @@ describe("identity pending-read compatibility", () => {
     await expect(
       t.query(api.aliases.resolveCanonicalMemberId, { memberId: "missing_member" })
     ).rejects.toThrow("pending compatibility accounts lookup exceeds 512 rows");
+  });
+
+  test("quarantines an unmarked alias while only a legacy v2 ready marker exists", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v2",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
+      await ctx.db.insert("member_aliases", {
+        account_email: "forged@test.com",
+        alias_member_id: "forged_alias",
+        canonical_member_id: "victim_member",
+        created_at: Date.now()
+      });
+    });
+
+    await expect(
+      t.query(api.aliases.resolveCanonicalMemberId, { memberId: "forged_alias" })
+    ).resolves.toBe("forged_alias");
   });
 });

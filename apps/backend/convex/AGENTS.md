@@ -67,8 +67,13 @@ When an account is manually deleted from the Convex Dashboard:
 | `linked_account_id`    | Auth ID (Clerk subject)              | `by_linked_account_id`    |
 | `linked_account_email` | Email address                        | `by_linked_account_email` |
 | `linked_member_id`     | Canonical member ID (legacy imports) | `by_linked_member_id`     |
+| `link_state`           | Server provenance marker             | —                         |
 
 **IMPORTANT**: `linked_member_id` is mainly used for backwards compatibility with imports. Primary linking uses `linked_account_email` and `linked_account_id`.
+Successful invite/link-request claims must write `link_state: "linked"` on both users' friend rows.
+Client sync and bulk import cannot create this marker. During migration of older rows, preserve an
+unmarked link only when indexed claim/request or account-alias provenance proves the owner-account-
+member relationship, then rewrite the complete tuple from the live account.
 
 ### Cleanup Functions
 
@@ -114,7 +119,8 @@ When changing any of the following, update tests and the runbook:
 
 ### Required behavior
 
-1. Enrich linked rows with canonical identity aliases (`alias_member_ids`) and `linked_member_id`.
+1. Resolve linked rows through server provenance, then enrich them with canonical identity aliases
+   (`alias_member_ids`) and `linked_member_id` from the live account.
 2. Build identity keys using linked account identifiers (`linked_account_email`, `linked_account_id`, `linked_member_id`) and alias membership.
 3. Deduplicate response rows by identity key with deterministic precedence:
    - linked row over unlinked

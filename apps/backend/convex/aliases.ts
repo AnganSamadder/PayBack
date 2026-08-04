@@ -10,6 +10,7 @@ import {
   normalizeMemberIds
 } from "./identity";
 import { getCurrentUserOrThrow, reconcileExpenseVisibility } from "./helpers";
+import { isGhostFriendIdentity } from "./friendLinkProvenance";
 
 /**
  * Internal helper for transitive alias resolution.
@@ -618,6 +619,26 @@ async function rewriteCanonicalReferences(
   }
 }
 
+export async function rewriteClaimedFriendReferences(
+  ctx: MutationCtx,
+  creator: Doc<"accounts">,
+  sourceMemberId: string,
+  claimant: Pick<Doc<"accounts">, "id" | "email" | "display_name" | "member_id">
+) {
+  if (!claimant.member_id) {
+    throw new Error("Claimant account is missing a canonical member ID");
+  }
+  await rewriteCanonicalReferences(
+    ctx,
+    creator,
+    new Set([normalizeMemberId(sourceMemberId)]),
+    claimant.member_id,
+    claimant.display_name ?? claimant.email ?? "Unknown",
+    claimant.id,
+    claimant.email
+  );
+}
+
 type MergeAccountFriendIntoCanonicalOptions = {
   accountEmail: string;
   sourceMemberId: string;
@@ -649,7 +670,7 @@ function assertMergeEligibleFriend(
 ) {
   const status = normalizedFriendStatus(friend.status);
   const hasBlockedState =
-    friend.link_state === "ghost" ||
+    isGhostFriendIdentity(friend) ||
     (status !== undefined && mergeBlockedFriendStatuses.has(status));
   const hasUnknownStatus = status !== undefined && !mergeEligibleFriendStatuses.has(status);
   if (hasBlockedState || hasUnknownStatus) {

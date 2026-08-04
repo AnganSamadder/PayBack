@@ -491,8 +491,42 @@ struct ConvexInviteTokenDTO: Decodable, Sendable {
 struct ConvexInviteTokenValidationDTO: Decodable, Sendable {
     let is_valid: Bool
     let error: String?
-    let token: ConvexInviteTokenDTO?
+    let token: ConvexPublicInviteTokenDTO?
     let expense_preview: ConvexExpensePreviewDTO?
+}
+
+/// Public invite preview data. Stable auth subjects are intentionally not exposed.
+struct ConvexPublicInviteTokenDTO: Decodable, Sendable {
+    let id: String
+    let creator_email: String
+    let creator_name: String?
+    let creator_profile_image_url: String?
+    let target_member_id: String
+    let target_member_name: String
+    let created_at: Double
+    let expires_at: Double
+    let claimed_at: Double?
+
+    func toInviteToken() -> InviteToken? {
+        guard let id = UUID(uuidString: id),
+              let targetMemberId = UUID(uuidString: target_member_id) else {
+            return nil
+        }
+
+        return InviteToken(
+            id: id,
+            creatorId: "",
+            creatorEmail: creator_email,
+            creatorName: creator_name,
+            creatorProfileImageUrl: creator_profile_image_url,
+            targetMemberId: targetMemberId,
+            targetMemberName: target_member_name,
+            createdAt: Date(timeIntervalSince1970: created_at / 1000),
+            expiresAt: Date(timeIntervalSince1970: expires_at / 1000),
+            claimedBy: nil,
+            claimedAt: claimed_at.map { Date(timeIntervalSince1970: $0 / 1000) }
+        )
+    }
 }
 
 /// Internal DTO for expense preview in invite validation
