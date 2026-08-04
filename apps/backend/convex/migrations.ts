@@ -2,7 +2,11 @@ import { internalMutation } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { reconcileUserExpenses } from "./helpers";
+import {
+  reconcileExpenseVisibility,
+  reconcileUserExpenses,
+  resolveActiveExpenseParticipantAccounts
+} from "./helpers";
 import {
   assertIdentityMaterializationReady,
   applyPreflightedAccountAliasMaterialization,
@@ -24,51 +28,17 @@ function normalizeEmail(value: string | undefined | null): string | undefined {
 }
 
 async function deriveExpenseParticipantEmails(ctx: any, expense: any): Promise<string[]> {
-  const emailSet = new Set<string>();
-  const ownerEmail = normalizeEmail(expense.owner_email);
-  if (ownerEmail) {
-    emailSet.add(ownerEmail);
-  }
-
-  for (const participant of expense.participants ?? []) {
-    let account: any | null = null;
-    const linkedEmail = normalizeEmail(participant.linked_account_email);
-    const linkedAccountId =
-      typeof participant.linked_account_id === "string"
-        ? participant.linked_account_id.trim()
-        : undefined;
-
-    if (linkedEmail) {
-      account = await ctx.db
-        .query("accounts")
-        .withIndex("by_email", (q: any) => q.eq("email", linkedEmail))
-        .unique();
-    }
-    if (!account && linkedAccountId) {
-      account = await findAccountByAuthIdOrDocId(ctx.db, linkedAccountId);
-    }
-    if (!account && typeof participant.member_id === "string") {
-      account = await findAccountByMemberId(ctx.db, participant.member_id);
-    }
-    if (account?.email) {
-      const normalized = normalizeEmail(account.email);
-      if (normalized) {
-        emailSet.add(normalized);
-      }
-    }
-  }
-
-  for (const memberId of expense.participant_member_ids ?? []) {
-    const account = await findAccountByMemberId(ctx.db, memberId);
-    if (account?.email) {
-      const normalized = normalizeEmail(account.email);
-      if (normalized) {
-        emailSet.add(normalized);
-      }
-    }
-  }
-
-  return Array.from(emailSet);
+  const accounts = await resolveActiveExpenseParticipantAccounts(ctx, {
+    ...expense,
+    participant_emails: []
+  });
+  return Array.from(
+    new Set(
+      accounts
+        .map((account) => normalizeEmail(account.email))
+        .filter((email): email is string => email !== undefined)
+    )
+  );
 }
 
 function canonicalEmailArray(values: string[] | undefined): string[] {
@@ -84,6 +54,143 @@ function arraysEqual(lhs: string[], rhs: string[]): boolean {
     if (lhs[i] !== rhs[i]) return false;
   }
   return true;
+}
+
+const MAX_EXPENSE_REPAIR_BATCH_SIZE = 64;
+const MAX_NAME_REPAIR_ACCOUNT_BATCH_SIZE = 2;
+const MAX_NAME_REPAIR_EXPENSES_PER_BATCH = 256;
+const MAX_REPAIR_ROWS_PER_ACCOUNT = 128;
+
+function validateExpenseRepairBatchSize(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_EXPENSE_REPAIR_BATCH_SIZE) {
+    throw new Error(`limit must be an integer between 1 and ${MAX_EXPENSE_REPAIR_BATCH_SIZE}`);
+  }
+}
+
+function validateNameRepairAccountBatchSize(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_NAME_REPAIR_ACCOUNT_BATCH_SIZE) {
+    throw new Error(`limit must be an integer between 1 and ${MAX_NAME_REPAIR_ACCOUNT_BATCH_SIZE}`);
+  }
+}
+
+function expenseReferencesMemberId(expense: Doc<"expenses">, memberId: string): boolean {
+  const normalizedMemberId = normalizeMemberId(memberId);
+  return (
+    normalizeMemberId(expense.paid_by_member_id) === normalizedMemberId ||
+    expense.involved_member_ids.some(
+      (candidate) => normalizeMemberId(candidate) === normalizedMemberId
+    ) ||
+    expense.participant_member_ids.some(
+      (candidate) => normalizeMemberId(candidate) === normalizedMemberId
+    ) ||
+    expense.splits.some((split) => normalizeMemberId(split.member_id) === normalizedMemberId) ||
+    expense.participants.some(
+      (participant) => normalizeMemberId(participant.member_id) === normalizedMemberId
+    )
+  );
+}
+
+async function reconcileMigratedExpenseVisibility(
+  ctx: any,
+  expenseId: string,
+  participantEmails: string[]
+) {
+  const visibilityAccounts = await Promise.all(
+    participantEmails.map((email) =>
+      ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q: any) => q.eq("email", email))
+        .unique()
+    )
+  );
+  const visibilityAccountIds = visibilityAccounts
+    .filter((account): account is NonNullable<typeof account> => account !== null)
+    .map((account) => account.id);
+  await reconcileUserExpenses(ctx, expenseId, visibilityAccountIds);
+}
+
+async function rewriteExpenseMemberIdPreservingRevocation(
+  ctx: any,
+  expense: Doc<"expenses">,
+  oldMemberId: string,
+  newMemberId: string
+): Promise<"unchanged" | "rewritten" | "skipped_revocation_collision"> {
+  const normalizedOldMemberId = normalizeMemberId(oldMemberId);
+  const normalizedNewMemberId = normalizeMemberId(newMemberId);
+  const inactiveMemberIds = new Set(
+    (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
+  );
+  const oldIdentityIsInactive = inactiveMemberIds.has(normalizedOldMemberId);
+  const newIdentityIsInactive = inactiveMemberIds.has(normalizedNewMemberId);
+  const oldIdentityIsReferenced =
+    oldIdentityIsInactive || expenseReferencesMemberId(expense, normalizedOldMemberId);
+  const newIdentityIsReferenced =
+    newIdentityIsInactive || expenseReferencesMemberId(expense, normalizedNewMemberId);
+
+  if (
+    normalizedOldMemberId !== normalizedNewMemberId &&
+    oldIdentityIsReferenced &&
+    newIdentityIsReferenced &&
+    oldIdentityIsInactive !== newIdentityIsInactive
+  ) {
+    const participantEmails = await deriveExpenseParticipantEmails(ctx, expense);
+    if (
+      !arraysEqual(
+        canonicalEmailArray(expense.participant_emails),
+        canonicalEmailArray(participantEmails)
+      )
+    ) {
+      await ctx.db.patch(expense._id, {
+        participant_emails: participantEmails,
+        updated_at: Date.now()
+      });
+    }
+    await reconcileMigratedExpenseVisibility(ctx, expense.id, participantEmails);
+    return "skipped_revocation_collision";
+  }
+
+  if (!oldIdentityIsReferenced || normalizedOldMemberId === normalizedNewMemberId) {
+    return "unchanged";
+  }
+
+  const replaceMemberId = (candidate: string) =>
+    normalizeMemberId(candidate) === normalizedOldMemberId ? normalizedNewMemberId : candidate;
+  const inactiveParticipantMemberIds = Array.from(
+    new Set(
+      (expense.inactive_participant_member_ids ?? []).map((memberId) => replaceMemberId(memberId))
+    )
+  );
+  const nextExpense: Doc<"expenses"> = {
+    ...expense,
+    paid_by_member_id: replaceMemberId(expense.paid_by_member_id),
+    involved_member_ids: expense.involved_member_ids.map(replaceMemberId),
+    splits: expense.splits.map((split) => ({
+      ...split,
+      member_id: replaceMemberId(split.member_id)
+    })),
+    participants: expense.participants.map((participant) => ({
+      ...participant,
+      member_id: replaceMemberId(participant.member_id)
+    })),
+    participant_member_ids: expense.participant_member_ids.map(replaceMemberId),
+    inactive_participant_member_ids: inactiveParticipantMemberIds,
+    updated_at: Date.now()
+  };
+  const participantEmails = await deriveExpenseParticipantEmails(ctx, nextExpense);
+  nextExpense.participant_emails = participantEmails;
+
+  await ctx.db.patch(expense._id, {
+    paid_by_member_id: nextExpense.paid_by_member_id,
+    involved_member_ids: nextExpense.involved_member_ids,
+    splits: nextExpense.splits,
+    participants: nextExpense.participants,
+    participant_member_ids: nextExpense.participant_member_ids,
+    inactive_participant_member_ids: nextExpense.inactive_participant_member_ids,
+    participant_emails: nextExpense.participant_emails,
+    updated_at: nextExpense.updated_at
+  });
+  await reconcileMigratedExpenseVisibility(ctx, nextExpense.id, participantEmails);
+  return "rewritten";
 }
 
 /**
@@ -323,79 +430,64 @@ export const fixLinkedMemberIds = internalMutation({
  * This can happen when expenses were created before the account was properly linked.
  */
 export const fixExpenseMemberIds = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const accounts = await ctx.db.query("accounts").collect();
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? MAX_NAME_REPAIR_ACCOUNT_BATCH_SIZE;
+    validateNameRepairAccountBatchSize(limit);
+    const accountsPage = await ctx.db.query("accounts").paginate({
+      cursor: args.cursor ?? null,
+      numItems: limit
+    });
     let expensesFixed = 0;
+    let expensesSkipped = 0;
+    let expensesScanned = 0;
 
-    for (const account of accounts) {
+    for (const account of accountsPage.page) {
       if (!account.member_id) continue;
 
-      // Get all groups owned by this account
-      const groups = await ctx.db
-        .query("groups")
-        .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
-        .collect();
-
-      // Collect all member IDs from groups to identify "old" member IDs used for this account
-      const knownMemberIds = new Set<string>();
-      for (const group of groups) {
-        for (const member of group.members) {
-          // If member name matches display name, it's the user
-          if (member.name.toLowerCase() === account.display_name.toLowerCase()) {
-            knownMemberIds.add(member.id);
-          }
-        }
-      }
-
-      // Get expenses owned by this account
       const expenses = await ctx.db
         .query("expenses")
         .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
-        .collect();
+        .take(MAX_REPAIR_ROWS_PER_ACCOUNT + 1);
+      if (expenses.length > MAX_REPAIR_ROWS_PER_ACCOUNT) {
+        throw new Error(`Identity maintenance required: too many expenses for ${account.email}`);
+      }
+      expensesScanned += expenses.length;
+      if (expensesScanned > MAX_NAME_REPAIR_EXPENSES_PER_BATCH) {
+        throw new Error("Identity maintenance required: expense repair batch exceeds read budget");
+      }
 
       for (const expense of expenses) {
-        let needsPatch = false;
-        const patches: any = {};
+        const payerMemberId = normalizeMemberId(expense.paid_by_member_id);
+        if (payerMemberId === normalizeMemberId(account.member_id)) continue;
+        const userParticipant = expense.participants.find(
+          (participant) =>
+            participant.name.toLowerCase() === account.display_name.toLowerCase() &&
+            normalizeMemberId(participant.member_id) === payerMemberId
+        );
+        if (!userParticipant) continue;
 
-        // Fix paid_by_member_id if it's not the linked_member_id but is in knownMemberIds
-        // OR if it matches none of the group members (orphaned ID)
-        if (expense.paid_by_member_id !== account.member_id) {
-          // Check if it was the user who paid (name-based matching in participants)
-          const userParticipant = expense.participants?.find(
-            (p: any) => p.name.toLowerCase() === account.display_name.toLowerCase()
-          );
-
-          if (userParticipant && userParticipant.member_id !== account.member_id) {
-            // This expense's participant is the user, update the member ID
-            patches.paid_by_member_id = account.member_id;
-            patches.involved_member_ids = expense.involved_member_ids.map((id: string) =>
-              id === expense.paid_by_member_id ? account.member_id : id
-            );
-            patches.splits = expense.splits.map((s: any) => ({
-              ...s,
-              member_id: s.member_id === expense.paid_by_member_id ? account.member_id : s.member_id
-            }));
-            patches.participants = expense.participants.map((p: any) => ({
-              ...p,
-              member_id: p.member_id === expense.paid_by_member_id ? account.member_id : p.member_id
-            }));
-            patches.participant_member_ids = expense.participant_member_ids.map((id: string) =>
-              id === expense.paid_by_member_id ? account.member_id : id
-            );
-            needsPatch = true;
-          }
-        }
-
-        if (needsPatch) {
-          await ctx.db.patch(expense._id, patches);
-          console.log(`Fixed expense ${expense.id} for ${account.email}`);
-          expensesFixed++;
-        }
+        const outcome = await rewriteExpenseMemberIdPreservingRevocation(
+          ctx,
+          expense,
+          expense.paid_by_member_id,
+          account.member_id
+        );
+        if (outcome === "rewritten") expensesFixed++;
+        if (outcome === "skipped_revocation_collision") expensesSkipped++;
       }
     }
 
-    return { expensesFixed };
+    return {
+      expensesFixed,
+      expensesSkipped,
+      expensesScanned,
+      continueCursor: accountsPage.isDone ? undefined : accountsPage.continueCursor,
+      isDone: accountsPage.isDone
+    };
   }
 });
 
@@ -407,95 +499,66 @@ export const fixAllExpenseMemberIds = internalMutation({
   args: {
     old_member_id: v.string(),
     new_member_id: v.string(),
-    account_email: v.string()
+    account_email: v.string(),
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
   },
   handler: async (ctx, args) => {
     const { old_member_id, new_member_id, account_email } = args;
-
-    // Get ALL expenses for this account
-    const expenses = await ctx.db
+    const limit = args.limit ?? 32;
+    validateExpenseRepairBatchSize(limit);
+    const expensesPage = await ctx.db
       .query("expenses")
       .withIndex("by_owner_email", (q) => q.eq("owner_email", account_email))
-      .collect();
+      .paginate({ cursor: args.cursor ?? null, numItems: limit });
 
     let fixed = 0;
-
-    for (const expense of expenses) {
-      const patches: any = { updated_at: Date.now() };
-      let needsPatch = false;
-
-      // Fix paid_by_member_id
-      if (expense.paid_by_member_id === old_member_id) {
-        patches.paid_by_member_id = new_member_id;
-        needsPatch = true;
-      }
-
-      // Fix involved_member_ids
-      if (expense.involved_member_ids.includes(old_member_id)) {
-        patches.involved_member_ids = expense.involved_member_ids.map((id: string) =>
-          id === old_member_id ? new_member_id : id
-        );
-        needsPatch = true;
-      }
-
-      // Fix splits
-      const hasOldSplit = expense.splits.some((s: any) => s.member_id === old_member_id);
-      if (hasOldSplit) {
-        patches.splits = expense.splits.map((s: any) => ({
-          ...s,
-          member_id: s.member_id === old_member_id ? new_member_id : s.member_id
-        }));
-        needsPatch = true;
-      }
-
-      // Fix participants
-      const hasOldParticipant = expense.participants?.some(
-        (p: any) => p.member_id === old_member_id
+    let skipped = 0;
+    for (const expense of expensesPage.page) {
+      const outcome = await rewriteExpenseMemberIdPreservingRevocation(
+        ctx,
+        expense,
+        old_member_id,
+        new_member_id
       );
-      if (hasOldParticipant) {
-        patches.participants = expense.participants.map((p: any) => ({
-          ...p,
-          member_id: p.member_id === old_member_id ? new_member_id : p.member_id
-        }));
-        needsPatch = true;
-      }
-
-      // Fix participant_member_ids
-      if (expense.participant_member_ids?.includes(old_member_id)) {
-        patches.participant_member_ids = expense.participant_member_ids.map((id: string) =>
-          id === old_member_id ? new_member_id : id
-        );
-        needsPatch = true;
-      }
-
-      if (needsPatch) {
-        await ctx.db.patch(expense._id, patches);
-        console.log(`Fixed expense ${expense.id}`);
-        fixed++;
-      }
+      if (outcome === "rewritten") fixed++;
+      if (outcome === "skipped_revocation_collision") skipped++;
     }
-
-    // Also fix groups
-    const groups = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", account_email))
-      .collect();
 
     let groupsFixed = 0;
-    for (const group of groups) {
-      const hasOldMember = group.members.some((m: any) => m.id === old_member_id);
-      if (hasOldMember) {
-        const newMembers = group.members.map((m: any) => ({
-          ...m,
-          id: m.id === old_member_id ? new_member_id : m.id
-        }));
-        await ctx.db.patch(group._id, { members: newMembers, updated_at: Date.now() });
-        console.log(`Fixed group ${group.id}`);
-        groupsFixed++;
+    if (!args.cursor) {
+      const groups = await ctx.db
+        .query("groups")
+        .withIndex("by_owner_email", (q) => q.eq("owner_email", account_email))
+        .take(MAX_REPAIR_ROWS_PER_ACCOUNT + 1);
+      if (groups.length > MAX_REPAIR_ROWS_PER_ACCOUNT) {
+        throw new Error(`Identity maintenance required: too many groups for ${account_email}`);
+      }
+      for (const group of groups) {
+        const hasOldMember = group.members.some(
+          (member) => normalizeMemberId(member.id) === normalizeMemberId(old_member_id)
+        );
+        if (hasOldMember) {
+          const newMembers = group.members.map((member) => ({
+            ...member,
+            id:
+              normalizeMemberId(member.id) === normalizeMemberId(old_member_id)
+                ? normalizeMemberId(new_member_id)
+                : member.id
+          }));
+          await ctx.db.patch(group._id, { members: newMembers, updated_at: Date.now() });
+          groupsFixed++;
+        }
       }
     }
 
-    return { expensesFixed: fixed, groupsFixed };
+    return {
+      expensesFixed: fixed,
+      expensesSkipped: skipped,
+      groupsFixed,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
+    };
   }
 });
 
@@ -575,20 +638,7 @@ export const backfillParticipantEmails = internalMutation({
     let updated = 0;
 
     for (const expense of expenses) {
-      // Build participant_emails from participants array + owner
-      const emails: string[] = [];
-
-      // Add owner email
-      if (expense.owner_email && !emails.includes(expense.owner_email)) {
-        emails.push(expense.owner_email);
-      }
-
-      // Add linked participant emails
-      for (const p of expense.participants || []) {
-        if (p.linked_account_email && !emails.includes(p.linked_account_email)) {
-          emails.push(p.linked_account_email);
-        }
-      }
+      const emails = await deriveExpenseParticipantEmails(ctx, expense);
 
       // Only update if emails changed
       const currentEmails = expense.participant_emails || [];
@@ -645,6 +695,9 @@ export const backfillParticipantEmailsAdvanced = internalMutation({
 
     for (const expense of expenses) {
       const emails = new Set<string>();
+      const inactiveMemberIds = new Set(
+        (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
+      );
 
       // Add owner email
       if (expense.owner_email) {
@@ -653,6 +706,7 @@ export const backfillParticipantEmailsAdvanced = internalMutation({
 
       // Add linked participant emails from lookup
       for (const memberId of expense.involved_member_ids) {
+        if (inactiveMemberIds.has(normalizeMemberId(memberId))) continue;
         const email = memberIdToEmail.get(memberId);
         if (email) {
           emails.add(email);
@@ -661,13 +715,13 @@ export const backfillParticipantEmailsAdvanced = internalMutation({
 
       const emailArray = Array.from(emails);
       const currentEmails = expense.participant_emails || [];
+      const canonicalCurrentEmails = canonicalEmailArray(currentEmails);
+      const canonicalNextEmails = canonicalEmailArray(emailArray);
 
-      // Check if we have new emails to add
-      const hasNewEmails = emailArray.some((e) => !currentEmails.includes(e));
-
-      if (hasNewEmails || emailArray.length > currentEmails.length) {
+      if (!arraysEqual(canonicalCurrentEmails, canonicalNextEmails)) {
         // Also update participant info with linked account details
         const updatedParticipants = expense.participants.map((p: any) => {
+          if (inactiveMemberIds.has(normalizeMemberId(p.member_id))) return p;
           const email = memberIdToEmail.get(p.member_id);
           const account = accounts.find((a) => a.email === email);
           if (account) {
@@ -714,36 +768,7 @@ export const backfillUserExpenses = internalMutation({
     let processed = 0;
 
     for (const expense of expenses) {
-      // 1. Collect User IDs (Owner + derived participants)
-      const userIds = new Set<string>();
-      if (expense.owner_account_id) {
-        userIds.add(expense.owner_account_id);
-      }
-
-      // Add linked accounts from participants array
-      if (expense.participants) {
-        for (const p of expense.participants) {
-          if (p.linked_account_id) {
-            userIds.add(p.linked_account_id);
-          }
-        }
-      }
-
-      // Resolve participant_emails to accounts
-      if (expense.participant_emails) {
-        for (const email of expense.participant_emails) {
-          const account = await ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q) => q.eq("email", email))
-            .unique();
-          if (account) {
-            userIds.add(account.id);
-          }
-        }
-      }
-
-      // 2. Reconcile
-      await reconcileUserExpenses(ctx, expense.id, Array.from(userIds));
+      await reconcileExpenseVisibility(ctx, expense);
       processed++;
     }
 

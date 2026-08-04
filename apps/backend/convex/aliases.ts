@@ -213,6 +213,18 @@ function expenseReferencesAnyMember(expense: Doc<"expenses">, memberIds: Readonl
   );
 }
 
+function rewritableSourceMemberIdsForExpense(
+  expense: Doc<"expenses">,
+  sourceMemberIds: ReadonlySet<string>
+) {
+  const inactiveMemberIds = new Set(
+    (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
+  );
+  return new Set(
+    Array.from(sourceMemberIds).filter((memberId) => !inactiveMemberIds.has(memberId))
+  );
+}
+
 const mergeCanonicalizationLimits = {
   affectedGroups: 64,
   expenses: 64,
@@ -401,7 +413,10 @@ async function rewriteCanonicalReferences(
     authorizedExpenses.set(String(expense._id), expense);
   }
   const relevantExpenses = Array.from(authorizedExpenses.values()).filter((expense) =>
-    expenseReferencesAnyMember(expense, sourceMemberIds)
+    expenseReferencesAnyMember(
+      expense,
+      rewritableSourceMemberIdsForExpense(expense, sourceMemberIds)
+    )
   );
   if (relevantExpenses.length > mergeCanonicalizationLimits.expenses) {
     throw mergeWorkLimitError();
@@ -527,35 +542,38 @@ async function rewriteCanonicalReferences(
   }
 
   for (const expense of plannedExpenses) {
+    const rewritableSourceMemberIds = rewritableSourceMemberIdsForExpense(expense, sourceMemberIds);
+
     const canonicalize = (memberId: string) => {
       const normalized = normalizeMemberId(memberId);
-      return sourceMemberIds.has(normalized) ? normalizedTarget : normalized;
+      return rewritableSourceMemberIds.has(normalized) ? normalizedTarget : normalized;
     };
     const paidByMemberId = canonicalize(expense.paid_by_member_id);
     const involvedMemberIds = normalizeMemberIds(expense.involved_member_ids.map(canonicalize));
     const participantMemberIds = normalizeMemberIds(
       expense.participant_member_ids.map(canonicalize)
     );
-    const splits = mergeSplitsByMember(expense.splits, sourceMemberIds, normalizedTarget);
+    const splits = mergeSplitsByMember(expense.splits, rewritableSourceMemberIds, normalizedTarget);
     const replacedParticipantEmails = new Set(
       expense.participants
-        .filter((participant) => sourceMemberIds.has(normalizeMemberId(participant.member_id)))
+        .filter((participant) =>
+          rewritableSourceMemberIds.has(normalizeMemberId(participant.member_id))
+        )
         .map((participant) => participant.linked_account_email?.trim().toLowerCase())
         .filter((email): email is string => Boolean(email))
     );
     const retainedParticipantEmails = new Set(
       expense.participants
-        .filter((participant) => !sourceMemberIds.has(normalizeMemberId(participant.member_id)))
+        .filter(
+          (participant) => !rewritableSourceMemberIds.has(normalizeMemberId(participant.member_id))
+        )
         .map((participant) => participant.linked_account_email?.trim().toLowerCase())
         .filter((email): email is string => Boolean(email))
     );
 
     const participantsByMember = new Map<string, Doc<"expenses">["participants"][number]>();
     for (const participant of expense.participants) {
-      const normalizedParticipantId = normalizeMemberId(participant.member_id);
-      const canonicalParticipantId = sourceMemberIds.has(normalizedParticipantId)
-        ? normalizedTarget
-        : normalizedParticipantId;
+      const canonicalParticipantId = canonicalize(participant.member_id);
       const nextParticipant = {
         ...participant,
         member_id: canonicalParticipantId,

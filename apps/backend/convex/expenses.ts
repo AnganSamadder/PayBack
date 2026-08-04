@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { reconcileUserExpenses } from "./helpers";
+import { reconcileExpenseVisibility, reconcileUserExpenses } from "./helpers";
 import { checkRateLimit } from "./rateLimit";
 import {
   findAccountByAuthIdOrDocId,
@@ -319,6 +319,9 @@ export const create = mutation({
       ...participant,
       member_id: normalizeMemberId(participant.member_id)
     }));
+    const inactiveParticipantMemberIds = new Set(
+      (existing?.inactive_participant_member_ids ?? []).map(normalizeMemberId)
+    );
     const requestedContextKind = args.context_kind;
     const existingGroup = existing?.group_ref ? await ctx.db.get(existing.group_ref) : null;
     const inferredExistingContextKind = existing
@@ -387,7 +390,8 @@ export const create = mutation({
 
     const buildParticipantEmails = async ({
       participants,
-      involvedMemberIds
+      involvedMemberIds,
+      inactiveMemberIds = new Set()
     }: {
       participants: {
         member_id: string;
@@ -396,9 +400,11 @@ export const create = mutation({
         linked_account_email?: string;
       }[];
       involvedMemberIds: string[];
+      inactiveMemberIds?: ReadonlySet<string>;
     }): Promise<string[]> => {
       const participantEmailSet = new Set<string>([user.email.toLowerCase()]);
       for (const participant of participants) {
+        if (inactiveMemberIds.has(normalizeMemberId(participant.member_id))) continue;
         const participantAccount = await resolveLinkedAccount({
           linkedAccountEmail: participant.linked_account_email,
           linkedAccountId: participant.linked_account_id,
@@ -409,6 +415,7 @@ export const create = mutation({
         }
       }
       for (const memberId of involvedMemberIds) {
+        if (inactiveMemberIds.has(normalizeMemberId(memberId))) continue;
         const account = await findAccountByMemberId(ctx.db, memberId);
         if (account?.email) {
           participantEmailSet.add(String(account.email).trim().toLowerCase());
@@ -726,9 +733,10 @@ export const create = mutation({
           (existing.is_payback_generated_mock_data ?? false);
 
       if (!callerOwnsExpense) {
-        const callerTouchesExpense = existing.splits.some((split: any) =>
-          callerEquivalentIds.has(normalizeMemberId(split.member_id))
-        );
+        const callerTouchesExpense = existing.splits.some((split: any) => {
+          const memberId = normalizeMemberId(split.member_id);
+          return !inactiveParticipantMemberIds.has(memberId) && callerEquivalentIds.has(memberId);
+        });
         if (!callerTouchesExpense) {
           throw new Error("Forbidden: expense access denied");
         }
@@ -757,7 +765,9 @@ export const create = mutation({
           throw new Error("Cannot unsettle a settled split");
         }
 
-        const callerOwnsSplit = callerEquivalentIds.has(existingMemberId);
+        const callerOwnsSplit =
+          !inactiveParticipantMemberIds.has(existingMemberId) &&
+          callerEquivalentIds.has(existingMemberId);
         if (!callerOwnsExpense) {
           if (isStructuralChange) {
             throw new Error("Forbidden: only owner can edit expense structure");
@@ -801,10 +811,11 @@ export const create = mutation({
         : existing.is_payback_generated_mock_data;
       const participantEmails = await buildParticipantEmails({
         participants: nextParticipants,
-        involvedMemberIds: nextInvolvedMemberIds
+        involvedMemberIds: nextInvolvedMemberIds,
+        inactiveMemberIds: inactiveParticipantMemberIds
       });
       const isSettled = computedSettledFromSplits(validatedSplits);
-      await ctx.db.patch(existing._id, {
+      const expensePatch = {
         context_kind: contextKind,
         description: callerOwnsExpense ? args.description : existing.description,
         notes: callerOwnsExpense && notesWereProvided ? normalizedNotes : existing.notes,
@@ -822,18 +833,9 @@ export const create = mutation({
         subexpenses: nextSubexpenses,
         is_payback_generated_mock_data: nextMockData,
         updated_at: Date.now()
-      });
-
-      const participantUsers = await Promise.all(
-        participantEmails.map((email) =>
-          ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q) => q.eq("email", email))
-            .unique()
-        )
-      );
-      const participantUserIds = participantUsers.filter((u) => u !== null).map((u) => u!.id);
-      await reconcileUserExpenses(ctx, args.id, participantUserIds);
+      };
+      await ctx.db.patch(existing._id, expensePatch);
+      await reconcileExpenseVisibility(ctx, { ...existing, ...expensePatch });
 
       return existing._id;
     }
@@ -899,13 +901,20 @@ export const setSettlementState = mutation({
     const expense = await loadExpenseByClientId(ctx, args.expenseId);
     const callerEquivalentIds = await buildUserEquivalentMemberIds(ctx.db, user);
     const callerOwnsExpense = isExpenseOwner(expense, user);
-    const callerIsPayer = callerEquivalentIds.has(normalizeMemberId(expense.paid_by_member_id));
+    const inactiveParticipantMemberIds = new Set(
+      (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
+    );
+    const normalizedPaidByMemberId = normalizeMemberId(expense.paid_by_member_id);
+    const callerIsPayer =
+      !inactiveParticipantMemberIds.has(normalizedPaidByMemberId) &&
+      callerEquivalentIds.has(normalizedPaidByMemberId);
 
     // Access gate: reject non-participants before revealing any split-level details.
     if (!callerOwnsExpense && !callerIsPayer) {
-      const callerHasSplit = expense.splits.some((split: any) =>
-        callerEquivalentIds.has(normalizeMemberId(split.member_id))
-      );
+      const callerHasSplit = expense.splits.some((split: any) => {
+        const memberId = normalizeMemberId(split.member_id);
+        return !inactiveParticipantMemberIds.has(memberId) && callerEquivalentIds.has(memberId);
+      });
       if (!callerHasSplit) {
         throw new Error("Forbidden: not a participant in this expense");
       }
@@ -918,13 +927,19 @@ export const setSettlementState = mutation({
     );
 
     if (requestedMemberIds.size === 0) {
-      if (callerOwnsExpense || callerIsPayer) {
+      if (callerOwnsExpense) {
         for (const memberId of splitMemberIds) {
           requestedMemberIds.add(memberId);
         }
+      } else if (callerIsPayer) {
+        for (const memberId of splitMemberIds) {
+          if (!inactiveParticipantMemberIds.has(memberId)) {
+            requestedMemberIds.add(memberId);
+          }
+        }
       } else {
         for (const memberId of splitMemberIds) {
-          if (callerEquivalentIds.has(memberId)) {
+          if (!inactiveParticipantMemberIds.has(memberId) && callerEquivalentIds.has(memberId)) {
             requestedMemberIds.add(memberId);
           }
         }
@@ -939,8 +954,13 @@ export const setSettlementState = mutation({
       if (!splitMemberIdSet.has(memberId)) {
         throw new Error(`Split not found for member ${memberId}`);
       }
-      if (!callerOwnsExpense && !callerIsPayer && !callerEquivalentIds.has(memberId)) {
-        throw new Error("Forbidden: cannot settle another member's split");
+      if (!callerOwnsExpense) {
+        if (inactiveParticipantMemberIds.has(memberId)) {
+          throw new Error("Forbidden: cannot settle an inactive participant split");
+        }
+        if (!callerIsPayer && !callerEquivalentIds.has(memberId)) {
+          throw new Error("Forbidden: cannot settle another member's split");
+        }
       }
     }
 

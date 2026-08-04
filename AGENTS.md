@@ -536,6 +536,40 @@ Failure impact:
 10. Name-only repair is forbidden. Retired repair endpoints must fail without reading or rewriting
     identity-bearing expense data.
 
+### 8.15 Historical participant revocation
+
+When friend cleanup retains an expense for accounting history:
+
+1. Preserve the original split amount and participant display name so splits continue to sum to
+   `total_amount`.
+2. Persist every canonical/alias ID for the removed identity in
+   `expenses.inactive_participant_member_ids`.
+3. Visibility reconciliation and participant-email rebuilding must exclude inactive member
+   surfaces, even when preserved splits or participant rows still resolve to an active account.
+   Do not exclude the account wholesale: expense ownership and a distinct active member surface
+   remain authoritative.
+4. `expenses:setSettlementState` must not use inactive splits for authorization. An account with a
+   distinct active split may settle only that active split; the historical inactive split remains
+   immutable to that participant.
+5. Inactive markers are durable per expense. Ordinary updates and friend relinking must not clear
+   them or restore revoked `user_expenses` visibility. A relinked identity may participate in new
+   expenses; any future reactivation of an existing expense must be an explicit authorized flow.
+6. Active participant closure is the union of non-inactive payer, `participant_member_ids`,
+   `involved_member_ids`, split, and participant-row member IDs. Cleanup and maintenance must not
+   delete history or remove visibility merely because one legacy identity surface is sparse. The
+   authoritative owner tuple counts as one distinct party even when its only member IDs are
+   inactive historical aliases.
+7. Identity repair batches must cap aggregate reads across all accounts in a page; a per-account cap
+   alone is not a safe Convex work bound.
+8. Expense visibility resolves exactly one authoritative owner from `owner_id`,
+   `owner_account_id`, and `owner_email`. Conflicting present fields are a maintenance error and
+   must abort before participant emails or `user_expenses` rows change.
+
+Failure impact:
+
+- Historical identity fields can otherwise regrant expense visibility or settlement authority after
+  a friend has been removed.
+
 ## 9) Security Hardening Set (Provenance: 2026-02-20)
 
 ### 9.1 Group upsert authorization

@@ -11,7 +11,12 @@ import {
   normalizeMemberId,
   removeAccountAliasMaterialization
 } from "./identity";
-import { reconcileExpenseVisibility, reconcileUserExpenses } from "./helpers";
+import {
+  collectActiveExpenseMemberIds,
+  reconcileExpenseVisibility,
+  reconcileUserExpenses,
+  resolveActiveExpenseParticipantAccounts
+} from "./helpers";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -69,76 +74,169 @@ function expenseReferencesEquivalentMember(
   );
 }
 
-async function buildResolvedParticipantEmails(
+type RemovedFriendExpenseOutcome = "unchanged" | "deleted" | "modified";
+const MAX_GROUPED_INDIVIDUAL_EXPENSES_PER_FRIEND_CLEANUP = 128;
+
+async function resolveActiveMemberAccount(
   ctx: any,
-  ownerEmail: string | undefined,
-  participants: any[] | undefined,
-  participantMemberIds: string[] | undefined
-): Promise<string[]> {
-  const emails = new Set<string>();
-  const normalizedOwnerEmail = normalizeEmail(ownerEmail);
-  if (normalizedOwnerEmail) {
-    emails.add(normalizedOwnerEmail);
-  }
-
-  for (const participant of participants ?? []) {
-    let account: any | null = null;
-    const linkedEmail = normalizeEmail(participant.linked_account_email);
-    const linkedAccountId =
-      typeof participant.linked_account_id === "string"
-        ? participant.linked_account_id.trim()
-        : undefined;
-
-    if (linkedEmail) {
+  expense: Doc<"expenses">,
+  normalizedMemberId: string
+): Promise<Doc<"accounts"> | null> {
+  let account = await findAccountByMemberId(ctx.db, normalizedMemberId);
+  if (!account) {
+    const participant = expense.participants.find(
+      (candidate) => normalizeMemberId(candidate.member_id) === normalizedMemberId
+    );
+    if (participant?.linked_account_id?.trim()) {
+      account = await findAccountByAuthIdOrDocId(ctx.db, participant.linked_account_id.trim());
+    }
+    const linkedEmail = participant?.linked_account_email?.trim().toLowerCase();
+    if (!account && linkedEmail) {
       account = await ctx.db
         .query("accounts")
         .withIndex("by_email", (q: any) => q.eq("email", linkedEmail))
         .unique();
     }
-    if (!account && linkedAccountId) {
-      account = await findAccountByAuthIdOrDocId(ctx.db, linkedAccountId);
-    }
-    if (!account && typeof participant.member_id === "string") {
-      account = await findAccountByMemberId(ctx.db, participant.member_id);
-    }
-    if (account?.email) {
-      const normalized = normalizeEmail(account.email);
-      if (normalized) {
-        emails.add(normalized);
-      }
-    }
   }
-
-  for (const memberId of participantMemberIds ?? []) {
-    const account = await findAccountByMemberId(ctx.db, memberId);
-    if (account?.email) {
-      const normalized = normalizeEmail(account.email);
-      if (normalized) {
-        emails.add(normalized);
-      }
-    }
-  }
-
-  return Array.from(emails);
+  return account?.status === "deleted" ? null : account;
 }
 
-async function reconcileExpenseVisibilityFromEmails(
+async function findOwnedGroupedIndividualExpenses(
   ctx: any,
-  expenseId: string,
-  participantEmails: string[]
-) {
-  const participantUsers = await Promise.all(
-    participantEmails.map((email) =>
-      ctx.db
-        .query("accounts")
-        .withIndex("by_email", (q: any) => q.eq("email", email))
-        .unique()
-    )
+  user: Doc<"accounts">,
+  normalizedAccountEmail: string
+): Promise<Doc<"expenses">[]> {
+  const queryLimit = MAX_GROUPED_INDIVIDUAL_EXPENSES_PER_FRIEND_CLEANUP + 1;
+  const candidatePages: Doc<"expenses">[][] = [];
+  candidatePages.push(
+    await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_id_and_context_kind", (q: any) =>
+        q.eq("owner_id", user._id).eq("context_kind", "grouped_individual")
+      )
+      .take(queryLimit)
   );
-  const participantUserIds = participantUsers
-    .filter((user): user is NonNullable<typeof user> => user !== null)
-    .map((user) => user.id);
-  await reconcileUserExpenses(ctx, expenseId, participantUserIds);
+  candidatePages.push(
+    await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_account_id_and_context_kind", (q: any) =>
+        q.eq("owner_account_id", user.id).eq("context_kind", "grouped_individual")
+      )
+      .take(queryLimit)
+  );
+  const ownerEmailKeys = new Set([normalizedAccountEmail, user.email.trim()]);
+  for (const ownerEmail of ownerEmailKeys) {
+    candidatePages.push(
+      await ctx.db
+        .query("expenses")
+        .withIndex("by_owner_email_and_context_kind", (q: any) =>
+          q.eq("owner_email", ownerEmail).eq("context_kind", "grouped_individual")
+        )
+        .take(queryLimit)
+    );
+  }
+  if (candidatePages.some((page) => page.length >= queryLimit)) {
+    throw new Error(
+      "Identity maintenance required: too many grouped-individual expenses for live friend cleanup"
+    );
+  }
+
+  const candidatesById = new Map<string, Doc<"expenses">>();
+  for (const page of candidatePages) {
+    for (const expense of page) candidatesById.set(String(expense._id), expense);
+  }
+  if (candidatesById.size > MAX_GROUPED_INDIVIDUAL_EXPENSES_PER_FRIEND_CLEANUP) {
+    throw new Error(
+      "Identity maintenance required: too many grouped-individual expenses for live friend cleanup"
+    );
+  }
+
+  for (const expense of candidatesById.values()) {
+    const legacyExpense = expense as Doc<"expenses"> & {
+      owner_id?: Doc<"accounts">["_id"];
+      owner_account_id?: string;
+      owner_email?: string;
+    };
+    const ownerIdConflicts =
+      legacyExpense.owner_id !== undefined && String(legacyExpense.owner_id) !== String(user._id);
+    const ownerAccountIdConflicts =
+      typeof legacyExpense.owner_account_id === "string" &&
+      legacyExpense.owner_account_id.trim().length > 0 &&
+      legacyExpense.owner_account_id.trim() !== user.id;
+    const ownerEmail = normalizeEmail(legacyExpense.owner_email);
+    const ownerEmailConflicts = ownerEmail !== undefined && ownerEmail !== normalizedAccountEmail;
+    if (ownerIdConflicts || ownerAccountIdConflicts || ownerEmailConflicts) {
+      throw new Error("Identity maintenance required: conflicting grouped-individual ownership");
+    }
+  }
+  return Array.from(candidatesById.values()).filter((expense) => expense.group_ref === undefined);
+}
+
+async function removeEquivalentMemberFromExpense(
+  ctx: any,
+  expense: Doc<"expenses">,
+  normalizedEquivalentIds: ReadonlySet<string>
+): Promise<RemovedFriendExpenseOutcome> {
+  if (!expenseReferencesEquivalentMember(expense, normalizedEquivalentIds)) return "unchanged";
+
+  const remainingParticipants = collectActiveExpenseMemberIds(expense, normalizedEquivalentIds);
+  const removedFriendWasPayer = matchesEquivalentMemberId(
+    expense.paid_by_member_id,
+    normalizedEquivalentIds
+  );
+
+  if (removedFriendWasPayer) {
+    await deleteUserExpensesForExpense(ctx, expense.id);
+    await ctx.db.delete(expense._id);
+    return "deleted";
+  }
+
+  const inactiveParticipantMemberIds = Array.from(
+    new Set([
+      ...(expense.inactive_participant_member_ids ?? []).map(normalizeMemberId),
+      ...normalizedEquivalentIds
+    ])
+  );
+  const visibilityExpense: Doc<"expenses"> = {
+    ...expense,
+    participant_member_ids: remainingParticipants,
+    involved_member_ids: remainingParticipants,
+    inactive_participant_member_ids: inactiveParticipantMemberIds,
+    participant_emails: []
+  };
+  const activeParticipantAccounts = await resolveActiveExpenseParticipantAccounts(
+    ctx,
+    visibilityExpense
+  );
+  const participantEmails = Array.from(
+    new Set(activeParticipantAccounts.map((account) => account.email.trim().toLowerCase()))
+  );
+  const activePartyKeys = new Set(
+    activeParticipantAccounts.map((account) => `account:${account.id}`)
+  );
+  for (const memberId of remainingParticipants) {
+    const account = await resolveActiveMemberAccount(ctx, visibilityExpense, memberId);
+    activePartyKeys.add(account ? `account:${account.id}` : `member:${memberId}`);
+  }
+  if (activePartyKeys.size <= 1) {
+    await deleteUserExpensesForExpense(ctx, expense.id);
+    await ctx.db.delete(expense._id);
+    return "deleted";
+  }
+
+  await ctx.db.patch(expense._id, {
+    participant_member_ids: remainingParticipants,
+    inactive_participant_member_ids: inactiveParticipantMemberIds,
+    involved_member_ids: remainingParticipants,
+    participant_emails: participantEmails,
+    updated_at: Date.now()
+  });
+  await reconcileUserExpenses(
+    ctx,
+    expense.id,
+    activeParticipantAccounts.map((account) => account.id)
+  );
+  return "modified";
 }
 
 async function pruneAliasMemberIdsFromAccount(
@@ -744,6 +842,12 @@ export const deleteUnlinkedFriend = mutation({
     let expensesModified = 0;
     let aliasesDeleted = 0;
 
+    const groupedIndividualExpenses = await findOwnedGroupedIndividualExpenses(
+      ctx,
+      user,
+      accountEmail
+    );
+
     const ownedGroups = await ctx.db
       .query("groups")
       .withIndex("by_owner_email", (q) => q.eq("owner_email", accountEmail))
@@ -784,55 +888,26 @@ export const deleteUnlinkedFriend = mutation({
           .collect();
 
         for (const expense of groupExpenses) {
-          if (!expenseReferencesEquivalentMember(expense, normalizedEquivalentIds)) continue;
-
-          const remainingParticipants = expense.participant_member_ids.filter(
-            (memberId) => !matchesEquivalentMemberId(memberId, normalizedEquivalentIds)
-          );
-          const removedFriendWasPayer = matchesEquivalentMemberId(
-            expense.paid_by_member_id,
+          const outcome = await removeEquivalentMemberFromExpense(
+            ctx,
+            expense,
             normalizedEquivalentIds
           );
-
-          if (removedFriendWasPayer || remainingParticipants.length <= 1) {
-            await deleteUserExpensesForExpense(ctx, expense.id);
-            await ctx.db.delete(expense._id);
-            expensesDeleted++;
-          } else {
-            const newSplits = expense.splits.filter(
-              (split) => !matchesEquivalentMemberId(split.member_id, normalizedEquivalentIds)
-            );
-            const newParticipants = expense.participants.filter(
-              (participant) =>
-                !matchesEquivalentMemberId(participant.member_id, normalizedEquivalentIds)
-            );
-            const newInvolvedIds = expense.involved_member_ids.filter(
-              (memberId) => !matchesEquivalentMemberId(memberId, normalizedEquivalentIds)
-            );
-            const newIsSettled =
-              newSplits.length > 0 && newSplits.every((split) => split.is_settled);
-            const participantEmails = await buildResolvedParticipantEmails(
-              ctx,
-              expense.owner_email,
-              newParticipants,
-              remainingParticipants
-            );
-
-            await ctx.db.patch(expense._id, {
-              splits: newSplits,
-              participants: newParticipants,
-              participant_member_ids: remainingParticipants,
-              involved_member_ids: newInvolvedIds,
-              participant_emails: participantEmails,
-              is_settled: newIsSettled,
-              updated_at: Date.now()
-            });
-            await reconcileExpenseVisibilityFromEmails(ctx, expense.id, participantEmails);
-            expensesModified++;
-          }
+          if (outcome === "deleted") expensesDeleted++;
+          if (outcome === "modified") expensesModified++;
         }
       }
       groupsModified++;
+    }
+
+    for (const expense of groupedIndividualExpenses) {
+      const outcome = await removeEquivalentMemberFromExpense(
+        ctx,
+        expense,
+        normalizedEquivalentIds
+      );
+      if (outcome === "deleted") expensesDeleted++;
+      if (outcome === "modified") expensesModified++;
     }
 
     aliasesDeleted = await pruneAliasMemberIdsFromAccount(ctx, accountEmail, equivalentIds);

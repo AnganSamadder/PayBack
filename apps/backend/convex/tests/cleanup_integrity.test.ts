@@ -1,6 +1,7 @@
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
+import { reconcileExpenseVisibility } from "../helpers";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
@@ -500,7 +501,11 @@ test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across ever
       participant_member_ids: ["owner_member", "watcher_member"],
       participants: [
         { member_id: "owner_member", name: "Owner" },
-        { member_id: storedCanonicalFriendId, name: "Friend" },
+        {
+          member_id: storedCanonicalFriendId,
+          name: "Friend",
+          linked_account_email: "removed@test.com"
+        },
         { member_id: "watcher_member", name: "Watcher", linked_account_email: "watcher@test.com" }
       ]
     });
@@ -565,6 +570,48 @@ test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across ever
   expect(result.expensesModified).toBe(2);
   expect(result.expensesDeleted).toBe(1);
 
+  const removedCtx = t.withIdentity(identity("removed@test.com", "removed_auth"));
+  await expect(
+    removedCtx.mutation(api.expenses.setSettlementState, {
+      expenseId: "split_participant_only_expense",
+      memberIds: [storedCanonicalFriendId],
+      settled: true
+    })
+  ).rejects.toThrow("Forbidden");
+
+  const retainedBeforeUpdate = await t.run(async (ctx) =>
+    ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "split_participant_only_expense"))
+      .unique()
+  );
+  if (!retainedBeforeUpdate) throw new Error("Expected retained historical expense");
+  await ownerCtx.mutation(api.expenses.create, {
+    id: retainedBeforeUpdate.id,
+    context_kind: "group",
+    group_id: retainedBeforeUpdate.group_id,
+    description: "Updated historical expense",
+    date: retainedBeforeUpdate.date,
+    total_amount: retainedBeforeUpdate.total_amount,
+    paid_by_member_id: retainedBeforeUpdate.paid_by_member_id,
+    involved_member_ids: retainedBeforeUpdate.involved_member_ids,
+    splits: retainedBeforeUpdate.splits,
+    is_settled: retainedBeforeUpdate.is_settled,
+    participant_member_ids: retainedBeforeUpdate.participant_member_ids,
+    participants: retainedBeforeUpdate.participants
+  });
+
+  await t.run(async (ctx) => {
+    const expense = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "split_participant_only_expense"))
+      .unique();
+    if (!expense) throw new Error("Expected retained historical expense");
+    await reconcileExpenseVisibility(ctx, expense);
+  });
+  await t.mutation(internal.migrations.repairExpenseSettlementAndVisibility, {});
+  await t.mutation(internal.migrations.backfillParticipantEmails, {});
+
   const normalizedRemovedIds = new Set([friendAlias, canonicalFriendId]);
   const normalized = (memberId: string) => memberId.trim().toLowerCase();
   const remaining = await t.run(async (ctx) => {
@@ -587,6 +634,34 @@ test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across ever
     "participant_ids_only_expense",
     "split_participant_only_expense"
   ]);
+  const splitHistory = remaining.expenses.find(
+    (expense) => expense.id === "split_participant_only_expense"
+  );
+  expect(splitHistory?.description).toBe("Updated historical expense");
+  expect(splitHistory?.total_amount).toBe(60);
+  expect(splitHistory?.splits.reduce((total, split) => total + split.amount, 0)).toBe(60);
+  expect(splitHistory?.splits.every((split) => split.is_settled === false)).toBe(true);
+  expect(new Set(splitHistory?.inactive_participant_member_ids)).toEqual(
+    new Set([friendAlias, canonicalFriendId])
+  );
+  expect(
+    splitHistory?.splits.some((split) => normalizedRemovedIds.has(normalized(split.member_id)))
+  ).toBe(true);
+  expect(
+    splitHistory?.participants.some((participant) =>
+      normalizedRemovedIds.has(normalized(participant.member_id))
+    )
+  ).toBe(true);
+
+  const participantHistory = remaining.expenses.find(
+    (expense) => expense.id === "participant_ids_only_expense"
+  );
+  expect(
+    participantHistory?.participant_member_ids.some((memberId) =>
+      normalizedRemovedIds.has(normalized(memberId))
+    )
+  ).toBe(false);
+
   for (const expense of remaining.expenses) {
     expect(normalizedRemovedIds.has(normalized(expense.paid_by_member_id))).toBe(false);
     expect(
@@ -595,14 +670,6 @@ test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across ever
     expect(
       expense.participant_member_ids.some((memberId) =>
         normalizedRemovedIds.has(normalized(memberId))
-      )
-    ).toBe(false);
-    expect(
-      expense.splits.some((split) => normalizedRemovedIds.has(normalized(split.member_id)))
-    ).toBe(false);
-    expect(
-      expense.participants.some((participant) =>
-        normalizedRemovedIds.has(normalized(participant.member_id))
       )
     ).toBe(false);
     expect(expense.participant_emails).not.toContain("removed@test.com");
@@ -617,6 +684,400 @@ test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across ever
         ["split_participant_only_expense", "participant_ids_only_expense"].includes(row.expense_id)
     )
   ).toBe(false);
+});
+
+test("expense visibility preserves owners and separate active surfaces for partly inactive accounts", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.run(async (ctx) => {
+    const ownerDoc = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "owner_member",
+      alias_member_ids: ["owner_inactive_alias"]
+    });
+    await ctx.db.insert("accounts", {
+      id: "participant_auth",
+      email: "participant@test.com",
+      display_name: "Participant",
+      created_at: Date.now(),
+      member_id: "participant_member",
+      alias_member_ids: ["participant_inactive_alias", "participant_active_alias"]
+    });
+    for (const [accountEmail, canonicalMemberId, aliasMemberId, sourceAccountId] of [
+      ["owner@test.com", "owner_member", "owner_inactive_alias", "owner_auth"],
+      [
+        "participant@test.com",
+        "participant_member",
+        "participant_inactive_alias",
+        "participant_auth"
+      ],
+      ["participant@test.com", "participant_member", "participant_active_alias", "participant_auth"]
+    ]) {
+      await ctx.db.insert("member_aliases", {
+        account_email: accountEmail,
+        canonical_member_id: canonicalMemberId,
+        alias_member_id: aliasMemberId,
+        materialization_source: "account_alias",
+        source_account_id: sourceAccountId,
+        created_at: Date.now()
+      });
+    }
+
+    const groupRef = await ctx.db.insert("groups", {
+      id: "historical_group",
+      name: "Historical Group",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "participant_active_alias", name: "Participant" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerDoc,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+
+    const expenseId = await ctx.db.insert("expenses", {
+      id: "partly_inactive_expense",
+      group_id: "historical_group",
+      group_ref: groupRef,
+      description: "Historical expense",
+      date: Date.now(),
+      total_amount: 60,
+      paid_by_member_id: "participant_active_alias",
+      involved_member_ids: ["participant_active_alias"],
+      splits: [
+        {
+          id: "historical_split",
+          member_id: "participant_inactive_alias",
+          amount: 30,
+          is_settled: false
+        },
+        {
+          id: "active_split",
+          member_id: "participant_active_alias",
+          amount: 30,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerDoc,
+      participant_member_ids: ["participant_active_alias"],
+      inactive_participant_member_ids: ["owner_inactive_alias", "participant_inactive_alias"],
+      participant_emails: ["owner@test.com", "participant@test.com"],
+      participants: [
+        {
+          member_id: "participant_inactive_alias",
+          name: "Historical Participant",
+          linked_account_id: "participant_auth",
+          linked_account_email: "participant@test.com"
+        },
+        { member_id: "participant_active_alias", name: "Active Participant" }
+      ],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    const expense = await ctx.db.get(expenseId);
+    if (!expense) throw new Error("Expected expense fixture");
+    await reconcileExpenseVisibility(ctx, expense);
+  });
+
+  const viewers = await t.run(async (ctx) =>
+    (
+      await ctx.db
+        .query("user_expenses")
+        .withIndex("by_expense_id", (q) => q.eq("expense_id", "partly_inactive_expense"))
+        .collect()
+    )
+      .map((row) => row.user_id)
+      .sort()
+  );
+  expect(viewers).toEqual(["owner_auth", "participant_auth"]);
+
+  const participantCtx = t.withIdentity(identity("participant@test.com", "participant_auth"));
+  await expect(
+    participantCtx.mutation(api.expenses.setSettlementState, {
+      expenseId: "partly_inactive_expense",
+      memberIds: ["participant_inactive_alias"],
+      settled: true
+    })
+  ).rejects.toThrow("Forbidden");
+
+  const settledExpense = await participantCtx.mutation(api.expenses.setSettlementState, {
+    expenseId: "partly_inactive_expense",
+    settled: true
+  });
+  expect(
+    settledExpense.splits.find(
+      (split: { member_id: string }) => split.member_id === "participant_inactive_alias"
+    )?.is_settled
+  ).toBe(false);
+  expect(
+    settledExpense.splits.find(
+      (split: { member_id: string }) => split.member_id === "participant_active_alias"
+    )?.is_settled
+  ).toBe(true);
+
+  const explicitlySettledExpense = await participantCtx.mutation(api.expenses.setSettlementState, {
+    expenseId: "partly_inactive_expense",
+    memberIds: ["participant_active_alias"],
+    settled: true
+  });
+  expect(
+    explicitlySettledExpense.splits.find(
+      (split: { member_id: string }) => split.member_id === "participant_inactive_alias"
+    )?.is_settled
+  ).toBe(false);
+  expect(
+    explicitlySettledExpense.splits.find(
+      (split: { member_id: string }) => split.member_id === "participant_active_alias"
+    )?.is_settled
+  ).toBe(true);
+
+  await expect(
+    participantCtx.mutation(api.expenses.create, {
+      id: "partly_inactive_expense",
+      context_kind: "group",
+      group_id: "historical_group",
+      description: "Historical expense",
+      date: explicitlySettledExpense.date,
+      total_amount: 60,
+      paid_by_member_id: "participant_active_alias",
+      involved_member_ids: ["participant_active_alias"],
+      splits: [
+        {
+          id: "historical_split",
+          member_id: "participant_inactive_alias",
+          amount: 30,
+          is_settled: true
+        },
+        {
+          id: "active_split",
+          member_id: "participant_active_alias",
+          amount: 30,
+          is_settled: true
+        }
+      ],
+      is_settled: true,
+      participant_member_ids: ["participant_active_alias"],
+      participants: [
+        { member_id: "participant_inactive_alias", name: "Historical Participant" },
+        { member_id: "participant_active_alias", name: "Active Participant" }
+      ]
+    })
+  ).rejects.toThrow("Forbidden");
+});
+
+test("expense visibility excludes orphaned inactive linked identities", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.run(async (ctx) => {
+    const ownerDoc = await ctx.db.insert("accounts", {
+      id: "orphan_owner_auth",
+      email: "orphan-owner@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "orphan_owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "orphan_removed_auth",
+      email: "orphan-removed@test.com",
+      display_name: "Removed",
+      created_at: Date.now(),
+      member_id: "orphan_removed_canonical"
+    });
+    const expenseId = await ctx.db.insert("expenses", {
+      id: "orphan_inactive_expense",
+      group_id: "orphan_group",
+      description: "Historical expense",
+      date: Date.now(),
+      total_amount: 10,
+      paid_by_member_id: "orphan_owner_member",
+      involved_member_ids: ["orphan_owner_member"],
+      splits: [
+        {
+          id: "orphan_inactive_split",
+          member_id: "orphan_inactive_alias",
+          amount: 10,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "orphan-owner@test.com",
+      owner_account_id: "orphan_owner_auth",
+      owner_id: ownerDoc,
+      participant_member_ids: ["orphan_owner_member"],
+      inactive_participant_member_ids: ["orphan_inactive_alias"],
+      participant_emails: ["orphan-owner@test.com", "orphan-removed@test.com"],
+      participants: [
+        {
+          member_id: "orphan_inactive_alias",
+          name: "Historical Participant",
+          linked_account_id: "orphan_removed_auth",
+          linked_account_email: "orphan-removed@test.com"
+        }
+      ],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    const expense = await ctx.db.get(expenseId);
+    if (!expense) throw new Error("Expected orphaned inactive expense");
+    await reconcileExpenseVisibility(ctx, expense);
+  });
+
+  const viewers = await t.run(async (ctx) =>
+    (
+      await ctx.db
+        .query("user_expenses")
+        .withIndex("by_expense_id", (q) => q.eq("expense_id", "orphan_inactive_expense"))
+        .collect()
+    )
+      .map((row) => row.user_id)
+      .sort()
+  );
+  expect(viewers).toEqual(["orphan_owner_auth"]);
+});
+
+test("advanced expense visibility backfill removes inactive participant surfaces", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.run(async (ctx) => {
+    const ownerDoc = await ctx.db.insert("accounts", {
+      id: "maintenance_owner_auth",
+      email: "maintenance-owner@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "maintenance_owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "maintenance_removed_auth",
+      email: "maintenance-removed@test.com",
+      display_name: "Removed",
+      created_at: Date.now(),
+      member_id: "maintenance_inactive_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "maintenance_active_auth",
+      email: "maintenance-active@test.com",
+      display_name: "Active",
+      created_at: Date.now(),
+      member_id: "maintenance_active_member"
+    });
+    await ctx.db.insert("expenses", {
+      id: "maintenance_inactive_expense",
+      group_id: "maintenance_group",
+      description: "Historical expense",
+      date: Date.now(),
+      total_amount: 10,
+      paid_by_member_id: "maintenance_owner_member",
+      involved_member_ids: [
+        "maintenance_owner_member",
+        "maintenance_inactive_member",
+        "maintenance_active_member"
+      ],
+      splits: [
+        {
+          id: "maintenance_inactive_split",
+          member_id: "maintenance_inactive_member",
+          amount: 10,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "maintenance-owner@test.com",
+      owner_account_id: "maintenance_owner_auth",
+      owner_id: ownerDoc,
+      participant_member_ids: ["maintenance_owner_member"],
+      inactive_participant_member_ids: ["maintenance_inactive_member"],
+      participant_emails: [
+        "maintenance-owner@test.com",
+        "maintenance-active@test.com",
+        "maintenance-removed@test.com"
+      ],
+      participants: [
+        {
+          member_id: "maintenance_inactive_member",
+          name: "Historical Participant",
+          linked_account_id: "maintenance_removed_auth",
+          linked_account_email: "maintenance-removed@test.com"
+        },
+        {
+          member_id: "maintenance_active_member",
+          name: "Active",
+          linked_account_id: "maintenance_active_auth",
+          linked_account_email: "maintenance-active@test.com"
+        }
+      ],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("user_expenses", {
+      user_id: "maintenance_owner_auth",
+      expense_id: "maintenance_inactive_expense",
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("user_expenses", {
+      user_id: "maintenance_active_auth",
+      expense_id: "maintenance_inactive_expense",
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("user_expenses", {
+      user_id: "maintenance_removed_auth",
+      expense_id: "maintenance_inactive_expense",
+      updated_at: Date.now()
+    });
+  });
+
+  await t.mutation(internal.migrations.backfillParticipantEmailsAdvanced, {});
+
+  const result = await t.run(async (ctx) => {
+    const expense = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "maintenance_inactive_expense"))
+      .unique();
+    const visibility = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "maintenance_inactive_expense"))
+      .collect();
+    return { expense, visibility };
+  });
+  expect(result.expense?.participant_emails).toEqual([
+    "maintenance-owner@test.com",
+    "maintenance-active@test.com"
+  ]);
+  expect(
+    result.expense?.participants.find(
+      (participant) => participant.member_id === "maintenance_inactive_member"
+    )?.name
+  ).toBe("Historical Participant");
+  expect(result.visibility.map((row) => row.user_id).sort()).toEqual([
+    "maintenance_active_auth",
+    "maintenance_owner_auth"
+  ]);
+
+  await t.run(async (ctx) => {
+    if (!result.expense) throw new Error("Expected maintenance expense");
+    await ctx.db.patch(result.expense._id, {
+      participant_emails: ["maintenance-owner@test.com", "maintenance-removed@test.com"]
+    });
+  });
+  await t.mutation(internal.migrations.backfillUserExpenses, {});
+
+  const visibilityAfterStaleEmail = await t.run(async (ctx) =>
+    ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "maintenance_inactive_expense"))
+      .collect()
+  );
+  expect(visibilityAfterStaleEmail.map((row) => row.user_id).sort()).toEqual([
+    "maintenance_active_auth",
+    "maintenance_owner_auth"
+  ]);
 });
 
 test("cleanup.deleteUnlinkedFriend preserves standalone aliases while pruning account materialization", async () => {
@@ -765,6 +1226,556 @@ test("cleanup.deleteUnlinkedFriend throws for a group-derived non-friend and lea
   expect(expensesAfter).toHaveLength(1);
   expect(expensesAfter[0].participant_member_ids).toContain("group_only_member");
   expect(friendsAfter).toHaveLength(0);
+});
+
+test("cleanup.deleteUnlinkedFriend revokes group-less grouped-individual history", async () => {
+  const t = convexTest(schema, modules);
+  await markIdentityReady(t);
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "grouped_cleanup_owner_auth",
+      email: "grouped-cleanup-owner@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "grouped_cleanup_owner"
+    });
+    await ctx.db.insert("accounts", {
+      id: "grouped_cleanup_active_auth",
+      email: "grouped-cleanup-active@test.com",
+      display_name: "Active participant",
+      created_at: Date.now(),
+      member_id: "grouped_cleanup_active"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "grouped-cleanup-owner@test.com",
+      member_id: "grouped_cleanup_removed",
+      name: "Removed participant",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: Date.now()
+    });
+
+    for (const fixture of [
+      {
+        id: "grouped_cleanup_history",
+        payer: "grouped_cleanup_owner",
+        amount: 30
+      },
+      {
+        id: "grouped_cleanup_removed_payer",
+        payer: "grouped_cleanup_removed",
+        amount: 20
+      }
+    ]) {
+      await ctx.db.insert("expenses", {
+        id: fixture.id,
+        group_id: crypto.randomUUID(),
+        context_kind: "grouped_individual",
+        description: fixture.id,
+        date: Date.now(),
+        total_amount: fixture.amount,
+        paid_by_member_id: fixture.payer,
+        involved_member_ids: [
+          "grouped_cleanup_owner",
+          "grouped_cleanup_removed",
+          "grouped_cleanup_active"
+        ],
+        splits: [
+          {
+            id: `${fixture.id}_owner_split`,
+            member_id: "grouped_cleanup_owner",
+            amount: fixture.amount / 3,
+            is_settled: false
+          },
+          {
+            id: `${fixture.id}_removed_split`,
+            member_id: "grouped_cleanup_removed",
+            amount: fixture.amount / 3,
+            is_settled: false
+          },
+          {
+            id: `${fixture.id}_active_split`,
+            member_id: "grouped_cleanup_active",
+            amount: fixture.amount / 3,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "grouped-cleanup-owner@test.com",
+        owner_account_id: "grouped_cleanup_owner_auth",
+        owner_id: ownerId,
+        participant_member_ids: [
+          "grouped_cleanup_owner",
+          "grouped_cleanup_removed",
+          "grouped_cleanup_active"
+        ],
+        participant_emails: [
+          "grouped-cleanup-owner@test.com",
+          "grouped-cleanup-active@test.com",
+          "removed-stale@test.com"
+        ],
+        participants: [
+          { member_id: "grouped_cleanup_owner", name: "Owner" },
+          { member_id: "grouped_cleanup_removed", name: "Removed participant" },
+          {
+            member_id: "grouped_cleanup_active",
+            name: "Active participant",
+            linked_account_id: "grouped_cleanup_active_auth",
+            linked_account_email: "grouped-cleanup-active@test.com"
+          }
+        ],
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+      for (const userId of [
+        "grouped_cleanup_owner_auth",
+        "grouped_cleanup_active_auth",
+        "grouped_cleanup_removed_stale_auth"
+      ]) {
+        await ctx.db.insert("user_expenses", {
+          user_id: userId,
+          expense_id: fixture.id,
+          updated_at: Date.now()
+        });
+      }
+    }
+  });
+
+  const owner = t.withIdentity(
+    identity("grouped-cleanup-owner@test.com", "grouped_cleanup_owner_auth")
+  );
+  const cleanupResult = await owner.mutation(api.cleanup.deleteUnlinkedFriend, {
+    friendMemberId: "grouped_cleanup_removed"
+  });
+
+  expect(cleanupResult).toMatchObject({
+    groupsModified: 0,
+    expensesDeleted: 1,
+    expensesModified: 1
+  });
+  const result = await t.run(async (ctx) => {
+    const retained = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "grouped_cleanup_history"))
+      .unique();
+    const removedPayer = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "grouped_cleanup_removed_payer"))
+      .unique();
+    const retainedVisibility = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "grouped_cleanup_history"))
+      .collect();
+    const deletedVisibility = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "grouped_cleanup_removed_payer"))
+      .collect();
+    return { retained, removedPayer, retainedVisibility, deletedVisibility };
+  });
+
+  expect(result.removedPayer).toBeNull();
+  expect(result.deletedVisibility).toEqual([]);
+  expect(result.retained?.total_amount).toBe(30);
+  expect(result.retained?.splits).toHaveLength(3);
+  expect(result.retained?.participants).toHaveLength(3);
+  expect(result.retained?.participant_member_ids).toEqual([
+    "grouped_cleanup_owner",
+    "grouped_cleanup_active"
+  ]);
+  expect(result.retained?.involved_member_ids).toEqual([
+    "grouped_cleanup_owner",
+    "grouped_cleanup_active"
+  ]);
+  expect(result.retained?.inactive_participant_member_ids).toEqual(["grouped_cleanup_removed"]);
+  expect(result.retained?.participant_emails.sort()).toEqual([
+    "grouped-cleanup-active@test.com",
+    "grouped-cleanup-owner@test.com"
+  ]);
+  expect(result.retainedVisibility.map((row) => row.user_id).sort()).toEqual([
+    "grouped_cleanup_active_auth",
+    "grouped_cleanup_owner_auth"
+  ]);
+});
+
+test("cleanup.deleteUnlinkedFriend preserves group-less survivors across drifted identity surfaces", async () => {
+  const t = convexTest(schema, modules);
+  await markIdentityReady(t);
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "drift_cleanup_owner_auth",
+      email: "drift-cleanup-owner@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "drift_cleanup_owner"
+    });
+    for (const surface of ["involved", "split", "participant"] as const) {
+      await ctx.db.insert("accounts", {
+        id: `drift_cleanup_${surface}_auth`,
+        email: `drift-cleanup-${surface}@test.com`,
+        display_name: `${surface} survivor`,
+        created_at: Date.now(),
+        member_id: `drift_cleanup_${surface}`
+      });
+    }
+    await ctx.db.insert("account_friends", {
+      account_email: "drift-cleanup-owner@test.com",
+      member_id: "drift_cleanup_removed",
+      name: "Removed",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("expenses", {
+      id: "drift_cleanup_expense",
+      group_id: crypto.randomUUID(),
+      context_kind: "grouped_individual",
+      description: "Drifted identity surfaces",
+      date: Date.now(),
+      total_amount: 30,
+      paid_by_member_id: "drift_cleanup_owner",
+      involved_member_ids: [
+        "drift_cleanup_owner",
+        "drift_cleanup_removed",
+        "drift_cleanup_involved"
+      ],
+      splits: [
+        {
+          id: "drift_cleanup_owner_split",
+          member_id: "drift_cleanup_owner",
+          amount: 10,
+          is_settled: false
+        },
+        {
+          id: "drift_cleanup_removed_split",
+          member_id: "drift_cleanup_removed",
+          amount: 10,
+          is_settled: false
+        },
+        {
+          id: "drift_cleanup_survivor_split",
+          member_id: "drift_cleanup_split",
+          amount: 10,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "drift-cleanup-owner@test.com",
+      owner_account_id: "drift_cleanup_owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: ["drift_cleanup_owner", "drift_cleanup_removed"],
+      participant_emails: ["drift-cleanup-owner@test.com", "removed-stale@test.com"],
+      participants: [
+        { member_id: "drift_cleanup_owner", name: "Owner" },
+        { member_id: "drift_cleanup_removed", name: "Removed" },
+        {
+          member_id: "drift_cleanup_participant",
+          name: "Participant survivor",
+          linked_account_id: "drift_cleanup_participant_auth",
+          linked_account_email: "drift-cleanup-participant@test.com"
+        }
+      ],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    for (const userId of [
+      "drift_cleanup_owner_auth",
+      "drift_cleanup_involved_auth",
+      "drift_cleanup_split_auth",
+      "drift_cleanup_participant_auth",
+      "drift_cleanup_removed_stale_auth"
+    ]) {
+      await ctx.db.insert("user_expenses", {
+        user_id: userId,
+        expense_id: "drift_cleanup_expense",
+        updated_at: Date.now()
+      });
+    }
+  });
+
+  const owner = t.withIdentity(
+    identity("drift-cleanup-owner@test.com", "drift_cleanup_owner_auth")
+  );
+  const cleanupResult = await owner.mutation(api.cleanup.deleteUnlinkedFriend, {
+    friendMemberId: "drift_cleanup_removed"
+  });
+  expect(cleanupResult).toMatchObject({ expensesDeleted: 0, expensesModified: 1 });
+
+  const result = await t.run(async (ctx) => {
+    const expense = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "drift_cleanup_expense"))
+      .unique();
+    const visibility = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "drift_cleanup_expense"))
+      .collect();
+    return { expense, visibility };
+  });
+  expect(result.expense?.total_amount).toBe(30);
+  expect(result.expense?.splits).toHaveLength(3);
+  expect(new Set(result.expense?.participant_member_ids)).toEqual(
+    new Set([
+      "drift_cleanup_owner",
+      "drift_cleanup_involved",
+      "drift_cleanup_split",
+      "drift_cleanup_participant"
+    ])
+  );
+  expect(new Set(result.expense?.involved_member_ids)).toEqual(
+    new Set([
+      "drift_cleanup_owner",
+      "drift_cleanup_involved",
+      "drift_cleanup_split",
+      "drift_cleanup_participant"
+    ])
+  );
+  expect(result.expense?.inactive_participant_member_ids).toEqual(["drift_cleanup_removed"]);
+  expect(new Set(result.expense?.participant_emails)).toEqual(
+    new Set([
+      "drift-cleanup-owner@test.com",
+      "drift-cleanup-involved@test.com",
+      "drift-cleanup-split@test.com",
+      "drift-cleanup-participant@test.com"
+    ])
+  );
+  expect(new Set(result.visibility.map((row) => row.user_id))).toEqual(
+    new Set([
+      "drift_cleanup_owner_auth",
+      "drift_cleanup_involved_auth",
+      "drift_cleanup_split_auth",
+      "drift_cleanup_participant_auth"
+    ])
+  );
+});
+
+test("cleanup.deleteUnlinkedFriend counts an authoritative owner with only inactive history", async () => {
+  const t = convexTest(schema, modules);
+  await markIdentityReady(t);
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "inactive_owner_cleanup_auth",
+      email: "inactive-owner-cleanup@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "inactive_owner_cleanup_canonical",
+      alias_member_ids: ["inactive_owner_cleanup_alias"]
+    });
+    await ctx.db.insert("accounts", {
+      id: "inactive_owner_survivor_auth",
+      email: "inactive-owner-survivor@test.com",
+      display_name: "Survivor",
+      created_at: Date.now(),
+      member_id: "inactive_owner_survivor"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "inactive-owner-cleanup@test.com",
+      member_id: "inactive_owner_removed",
+      name: "Removed",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("expenses", {
+      id: "inactive_owner_cleanup_expense",
+      group_id: crypto.randomUUID(),
+      context_kind: "grouped_individual",
+      description: "Owner represented only by inactive alias",
+      date: Date.now(),
+      total_amount: 30,
+      paid_by_member_id: "inactive_owner_cleanup_alias",
+      involved_member_ids: [
+        "inactive_owner_cleanup_alias",
+        "inactive_owner_removed",
+        "inactive_owner_survivor"
+      ],
+      splits: [
+        {
+          id: "inactive_owner_historical_split",
+          member_id: "inactive_owner_cleanup_alias",
+          amount: 10,
+          is_settled: false
+        },
+        {
+          id: "inactive_owner_removed_split",
+          member_id: "inactive_owner_removed",
+          amount: 10,
+          is_settled: false
+        },
+        {
+          id: "inactive_owner_survivor_split",
+          member_id: "inactive_owner_survivor",
+          amount: 10,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "inactive-owner-cleanup@test.com",
+      owner_account_id: "inactive_owner_cleanup_auth",
+      owner_id: ownerId,
+      participant_member_ids: [
+        "inactive_owner_cleanup_alias",
+        "inactive_owner_removed",
+        "inactive_owner_survivor"
+      ],
+      inactive_participant_member_ids: ["inactive_owner_cleanup_alias"],
+      participant_emails: [
+        "inactive-owner-cleanup@test.com",
+        "inactive-owner-survivor@test.com",
+        "removed-stale@test.com"
+      ],
+      participants: [
+        { member_id: "inactive_owner_cleanup_alias", name: "Historical owner" },
+        { member_id: "inactive_owner_removed", name: "Removed" },
+        {
+          member_id: "inactive_owner_survivor",
+          name: "Survivor",
+          linked_account_id: "inactive_owner_survivor_auth",
+          linked_account_email: "inactive-owner-survivor@test.com"
+        }
+      ],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    for (const userId of [
+      "inactive_owner_cleanup_auth",
+      "inactive_owner_survivor_auth",
+      "inactive_owner_removed_stale_auth"
+    ]) {
+      await ctx.db.insert("user_expenses", {
+        user_id: userId,
+        expense_id: "inactive_owner_cleanup_expense",
+        updated_at: Date.now()
+      });
+    }
+  });
+
+  const owner = t.withIdentity(
+    identity("inactive-owner-cleanup@test.com", "inactive_owner_cleanup_auth")
+  );
+  const cleanupResult = await owner.mutation(api.cleanup.deleteUnlinkedFriend, {
+    friendMemberId: "inactive_owner_removed"
+  });
+  expect(cleanupResult).toMatchObject({ expensesDeleted: 0, expensesModified: 1 });
+
+  const result = await t.run(async (ctx) => {
+    const expense = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "inactive_owner_cleanup_expense"))
+      .unique();
+    const visibility = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "inactive_owner_cleanup_expense"))
+      .collect();
+    return { expense, visibility };
+  });
+  expect(result.expense?.total_amount).toBe(30);
+  expect(result.expense?.splits).toHaveLength(3);
+  expect(result.expense?.participant_member_ids).toEqual(["inactive_owner_survivor"]);
+  expect(new Set(result.expense?.inactive_participant_member_ids)).toEqual(
+    new Set(["inactive_owner_cleanup_alias", "inactive_owner_removed"])
+  );
+  expect(new Set(result.expense?.participant_emails)).toEqual(
+    new Set(["inactive-owner-cleanup@test.com", "inactive-owner-survivor@test.com"])
+  );
+  expect(new Set(result.visibility.map((row) => row.user_id))).toEqual(
+    new Set(["inactive_owner_cleanup_auth", "inactive_owner_survivor_auth"])
+  );
+});
+
+test("cleanup.deleteUnlinkedFriend rejects conflicting legacy expense ownership", async () => {
+  const t = convexTest(schema, modules);
+  await markIdentityReady(t);
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "legacy_cleanup_owner_auth",
+      email: "legacy-cleanup-owner@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "legacy_cleanup_owner"
+    });
+    const conflictingOwnerId = await ctx.db.insert("accounts", {
+      id: "legacy_cleanup_conflict_auth",
+      email: "legacy-cleanup-conflict@test.com",
+      display_name: "Conflict",
+      created_at: Date.now(),
+      member_id: "legacy_cleanup_conflict"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "legacy-cleanup-owner@test.com",
+      member_id: "legacy_cleanup_removed",
+      name: "Removed",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("expenses", {
+      id: "legacy_cleanup_conflicting_expense",
+      group_id: crypto.randomUUID(),
+      context_kind: "grouped_individual",
+      description: "Conflicting owner tuple",
+      date: Date.now(),
+      total_amount: 10,
+      paid_by_member_id: "legacy_cleanup_owner",
+      involved_member_ids: ["legacy_cleanup_owner", "legacy_cleanup_removed"],
+      splits: [
+        {
+          id: "legacy_cleanup_owner_split",
+          member_id: "legacy_cleanup_owner",
+          amount: 5,
+          is_settled: false
+        },
+        {
+          id: "legacy_cleanup_removed_split",
+          member_id: "legacy_cleanup_removed",
+          amount: 5,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "legacy-cleanup-owner@test.com",
+      owner_account_id: "legacy_cleanup_owner_auth",
+      owner_id: conflictingOwnerId,
+      participant_member_ids: ["legacy_cleanup_owner", "legacy_cleanup_removed"],
+      participant_emails: ["legacy-cleanup-owner@test.com"],
+      participants: [
+        { member_id: "legacy_cleanup_owner", name: "Owner" },
+        { member_id: "legacy_cleanup_removed", name: "Removed" }
+      ],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+  });
+
+  const owner = t.withIdentity(
+    identity("legacy-cleanup-owner@test.com", "legacy_cleanup_owner_auth")
+  );
+  await expect(
+    owner.mutation(api.cleanup.deleteUnlinkedFriend, {
+      friendMemberId: "legacy_cleanup_removed"
+    })
+  ).rejects.toThrow("conflicting grouped-individual ownership");
+
+  const result = await t.run(async (ctx) => {
+    const expense = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "legacy_cleanup_conflicting_expense"))
+      .unique();
+    const friend = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q
+          .eq("account_email", "legacy-cleanup-owner@test.com")
+          .eq("member_id", "legacy_cleanup_removed")
+      )
+      .unique();
+    return { expense, friend };
+  });
+  expect(result.expense).not.toBeNull();
+  expect(result.friend).not.toBeNull();
 });
 
 test("cleanup.selfDeleteAccount removes account PII, preserves shared history, and is idempotent", async () => {

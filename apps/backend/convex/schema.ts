@@ -169,6 +169,7 @@ export default defineSchema({
     owner_id: v.id("accounts"),
     group_ref: v.optional(v.id("groups")),
     participant_member_ids: v.array(v.string()),
+    inactive_participant_member_ids: v.optional(v.array(v.string())),
     participant_emails: v.array(v.string()),
     participants: v.array(
       v.object({
@@ -194,6 +195,9 @@ export default defineSchema({
     .index("by_owner_account_id", ["owner_account_id"])
     .index("by_owner_email", ["owner_email"])
     .index("by_owner_id", ["owner_id"])
+    .index("by_owner_id_and_context_kind", ["owner_id", "context_kind"])
+    .index("by_owner_account_id_and_context_kind", ["owner_account_id", "context_kind"])
+    .index("by_owner_email_and_context_kind", ["owner_email", "context_kind"])
     .index("by_group_id", ["group_id"])
     .index("by_group_ref", ["group_ref"])
     .index("by_client_id", ["id"])
