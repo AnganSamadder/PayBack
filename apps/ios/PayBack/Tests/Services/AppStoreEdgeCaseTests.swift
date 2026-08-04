@@ -707,8 +707,8 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             displayName: "Example User",
             linkedMemberId: linkedMemberId
         )
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        await mockAccountService.addAccount(account)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let friend = GroupMember(id: linkedMemberId, name: "Test")
 
@@ -718,7 +718,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         )
     }
 
-    func testSendLinkRequest_WithAccountNotFound_ThrowsError() async throws {
+    func testSendLinkRequest_DoesNotRequireRecipientToAlreadyHaveAccount() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -726,10 +726,10 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
         let friend = GroupMember(name: "Alice")
 
-        // When/Then - email not in mock service
-        await XCTAssertThrowsError(
-            try await sut.sendLinkRequest(toEmail: "nonexistent@example.com", forFriend: friend)
-        )
+        try await sut.sendLinkRequest(toEmail: "nonexistent@example.com", forFriend: friend)
+
+        XCTAssertEqual(sut.outgoingLinkRequests.count, 1)
+        XCTAssertEqual(sut.outgoingLinkRequests.first?.recipientEmail, "nonexistent@example.com")
     }
 
     func testSendLinkRequest_WithSameAccountId_ThrowsError() async throws {
@@ -755,18 +755,95 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        let recipientAccount = UserAccount(id: "recipient-456", email: "recipient@example.com", displayName: "Recipient")
-        await mockAccountService.addAccount(recipientAccount)
-
-        let friend = GroupMember(name: "Alice")
+        let firstFriend = GroupMember(name: "Alice")
+        let retryFriend = GroupMember(name: "Alice Retry")
 
         // Send first request
-        try await sut.sendLinkRequest(toEmail: "recipient@example.com", forFriend: friend)
+        try await sut.sendLinkRequest(toEmail: "recipient@example.com", forFriend: firstFriend)
 
-        // When/Then - try to send duplicate
+        // A UI retry can generate a different local member ID. Email identity must
+        // still deduplicate the active request.
         await XCTAssertThrowsError(
-            try await sut.sendLinkRequest(toEmail: "recipient@example.com", forFriend: friend)
+            try await sut.sendLinkRequest(
+                toEmail: " RECIPIENT@example.com\n",
+                forFriend: retryFriend
+            )
         )
+        XCTAssertEqual(sut.outgoingLinkRequests.count, 1)
+        XCTAssertEqual(sut.friends.count, 1)
+    }
+
+    func testSendLinkRequest_ReusesOneIdempotencyKeyAcrossNetworkRetries() async throws {
+        let retryingLinkService = AmbiguousRetryLinkRequestService()
+        let retryStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: retryingLinkService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true
+        )
+        retryStore.session = UserSession(
+            account: UserAccount(
+                id: "test-123",
+                email: "test@example.com",
+                displayName: "Example User"
+            )
+        )
+
+        try await retryStore.sendLinkRequest(
+            toEmail: "recipient@example.com",
+            forFriend: GroupMember(name: "Alice")
+        )
+
+        let requestIds = await retryingLinkService.receivedRequestIds()
+        XCTAssertEqual(requestIds.count, 2)
+        XCTAssertEqual(Set(requestIds).count, 1)
+        XCTAssertEqual(retryStore.outgoingLinkRequests.first?.id, requestIds.first)
+    }
+
+    func testAddFriendEmailDraftKeepsIdentityForSameRecipientRetry() {
+        let originalId = UUID()
+        var draft = AddFriendSheet.EmailDraft(memberId: originalId)
+
+        XCTAssertEqual(
+            draft.friend(named: "Alice", recipientEmail: " Friend@Example.com ").id,
+            originalId
+        )
+        XCTAssertEqual(
+            draft.friend(named: "Corrected Alice", recipientEmail: "friend@example.com").id,
+            originalId
+        )
+    }
+
+    func testAddFriendEmailDraftRotatesIdentityWhenRecipientChangesAfterAttempt() {
+        let originalId = UUID()
+        var draft = AddFriendSheet.EmailDraft(memberId: originalId)
+
+        _ = draft.friend(named: "Alice", recipientEmail: "first@example.com")
+        draft.recipientEmailChanged(to: " SECOND@example.com ")
+
+        XCTAssertNotEqual(draft.memberId, originalId)
+    }
+
+    func testAddFriendEmailDraftDoesNotRotateDuringPreSubmissionTyping() {
+        let originalId = UUID()
+        var draft = AddFriendSheet.EmailDraft(memberId: originalId)
+
+        draft.recipientEmailChanged(to: "f")
+        draft.recipientEmailChanged(to: "friend@example.com")
+
+        XCTAssertEqual(draft.memberId, originalId)
+    }
+
+    func testAddFriendEmailDraftResetRotatesIdentity() {
+        let originalId = UUID()
+        var draft = AddFriendSheet.EmailDraft(memberId: originalId)
+
+        draft.reset()
+        XCTAssertNotEqual(draft.memberId, originalId)
     }
 
     // MARK: - Fetch Link Requests Edge Cases
@@ -903,6 +980,37 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertNil(deletionStore.session)
         XCTAssertEqual(deletionStore.accountDeletionState, .idle)
         XCTAssertFalse(deletionStore.isAccountDeletionBlocking)
+    }
+
+    func testSendLinkRequest_RejectsCanonicalResponseForDifferentTarget() async throws {
+        let requestedTargetId = UUID()
+        let mismatchedService = MismatchedTargetLinkRequestService()
+        let linkStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mismatchedService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true
+        )
+        linkStore.session = UserSession(
+            account: UserAccount(
+                id: "test-123",
+                email: "test@example.com",
+                displayName: "Example User"
+            )
+        )
+
+        await XCTAssertThrowsError(
+            try await linkStore.sendLinkRequest(
+                toEmail: "recipient@example.com",
+                forFriend: GroupMember(id: requestedTargetId, name: "Alice")
+            )
+        )
+
+        XCTAssertTrue(linkStore.outgoingLinkRequests.isEmpty)
     }
 
     func testPendingDeletionReceiptAfterRelaunchDeletesAuthenticationIdentityOnly() async throws {
@@ -1141,6 +1249,7 @@ private actor ControlledDeletionEmailAuthService: EmailAuthService {
         signOutCallCount
     }
 }
+
 private actor SequencedAuthenticationSessionLoader {
     enum Outcome {
         case identity(AuthenticationSessionIdentity)
@@ -1174,4 +1283,78 @@ private actor SequencedAuthenticationSessionLoader {
     func loadCalls() -> Int {
         callCount
     }
+}
+
+private actor AmbiguousRetryLinkRequestService: LinkRequestService {
+    private var attempts = 0
+    private var requestIds: [UUID] = []
+
+    func createLinkRequest(
+        requestId: UUID,
+        recipientEmail: String,
+        targetMemberId: UUID,
+        targetMemberName: String
+    ) async throws -> LinkRequest {
+        requestIds.append(requestId)
+        attempts += 1
+        if attempts == 1 {
+            throw PayBackError.networkUnavailable
+        }
+        return LinkRequest(
+            id: requestId,
+            requesterId: "test-123",
+            requesterEmail: "test@example.com",
+            requesterName: "Example User",
+            recipientEmail: recipientEmail,
+            targetMemberId: targetMemberId,
+            targetMemberName: targetMemberName,
+            createdAt: Date(),
+            status: .pending,
+            expiresAt: Date().addingTimeInterval(60),
+            rejectedAt: nil
+        )
+    }
+
+    func receivedRequestIds() -> [UUID] { requestIds }
+    func fetchIncomingRequests() async throws -> [LinkRequest] { [] }
+    func fetchOutgoingRequests() async throws -> [LinkRequest] { [] }
+    func fetchPreviousRequests() async throws -> [LinkRequest] { [] }
+    func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult {
+        throw PayBackError.linkInvalid
+    }
+    func declineLinkRequest(_ requestId: UUID) async throws {}
+    func cancelLinkRequest(_ requestId: UUID) async throws {}
+}
+
+private actor MismatchedTargetLinkRequestService: LinkRequestService {
+    func createLinkRequest(
+        requestId: UUID,
+        recipientEmail: String,
+        targetMemberId: UUID,
+        targetMemberName: String
+    ) async throws -> LinkRequest {
+        let now = Date()
+        return LinkRequest(
+            id: requestId,
+            requesterId: "test-123",
+            requesterEmail: "test@example.com",
+            requesterName: "Example User",
+            recipientEmail: recipientEmail,
+            targetMemberId: UUID(),
+            targetMemberName: targetMemberName,
+            createdAt: now,
+            status: .pending,
+            expiresAt: now.addingTimeInterval(7 * 24 * 60 * 60),
+            rejectedAt: nil
+        )
+    }
+
+    func fetchIncomingRequests() async throws -> [LinkRequest] { [] }
+    func fetchOutgoingRequests() async throws -> [LinkRequest] { [] }
+    func fetchPreviousRequests() async throws -> [LinkRequest] { [] }
+    func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult {
+        throw PayBackError.linkInvalid
+    }
+    func declineLinkRequest(_ requestId: UUID) async throws {}
+    func cancelLinkRequest(_ requestId: UUID) async throws {}
 }

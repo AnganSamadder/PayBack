@@ -316,3 +316,204 @@ test("friends:upsert preserves existing linked metadata on stale unlinked client
   expect(row?.linked_account_email).toBe("friend@example.com");
   expect(row?.status).toBe("friend");
 });
+
+test("linkRequests:create returns canonical requests and enforces exact idempotency", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "other_auth_id",
+      email: "other@example.com",
+      display_name: "Other",
+      created_at: Date.now(),
+      member_id: "other_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_member_two",
+      name: "Second Friend",
+      profile_avatar_color: "#654321",
+      has_linked_account: false,
+      updated_at: Date.now()
+    });
+  });
+
+  const ownerCtx = t.withIdentity({
+    subject: "owner_auth_id",
+    email: "owner@example.com",
+    name: "Owner",
+    pictureUrl: "http://placeholder.com",
+    tokenIdentifier: "owner_auth_id",
+    issuer: "http://placeholder.com",
+    emailVerified: true,
+    updatedAt: "2023-01-01"
+  });
+  const otherCtx = t.withIdentity({
+    subject: "other_auth_id",
+    email: "other@example.com",
+    name: "Other",
+    pictureUrl: "http://placeholder.com",
+    tokenIdentifier: "other_auth_id",
+    issuer: "http://placeholder.com",
+    emailVerified: true,
+    updatedAt: "2023-01-01"
+  });
+
+  await expect(
+    ownerCtx.mutation(api.linkRequests.create, {
+      id: "self_request",
+      recipient_email: " OWNER@example.com ",
+      target_member_id: "friend_member",
+      target_member_name: "Friend"
+    })
+  ).rejects.toThrow("yourself");
+
+  const legacyRequestId = await ownerCtx.mutation(api.linkRequests.create, {
+    id: "request_one",
+    recipient_email: " Friend@Example.com ",
+    target_member_id: "friend_member",
+    target_member_name: "Stale Client Name"
+  });
+  expect(legacyRequestId).toBe("request_one");
+
+  const first = await ownerCtx.mutation(api.linkRequests.createV2, {
+    id: "request_one",
+    recipient_email: " Friend@Example.com ",
+    target_member_id: "friend_member",
+    target_member_name: "Stale Client Name"
+  });
+
+  expect(first).toMatchObject({
+    id: "request_one",
+    requester_id: "owner_auth_id",
+    requester_email: "owner@example.com",
+    requester_name: "Owner",
+    recipient_email: "friend@example.com",
+    target_member_id: "friend_member",
+    target_member_name: "Friend",
+    status: "pending"
+  });
+  expect(first.created_at).toEqual(expect.any(Number));
+  expect(first.expires_at).toBeGreaterThan(first.created_at);
+
+  const sameTargetDuplicate = await ownerCtx.mutation(api.linkRequests.createV2, {
+    id: "request_two",
+    recipient_email: "friend@example.com",
+    target_member_id: "friend_member",
+    target_member_name: "Updated Client Name"
+  });
+  expect(sameTargetDuplicate).toMatchObject(first);
+
+  await expect(
+    ownerCtx.mutation(api.linkRequests.createV2, {
+      id: "request_three",
+      recipient_email: "friend@example.com",
+      target_member_id: "friend_member_two",
+      target_member_name: "Second Friend"
+    })
+  ).rejects.toThrow("active link request");
+
+  await expect(
+    ownerCtx.mutation(api.linkRequests.createV2, {
+      id: "request_one",
+      recipient_email: "other@example.com",
+      target_member_id: "friend_member",
+      target_member_name: "Friend"
+    })
+  ).rejects.toThrow("already used");
+
+  await expect(
+    otherCtx.mutation(api.linkRequests.createV2, {
+      id: "request_one",
+      recipient_email: "friend@example.com",
+      target_member_id: "friend_member",
+      target_member_name: "Friend"
+    })
+  ).rejects.toThrow("already used");
+
+  await t.run(async (ctx) => {
+    const request = await ctx.db
+      .query("link_requests")
+      .withIndex("by_client_id", (q) => q.eq("id", "request_one"))
+      .unique();
+    const friend = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@example.com").eq("member_id", "friend_member")
+      )
+      .unique();
+    expect(request).not.toBeNull();
+    expect(friend).not.toBeNull();
+    await ctx.db.patch(request!._id, { status: "accepted" });
+    await ctx.db.patch(friend!._id, {
+      has_linked_account: true,
+      linked_account_id: "linked_auth_id",
+      linked_account_email: "friend@example.com"
+    });
+  });
+
+  const acceptedReplay = await ownerCtx.mutation(api.linkRequests.createV2, {
+    id: "request_one",
+    recipient_email: " FRIEND@example.com ",
+    target_member_id: "friend_member",
+    target_member_name: "Any Client Name"
+  });
+
+  expect(acceptedReplay).toMatchObject({
+    id: "request_one",
+    recipient_email: "friend@example.com",
+    target_member_id: "friend_member",
+    target_member_name: "Friend",
+    status: "accepted"
+  });
+  const requests = await t.run(async (ctx) => ctx.db.query("link_requests").collect());
+  expect(requests).toHaveLength(1);
+  expect(requests[0].recipient_email).toBe("friend@example.com");
+});
+
+test("linkRequests:create rejects a target identity not owned by the requester", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "owner_member"
+    });
+  });
+
+  const ownerCtx = t.withIdentity({
+    subject: "owner_auth_id",
+    email: "owner@example.com",
+    name: "Owner",
+    pictureUrl: "http://placeholder.com",
+    tokenIdentifier: "owner_auth_id",
+    issuer: "http://placeholder.com",
+    emailVerified: true,
+    updatedAt: "2023-01-01"
+  });
+
+  await expect(
+    ownerCtx.mutation(api.linkRequests.create, {
+      id: "forged_request",
+      recipient_email: "friend@example.com",
+      target_member_id: "foreign_member",
+      target_member_name: "Foreign"
+    })
+  ).rejects.toThrow("owned by the requester");
+});

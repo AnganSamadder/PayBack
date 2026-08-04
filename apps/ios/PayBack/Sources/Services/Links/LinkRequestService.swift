@@ -10,6 +10,7 @@ import Foundation
 public protocol LinkRequestService: Sendable {
     /// Creates a link request to connect an account with an unlinked participant
     func createLinkRequest(
+        requestId: UUID,
         recipientEmail: String,
         targetMemberId: UUID,
         targetMemberName: String
@@ -34,6 +35,21 @@ public protocol LinkRequestService: Sendable {
     func cancelLinkRequest(_ requestId: UUID) async throws
 }
 
+public extension LinkRequestService {
+    func createLinkRequest(
+        recipientEmail: String,
+        targetMemberId: UUID,
+        targetMemberName: String
+    ) async throws -> LinkRequest {
+        try await createLinkRequest(
+            requestId: UUID(),
+            recipientEmail: recipientEmail,
+            targetMemberId: targetMemberId,
+            targetMemberName: targetMemberName
+        )
+    }
+}
+
 /// Mock implementation for testing
 public final class MockLinkRequestService: LinkRequestService, @unchecked Sendable {
     private static var requests: [UUID: LinkRequest] = [:]
@@ -42,6 +58,7 @@ public final class MockLinkRequestService: LinkRequestService, @unchecked Sendab
     public init() {}
 
     public func createLinkRequest(
+        requestId: UUID,
         recipientEmail: String,
         targetMemberId: UUID,
         targetMemberName: String
@@ -71,7 +88,7 @@ public final class MockLinkRequestService: LinkRequestService, @unchecked Sendab
                 }
 
                 let request = LinkRequest(
-                    id: UUID(),
+                    id: requestId,
                     requesterId: "mock-user-id",
                     requesterEmail: "mock@example.com",
                     requesterName: "Mock User",

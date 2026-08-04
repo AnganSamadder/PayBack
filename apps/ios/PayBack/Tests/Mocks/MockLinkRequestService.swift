@@ -11,6 +11,7 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
 
     /// Create a new link request
     func createLinkRequest(
+        requestId: UUID,
         recipientEmail: String,
         targetMemberId: UUID,
         targetMemberName: String
@@ -36,7 +37,6 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
             throw PayBackError.linkDuplicateRequest
         }
 
-        let requestId = UUID()
         let createdAt = Date()
         let expiresAt = createdAt.addingTimeInterval(7 * 24 * 3600) // 7 days
 

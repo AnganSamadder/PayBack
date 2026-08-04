@@ -3120,8 +3120,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
 
         // Prevent self-linking: check if recipient email matches current user's email
-        let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
-        let currentUserEmail = session.account.email.lowercased()
+        let normalizedEmail = try accountService.normalizedEmail(from: email)
+        let currentUserEmail = session.account.email
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         if normalizedEmail == currentUserEmail {
             throw PayBackError.linkSelfNotAllowed
         }
@@ -3141,28 +3143,28 @@ func completeAuthentication(id: String, email: String, name: String?) {
             throw PayBackError.linkMemberAlreadyLinked
         }
 
-        // Lookup account by email with retry
-        let account = try await retryPolicy.execute {
-            guard let acc = try? await self.accountService.lookupAccount(byEmail: normalizedEmail) else {
-                throw PayBackError.accountNotFound(email: normalizedEmail)
-            }
-            return acc
-        }
-
-        // Additional self-linking check: verify the found account is not the current user
-        if account.id == session.account.id {
-            throw PayBackError.linkSelfNotAllowed
-        }
-
-        // Check if this account is already linked to a different member
-        if isAccountAlreadyLinked(accountId: account.id) {
+        // Do not query the global account directory. A request may be sent before the
+        // recipient has registered, and account existence must not be disclosed.
+        if friends.contains(where: {
+            $0.linkedAccountEmail?
+                .lowercased()
+                .trimmingCharacters(in: .whitespacesAndNewlines) == normalizedEmail
+        }) {
             throw PayBackError.linkAccountAlreadyLinked
         }
 
-        // Check for existing pending request for this member
+        // A recipient email can have only one active outgoing request, even if a
+        // retry creates a fresh local member ID.
         let hasPendingRequest = await MainActor.run {
             outgoingLinkRequests.contains { request in
-                areSamePerson(request.targetMemberId, friend.id) && request.status == .pending
+                guard request.status == .pending, request.expiresAt > Date() else {
+                    return false
+                }
+                let requestEmail = request.recipientEmail
+                    .lowercased()
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return areSamePerson(request.targetMemberId, friend.id) ||
+                    requestEmail == normalizedEmail
             }
         }
 
@@ -3170,13 +3172,44 @@ func completeAuthentication(id: String, email: String, name: String?) {
             throw PayBackError.linkDuplicateRequest
         }
 
-        // Create link request with retry
+        // The backend requires the target identity to be a caller-owned unlinked
+        // friend. Persist that identity before creating the request. If the request
+        // fails, the friend remains available for an explicit retry.
+        let friendsToSync = await MainActor.run {
+            if let existingIndex = friends.firstIndex(where: {
+                areSamePerson($0.memberId, friend.id)
+            }) {
+                if friends[existingIndex].hasLinkedAccount == false,
+                   friends[existingIndex].name != friend.name {
+                    friends[existingIndex].name = friend.name
+                    persistCurrentState()
+                }
+            } else {
+                friends.append(
+                    AccountFriend(memberId: friend.id, name: friend.name, status: "friend")
+                )
+                persistCurrentState()
+            }
+            return friends
+        }
+        try await accountService.syncFriends(
+            accountEmail: session.account.email,
+            friends: friendsToSync
+        )
+
+        // Reuse one idempotency key across ambiguous network retries so the
+        // backend and client always refer to the same logical request.
+        let requestId = UUID()
         let request = try await retryPolicy.execute {
             try await self.linkRequestService.createLinkRequest(
-                recipientEmail: account.email,
+                requestId: requestId,
+                recipientEmail: normalizedEmail,
                 targetMemberId: friend.id,
                 targetMemberName: friend.name
             )
+        }
+        guard areSamePerson(request.targetMemberId, friend.id) else {
+            throw PayBackError.linkInvalid
         }
 
         // Add to outgoing requests

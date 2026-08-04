@@ -75,64 +75,37 @@ final class UIModelsAndEnumsTests: XCTestCase {
         XCTAssertNil(AddFriendSheet.AddMode(rawValue: "Invalid"))
     }
 
-    // MARK: - AddFriendSheet.SearchState Tests
+    // MARK: - AddFriendSheet.SubmissionState Tests
 
-    func test_searchState_idle() {
-        let state1 = AddFriendSheet.SearchState.idle
-        let state2 = AddFriendSheet.SearchState.idle
+    func test_submissionState_idle() {
+        let state1 = AddFriendSheet.SubmissionState.idle
+        let state2 = AddFriendSheet.SubmissionState.idle
         XCTAssertEqual(state1, state2)
     }
 
-    func test_searchState_searching() {
-        let state1 = AddFriendSheet.SearchState.searching
-        let state2 = AddFriendSheet.SearchState.searching
+    func test_submissionState_sending() {
+        let state1 = AddFriendSheet.SubmissionState.sending
+        let state2 = AddFriendSheet.SubmissionState.sending
         XCTAssertEqual(state1, state2)
     }
 
-    func test_searchState_notFound() {
-        let state1 = AddFriendSheet.SearchState.notFound
-        let state2 = AddFriendSheet.SearchState.notFound
-        XCTAssertEqual(state1, state2)
-    }
-
-    func test_searchState_error() {
-        let state1 = AddFriendSheet.SearchState.error("Test error")
-        let state2 = AddFriendSheet.SearchState.error("Test error")
+    func test_submissionState_error() {
+        let state1 = AddFriendSheet.SubmissionState.error("Test error")
+        let state2 = AddFriendSheet.SubmissionState.error("Test error")
         XCTAssertEqual(state1, state2)
 
-        let state3 = AddFriendSheet.SearchState.error("Different error")
+        let state3 = AddFriendSheet.SubmissionState.error("Different error")
         XCTAssertNotEqual(state1, state3)
     }
 
-    func test_searchState_found() {
-        let account1 = UserAccount(id: "test-id-1", email: "test@example.com", displayName: "Example User")
-        let state1 = AddFriendSheet.SearchState.found(account1)
-        let state2 = AddFriendSheet.SearchState.found(account1)
-        XCTAssertEqual(state1, state2)
+    func test_submissionState_inequality() {
+        let idle = AddFriendSheet.SubmissionState.idle
+        let sending = AddFriendSheet.SubmissionState.sending
+        let error = AddFriendSheet.SubmissionState.error("Error")
 
-        let account2 = UserAccount(id: "test-id-2", email: "other@example.com", displayName: "Other User")
-        let state3 = AddFriendSheet.SearchState.found(account2)
-        XCTAssertNotEqual(state1, state3)
-    }
-
-    func test_searchState_inequality() {
-        let idle = AddFriendSheet.SearchState.idle
-        let searching = AddFriendSheet.SearchState.searching
-        let notFound = AddFriendSheet.SearchState.notFound
-        let error = AddFriendSheet.SearchState.error("Error")
-        let account = UserAccount(id: "test-id", email: "test@example.com", displayName: "Test")
-        let found = AddFriendSheet.SearchState.found(account)
-
-        XCTAssertNotEqual(idle, searching)
-        XCTAssertNotEqual(idle, notFound)
+        XCTAssertNotEqual(idle, sending)
         XCTAssertNotEqual(idle, error)
-        XCTAssertNotEqual(idle, found)
-        XCTAssertNotEqual(searching, notFound)
-        XCTAssertNotEqual(searching, error)
-        XCTAssertNotEqual(searching, found)
-        XCTAssertNotEqual(notFound, error)
-        XCTAssertNotEqual(notFound, found)
-        XCTAssertNotEqual(error, found)
+        XCTAssertNotEqual(sending, error)
     }
 
     // MARK: - ActivityView.ActivityNavigationState Tests

@@ -189,6 +189,7 @@ export default defineSchema({
     requester_name: v.string(),
     recipient_email: v.string(),
     target_member_id: v.string(),
+    target_friend_id: v.optional(v.id("account_friends")),
     target_member_name: v.string(),
     created_at: v.number(),
     status: v.string(),
@@ -197,6 +198,7 @@ export default defineSchema({
   })
     .index("by_recipient_email", ["recipient_email"])
     .index("by_requester_id", ["requester_id"])
+    .index("by_requester_id_and_recipient_email", ["requester_id", "recipient_email"])
     .index("by_requester_email", ["requester_email"])
     .index("by_client_id", ["id"]),
 

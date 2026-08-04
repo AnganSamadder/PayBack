@@ -19,12 +19,11 @@ actor ConvexLinkRequestService: LinkRequestService {
     }
 
     func createLinkRequest(
+        requestId: UUID,
         recipientEmail: String,
         targetMemberId: UUID,
         targetMemberName: String
     ) async throws -> LinkRequest {
-        let requestId = UUID()
-
         let args: [String: ConvexEncodable?] = [
             "id": requestId.uuidString,
             "recipient_email": recipientEmail.lowercased(),
@@ -32,25 +31,14 @@ actor ConvexLinkRequestService: LinkRequestService {
             "target_member_name": targetMemberName
         ]
 
-        _ = try await client.mutation("linkRequests:create", with: args)
-
-        // Build the request locally
-        let now = Date()
-        let expiresAt = Calendar.current.date(byAdding: .day, value: 7, to: now) ?? now
-
-        return LinkRequest(
-            id: requestId,
-            requesterId: "",
-            requesterEmail: "",
-            requesterName: "",
-            recipientEmail: recipientEmail.lowercased(),
-            targetMemberId: targetMemberId,
-            targetMemberName: targetMemberName,
-            createdAt: now,
-            status: .pending,
-            expiresAt: expiresAt,
-            rejectedAt: nil
+        let dto: ConvexLinkRequestDTO = try await client.mutation(
+            "linkRequests:createV2",
+            with: args
         )
+        guard let request = dto.toLinkRequest() else {
+            throw PayBackError.linkInvalid
+        }
+        return request
     }
 
     func fetchIncomingRequests() async throws -> [LinkRequest] {

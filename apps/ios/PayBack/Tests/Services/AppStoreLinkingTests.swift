@@ -386,8 +386,7 @@ final class AppStoreLinkingTests: XCTestCase {
             linkedAccountEmail: "alice@example.com"
         )
 
-        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
-        try await Task.sleep(nanoseconds: 200_000_000)
+        sut.addImportedFriend(linkedFriend)
 
         // When/Then - should throw
         await XCTAssertThrowsError(
@@ -415,8 +414,7 @@ final class AppStoreLinkingTests: XCTestCase {
             linkedAccountEmail: "alice@example.com"
         )
 
-        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [aliceFriend])
-        try await Task.sleep(nanoseconds: 200_000_000)
+        sut.addImportedFriend(aliceFriend)
 
         // When/Then - trying to link Bob to Alice's email should throw
         await XCTAssertThrowsError(
