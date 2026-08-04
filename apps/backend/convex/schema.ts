@@ -124,6 +124,7 @@ export default defineSchema({
       v.union(v.literal("group"), v.literal("direct"), v.literal("grouped_individual"))
     ),
     description: v.string(),
+    notes: v.optional(v.string()),
     date: v.number(),
     total_amount: v.number(),
     paid_by_member_id: v.string(),

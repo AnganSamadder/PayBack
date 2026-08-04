@@ -749,7 +749,13 @@ private struct SettleConfirmationView: View {
 
                             Spacer()
 
-                            Text(selectedExpenses.reduce(0) { $0 + $1.totalAmount }, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                            Text(
+                                SettlementAmountLogic.totalToSettle(
+                                    expenses: selectedExpenses,
+                                    isCurrentUser: store.isMe
+                                ),
+                                format: .currency(code: Locale.current.currency?.identifier ?? "USD")
+                            )
                                 .font(.system(.title2, design: .rounded, weight: .bold))
                                 .foregroundStyle(AppTheme.brand)
                         }
@@ -1031,9 +1037,10 @@ private struct SettleModal: View {
     }
 
     var selectedTotal: Double {
-        unsettledExpenses
-            .filter { selectedExpenseIds.contains($0.id) }
-            .reduce(0) { $0 + $1.totalAmount }
+        SettlementAmountLogic.totalToSettle(
+            expenses: unsettledExpenses.filter { selectedExpenseIds.contains($0.id) },
+            isCurrentUser: store.isMe
+        )
     }
 
     var selectedExpenses: [Expense] {

@@ -255,6 +255,7 @@ export const create = mutation({
     ),
     group_id: v.string(),
     description: v.string(),
+    notes: v.optional(v.union(v.string(), v.null())),
     date: v.number(),
     total_amount: v.number(),
     paid_by_member_id: v.string(),
@@ -295,6 +296,12 @@ export const create = mutation({
     if (!user) throw new Error("User not found");
 
     await checkRateLimit(ctx, identity.subject, "expenses:create", 10);
+    const notesWereProvided = args.notes !== undefined;
+    const trimmedNotes = args.notes?.trim();
+    if (trimmedNotes && trimmedNotes.length > 2000) {
+      throw new Error("Notes must be 2000 characters or fewer");
+    }
+    const normalizedNotes = trimmedNotes && trimmedNotes.length > 0 ? trimmedNotes : undefined;
 
     const existing = await ctx.db
       .query("expenses")
@@ -798,6 +805,7 @@ export const create = mutation({
       await ctx.db.patch(existing._id, {
         context_kind: contextKind,
         description: callerOwnsExpense ? args.description : existing.description,
+        notes: callerOwnsExpense && notesWereProvided ? normalizedNotes : existing.notes,
         date: callerOwnsExpense ? args.date : existing.date,
         total_amount: callerOwnsExpense ? args.total_amount : existing.total_amount,
         paid_by_member_id: callerOwnsExpense ? normalizedPaidBy : existing.paid_by_member_id,
@@ -839,6 +847,7 @@ export const create = mutation({
       context_kind: contextKind,
       group_ref: group?._id,
       description: args.description,
+      notes: normalizedNotes,
       date: args.date,
       total_amount: args.total_amount,
       paid_by_member_id: normalizedPaidBy,

@@ -45,7 +45,8 @@ final class ConvexDTOsTests: XCTestCase {
             owner_account_id: "owner-account-id",
             participant_member_ids: nil,
             participants: nil,
-            subexpenses: nil
+            subexpenses: nil,
+            notes: "Vegetarian option requested"
         )
 
         let expense = dto.toExpense()
@@ -60,6 +61,7 @@ final class ConvexDTOsTests: XCTestCase {
         XCTAssertEqual(expense.contextKind, .groupedIndividual)
         XCTAssertEqual(expense.ownerEmail, "owner@test.com")
         XCTAssertEqual(expense.ownerAccountId, "owner-account-id")
+        XCTAssertEqual(expense.notes, "Vegetarian option requested")
     }
 
     func testConvexExpenseDTO_toExpense_InvalidUUID_GeneratesNewUUID() {

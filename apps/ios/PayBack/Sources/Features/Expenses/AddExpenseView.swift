@@ -42,6 +42,22 @@ private enum AddExpenseAlert: Identifiable {
             return "cannotSave-\(message)"
         }
     }
+
+    var title: String {
+        switch self {
+        case .duplicateExpense: return "Duplicate Expense?"
+        case .cannotSave: return "Can't Save Yet"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .duplicateExpense:
+            return "This looks like a duplicate of an existing expense in this group. Are you sure you want to save it?"
+        case .cannotSave(let message):
+            return message
+        }
+    }
 }
 
 struct AddExpenseView: View {
@@ -76,6 +92,7 @@ struct AddExpenseView: View {
     @State private var showSubexpenses: Bool = false
 
     @State private var showNotesSheet: Bool = false
+    @State private var notesText: String = ""
     @State private var activeAlert: AddExpenseAlert?
     @State private var showSwipeSaveConfirmOverlay: Bool = false
     @State private var isSaving: Bool = false
@@ -101,26 +118,6 @@ struct AddExpenseView: View {
     var body: some View {
         GeometryReader { geometry in
             mainContent(geometry: geometry)
-                .alert(item: $activeAlert) { alert in
-                    switch alert {
-                    case .duplicateExpense:
-                        return Alert(
-                            title: Text("Duplicate Expense?"),
-                            message: Text("This looks like a duplicate of an existing expense in this group. Are you sure you want to save it?"),
-                            primaryButton: .default(Text("Save Anyway")) {
-                                skipDupeCheck = true
-                                saveTapped()
-                            },
-                            secondaryButton: .cancel()
-                        )
-                    case .cannotSave(let message):
-                        return Alert(
-                            title: Text("Can't Save Yet"),
-                            message: Text(message),
-                            dismissButton: .default(Text("OK"))
-                        )
-                    }
-                }
                 .overlay(alignment: .bottom) {
                     if showSwipeSaveConfirmOverlay {
                         swipeSaveConfirmOverlay
@@ -138,6 +135,28 @@ struct AddExpenseView: View {
                 .onAppear {
                     resolveInitialPayerIfNeeded()
                 }
+        }
+        .alert(
+            activeAlert?.title ?? "",
+            isPresented: Binding(
+                get: { activeAlert != nil },
+                set: { if !$0 { activeAlert = nil } }
+            )
+        ) {
+            switch activeAlert {
+            case .duplicateExpense:
+                Button("Cancel", role: .cancel) { }
+                Button("Save Anyway") {
+                    skipDupeCheck = true
+                    saveTapped()
+                }
+            case .cannotSave:
+                Button("OK") { }
+            case nil:
+                EmptyView()
+            }
+        } message: {
+            Text(activeAlert?.message ?? "")
         }
     }
 
@@ -323,7 +342,8 @@ struct AddExpenseView: View {
             contextKind: expenseContextKind,
             participantNames: Dictionary(uniqueKeysWithValues: participants.map { ($0.id, $0.name) }),
             // Filter out zero-amount subexpenses; a single item is semantically a plain expense
-            subexpenses: { let f = subexpenses.filter { $0.amount > 0.001 }; return f.count >= 2 ? f : nil }()
+            subexpenses: { let f = subexpenses.filter { $0.amount > 0.001 }; return f.count >= 2 ? f : nil }(),
+            notes: notesText
         )
 
         isSaving = true
@@ -335,7 +355,7 @@ struct AddExpenseView: View {
             close()
         } catch {
             Haptics.notify(.error)
-            activeAlert = .cannotSave(message: error.localizedDescription)
+            activeAlert = .cannotSave(message: AddExpenseFlowLogic.saveFailureMessage(for: error))
         }
     }
 
@@ -427,7 +447,13 @@ struct AddExpenseView: View {
 
             Spacer()
 
-            BottomMetaBubble(title: bottomMetaTitle, group: group, date: $date, showNotes: $showNotesSheet)
+            BottomMetaBubble(
+                title: bottomMetaTitle,
+                group: group,
+                date: $date,
+                showNotes: $showNotesSheet,
+                notes: $notesText
+            )
                 .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
                 .padding(.bottom, AppMetrics.AddExpense.bottomInnerPadding)
                 .padding(.bottom, 20)
@@ -1214,6 +1240,30 @@ enum AddExpenseFlowLogic {
         return "Please fix the following before saving:\n\(details)"
     }
 
+    static func saveFailureMessage(for error: Error) -> String {
+        let normalizedMessage = error.localizedDescription.lowercased()
+        if normalizedMessage.contains("is not a confirmed friend") {
+            return "One or more participants are no longer confirmed friends. Reconnect them and try again."
+        }
+        if normalizedMessage.contains("identity maintenance required") {
+            return "PayBack is updating member links. Please wait a moment and try again."
+        }
+        let lostGroupAccessMessages = [
+            "group not found",
+            "forbidden: group access denied",
+            "not authorized for direct group",
+            "you are not a member of this group",
+            "expense group mismatch"
+        ]
+        if lostGroupAccessMessages.contains(where: normalizedMessage.contains) {
+            return "This group is no longer available to you. Go back and refresh your groups."
+        }
+
+        return error.userFacingMessage(
+            fallback: "We couldn't save this expense. Check your connection and try again."
+        )
+    }
+
     static func canSaveExpense(
         description: String,
         totalAmount: Double,
@@ -1498,6 +1548,7 @@ private struct BottomMetaBubble: View {
     let group: SpendingGroup
     @Binding var date: Date
     @Binding var showNotes: Bool
+    @Binding var notes: String
 
     var body: some View {
         HStack(spacing: AppMetrics.AddExpense.bottomRowSpacing) {
@@ -1517,13 +1568,6 @@ private struct BottomMetaBubble: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
-            Button { /* camera placeholder */ } label: {
-                Image(systemName: "camera.fill")
-                    .symbolRenderingMode(.monochrome)
-                    .font(.title3)
-                    .foregroundColor(.primary)
-            }
-            .tint(.primary)
             Button { showNotes = true } label: {
                 Image(systemName: "note.text")
                     .symbolRenderingMode(.monochrome)
@@ -1536,16 +1580,20 @@ private struct BottomMetaBubble: View {
         .background(AppTheme.card)
         .clipShape(RoundedRectangle(cornerRadius: AppMetrics.AddExpense.bottomCornerRadius, style: .continuous))
         .sheet(isPresented: $showNotes) {
-            NavigationStack {
-                NotesEditor()
-            }
+            NotesEditor(text: $notes)
         }
     }
 }
 
 private struct NotesEditor: View {
     @Environment(\.dismiss) var dismiss
-    @State private var text: String = ""
+    @Binding var text: String
+    @State private var draft: String
+
+    init(text: Binding<String>) {
+        _text = text
+        _draft = State(initialValue: text.wrappedValue)
+    }
 
     var body: some View {
         NavigationStack {
@@ -1566,7 +1614,7 @@ private struct NotesEditor: View {
                 )
 
                 // Notes Input
-                TextEditor(text: $text)
+                TextEditor(text: $draft)
                     .frame(maxHeight: .infinity)
                     .padding(20)
                     .background(
@@ -1587,7 +1635,14 @@ private struct NotesEditor: View {
                         .padding(.bottom, 8)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        text = String(
+                            draft
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                                .prefix(2000)
+                        )
+                        dismiss()
+                    }
                         .fontWeight(.semibold)
                         .foregroundStyle(AppTheme.brand)
                         .padding(.bottom, 8)

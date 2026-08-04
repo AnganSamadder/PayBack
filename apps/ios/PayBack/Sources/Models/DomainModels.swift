@@ -119,11 +119,12 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
     var participantNames: [UUID: String]? // Optional cache of participant display names from remote payload
     var isDebug: Bool // Whether this is debug/test data (not synced to real transactions)
     var subexpenses: [Subexpense]? // Optional breakdown of the total amount into sub-costs
+    var notes: String?
     var ownerEmail: String?
     var ownerAccountId: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, groupId, contextKind, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug, subexpenses, ownerEmail, ownerAccountId
+        case id, groupId, contextKind, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug, subexpenses, notes, ownerEmail, ownerAccountId
     }
 
     init(from decoder: Decoder) throws {
@@ -144,6 +145,7 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         isDebug = try container.decodeIfPresent(Bool.self, forKey: .isDebug) ?? false
         // subexpenses is optional - decode if present, otherwise nil
         subexpenses = try container.decodeIfPresent([Subexpense].self, forKey: .subexpenses)
+        notes = try container.decodeIfPresent(String.self, forKey: .notes)
         ownerEmail = try container.decodeIfPresent(String.self, forKey: .ownerEmail)
         ownerAccountId = try container.decodeIfPresent(String.self, forKey: .ownerAccountId)
     }
@@ -172,6 +174,9 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         if let subexpenses = subexpenses, !subexpenses.isEmpty {
             try container.encode(subexpenses, forKey: .subexpenses)
         }
+        if let notes {
+            try container.encode(notes, forKey: .notes)
+        }
         if let ownerEmail {
             try container.encode(ownerEmail, forKey: .ownerEmail)
         }
@@ -194,6 +199,7 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         participantNames: [UUID: String]? = nil,
         isDebug: Bool = false,
         subexpenses: [Subexpense]? = nil,
+        notes: String? = nil,
         ownerEmail: String? = nil,
         ownerAccountId: String? = nil
     ) {
@@ -210,6 +216,8 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         self.participantNames = participantNames
         self.isDebug = isDebug
         self.subexpenses = subexpenses
+        let trimmedNotes = notes?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.notes = trimmedNotes?.isEmpty == false ? trimmedNotes : nil
         self.ownerEmail = ownerEmail
         self.ownerAccountId = ownerAccountId
     }

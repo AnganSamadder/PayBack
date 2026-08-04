@@ -30,6 +30,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
     let participant_member_ids: [String]?
     let participants: [ConvexParticipantDTO]?
     let subexpenses: [ConvexSubexpenseDTO]?
+    let notes: String?
 
     init(
         id: String,
@@ -46,7 +47,8 @@ struct ConvexExpenseDTO: Decodable, Sendable {
         owner_account_id: String?,
         participant_member_ids: [String]?,
         participants: [ConvexParticipantDTO]?,
-        subexpenses: [ConvexSubexpenseDTO]?
+        subexpenses: [ConvexSubexpenseDTO]?,
+        notes: String? = nil
     ) {
         self.id = id
         self.group_id = group_id
@@ -63,6 +65,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
         self.participant_member_ids = participant_member_ids
         self.participants = participants
         self.subexpenses = subexpenses
+        self.notes = notes
     }
 
     /// Maps Convex DTO to domain Expense model
@@ -96,6 +99,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
             contextKind: contextKind,
             participantNames: participantNames,
             subexpenses: subexpenses?.map { $0.toSubexpense() },
+            notes: notes,
             ownerEmail: owner_email,
             ownerAccountId: owner_account_id
         )

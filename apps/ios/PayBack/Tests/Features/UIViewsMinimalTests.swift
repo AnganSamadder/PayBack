@@ -326,6 +326,61 @@ final class UIViewsMinimalTests: XCTestCase {
         )
     }
 
+    func test_addExpenseFlowLogic_saveFailureMessage_hidesUnknownCloudDetails() {
+        let error = NSError(
+            domain: "ConvexInternal",
+            code: 500,
+            userInfo: [NSLocalizedDescriptionKey: "mutation failed for private@example.com with token secret-token"]
+        )
+
+        let message = AddExpenseFlowLogic.saveFailureMessage(for: error)
+
+        XCTAssertEqual(message, "We couldn't save this expense. Check your connection and try again.")
+        XCTAssertFalse(message.contains("private@example.com"))
+        XCTAssertFalse(message.contains("secret-token"))
+    }
+
+    func test_addExpenseFlowLogic_saveFailureMessage_preservesSafeDomainMessage() {
+        let message = AddExpenseFlowLogic.saveFailureMessage(for: PayBackError.networkUnavailable)
+
+        XCTAssertEqual(message, PayBackError.networkUnavailable.errorDescription)
+    }
+
+    func test_addExpenseFlowLogic_saveFailureMessage_mapsAllowlistedCloudRejections() {
+        let cases = [
+            (
+                "Server Error: Cannot create direct expense: Member Private Name is not a confirmed friend.",
+                "One or more participants are no longer confirmed friends. Reconnect them and try again."
+            ),
+            (
+                "Server Error: Forbidden: group access denied",
+                "This group is no longer available to you. Go back and refresh your groups."
+            ),
+            (
+                "Server Error: Group not found",
+                "This group is no longer available to you. Go back and refresh your groups."
+            ),
+            (
+                "Server Error: Identity maintenance required: indexed identity migration is not complete; try again later",
+                "PayBack is updating member links. Please wait a moment and try again."
+            )
+        ]
+
+        for (serverMessage, expectedMessage) in cases {
+            let error = NSError(
+                domain: "ConvexError",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: serverMessage]
+            )
+
+            XCTAssertEqual(
+                AddExpenseFlowLogic.saveFailureMessage(for: error),
+                expectedMessage,
+                "Failed to sanitize allowlisted rejection: \(serverMessage)"
+            )
+        }
+    }
+
     func test_addExpenseFlowLogic_swipeUpBehavior_showConfirmWhenEnabled() {
         let behavior = AddExpenseFlowLogic.swipeUpBehavior(
             canSave: true,

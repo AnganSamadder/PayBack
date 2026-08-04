@@ -39,6 +39,9 @@ struct ExpenseDetailView: View {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 24) {
                     headerCard
+                    if let notes = expense.notes, !notes.isEmpty {
+                        notesSection(notes)
+                    }
                     paymentDetailsSection
 
                     if expense.hasSubexpenses, let subexpenses = expense.subexpenses {
@@ -100,6 +103,20 @@ struct ExpenseDetailView: View {
     }
 
     // MARK: - Header Card
+
+    private func notesSection(_ notes: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Notes", systemImage: "note.text")
+                .font(.system(.headline, design: .rounded, weight: .semibold))
+            Text(notes)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(20)
+        .background(AppTheme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
 
     private var headerCard: some View {
         VStack(spacing: 16) {

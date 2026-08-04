@@ -373,6 +373,7 @@
 		D36B4C673077ECB74ADA3587 /* CreateGroupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06E3B88C69A190E1380A4B7 /* CreateGroupView.swift */; };
 		D4131021354BEF16AF626707 /* PayBackError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69443F11A93F66BEE9237A98 /* PayBackError.swift */; };
 		D415F4D4272A96180B43BDD1 /* AsyncCancellationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF43F02D69F85F5596A1EA75 /* AsyncCancellationTests.swift */; };
+		D4261908AA1AC29B5E01D248 /* SettlementAmountLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3646B062F02254D4908DE7F1 /* SettlementAmountLogic.swift */; };
 		D43482D1B13E4A83F6C49853 /* BulkImportDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FFE0C69153361C7512864B4 /* BulkImportDTO.swift */; };
 		D4469F40EB4DD214E9361842 /* PersistenceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B08CB24185FAEDBC42F82B1 /* PersistenceService.swift */; };
 		D4F8779C7806F56BDA84A374 /* InviteLinkClaimView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 659E0CE6F984DA94965FD32A /* InviteLinkClaimView.swift */; };
@@ -387,6 +388,7 @@
 		DBDE72E8897F0A745837FBE6 /* MockAccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3640B3D4C3D7B38B254BA727 /* MockAccountService.swift */; };
 		DC33E34D68E57C37A5FFCB4B /* MergeFriendsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB58AE1B0F6AF30906CCA356 /* MergeFriendsView.swift */; };
 		DCFD40A6B26BE87AE364611E /* MockInviteLinkServiceExtendedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6541D3F78C0F8E50FF31005 /* MockInviteLinkServiceExtendedTests.swift */; };
+		DD30BEA88C50AF4D27165059 /* SettlementAmountLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3646B062F02254D4908DE7F1 /* SettlementAmountLogic.swift */; };
 		DDE14BE19AD5DAAA848EA58D /* ImportExportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 049690E11813E755E5AD8ADE /* ImportExportView.swift */; };
 		DF147F930256301E628A240A /* InviteURLGenerationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE8839AAF1CFE425F1A0510C /* InviteURLGenerationTests.swift */; };
 		DF4D7542C8E51B6B198800A3 /* AddFriendSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2AEEEBBB4AFAF0798ED5AA /* AddFriendSheet.swift */; };
@@ -517,6 +519,7 @@
 		31895FC4E868FA176E7F2529 /* AppAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAppearance.swift; sourceTree = "<group>"; };
 		344A547A75671AF313B917FF /* HapticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticsTests.swift; sourceTree = "<group>"; };
 		3640B3D4C3D7B38B254BA727 /* MockAccountService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockAccountService.swift; sourceTree = "<group>"; };
+		3646B062F02254D4908DE7F1 /* SettlementAmountLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettlementAmountLogic.swift; sourceTree = "<group>"; };
 		36C05FF334774CA8BD616DCB /* UIViewsMinimalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIViewsMinimalTests.swift; sourceTree = "<group>"; };
 		3795804FFE856077EFE59934 /* CreateGroupViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateGroupViewTests.swift; sourceTree = "<group>"; };
 		387C17F0C12AF8DFD35B7123 /* ClerkEmailAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClerkEmailAuthService.swift; sourceTree = "<group>"; };
@@ -1000,6 +1003,7 @@
 			isa = PBXGroup;
 			children = (
 				AFBA8E0EBE44D8FDFE66220E /* ExpenseCloudService.swift */,
+				3646B062F02254D4908DE7F1 /* SettlementAmountLogic.swift */,
 			);
 			path = Expenses;
 			sourceTree = "<group>";
@@ -1484,7 +1488,6 @@
 				};
 			};
 			buildConfigurationList = CFA919DD368A600D55BE1736 /* Build configuration list for PBXProject "PayBack" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -1498,13 +1501,14 @@
 				628B76C702015F4F77FFE89E /* XCRemoteSwiftPackageReference "convex-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
+			productRefGroup = F13B169CE7475A8EB5EDCE85 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				8A87A393B132A8E10E64FD91 /* PayBack */,
+				093E9F3EF3319A7C18C3E0D0 /* PayBackTests */,
 				ACE8E35CABC534CE064B9F02 /* PayBackCI */,
 				10089D422C25B41E29F698A8 /* PayBackCITests */,
-				093E9F3EF3319A7C18C3E0D0 /* PayBackTests */,
 			);
 		};
 /* End PBXProject section */
@@ -1673,6 +1677,7 @@
 				E396502AA7DA34A62265A47D /* RootView.swift in Sources */,
 				4C42390D1DA41469D4D278A6 /* SettingsView.swift in Sources */,
 				4566894D58E0F34AB08F2C6A /* SettleView.swift in Sources */,
+				D4261908AA1AC29B5E01D248 /* SettlementAmountLogic.swift in Sources */,
 				C81B87A072201C147FD21F9C /* SignupDetailsView.swift in Sources */,
 				C43E95FF051DE152A3273850 /* SignupView.swift in Sources */,
 				413F68E86FB7679DC0D51EE8 /* SmartIcon.swift in Sources */,
@@ -2031,6 +2036,7 @@
 				5BA4F06247280DDE15155A5D /* RootView.swift in Sources */,
 				D013A0CBBCB20B354345CA83 /* SettingsView.swift in Sources */,
 				3EC6E83D5D227AC901339BDD /* SettleView.swift in Sources */,
+				DD30BEA88C50AF4D27165059 /* SettlementAmountLogic.swift in Sources */,
 				D250EB25801C16984E0C99C2 /* SignupDetailsView.swift in Sources */,
 				D9277829989507A1BA9B8CDE /* SignupView.swift in Sources */,
 				5349E0BDA5B979A0DC4BEF43 /* SmartIcon.swift in Sources */,

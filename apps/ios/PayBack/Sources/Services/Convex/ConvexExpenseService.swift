@@ -109,6 +109,9 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         if let subArgs = subexpenseArgs {
             args["subexpenses"] = subArgs
         }
+        // `updateValue` preserves an explicit nil in this optional-valued
+        // dictionary, allowing current clients to clear notes with Convex null.
+        args.updateValue(expense.notes, forKey: "notes")
 
         _ = try await client.mutation("expenses:create", with: args)
     }
@@ -161,6 +164,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         if let subArgs = subexpenseArgs {
             args["subexpenses"] = subArgs
         }
+        args.updateValue(expense.notes, forKey: "notes")
 
         _ = try await client.mutation("expenses:create", with: args)
     }
