@@ -18,6 +18,9 @@
       ],
       "outputs": ["dist/**", "build/**"]
     },
+    "@payback/backend#build": {
+      "outputs": []
+    },
     "lint": {
       "inputs": ["src/**", "convex/**", "tests/**", "eslint.config.*", "package.json"],
       "outputs": []

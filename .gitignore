@@ -167,3 +167,4 @@ scripts/list_stitch_screens.py
 
 # Dev session artifacts
 token-usage-output.txt
+.simulator-artifacts/

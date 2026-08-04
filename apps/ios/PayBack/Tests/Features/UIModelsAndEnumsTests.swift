@@ -50,9 +50,9 @@ final class UIModelsAndEnumsTests: XCTestCase {
         let unsettle = SettleMode.unsettle
         let delete = SettleMode.delete
         // Each case is a different value
-        if case .settle = settle { XCTAssertTrue(true) } else { XCTFail() }
-        if case .unsettle = unsettle { XCTAssertTrue(true) } else { XCTFail() }
-        if case .delete = delete { XCTAssertTrue(true) } else { XCTFail() }
+        if case .settle = settle { XCTAssertTrue(true) } else { XCTFail("Expected settle mode") }
+        if case .unsettle = unsettle { XCTAssertTrue(true) } else { XCTFail("Expected unsettle mode") }
+        if case .delete = delete { XCTAssertTrue(true) } else { XCTFail("Expected delete mode") }
     }
 
     // MARK: - AddFriendSheet.AddMode Tests

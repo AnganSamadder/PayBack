@@ -15,6 +15,9 @@
 #   DERIVED_DATA_PATH: custom DerivedData path (default: ./DerivedDataCI in xcodecloud mode)
 #   FAIL_ON_WARNINGS: 1 (fail if any warnings are detected)
 #   RUN_WEB_E2E: 1 (default) to run web Playwright smoke tests; set to 0 to skip
+#   PAYBACK_SIMULATOR_UDID: explicit available iPhone simulator UDID (optional)
+#   PAYBACK_PARALLEL_TESTING: YES (default) or NO
+#   PAYBACK_MAX_PARALLEL_TEST_WORKERS: positive Xcode worker limit (optional)
 
 set -e
 
@@ -33,6 +36,25 @@ SANITIZER="${SANITIZER:-none}"
 CI_FLAVOR="${CI_FLAVOR:-github}"
 FAIL_ON_WARNINGS="${FAIL_ON_WARNINGS:-1}"
 RUN_WEB_E2E="${RUN_WEB_E2E:-1}"
+PAYBACK_PARALLEL_TESTING="${PAYBACK_PARALLEL_TESTING:-YES}"
+PAYBACK_MAX_PARALLEL_TEST_WORKERS="${PAYBACK_MAX_PARALLEL_TEST_WORKERS:-}"
+
+if [ "$PAYBACK_PARALLEL_TESTING" != "YES" ] && [ "$PAYBACK_PARALLEL_TESTING" != "NO" ]; then
+	echo "PAYBACK_PARALLEL_TESTING must be YES or NO" >&2
+	exit 1
+fi
+
+if [ -n "$PAYBACK_MAX_PARALLEL_TEST_WORKERS" ] &&
+	! [[ "$PAYBACK_MAX_PARALLEL_TEST_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+	echo "PAYBACK_MAX_PARALLEL_TEST_WORKERS must be a positive integer" >&2
+	exit 1
+fi
+
+if [ "$SANITIZER" = "none" ]; then
+	EFFECTIVE_PARALLEL_TESTING="$PAYBACK_PARALLEL_TESTING"
+else
+	EFFECTIVE_PARALLEL_TESTING="NO"
+fi
 
 # XcodeCloud parity mode settings
 if [ "$CI_FLAVOR" = "xcodecloud" ]; then
@@ -88,6 +110,12 @@ xcodebuild -version | head -2 | sed 's/^/  /'
 echo "  CI_FLAVOR: $CI_FLAVOR"
 echo "  SANITIZER: $SANITIZER"
 echo "  FAIL_ON_WARNINGS: $FAIL_ON_WARNINGS"
+echo "  Parallel testing: $EFFECTIVE_PARALLEL_TESTING"
+if [ "$EFFECTIVE_PARALLEL_TESTING" = "YES" ]; then
+	echo "  Parallel workers: ${PAYBACK_MAX_PARALLEL_TEST_WORKERS:-Xcode default}"
+else
+	echo "  Parallel workers: disabled"
+fi
 
 # Check if Intel simulator is being attempted
 if [ "$HOST_ARCH" = "x86_64" ]; then
@@ -207,6 +235,7 @@ echo -e "${YELLOW}[7/10] Selecting iPhone simulator...${NC}"
 SIMULATOR_INFO=$(
 	python3 <<'PY'
 import json
+import os
 import subprocess
 import sys
 
@@ -284,7 +313,18 @@ if not candidates:
   print("ERROR: No available iPhone simulator found", file=sys.stderr)
   sys.exit(1)
 
-version_tuple, name, udid, version_str = pick_latest(candidates)
+requested_udid = os.environ.get("PAYBACK_SIMULATOR_UDID", "").strip()
+if requested_udid:
+  selected = next((entry for entry in candidates if entry[2] == requested_udid), None)
+  if selected is None:
+    print(
+      f"ERROR: PAYBACK_SIMULATOR_UDID is not an available iPhone: {requested_udid}",
+      file=sys.stderr,
+    )
+    sys.exit(1)
+  version_tuple, name, udid, version_str = selected
+else:
+  version_tuple, name, udid, version_str = pick_latest(candidates)
 print(f"{name}:::{udid}:::{version_str}")
 PY
 )
@@ -307,7 +347,13 @@ echo ""
 # =============================================================================
 echo -e "${YELLOW}[8/10] Booting simulator...${NC}"
 xcrun simctl boot "$SIMULATOR_UDID" 2>/dev/null || echo "Already booted"
-xcrun simctl bootstatus "$SIMULATOR_UDID" -b 2>/dev/null || true
+if [ -n "$TIMEOUT_CMD" ]; then
+	if ! $TIMEOUT_CMD 120 xcrun simctl bootstatus "$SIMULATOR_UDID" -b 2>/dev/null; then
+		echo -e "${YELLOW}⚠ Simulator boot status timed out; xcodebuild will perform the final readiness check${NC}"
+	fi
+else
+	xcrun simctl bootstatus "$SIMULATOR_UDID" -b 2>/dev/null || true
+fi
 echo -e "${GREEN}✓ Ready${NC}"
 echo ""
 
@@ -327,7 +373,10 @@ fi
 
 # Determine sanitizer flags and parallel testing
 SANITIZER_FLAGS=""
-PARALLEL_FLAG="-parallel-testing-enabled YES"
+PARALLEL_FLAG="-parallel-testing-enabled $EFFECTIVE_PARALLEL_TESTING"
+if [ "$EFFECTIVE_PARALLEL_TESTING" = "YES" ] && [ -n "$PAYBACK_MAX_PARALLEL_TEST_WORKERS" ]; then
+	PARALLEL_FLAG="$PARALLEL_FLAG -maximum-parallel-testing-workers $PAYBACK_MAX_PARALLEL_TEST_WORKERS"
+fi
 TSAN_OPTIONS_ENV=""
 if [ "$SANITIZER" = "none" ]; then
 	SANITIZER_FLAGS="-enableCodeCoverage YES"

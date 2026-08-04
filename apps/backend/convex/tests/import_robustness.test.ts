@@ -2,7 +2,7 @@ import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
-import { modules } from "./setup";
+import { modules } from "../test.setup";
 
 test("import_robustness: handles aliases and id mismatches", async () => {
   const t = convexTest(schema, modules);

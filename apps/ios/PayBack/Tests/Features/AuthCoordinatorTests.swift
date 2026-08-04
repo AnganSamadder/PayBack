@@ -848,10 +848,10 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
         set { lock.withLock { _lastPasswordResetEmail = newValue } }
     }
     var signInCallCount: Int {
-        get { lock.withLock { _signInCallCount } }
+        lock.withLock { _signInCallCount }
     }
     var passwordResetCallCount: Int {
-        get { lock.withLock { _passwordResetCallCount } }
+        lock.withLock { _passwordResetCallCount }
     }
 
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
