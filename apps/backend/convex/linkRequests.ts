@@ -1,7 +1,7 @@
 import { query, mutation, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { normalizeMemberId } from "./identity";
+import { assertIdentityMaterializationReady, normalizeMemberId } from "./identity";
 
 function isUnlinkedFriend(friend: {
   has_linked_account: boolean;
@@ -243,6 +243,7 @@ export const accept = mutation({
       throw new Error("Target member is no longer an unlinked friend owned by the requester");
     }
 
+    await assertIdentityMaterializationReady(ctx.db);
     // Update request status first to preserve idempotency semantics.
     await ctx.db.patch(request._id, {
       status: "accepted"

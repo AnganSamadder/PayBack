@@ -6,7 +6,13 @@ import {
   reconcileExpensesForMember
 } from "./helpers";
 import { resolveCanonicalMemberIdInternal } from "./aliases";
-import { normalizeMemberId, normalizeMemberIds } from "./identity";
+import {
+  assertIdentityMaterializationReady,
+  ensureStandaloneAlias,
+  findAliasByAliasMemberId,
+  normalizeMemberId,
+  normalizeMemberIds
+} from "./identity";
 
 const friendValidator = v.object({
   member_id: v.string(),
@@ -80,6 +86,16 @@ export const bulkImport = mutation({
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    const accountEmail = user.email.trim().toLowerCase();
+    const hasLinkedIdentityInput = args.friends.some(
+      (friend) =>
+        friend.has_linked_account === true ||
+        Boolean(friend.linked_account_id?.trim()) ||
+        Boolean(friend.linked_account_email?.trim())
+    );
+    if (hasLinkedIdentityInput) {
+      await assertIdentityMaterializationReady(ctx.db);
+    }
 
     // Resolve canonical IDs in input
     for (const friend of args.friends) {
@@ -144,7 +160,7 @@ export const bulkImport = mutation({
       const existingExact = await ctx.db
         .query("account_friends")
         .withIndex("by_account_email_and_member_id", (q) =>
-          q.eq("account_email", user.email).eq("member_id", friend.member_id)
+          q.eq("account_email", accountEmail).eq("member_id", friend.member_id)
         )
         .unique();
       const existing =
@@ -152,7 +168,7 @@ export const bulkImport = mutation({
         (
           await ctx.db
             .query("account_friends")
-            .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+            .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
             .collect()
         ).find(
           (candidate) =>
@@ -163,7 +179,7 @@ export const bulkImport = mutation({
       const match = existing;
 
       // Check if linked account still exists. If not, strip the link.
-      let finalLinkedEmail = friend.linked_account_email?.toLowerCase();
+      let finalLinkedEmail = friend.linked_account_email?.trim().toLowerCase() || undefined;
       let finalLinkedAccountId = friend.linked_account_id;
       let finalStatus = friend.status;
       let finalHasLinked = friend.has_linked_account ?? false;
@@ -224,46 +240,31 @@ export const bulkImport = mutation({
             .unique();
 
           if (linkedAccount) {
-            await reconcileExpensesForMember(ctx, user.email, match.member_id, linkedAccount.id);
+            await reconcileExpensesForMember(ctx, accountEmail, match.member_id, linkedAccount.id);
           }
         }
 
         // Ensure alias exists if we have a link (for existing records too)
         if (linkedMemberId && match.member_id !== linkedMemberId) {
-          const existingAlias = await ctx.db
-            .query("member_aliases")
-            .withIndex("by_alias_member_id", (q) =>
-              q.eq("alias_member_id", normalizeMemberId(match.member_id))
-            )
-            .unique();
-
-          if (!existingAlias) {
-            await ctx.db.insert("member_aliases", {
-              account_email: user.email,
-              alias_member_id: normalizeMemberId(match.member_id),
-              canonical_member_id: linkedMemberId,
-              created_at: Date.now()
-            });
-          }
+          await ensureStandaloneAlias(ctx, {
+            aliasMemberId: match.member_id,
+            canonicalMemberId: linkedMemberId,
+            provenanceEmail: accountEmail
+          });
         }
         continue;
       }
 
       // Check if this ID is already an alias for a known user (Robust Fix)
       // This handles cases where the CSV has an old/garbage ID that we *know*
-      const knownAlias = await ctx.db
-        .query("member_aliases")
-        .withIndex("by_alias_member_id", (q) =>
-          q.eq("alias_member_id", normalizeMemberId(friend.member_id))
-        )
-        .unique();
+      const knownAlias = await findAliasByAliasMemberId(ctx.db, friend.member_id);
 
       if (knownAlias) {
         const canonicalFriend = await ctx.db
           .query("account_friends")
           .withIndex("by_account_email_and_member_id", (q) =>
             q
-              .eq("account_email", user.email)
+              .eq("account_email", accountEmail)
               .eq("member_id", normalizeMemberId(knownAlias.canonical_member_id))
           )
           .unique();
@@ -281,7 +282,7 @@ export const bulkImport = mutation({
       memberIdMap.set(friend.member_id, friend.member_id); // Map to itself
 
       await ctx.db.insert("account_friends", {
-        account_email: user.email,
+        account_email: accountEmail,
         member_id: friend.member_id,
         name: friend.name || "Unknown",
         nickname: friend.nickname,
@@ -297,21 +298,11 @@ export const bulkImport = mutation({
 
       // Ensure alias exists for new friend
       if (linkedMemberId && friend.member_id !== linkedMemberId) {
-        const existingAlias = await ctx.db
-          .query("member_aliases")
-          .withIndex("by_alias_member_id", (q) =>
-            q.eq("alias_member_id", normalizeMemberId(friend.member_id))
-          )
-          .unique();
-
-        if (!existingAlias) {
-          await ctx.db.insert("member_aliases", {
-            account_email: user.email,
-            alias_member_id: normalizeMemberId(friend.member_id),
-            canonical_member_id: linkedMemberId,
-            created_at: Date.now()
-          });
-        }
+        await ensureStandaloneAlias(ctx, {
+          aliasMemberId: friend.member_id,
+          canonicalMemberId: linkedMemberId,
+          provenanceEmail: accountEmail
+        });
       }
 
       // Trigger reconciliation for new friend
@@ -322,7 +313,7 @@ export const bulkImport = mutation({
           .unique();
 
         if (linkedAccount) {
-          await reconcileExpensesForMember(ctx, user.email, friend.member_id, linkedAccount.id);
+          await reconcileExpensesForMember(ctx, accountEmail, friend.member_id, linkedAccount.id);
         }
       }
 
@@ -358,7 +349,7 @@ export const bulkImport = mutation({
         id: group.id,
         name: group.name,
         members: remappedMembers,
-        owner_email: user.email,
+        owner_email: accountEmail,
         owner_account_id: user.id,
         owner_id: user._id,
         is_direct: group.is_direct ?? false,
@@ -383,11 +374,10 @@ export const bulkImport = mutation({
         continue;
       }
 
-      const participantEmails: string[] = [user.email.toLowerCase()];
+      const participantEmails = new Set<string>([accountEmail]);
       for (const p of expense.participants) {
-        if (p.linked_account_email && !participantEmails.includes(p.linked_account_email)) {
-          participantEmails.push(p.linked_account_email.toLowerCase());
-        }
+        const linkedEmail = p.linked_account_email?.trim().toLowerCase();
+        if (linkedEmail) participantEmails.add(linkedEmail);
       }
 
       // Remap IDs in Expense
@@ -420,12 +410,12 @@ export const bulkImport = mutation({
         involved_member_ids: remappedInvolved,
         splits: remappedSplits,
         is_settled: expense.is_settled,
-        owner_email: user.email,
+        owner_email: accountEmail,
         owner_account_id: user.id,
         owner_id: user._id,
         participant_member_ids: remappedParticipantIds,
         participants: remappedParticipants,
-        participant_emails: participantEmails,
+        participant_emails: Array.from(participantEmails),
         linked_participants: expense.linked_participants,
         subexpenses: expense.subexpenses,
         created_at: Date.now(),
@@ -434,7 +424,7 @@ export const bulkImport = mutation({
 
       // Reconcile user_expenses for this new expense
       const participantUsers = await Promise.all(
-        participantEmails.map((email) =>
+        Array.from(participantEmails).map((email) =>
           ctx.db
             .query("accounts")
             .withIndex("by_email", (q) => q.eq("email", email))

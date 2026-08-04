@@ -9,13 +9,20 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
 
   // 1. Setup User A (The Payer/Owner)
   const userA = await t.run(async (ctx) => {
-    return await ctx.db.insert("accounts", {
+    const accountId = await ctx.db.insert("accounts", {
       id: "user_a",
       email: "user_a@example.com",
       display_name: "User A",
       created_at: Date.now(),
       member_id: "member_a"
     });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v1",
+      status: "ready",
+      phase: "complete",
+      updated_at: Date.now()
+    });
+    return accountId;
   });
 
   // 2. Setup User B (The Friend/Borrower) - Initially exists as an account but UNLINKED
@@ -315,6 +322,185 @@ test("friends:upsert preserves existing linked metadata on stale unlinked client
   expect(row?.linked_account_id).toBe("friend_auth_id");
   expect(row?.linked_account_email).toBe("friend@example.com");
   expect(row?.status).toBe("friend");
+});
+
+test("friends:upsert cannot create linked metadata from a client payload", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+  });
+
+  const ownerCtx = t.withIdentity({
+    subject: "owner_auth_id",
+    email: "owner@example.com",
+    name: "Owner",
+    pictureUrl: "http://placeholder.com",
+    tokenIdentifier: "owner_auth_id",
+    issuer: "http://placeholder.com",
+    emailVerified: true,
+    updatedAt: "2023-01-01"
+  });
+
+  await ownerCtx.mutation(api.friends.upsert, {
+    member_id: "forged_friend",
+    name: "Forged Friend",
+    has_linked_account: true,
+    linked_account_id: "victim_auth_id",
+    linked_account_email: "victim@example.com",
+    status: "friend"
+  });
+
+  const row = await t.run(async (ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@example.com").eq("member_id", "forged_friend")
+      )
+      .unique()
+  );
+
+  expect(row?.has_linked_account).toBe(false);
+  expect(row?.linked_account_id).toBeUndefined();
+  expect(row?.linked_account_email).toBeUndefined();
+  expect(row?.status).toBeUndefined();
+});
+
+test("friends:upsert cannot promote an existing unlinked row", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "unlinked_friend",
+      name: "Unlinked Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      link_state: "unlinked",
+      status: "manual",
+      updated_at: now
+    });
+  });
+
+  const ownerCtx = t.withIdentity({
+    subject: "owner_auth_id",
+    email: "owner@example.com",
+    name: "Owner",
+    pictureUrl: "http://placeholder.com",
+    tokenIdentifier: "owner_auth_id",
+    issuer: "http://placeholder.com",
+    emailVerified: true,
+    updatedAt: "2023-01-01"
+  });
+
+  await ownerCtx.mutation(api.friends.upsert, {
+    member_id: "unlinked_friend",
+    name: "Renamed Unlinked Friend",
+    has_linked_account: true,
+    linked_account_id: "victim_auth_id",
+    linked_account_email: "victim@example.com",
+    status: "friend"
+  });
+
+  const row = await t.run(async (ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@example.com").eq("member_id", "unlinked_friend")
+      )
+      .unique()
+  );
+
+  expect(row).toMatchObject({
+    name: "Renamed Unlinked Friend",
+    has_linked_account: false,
+    link_state: "unlinked",
+    status: "manual"
+  });
+  expect(row?.linked_account_id).toBeUndefined();
+  expect(row?.linked_account_email).toBeUndefined();
+});
+
+test("friends:upsert preserves the complete server-owned link tuple", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: true,
+      linked_account_id: "friend_auth_id",
+      linked_account_email: "friend@example.com",
+      linked_member_id: "friend_canonical_member",
+      link_state: "linked",
+      status: "friend",
+      updated_at: now
+    });
+  });
+
+  const ownerCtx = t.withIdentity({
+    subject: "owner_auth_id",
+    email: "owner@example.com",
+    name: "Owner",
+    pictureUrl: "http://placeholder.com",
+    tokenIdentifier: "owner_auth_id",
+    issuer: "http://placeholder.com",
+    emailVerified: true,
+    updatedAt: "2023-01-01"
+  });
+
+  await ownerCtx.mutation(api.friends.upsert, {
+    member_id: "friend_member",
+    name: "Renamed Friend",
+    has_linked_account: true,
+    linked_account_id: "attacker_auth_id",
+    linked_account_email: "attacker@example.com",
+    status: "pending"
+  });
+
+  const row = await t.run(async (ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@example.com").eq("member_id", "friend_member")
+      )
+      .unique()
+  );
+
+  expect(row).toMatchObject({
+    name: "Renamed Friend",
+    has_linked_account: true,
+    linked_account_id: "friend_auth_id",
+    linked_account_email: "friend@example.com",
+    linked_member_id: "friend_canonical_member",
+    link_state: "linked",
+    status: "friend"
+  });
 });
 
 test("linkRequests:create returns canonical requests and enforces exact idempotency", async () => {

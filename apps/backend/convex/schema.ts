@@ -64,6 +64,7 @@ export default defineSchema({
     linked_account_id: v.optional(v.string()),
     linked_account_email: v.optional(v.string()),
     linked_member_id: v.optional(v.string()), // Canonical Member ID link
+    local_alias_member_ids: v.optional(v.array(v.string())),
     link_state: v.optional(v.union(v.literal("linked"), v.literal("unlinked"), v.literal("ghost"))),
     status: v.optional(v.string()),
     profile_image_url: v.optional(v.string()),
@@ -82,12 +83,27 @@ export default defineSchema({
   member_aliases: defineTable({
     canonical_member_id: v.string(), // The "real" member ID (receiver's existing canonical member_id)
     alias_member_id: v.string(), // The member ID that aliases to canonical (sender's target_member_id)
-    account_email: v.string(), // The account that created this alias relationship
+    account_email: v.string(), // Audit provenance: the actor/importer that created this row
+    materialization_source: v.optional(v.literal("account_alias")),
+    source_account_id: v.optional(v.string()),
     created_at: v.number()
   })
     .index("by_alias_member_id", ["alias_member_id"])
     .index("by_canonical_member_id", ["canonical_member_id"])
-    .index("by_account_email", ["account_email"]),
+    .index("by_account_email", ["account_email"])
+    .index("by_source_account_and_alias", ["source_account_id", "alias_member_id"]),
+
+  identity_materialization_state: defineTable({
+    key: v.string(),
+    status: v.union(v.literal("pending"), v.literal("ready")),
+    phase: v.union(v.literal("aliases"), v.literal("accounts"), v.literal("complete")),
+    cursor: v.optional(v.string()),
+    current_account_id: v.optional(v.id("accounts")),
+    next_account_cursor: v.optional(v.string()),
+    alias_offset: v.optional(v.number()),
+    last_error: v.optional(v.string()),
+    updated_at: v.number()
+  }).index("by_key", ["key"]),
 
   groups: defineTable({
     id: v.string(), // UUID string from client

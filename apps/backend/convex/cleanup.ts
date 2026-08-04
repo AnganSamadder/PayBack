@@ -2,7 +2,15 @@ import { mutation, internalMutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { Doc } from "./_generated/dataModel";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
-import { findAccountByAuthIdOrDocId, findAccountByMemberId, normalizeMemberId } from "./identity";
+import {
+  assertIdentityMaterializationReady,
+  findAccountByAuthIdOrDocId,
+  findAccountByMemberId,
+  MAX_LIVE_ACCOUNT_ALIASES,
+  MAX_LIVE_ALIAS_DELTA,
+  normalizeMemberId,
+  removeAccountAliasMaterialization
+} from "./identity";
 import { reconcileExpenseVisibility, reconcileUserExpenses } from "./helpers";
 
 // Helper to get current user or throw
@@ -105,59 +113,41 @@ async function reconcileExpenseVisibilityFromEmails(
   await reconcileUserExpenses(ctx, expenseId, participantUserIds);
 }
 
-async function removeAliasesForAccountMemberIds(
-  ctx: any,
-  accountEmail: string,
-  memberIds: string[]
-): Promise<number> {
-  let aliasesDeleted = 0;
-  for (const memberId of memberIds) {
-    const aliasesAsCanonical = await ctx.db
-      .query("member_aliases")
-      .withIndex("by_canonical_member_id", (q: any) => q.eq("canonical_member_id", memberId))
-      .collect();
-
-    for (const alias of aliasesAsCanonical) {
-      if (alias.account_email !== accountEmail) continue;
-      await ctx.db.delete(alias._id);
-      aliasesDeleted++;
-    }
-
-    const aliasesAsAlias = await ctx.db
-      .query("member_aliases")
-      .withIndex("by_alias_member_id", (q: any) => q.eq("alias_member_id", memberId))
-      .collect();
-
-    for (const alias of aliasesAsAlias) {
-      if (alias.account_email !== accountEmail) continue;
-      await ctx.db.delete(alias._id);
-      aliasesDeleted++;
-    }
-  }
-  return aliasesDeleted;
-}
-
 async function pruneAliasMemberIdsFromAccount(
   ctx: any,
   accountEmail: string,
   memberIdsToRemove: string[]
-): Promise<void> {
+): Promise<number> {
   const account = await ctx.db
     .query("accounts")
     .withIndex("by_email", (q: any) => q.eq("email", accountEmail))
     .unique();
-  if (!account || !Array.isArray(account.alias_member_ids)) return;
+  if (!account || !Array.isArray(account.alias_member_ids)) return 0;
 
   const removeSet = new Set(memberIdsToRemove.map((id) => normalizeMemberId(id)));
+  const hasAliasToRemove = account.alias_member_ids.some((memberId: string) =>
+    removeSet.has(normalizeMemberId(memberId))
+  );
+  if (!hasAliasToRemove) return 0;
+  if (account.alias_member_ids.length > MAX_LIVE_ACCOUNT_ALIASES) {
+    throw new Error("Identity maintenance required: account alias cleanup must be migrated");
+  }
+  if (removeSet.size > MAX_LIVE_ALIAS_DELTA) {
+    throw new Error("Identity maintenance required: alias cleanup delta is too large");
+  }
   const nextAliasIds = account.alias_member_ids.filter(
     (memberId: string) => !removeSet.has(normalizeMemberId(memberId))
   );
-  if (nextAliasIds.length === account.alias_member_ids.length) return;
-
+  await assertIdentityMaterializationReady(ctx.db);
+  let aliasesDeleted = 0;
+  for (const memberId of removeSet) {
+    aliasesDeleted += await removeAccountAliasMaterialization(ctx, account.id, memberId);
+  }
   await ctx.db.patch(account._id, {
     alias_member_ids: nextAliasIds,
     updated_at: Date.now()
   });
+  return aliasesDeleted;
 }
 
 async function findDeterministicSteward(
@@ -625,6 +615,7 @@ export const deleteLinkedFriend = mutation({
       };
     }
 
+    await assertIdentityMaterializationReady(ctx.db);
     const equivalentIds = await getAllEquivalentMemberIds(ctx.db, friendMemberId);
 
     const userAccount = await ctx.db
@@ -665,8 +656,7 @@ export const deleteLinkedFriend = mutation({
       directGroupDeleted = true;
     }
 
-    const aliasesDeleted = await removeAliasesForAccountMemberIds(ctx, accountEmail, equivalentIds);
-    await pruneAliasMemberIdsFromAccount(ctx, accountEmail, equivalentIds);
+    const aliasesDeleted = await pruneAliasMemberIdsFromAccount(ctx, accountEmail, equivalentIds);
 
     await ctx.db.delete(friend._id);
 
@@ -714,6 +704,7 @@ export const deleteUnlinkedFriend = mutation({
       throw new Error("Friend is linked. Use deleteLinkedFriend instead.");
     }
 
+    await assertIdentityMaterializationReady(ctx.db);
     const equivalentIds = await getAllEquivalentMemberIds(ctx.db, friendMemberId);
 
     let groupsModified = 0;
@@ -805,8 +796,7 @@ export const deleteUnlinkedFriend = mutation({
       groupsModified++;
     }
 
-    aliasesDeleted = await removeAliasesForAccountMemberIds(ctx, accountEmail, equivalentIds);
-    await pruneAliasMemberIdsFromAccount(ctx, accountEmail, equivalentIds);
+    aliasesDeleted = await pruneAliasMemberIdsFromAccount(ctx, accountEmail, equivalentIds);
 
     await ctx.db.delete(friend._id);
 

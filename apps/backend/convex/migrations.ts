@@ -1,8 +1,19 @@
 import { internalMutation } from "./_generated/server";
+import { Doc } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { reconcileUserExpenses } from "./helpers";
-import { findAccountByAuthIdOrDocId, findAccountByMemberId } from "./identity";
+import {
+  ensureAccountAliasMaterialization,
+  ensureStandaloneAlias,
+  findAccountByAuthIdOrDocId,
+  findAccountByMemberId,
+  IDENTITY_MATERIALIZATION_KEY,
+  MAX_ALIAS_ROWS_PER_MEMBER_ID,
+  normalizeMemberId,
+  normalizeMemberIds,
+  preflightAccountAliasMaterialization
+} from "./identity";
 
 function normalizeEmail(value: string | undefined | null): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -84,45 +95,48 @@ function arraysEqual(lhs: string[], rhs: string[]): boolean {
  * Also preserves original_nickname from nickname field before linking.
  */
 export const createMemberAliasesFromClaimedTokens = internalMutation({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error("limit must be an integer between 1 and 100");
+    }
     const claimedTokens = await ctx.db
       .query("invite_tokens")
       .filter((q) => q.neq(q.field("claimed_by"), undefined))
-      .collect();
+      .paginate({ cursor: args.cursor ?? null, numItems: limit });
 
     let aliasesCreated = 0;
     let nicknamesPreserved = 0;
 
-    for (const token of claimedTokens) {
+    for (const token of claimedTokens.page) {
       if (!token.claimed_by) continue;
 
       const claimantAccount = await ctx.db
         .query("accounts")
-        .filter((q) => q.eq(q.field("id"), token.claimed_by))
-        .first();
+        .withIndex("by_auth_id", (q) => q.eq("id", token.claimed_by!))
+        .unique();
 
       if (!claimantAccount?.member_id) continue;
 
-      const canonicalId = claimantAccount.member_id;
-      const aliasId = token.target_member_id;
+      const canonicalId = normalizeMemberId(claimantAccount.member_id);
+      const aliasId = normalizeMemberId(token.target_member_id);
 
       if (canonicalId === aliasId) continue;
 
-      const existingAlias = await ctx.db
-        .query("member_aliases")
-        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", aliasId))
-        .first();
-
-      if (existingAlias) continue;
-
-      await ctx.db.insert("member_aliases", {
-        canonical_member_id: canonicalId,
-        alias_member_id: aliasId,
-        account_email: token.creator_email,
-        created_at: token.claimed_at || Date.now()
-      });
-      aliasesCreated++;
+      if (
+        await ensureStandaloneAlias(ctx, {
+          canonicalMemberId: canonicalId,
+          aliasMemberId: aliasId,
+          provenanceEmail: token.creator_email,
+          createdAt: token.claimed_at || Date.now()
+        })
+      ) {
+        aliasesCreated++;
+      }
 
       const creatorFriend = await ctx.db
         .query("account_friends")
@@ -140,7 +154,13 @@ export const createMemberAliasesFromClaimedTokens = internalMutation({
       }
     }
 
-    return { aliasesCreated, nicknamesPreserved, tokensProcessed: claimedTokens.length };
+    return {
+      aliasesCreated,
+      nicknamesPreserved,
+      tokensProcessed: claimedTokens.page.length,
+      cursor: claimedTokens.continueCursor,
+      isDone: claimedTokens.isDone
+    };
   }
 });
 
@@ -927,5 +947,191 @@ export const backfillExpenseContextKind = internalMutation({
       patchedDirect,
       patchedGroup
     };
+  }
+});
+
+/**
+ * Resumable identity rollout. Each call performs at most batchSize alias operations and
+ * records its own cursor. The ready marker is written only after both tables are complete.
+ */
+export const runIdentityMaterializationMigration = internalMutation({
+  args: {
+    batchSize: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const batchSize = args.batchSize ?? 64;
+    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 128) {
+      throw new Error("batchSize must be an integer between 1 and 128");
+    }
+
+    let state: any = await ctx.db
+      .query("identity_materialization_state")
+      .withIndex("by_key", (q) => q.eq("key", IDENTITY_MATERIALIZATION_KEY))
+      .unique();
+    if (!state) {
+      const stateId = await ctx.db.insert("identity_materialization_state", {
+        key: IDENTITY_MATERIALIZATION_KEY,
+        status: "pending",
+        phase: "aliases",
+        updated_at: Date.now()
+      });
+      state = await ctx.db.get(stateId);
+    }
+    if (state.status === "ready") {
+      return { status: "ready" as const, phase: "complete" as const, lastError: undefined };
+    }
+
+    if (state.phase === "aliases") {
+      const page = await ctx.db.query("member_aliases").paginate({
+        cursor: state.cursor ?? null,
+        numItems: batchSize
+      });
+      const deletedIds = new Set<string>();
+      for (const alias of page.page) {
+        if (deletedIds.has(String(alias._id))) continue;
+        const aliasMemberId = normalizeMemberId(alias.alias_member_id);
+        const canonicalMemberId = normalizeMemberId(alias.canonical_member_id);
+        const accountEmail = alias.account_email.trim().toLowerCase();
+        const candidates = await ctx.db
+          .query("member_aliases")
+          .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", aliasMemberId))
+          .take(MAX_ALIAS_ROWS_PER_MEMBER_ID + 1);
+        if (candidates.length > MAX_ALIAS_ROWS_PER_MEMBER_ID) {
+          const lastError = `Too many alias rows for ${aliasMemberId}`;
+          await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+          return { status: "pending" as const, phase: "aliases" as const, lastError };
+        }
+        const conflict = candidates.find(
+          (candidate) =>
+            candidate._id !== alias._id &&
+            normalizeMemberId(candidate.canonical_member_id) !== canonicalMemberId
+        );
+        if (conflict) {
+          const lastError = `Conflicting alias ownership for ${aliasMemberId}`;
+          await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+          return { status: "pending" as const, phase: "aliases" as const, lastError };
+        }
+        const sameSource = candidates.find(
+          (candidate) =>
+            candidate._id !== alias._id &&
+            (candidate.source_account_id ?? null) === (alias.source_account_id ?? null)
+        );
+        if (sameSource) {
+          const keepExisting =
+            sameSource._creationTime < alias._creationTime ||
+            (sameSource._creationTime === alias._creationTime &&
+              String(sameSource._id) < String(alias._id));
+          const deletedId = keepExisting ? alias._id : sameSource._id;
+          await ctx.db.delete(deletedId);
+          deletedIds.add(String(deletedId));
+          if (keepExisting) continue;
+        }
+        await ctx.db.patch(alias._id, {
+          alias_member_id: aliasMemberId,
+          canonical_member_id: canonicalMemberId,
+          account_email: accountEmail
+        });
+      }
+      await ctx.db.patch(state._id, {
+        phase: page.isDone ? "accounts" : "aliases",
+        cursor: page.isDone ? undefined : page.continueCursor,
+        last_error: undefined,
+        updated_at: Date.now()
+      });
+      return {
+        status: "pending" as const,
+        phase: page.isDone ? ("accounts" as const) : ("aliases" as const),
+        lastError: undefined
+      };
+    }
+
+    let account: Doc<"accounts"> | null = state.current_account_id
+      ? await ctx.db.get(state.current_account_id as Doc<"accounts">["_id"])
+      : null;
+    let nextAccountCursor = state.next_account_cursor;
+    if (!account) {
+      const page = await ctx.db.query("accounts").paginate({
+        cursor: state.cursor ?? null,
+        numItems: 1
+      });
+      account = page.page[0] ?? null;
+      nextAccountCursor = page.continueCursor;
+      if (!account) {
+        await ctx.db.patch(state._id, {
+          status: "ready",
+          phase: "complete",
+          cursor: undefined,
+          current_account_id: undefined,
+          next_account_cursor: undefined,
+          alias_offset: undefined,
+          last_error: undefined,
+          updated_at: Date.now()
+        });
+        return { status: "ready" as const, phase: "complete" as const, lastError: undefined };
+      }
+    }
+
+    const canonicalMemberId = account.member_id ? normalizeMemberId(account.member_id) : undefined;
+    if (canonicalMemberId) {
+      const collisions = await ctx.db
+        .query("accounts")
+        .withIndex("by_member_id", (q) => q.eq("member_id", canonicalMemberId))
+        .take(2);
+      const collision = collisions.find((candidate) => candidate._id !== account!._id);
+      if (collision) {
+        const lastError = `Conflicting canonical account identity ${canonicalMemberId}`;
+        await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+        return { status: "pending" as const, phase: "accounts" as const, lastError };
+      }
+    }
+
+    const aliases = normalizeMemberIds(account.alias_member_ids);
+    const aliasOffset = state.current_account_id ? (state.alias_offset ?? 0) : 0;
+    const batch = aliases.slice(aliasOffset, aliasOffset + batchSize);
+    if (canonicalMemberId) {
+      const accountIdentity = {
+        id: account.id,
+        email: account.email,
+        member_id: canonicalMemberId
+      };
+      try {
+        for (const alias of batch) {
+          await preflightAccountAliasMaterialization(ctx, accountIdentity, alias);
+        }
+      } catch (error) {
+        const lastError =
+          error instanceof Error ? error.message : "Unknown identity maintenance error";
+        await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+        return { status: "pending" as const, phase: "accounts" as const, lastError };
+      }
+      for (const alias of batch) {
+        await ensureAccountAliasMaterialization(ctx, accountIdentity, alias);
+      }
+    }
+    const nextOffset = aliasOffset + batch.length;
+    if (nextOffset < aliases.length) {
+      await ctx.db.patch(state._id, {
+        current_account_id: account._id,
+        next_account_cursor: nextAccountCursor,
+        alias_offset: nextOffset,
+        last_error: undefined,
+        updated_at: Date.now()
+      });
+    } else {
+      await ctx.db.patch(account._id, {
+        member_id: canonicalMemberId,
+        alias_member_ids: aliases,
+        updated_at: Date.now()
+      });
+      await ctx.db.patch(state._id, {
+        cursor: nextAccountCursor,
+        current_account_id: undefined,
+        next_account_cursor: undefined,
+        alias_offset: undefined,
+        last_error: undefined,
+        updated_at: Date.now()
+      });
+    }
+    return { status: "pending" as const, phase: "accounts" as const, lastError: undefined };
   }
 });

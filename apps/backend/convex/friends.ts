@@ -83,6 +83,9 @@ export const list = query({
       for (const alias of linkedAccount?.alias_member_ids || []) {
         aliasSet.add(normalizeMemberId(alias));
       }
+      for (const alias of friend.local_alias_member_ids || []) {
+        aliasSet.add(normalizeMemberId(alias));
+      }
 
       linkedIdentityContexts.set(identityKey, {
         account: linkedAccount,
@@ -125,7 +128,7 @@ export const list = query({
             linked_member_id:
               linkedAccount?.status === "deleted" ? friend.linked_member_id : undefined,
             link_state: linkedAccount?.status === "deleted" ? "ghost" : "unlinked",
-            alias_member_ids: []
+            alias_member_ids: normalizeMemberIds(friend.local_alias_member_ids)
           });
           continue;
         }
@@ -134,6 +137,7 @@ export const list = query({
         const duplicateMemberIds = context ? Array.from(context.memberIds) : [];
         const enrichedAliases = normalizeMemberIds([
           ...(linkedAccount.alias_member_ids || []),
+          ...(friend.local_alias_member_ids || []),
           ...duplicateMemberIds
         ]);
 
@@ -166,7 +170,7 @@ export const list = query({
             linked_member_id:
               linkedByMemberId?.status === "deleted" ? friend.linked_member_id : undefined,
             link_state: linkedByMemberId?.status === "deleted" ? "ghost" : "unlinked",
-            alias_member_ids: []
+            alias_member_ids: normalizeMemberIds(friend.local_alias_member_ids)
           });
           continue;
         }
@@ -175,6 +179,7 @@ export const list = query({
         const duplicateMemberIds = context ? Array.from(context.memberIds) : [];
         const enrichedAliases = normalizeMemberIds([
           ...(linkedByMemberId.alias_member_ids || []),
+          ...(friend.local_alias_member_ids || []),
           ...duplicateMemberIds
         ]);
 
@@ -192,7 +197,7 @@ export const list = query({
         validatedFriends.push({
           ...friend,
           member_id: friend.normalizedMemberId,
-          alias_member_ids: []
+          alias_member_ids: normalizeMemberIds(friend.local_alias_member_ids)
         });
       }
     }
@@ -330,12 +335,10 @@ export const upsert = mutation({
       ).find((friend) => normalizeMemberId(friend.member_id) === normalizedMemberId);
 
     if (existingLegacy) {
-      const preserveExistingLink = existingLegacy.has_linked_account && !args.has_linked_account;
-      const finalHasLinkedAccount = args.has_linked_account || preserveExistingLink;
-      const finalLinkedAccountId = args.linked_account_id ?? existingLegacy.linked_account_id;
-      const finalLinkedAccountEmail =
-        args.linked_account_email ?? existingLegacy.linked_account_email;
-      const finalStatus = args.status ?? existingLegacy.status;
+      const hasServerOwnedLinkState =
+        existingLegacy.has_linked_account ||
+        existingLegacy.link_state === "linked" ||
+        existingLegacy.link_state === "ghost";
 
       await ctx.db.patch(existingLegacy._id, {
         member_id: normalizedMemberId,
@@ -350,10 +353,22 @@ export const upsert = mutation({
           args.display_preference === undefined
             ? existingLegacy.display_preference
             : args.display_preference,
-        has_linked_account: finalHasLinkedAccount,
-        linked_account_id: finalHasLinkedAccount ? finalLinkedAccountId : undefined,
-        linked_account_email: finalHasLinkedAccount ? finalLinkedAccountEmail : undefined,
-        status: finalStatus,
+        has_linked_account: hasServerOwnedLinkState
+          ? existingLegacy.has_linked_account
+          : false,
+        linked_account_id: hasServerOwnedLinkState
+          ? existingLegacy.linked_account_id
+          : undefined,
+        linked_account_email: hasServerOwnedLinkState
+          ? existingLegacy.linked_account_email
+          : undefined,
+        linked_member_id: hasServerOwnedLinkState
+          ? existingLegacy.linked_member_id
+          : undefined,
+        link_state: hasServerOwnedLinkState
+          ? existingLegacy.link_state
+          : existingLegacy.link_state ?? "unlinked",
+        status: existingLegacy.status,
         updated_at: Date.now()
       });
       return existingLegacy._id;
@@ -370,10 +385,8 @@ export const upsert = mutation({
         last_name: args.last_name,
         display_preference: args.display_preference,
         profile_avatar_color: getRandomAvatarColor(),
-        has_linked_account: args.has_linked_account,
-        linked_account_id: args.linked_account_id,
-        linked_account_email: args.linked_account_email,
-        status: args.status,
+        has_linked_account: false,
+        link_state: "unlinked",
         updated_at: Date.now()
       });
     }

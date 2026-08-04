@@ -8,7 +8,10 @@ This runbook defines the canonical identity/linking pipeline for PayBack across 
 
 - `accounts.member_id`: canonical member ID (immutable after account creation).
 - `accounts.alias_member_ids`: account-level alias list (denormalized read path).
-- `member_aliases`: alias index/cache table (`alias_member_id -> canonical_member_id`).
+- `member_aliases`: indexed alias materialization (`alias_member_id -> canonical_member_id`).
+  `account_email` records the actor/importer that created the row; it is audit provenance, not
+  ownership. Account-array rows are distinguished by `materialization_source=account_alias` and
+  `source_account_id`.
 
 ## Hard Invariants
 
@@ -19,6 +22,48 @@ This runbook defines the canonical identity/linking pipeline for PayBack across 
 5. Alias conflicts (alias already mapped to a different canonical) must fail with deterministic error code `ALIAS_CONFLICT`.
 6. Alias cycles must fail with deterministic error code `ALIAS_CYCLE`.
 7. Invite claim and link-request accept must run the same backend claim core.
+
+## Indexed Identity Rollout
+
+Identity mutations that depend on the complete alias index require
+`identity_materialization_state/member_identity_v1` to be `ready`. Missing or pending state fails
+atomically with `Identity maintenance required`; it must never enable an unindexed fallback scan.
+The following flows pause until the migration completes:
+
+- normal, merge-selected, and internal invite claims;
+- link-request acceptance;
+- bulk imports containing linked friend identity metadata;
+- linked and unlinked friend cleanup;
+- legacy canonical-member bootstrap through `users:updateLinkedMemberId`;
+- explicit member/friend merge operations.
+
+Non-linked imports and operations that do not mutate canonical or alias identity remain available.
+
+Run the internal migration repeatedly after deploying the schema/backend change:
+
+```bash
+bunx convex run migrations:runIdentityMaterializationMigration '{"batchSize":128}'
+```
+
+Repeat until the response reports `status: "ready"`. The migration first normalizes standalone
+alias rows, then normalizes accounts and materializes account aliases in resumable batches. State
+stores the current account and alias offset, so a large account never requires one transaction.
+If `lastError` reports conflicting canonical ownership or an identity maintenance bound, repair the
+named identity and resume. Account-phase errors remain recorded without advancing the account
+cursor or committing a partial alias batch.
+
+For a clean installation, run the same command until ready; an empty database normally completes
+in two calls. Do not manually insert or flip the readiness row. Rollback requires removing the
+merge gate together with this schema version; deleting only the marker intentionally disables
+merge operations.
+
+Live writes are deliberately smaller than migration batches:
+
+- account alias arrays above 256 require maintenance instead of live scanning;
+- invite claim adds only its one new indexed account-alias row;
+- cleanup removes only explicitly requested `source_account_id` rows;
+- standalone aliases from `mergeMemberIds`, imports, and historical claims are never deleted by
+  unrelated account-array synchronization.
 
 ## Contract Versioning
 

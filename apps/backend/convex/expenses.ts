@@ -455,9 +455,11 @@ export const create = mutation({
       const ownerFriendIdentityRows: { friend: any; identityIds: Set<string> }[] = [];
       for (const friend of ownerFriendRows) {
         const identityIds = new Set<string>();
-        const friendIdentitySeeds = [friend.member_id, friend.linked_member_id].filter(
-          (value): value is string => typeof value === "string" && value.length > 0
-        );
+        const friendIdentitySeeds = [
+          friend.member_id,
+          friend.linked_member_id,
+          ...(friend.local_alias_member_ids || [])
+        ].filter((value): value is string => typeof value === "string" && value.length > 0);
 
         for (const seedId of friendIdentitySeeds) {
           const equivalentIds = await getEquivalentIdSet(seedId);

@@ -1,4 +1,5 @@
 import { internalMutation } from "./_generated/server";
+import { assertIdentityMaterializationReady, ensureStandaloneAlias } from "./identity";
 
 export const repairAlias = internalMutation({
   args: {},
@@ -100,16 +101,16 @@ export const repairAlias = internalMutation({
       };
     }
 
-    await ctx.db.insert("member_aliases", {
-      account_email: mainUserEmail,
-      alias_member_id: idA,
-      canonical_member_id: idB,
-      created_at: Date.now()
+    await assertIdentityMaterializationReady(ctx.db);
+    const aliasCreated = await ensureStandaloneAlias(ctx, {
+      provenanceEmail: mainUserEmail,
+      aliasMemberId: idA,
+      canonicalMemberId: idB
     });
 
     return {
       success: true,
-      message: "Alias created",
+      message: aliasCreated ? "Alias created" : "Alias already materialized",
       alias_member_id: idA,
       canonical_member_id: idB
     };

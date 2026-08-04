@@ -17,6 +17,17 @@ function identity(email: string, subject: string) {
   };
 }
 
+async function markIdentityReady(t: any) {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v1",
+      status: "ready",
+      phase: "complete",
+      updated_at: Date.now()
+    });
+  });
+}
+
 test("cleanup.deleteLinkedFriend removes all matching direct groups", async () => {
   const t = convexTest(schema, modules);
 
@@ -126,6 +137,7 @@ test("cleanup.deleteLinkedFriend removes all matching direct groups", async () =
   });
 
   await expect(t.query(api.cleanup.selfDeletionStatus, {})).rejects.toThrow("Unauthenticated");
+  await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
   const result = await ownerCtx.mutation(api.cleanup.deleteLinkedFriend, {
     friendMemberId: "friend_member"
@@ -240,6 +252,7 @@ test("cleanup.deleteUnlinkedFriend reconciles user_expenses after patching share
     });
   });
 
+  await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
   const result = await ownerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
     friendMemberId: "friend_member"
@@ -268,7 +281,7 @@ test("cleanup.deleteUnlinkedFriend reconciles user_expenses after patching share
   expect(visibilityUserIds).toEqual(["owner_auth", "watcher_auth"]);
 });
 
-test("cleanup.deleteUnlinkedFriend only deletes aliases for the caller account", async () => {
+test("cleanup.deleteUnlinkedFriend preserves standalone aliases while pruning account materialization", async () => {
   const t = convexTest(schema, modules);
 
   await t.run(async (ctx) => {
@@ -280,15 +293,6 @@ test("cleanup.deleteUnlinkedFriend only deletes aliases for the caller account",
       member_id: "owner_member",
       alias_member_ids: ["friend_member"]
     });
-    await ctx.db.insert("accounts", {
-      id: "other_auth",
-      email: "other@test.com",
-      display_name: "Other",
-      created_at: Date.now(),
-      member_id: "other_member",
-      alias_member_ids: ["friend_member"]
-    });
-
     await ctx.db.insert("account_friends", {
       account_email: "owner@test.com",
       member_id: "friend_member",
@@ -302,16 +306,19 @@ test("cleanup.deleteUnlinkedFriend only deletes aliases for the caller account",
       account_email: "owner@test.com",
       canonical_member_id: "owner_member",
       alias_member_id: "friend_member",
+      materialization_source: "account_alias",
+      source_account_id: "owner_auth",
       created_at: Date.now()
     });
     await ctx.db.insert("member_aliases", {
-      account_email: "other@test.com",
-      canonical_member_id: "other_member",
+      account_email: "importer@test.com",
+      canonical_member_id: "owner_member",
       alias_member_id: "friend_member",
       created_at: Date.now()
     });
   });
 
+  await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
   const result = await ownerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
     friendMemberId: "friend_member"
@@ -325,7 +332,8 @@ test("cleanup.deleteUnlinkedFriend only deletes aliases for the caller account",
       .collect()
   );
   expect(remainingAliases).toHaveLength(1);
-  expect(remainingAliases[0].account_email).toBe("other@test.com");
+  expect(remainingAliases[0].account_email).toBe("importer@test.com");
+  expect(remainingAliases[0].source_account_id).toBeUndefined();
 
   const ownerAccount = await t.run(async (ctx) =>
     ctx.db

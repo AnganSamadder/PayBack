@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
@@ -43,6 +43,12 @@ test("import_robustness: handles aliases and id mismatches", async () => {
       created_at: Date.now()
     });
   });
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const result = await t.mutation(internal.migrations.runIdentityMaterializationMigration, {
+      batchSize: 10
+    });
+    if (result.status === "ready") break;
+  }
 
   // 4. Run Import with ALIAS ID
   // Scenario: CSV has old ID "C7EA...", but DB has "1C7F...". Alias links them.
@@ -246,4 +252,73 @@ test("import_robustness: updates existing friend status even without new link me
 
   expect(updatedFriend).not.toBeNull();
   expect(updatedFriend?.status).toBe("friend");
+});
+
+test("bulkImport normalizes owner email and linked alias rows", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "Owner@Example.COM",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "friend_auth",
+      email: "friend@example.com",
+      display_name: "Friend",
+      created_at: now,
+      member_id: "Friend_Canonical"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v1",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+  });
+
+  const ownerCtx = t.withIdentity({
+    subject: "owner_auth",
+    email: "Owner@Example.COM",
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+  await ownerCtx.mutation(api.bulkImport.bulkImport, {
+    friends: [
+      {
+        member_id: "Legacy_Friend",
+        name: "Friend",
+        profile_avatar_color: "#111111",
+        has_linked_account: true,
+        linked_account_email: "FRIEND@EXAMPLE.COM"
+      }
+    ],
+    groups: [],
+    expenses: []
+  });
+
+  const state = await t.run(async (ctx) => ({
+    friend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@example.com").eq("member_id", "legacy_friend")
+      )
+      .unique(),
+    alias: await ctx.db
+      .query("member_aliases")
+      .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", "legacy_friend"))
+      .first()
+  }));
+  expect(state.friend?.linked_account_email).toBe("friend@example.com");
+  expect(state.alias).toMatchObject({
+    canonical_member_id: "friend_canonical",
+    account_email: "owner@example.com"
+  });
 });

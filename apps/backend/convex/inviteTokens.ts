@@ -5,10 +5,12 @@ import { resolveCanonicalMemberIdInternal } from "./aliases";
 import { reconcileUserExpenses } from "./helpers";
 import {
   deterministicLinkingError,
+  ensureAccountAliasMaterialization,
   findAccountByMemberId,
   findAliasByAliasMemberId,
   LINKING_CONTRACT_VERSION,
   LINKING_ERROR_CODES,
+  MAX_LIVE_ACCOUNT_ALIASES,
   normalizeMemberId,
   normalizeMemberIds
 } from "./identity";
@@ -281,6 +283,7 @@ export const validate = query({
  * This powers both inviteTokens:claim and linkRequests:accept.
  */
 async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
+  await assertIdentityMaterializationReady(ctx.db);
   const linkContext = normalizeLinkClaimContext(input);
   const now = Date.now();
 
@@ -331,15 +334,6 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         `alias_member_id=${linkContext.targetMemberId},existing_canonical=${existingAlias.canonical_member_id},claimer_canonical=${userCanonicalMemberId}`
       );
     }
-
-    if (!existingAlias) {
-      await ctx.db.insert("member_aliases", {
-        canonical_member_id: userCanonicalMemberId,
-        alias_member_id: linkContext.targetMemberId,
-        account_email: user.email.toLowerCase().trim(),
-        created_at: now
-      });
-    }
   }
 
   const updatedAliases = normalizeMemberIds([
@@ -347,6 +341,17 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
     linkContext.targetMemberId
   ]).filter((memberId) => memberId !== userCanonicalMemberId);
 
+  if (updatedAliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+    throw new Error(
+      `Identity maintenance required: account ${user.id} has too many aliases for a live claim`
+    );
+  }
+  await ensureAccountAliasMaterialization(
+    ctx,
+    { id: user.id, email: user.email, member_id: userCanonicalMemberId },
+    linkContext.targetMemberId,
+    now
+  );
   await ctx.db.patch(user._id, {
     alias_member_ids: updatedAliases,
     updated_at: now
@@ -824,6 +829,7 @@ export const _internalClaimForAccount = internalMutation({
       throw new Error("Token has already been claimed");
     }
 
+    await assertIdentityMaterializationReady(ctx.db);
     await ctx.db.patch(token._id, {
       claimed_by: user.id,
       claimed_at: now

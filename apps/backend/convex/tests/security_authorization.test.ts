@@ -440,6 +440,48 @@ describe("Security Authorization", () => {
     expect(account?.member_id).toBe("member_original");
   });
 
+  test("users.updateLinkedMemberId materializes aliases during legacy bootstrap", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "legacy_user_id",
+        email: "legacy-user@test.com",
+        display_name: "Legacy User",
+        created_at: Date.now(),
+        alias_member_ids: ["Legacy_Alias"]
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v1",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
+    });
+
+    const userCtx = t.withIdentity(identity("legacy-user@test.com", "legacy_user_id"));
+    await userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "Canonical_Member" });
+
+    const state = await t.run(async (ctx) => ({
+      account: await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) => q.eq("email", "legacy-user@test.com"))
+        .unique(),
+      alias: await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", "legacy_alias"))
+        .unique()
+    }));
+    expect(state.account).toMatchObject({
+      member_id: "canonical_member",
+      alias_member_ids: ["legacy_alias"]
+    });
+    expect(state.alias).toMatchObject({
+      canonical_member_id: "canonical_member",
+      account_email: "legacy-user@test.com"
+    });
+  });
+
   test("users.resolveLinkedAccountsForMemberIds only returns caller-visible identities", async () => {
     const t = convexTest(schema, modules);
 
@@ -494,11 +536,11 @@ describe("Security Authorization", () => {
     });
   });
 
-  test("aliases.mergeMemberIds does not trust forged accountEmail", async () => {
+  test("aliases.mergeMemberIds performs only an owner-scoped local friend merge", async () => {
     const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
-      await ctx.db.insert("accounts", {
+      const attacker = await ctx.db.insert("accounts", {
         id: "attacker_id",
         email: "attacker@test.com",
         display_name: "Attacker",
@@ -512,6 +554,42 @@ describe("Security Authorization", () => {
         created_at: Date.now(),
         member_id: "victim_member"
       });
+      await ctx.db.insert("account_friends", {
+        account_email: "attacker@test.com",
+        member_id: "source_member",
+        name: "Duplicate",
+        profile_avatar_color: "#000000",
+        has_linked_account: false,
+        updated_at: Date.now()
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "attacker@test.com",
+        member_id: "target_member",
+        name: "Canonical",
+        profile_avatar_color: "#111111",
+        has_linked_account: false,
+        updated_at: Date.now()
+      });
+      await ctx.db.insert("groups", {
+        id: "attacker_group",
+        name: "Attacker Group",
+        members: [
+          { id: "attacker_member", name: "Attacker", is_current_user: true },
+          { id: "source_member", name: "Duplicate" }
+        ],
+        owner_email: "attacker@test.com",
+        owner_account_id: "attacker_id",
+        owner_id: attacker,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        is_direct: false
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v1",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
     });
 
     const attackerCtx = t.withIdentity(identity("attacker@test.com", "attacker_id"));
@@ -522,9 +600,81 @@ describe("Security Authorization", () => {
       accountEmail: "victim@test.com"
     });
 
-    const aliases = await t.run(async (ctx) => ctx.db.query("member_aliases").collect());
-    expect(aliases).toHaveLength(1);
-    expect(aliases[0].account_email).toBe("attacker@test.com");
+    const state = await t.run(async (ctx) => ({
+      aliases: await ctx.db.query("member_aliases").collect(),
+      friends: await ctx.db.query("account_friends").collect(),
+      groups: await ctx.db.query("groups").collect()
+    }));
+    const canonical = state.friends.find((friend) => friend.member_id === "target_member");
+    const group = state.groups.find((candidate) => candidate.id === "attacker_group");
+
+    expect(state.aliases).toHaveLength(0);
+    expect(canonical?.local_alias_member_ids).toEqual(["source_member"]);
+    expect(state.friends.some((friend) => friend.member_id === "source_member")).toBe(false);
+    expect(group?.members.map((member) => member.id)).toContain("target_member");
+    expect(group?.members.map((member) => member.id)).not.toContain("source_member");
+  });
+
+  test("aliases.mergeMemberIds rejects group-only and arbitrary identities atomically", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.run(async (ctx) => {
+      const caller = await ctx.db.insert("accounts", {
+        id: "caller_id",
+        email: "caller@test.com",
+        display_name: "Caller",
+        created_at: Date.now(),
+        member_id: "caller_member"
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "caller@test.com",
+        member_id: "owned_target",
+        name: "Owned Target",
+        profile_avatar_color: "#111111",
+        has_linked_account: false,
+        updated_at: Date.now()
+      });
+      await ctx.db.insert("groups", {
+        id: "caller_group",
+        name: "Caller Group",
+        members: [
+          { id: "caller_member", name: "Caller", is_current_user: true },
+          { id: "group_only_source", name: "Group Only" }
+        ],
+        owner_email: "caller@test.com",
+        owner_account_id: "caller_id",
+        owner_id: caller,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        is_direct: false
+      });
+    });
+
+    const callerCtx = t.withIdentity(identity("caller@test.com", "caller_id"));
+    await expect(
+      callerCtx.mutation(api.aliases.mergeMemberIds, {
+        sourceId: "group_only_source",
+        targetCanonicalId: "owned_target"
+      })
+    ).rejects.toThrow("Friend with member_id group_only_source not found");
+    await expect(
+      callerCtx.mutation(api.aliases.mergeMemberIds, {
+        sourceId: "arbitrary_source",
+        targetCanonicalId: "arbitrary_target"
+      })
+    ).rejects.toThrow();
+
+    const state = await t.run(async (ctx) => ({
+      aliases: await ctx.db.query("member_aliases").collect(),
+      friends: await ctx.db.query("account_friends").collect(),
+      groups: await ctx.db.query("groups").collect()
+    }));
+    const target = state.friends.find((friend) => friend.member_id === "owned_target");
+    const group = state.groups.find((candidate) => candidate.id === "caller_group");
+
+    expect(state.aliases).toHaveLength(0);
+    expect(target?.local_alias_member_ids).toBeUndefined();
+    expect(group?.members.map((member) => member.id)).toContain("group_only_source");
   });
 
   test("aliases.mergeUnlinkedFriends does not allow forged accountEmail", async () => {

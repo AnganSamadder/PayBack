@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
 import { query, internalQuery, internalMutation, QueryCtx } from "./_generated/server";
+import { assertIdentityMaterializationReady, ensureStandaloneAlias } from "./identity";
 
 export const fixMissingDirectFlags = internalMutation({
   args: {},
@@ -116,6 +117,7 @@ export const debugUserData = internalQuery({
 export const fixIdsByName = internalMutation({
   args: {},
   handler: async (ctx) => {
+    await assertIdentityMaterializationReady(ctx.db);
     const accounts = await ctx.db.query("accounts").collect();
     let expensesUpdated = 0;
     let aliasesCreated = 0;
@@ -146,13 +148,14 @@ export const fixIdsByName = internalMutation({
                 q.eq("alias_member_id", expense.paid_by_member_id)
               )
               .first();
-            if (!existingAlias) {
-              await ctx.db.insert("member_aliases", {
-                canonical_member_id: canonicalId,
-                alias_member_id: expense.paid_by_member_id,
-                account_email: account.email,
-                created_at: Date.now()
-              });
+            if (
+              !existingAlias &&
+              (await ensureStandaloneAlias(ctx, {
+                canonicalMemberId: canonicalId,
+                aliasMemberId: expense.paid_by_member_id,
+                provenanceEmail: account.email
+              }))
+            ) {
               aliasesCreated++;
             }
             patches.paid_by_member_id = canonicalId;

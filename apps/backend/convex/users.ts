@@ -3,7 +3,12 @@ import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { checkRateLimit } from "./rateLimit";
-import { findAccountByAuthIdOrDocId, normalizeMemberId } from "./identity";
+import {
+  assertIdentityMaterializationReady,
+  findAccountByAuthIdOrDocId,
+  normalizeMemberId,
+  syncAccountAliasMaterialization
+} from "./identity";
 
 const MAX_SAMPLE_IDS = 10;
 const MAX_EQUIVALENT_MEMBER_IDS = 50;
@@ -511,6 +516,7 @@ export const updateLinkedMemberId = mutation({
       return user._id;
     }
 
+    await assertIdentityMaterializationReady(ctx.db);
     // Legacy-only bootstrap path for old rows without member_id.
     // Never allow adopting a member ID already used by a different account.
     const takenByAccount = await ctx.db
@@ -527,6 +533,11 @@ export const updateLinkedMemberId = mutation({
       .filter((id) => id !== requestedMemberId)
       .slice(0, MAX_EQUIVALENT_MEMBER_IDS);
 
+    await syncAccountAliasMaterialization(
+      ctx,
+      { id: user.id, email: user.email, member_id: requestedMemberId },
+      updatedAliases
+    );
     await ctx.db.patch(user._id, {
       member_id: requestedMemberId,
       alias_member_ids: updatedAliases,
