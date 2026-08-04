@@ -8,8 +8,11 @@ actor MockAccountServiceForAppStore: AccountService {
     private var friends: [String: [AccountFriend]] = [:] // email -> friends
     private var friendSyncHistory: [String: [[AccountFriend]]] = [:] // email -> sync snapshots
     private var shouldFail: Bool = false
+    private var shouldFailNextFriendFetch = false
     private var selfDeleteCallCount = 0
     private var completedSelfDeletion = false
+    private var mergeMemberIdCalls: [(source: UUID, target: UUID)] = []
+    private var mergeUnlinkedFriendCalls: [(target: String, source: String)] = []
 
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -59,6 +62,10 @@ actor MockAccountServiceForAppStore: AccountService {
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
+        if shouldFailNextFriendFetch {
+            shouldFailNextFriendFetch = false
+            throw PayBackError.networkUnavailable
+        }
         return friends[accountEmail.lowercased()] ?? []
     }
 
@@ -97,12 +104,19 @@ actor MockAccountServiceForAppStore: AccountService {
         friends.removeAll()
         friendSyncHistory.removeAll()
         shouldFail = false
+        shouldFailNextFriendFetch = false
         selfDeleteCallCount = 0
         completedSelfDeletion = false
+        mergeMemberIdCalls.removeAll()
+        mergeUnlinkedFriendCalls.removeAll()
     }
 
     func latestSyncedFriends(accountEmail: String) -> [AccountFriend]? {
         friendSyncHistory[accountEmail.lowercased()]?.last
+    }
+
+    func failNextFriendFetch() {
+        shouldFailNextFriendFetch = true
     }
 
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String? {
@@ -126,7 +140,11 @@ actor MockAccountServiceForAppStore: AccountService {
 
     func mergeMemberIds(from sourceId: UUID, to targetId: UUID) async throws {
         if shouldFail { throw PayBackError.networkUnavailable }
-        // No-op for mock
+        mergeMemberIdCalls.append((source: sourceId, target: targetId))
+    }
+
+    func latestMergeMemberIdsCall() -> (source: UUID, target: UUID)? {
+        mergeMemberIdCalls.last
     }
 
     func deleteLinkedFriend(memberId: UUID) async throws {
@@ -193,6 +211,29 @@ actor MockAccountServiceForAppStore: AccountService {
 
     func mergeUnlinkedFriends(friendId1: String, friendId2: String) async throws {
         if shouldFail { throw PayBackError.networkUnavailable }
+        mergeUnlinkedFriendCalls.append((target: friendId1, source: friendId2))
+        guard let targetId = UUID(uuidString: friendId1),
+              let sourceId = UUID(uuidString: friendId2) else {
+            return
+        }
+        for email in Array(friends.keys) {
+            var friendList = friends[email] ?? []
+            guard let targetIndex = friendList.firstIndex(where: { $0.memberId == targetId }),
+                  let source = friendList.first(where: { $0.memberId == sourceId }) else {
+                continue
+            }
+            var target = friendList[targetIndex]
+            target.aliasMemberIds = Array(
+                Set((target.aliasMemberIds ?? []) + (source.aliasMemberIds ?? []) + [sourceId])
+            )
+            friendList[targetIndex] = target
+            friendList.removeAll { $0.memberId == sourceId }
+            friends[email] = friendList
+        }
+    }
+
+    func latestMergeUnlinkedFriendsCall() -> (target: String, source: String)? {
+        mergeUnlinkedFriendCalls.last
     }
 
     func validateAccountIds(_ ids: [String]) async throws -> Set<String> {

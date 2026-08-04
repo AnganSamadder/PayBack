@@ -6,10 +6,17 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var expenses: [UUID: Expense] = [:]
     private var participantsByExpenseId: [UUID: [ExpenseParticipant]] = [:]
     private var shouldFail: Bool = false
+    private var upsertDelaysNanoseconds: [UInt64] = []
+    private var upsertInvocationCount = 0
 
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
         if shouldFail {
             throw PayBackError.authSessionMissing
+        }
+        upsertInvocationCount += 1
+        let delay = upsertDelaysNanoseconds.isEmpty ? 0 : upsertDelaysNanoseconds.removeFirst()
+        if delay > 0 {
+            try await Task.sleep(nanoseconds: delay)
         }
         expenses[expense.id] = expense
         participantsByExpenseId[expense.id] = participants
@@ -74,10 +81,20 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         shouldFail = fail
     }
 
+    func setUpsertDelaysNanoseconds(_ delays: [UInt64]) {
+        upsertDelaysNanoseconds = delays
+    }
+
+    func currentUpsertInvocationCount() -> Int {
+        upsertInvocationCount
+    }
+
     func reset() {
         expenses.removeAll()
         participantsByExpenseId.removeAll()
         shouldFail = false
+        upsertDelaysNanoseconds.removeAll()
+        upsertInvocationCount = 0
     }
 
     func participants(for expenseId: UUID) -> [ExpenseParticipant]? {

@@ -229,8 +229,8 @@ struct SettingsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(store.friends.filter { !$0.hasLinkedAccount }.count < 2)
-                .opacity(store.friends.filter { !$0.hasLinkedAccount }.count < 2 ? 0.6 : 1)
+                .disabled(store.mergeableUnlinkedFriends.count < 2)
+                .opacity(store.mergeableUnlinkedFriends.count < 2 ? 0.6 : 1)
             }
             .background(
                 RoundedRectangle(cornerRadius: 16)

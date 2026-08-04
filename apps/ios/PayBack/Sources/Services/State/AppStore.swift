@@ -18,6 +18,12 @@ struct AuthenticationSessionIdentity: Sendable, Equatable {
 }
 
 final class AppStore: ObservableObject {
+    private struct RemoteLoadContext: Sendable {
+        let generation: UInt64
+        let accountId: String
+        let accountEmail: String
+    }
+
     private struct NormalizedRemoteData {
         let groups: [SpendingGroup]
         let expenses: [Expense]
@@ -50,6 +56,7 @@ final class AppStore: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
+    private var remoteLoadGeneration: UInt64 = 0
     /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseUpsertIds: Set<UUID> = []
     /// Local settlement writes that have been sent to cloud but not yet observed in realtime snapshots.
@@ -684,7 +691,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         print("[AuthDebug] signOut called. Current User: \(currentUser.name) (\(currentUser.id))")
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
-        remoteLoadTask?.cancel()
+        invalidateRemoteLoad()
         friendSyncTask?.cancel()
         hasCompletedInitialRemoteLoad = false
 
@@ -1290,12 +1297,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func directGroup(with memberId: UUID) -> SpendingGroup? {
-        groups.first { group in
-            (group.isDirect ?? false) &&
-            group.members.count == 2 &&
-            group.members.contains { $0.id == memberId } &&
-            group.members.contains { $0.id == currentUser.id }
-        }
+        existingDirectGroup(
+            for: accountFriendIdentityMemberIds(for: [memberId])
+        )
     }
 
     // MARK: - Friend Management
@@ -1705,6 +1709,42 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return master1 == master2
     }
 
+    /// Resolves only the identity edges explicitly attached to selected account friends.
+    /// Imported group members can retain a distinct local ID while pointing back to an
+    /// AccountFriend through `accountFriendMemberId`.
+    func accountFriendIdentityMemberIds(for rootMemberIds: [UUID]) -> Set<UUID> {
+        var identityIds = Set(rootMemberIds)
+        var didExpand = true
+
+        while didExpand {
+            didExpand = false
+
+            func isKnownIdentity(_ candidateId: UUID) -> Bool {
+                identityIds.contains { areSamePerson(candidateId, $0) }
+            }
+
+            for friend in friends {
+                let friendIds = [friend.memberId] + (friend.aliasMemberIds ?? [])
+                guard friendIds.contains(where: isKnownIdentity) else { continue }
+                for friendId in friendIds where identityIds.insert(friendId).inserted {
+                    didExpand = true
+                }
+            }
+
+            for group in groups {
+                for member in group.members {
+                    let memberIds = [member.id] + (member.accountFriendMemberId.map { [$0] } ?? [])
+                    guard memberIds.contains(where: isKnownIdentity) else { continue }
+                    for memberId in memberIds where identityIds.insert(memberId).inserted {
+                        didExpand = true
+                    }
+                }
+            }
+        }
+
+        return identityIds
+    }
+
     /// Returns all member IDs that represent the current user (their own ID + linked member ID if any)
     private var currentUserMemberIds: Set<UUID> {
         var ids: Set<UUID> = [currentUser.id]
@@ -1901,15 +1941,41 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
     }
 
+    @MainActor
     func loadRemoteData() async {
-        remoteLoadTask?.cancel()
+        remoteLoadGeneration &+= 1
+        let generation = remoteLoadGeneration
+        let previousLoad = remoteLoadTask
+        previousLoad?.cancel()
 
-        guard let session = self.session else {
+        guard let session else {
+            remoteLoadTask = nil
             #if DEBUG
             print("⚠️ Cannot load remote data: no active session")
             #endif
             return
         }
+
+        let context = RemoteLoadContext(
+            generation: generation,
+            accountId: session.account.id,
+            accountEmail: session.account.email.lowercased()
+        )
+        let loadTask = Task { @MainActor [weak self] in
+            await previousLoad?.value
+            guard let self else { return }
+            await self.performRemoteLoad(context: context)
+        }
+        remoteLoadTask = loadTask
+        await loadTask.value
+        if remoteLoadGeneration == generation {
+            remoteLoadTask = nil
+        }
+    }
+
+    @MainActor
+    private func performRemoteLoad(context: RemoteLoadContext) async {
+        guard isCurrentRemoteLoad(context) else { return }
 
         #if DEBUG
         print("[AppStore] Starting remote data fetch...")
@@ -1917,71 +1983,89 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         do {
             try? await expenseCloudService.clearLegacyMockExpenses()
+            guard isCurrentRemoteLoad(context) else { return }
 
             let remoteGroups = try await groupCloudService.fetchGroups()
+            guard isCurrentRemoteLoad(context) else { return }
             let remoteExpenses = try await expenseCloudService.fetchExpenses()
-            let remoteFriends = try await accountService.fetchFriends(accountEmail: session.account.email.lowercased())
+            guard isCurrentRemoteLoad(context) else { return }
+            let remoteFriends = try await accountService.fetchFriends(accountEmail: context.accountEmail)
+            guard isCurrentRemoteLoad(context) else { return }
 
             #if DEBUG
             print("[AppStore] Fetched \(remoteGroups.count) groups and \(remoteExpenses.count) expenses from cloud")
             #endif
 
-            let normalization = await MainActor.run {
-                self.normalizedRemoteData(groups: remoteGroups, expenses: remoteExpenses)
-            }
+            let normalization = normalizedRemoteData(groups: remoteGroups, expenses: remoteExpenses)
+            guard isCurrentRemoteLoad(context) else { return }
 
-            let mergedFriends = await MainActor.run { () -> [AccountFriend] in
-                self.groups = normalization.groups
-                self.expenses = normalization.expenses
-                self.hasCompletedInitialRemoteLoad = true
-                self.persistCurrentState()
-                self.logFetchedData(groups: normalization.groups, expenses: normalization.expenses)
-                self.processFriendsUpdate(remoteFriends)
-                self.normalizeDirectGroupFlags()
-                self.purgeCurrentUserFriendRecords()
-                self.pruneSelfOnlyDirectGroups()
-                return self.friends
-            }
+            groups = normalization.groups
+            expenses = normalization.expenses
+            hasCompletedInitialRemoteLoad = true
+            persistCurrentState()
+            logFetchedData(groups: normalization.groups, expenses: normalization.expenses)
+            processFriendsUpdate(remoteFriends)
+            normalizeDirectGroupFlags()
+            purgeCurrentUserFriendRecords()
+            pruneSelfOnlyDirectGroups()
+            let mergedFriends = friends
 
             // Perform state reconciliation to verify link status
-            await reconcileLinkState()
-        await startSessionMonitoring()
+            await reconcileLinkState(remoteLoadContext: context)
+            guard isCurrentRemoteLoad(context) else { return }
+            startSessionMonitoring()
 
-            // Push dirty records back to cloud
-            Task { [weak self] in
-                guard let self else { return }
-                for group in normalization.dirtyGroups {
-                    try? await self.groupCloudService.upsertGroup(group)
-                }
+            // Finish normalization writes before returning so an older snapshot cannot
+            // race with and overwrite a user edit that starts after remote loading.
+            for group in normalization.dirtyGroups {
+                guard isCurrentRemoteLoad(context) else { return }
+                try? await groupCloudService.upsertGroup(group)
             }
 
-            Task { [weak self] in
-                guard let self else { return }
-                for expense in normalization.dirtyExpenses {
-                    let expenseToSync = await MainActor.run { self.expenseForCloudSync(expense) }
-                    let participants = await MainActor.run { self.makeParticipants(for: expenseToSync) }
-                    try? await self.expenseCloudService.upsertExpense(expenseToSync, participants: participants)
-                }
+            for expense in normalization.dirtyExpenses {
+                guard isCurrentRemoteLoad(context) else { return }
+                let expenseToSync = expenseForCloudSync(expense)
+                let participants = makeParticipants(for: expenseToSync)
+                try? await expenseCloudService.upsertExpense(expenseToSync, participants: participants)
             }
 
-            Task { [weak self] in
-                guard let self, let session = self.session else { return }
-                try? await self.accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: mergedFriends)
-            }
+            guard isCurrentRemoteLoad(context) else { return }
+            try? await accountService.syncFriends(
+                accountEmail: context.accountEmail,
+                friends: mergedFriends
+            )
 
             #if DEBUG
             print("[AppStore] ✅ Remote data sync complete")
             #endif
         } catch {
-            await MainActor.run {
+            if isCurrentRemoteLoad(context) {
                 // If the initial fetch fails after a valid session exists, allow later realtime
                 // snapshots to repopulate the store once connectivity/auth recovers.
-                self.hasCompletedInitialRemoteLoad = true
+                hasCompletedInitialRemoteLoad = true
             }
             #if DEBUG
             print("⚠️ Failed to load remote data: \(error.localizedDescription)")
             #endif
         }
+    }
+
+    @MainActor
+    private func isCurrentRemoteLoad(_ context: RemoteLoadContext) -> Bool {
+        guard !Task.isCancelled,
+              remoteLoadGeneration == context.generation,
+              let session else {
+            return false
+        }
+        return session.account.id == context.accountId &&
+            session.account.email.lowercased() == context.accountEmail
+    }
+
+    @MainActor
+    private func invalidateRemoteLoad() {
+        remoteLoadGeneration &+= 1
+        remoteLoadTask?.cancel()
+        remoteLoadTask = nil
     }
 
     private func persistCurrentState() {
@@ -2952,6 +3036,22 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     // MARK: - Direct (person-to-person) helpers
+    private func existingDirectGroup(for friendMemberIds: Set<UUID>) -> SpendingGroup? {
+        groups.first { group in
+            guard group.isDirect == true, group.members.count == 2 else { return false }
+
+            let hasCurrentUser = group.members.contains { isMe($0.id) }
+            let hasFriend = group.members.contains { member in
+                guard !isMe(member.id) else { return false }
+                let memberIds = [member.id] + (member.accountFriendMemberId.map { [$0] } ?? [])
+                return memberIds.contains { memberId in
+                    friendMemberIds.contains { areSamePerson(memberId, $0) }
+                }
+            }
+            return hasCurrentUser && hasFriend
+        }
+    }
+
     func directGroup(with friend: GroupMember) -> SpendingGroup {
         guard !isCurrentUser(friend) else {
             #if DEBUG
@@ -2963,11 +3063,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 ?? SpendingGroup(name: currentUser.name, members: [currentUser], isDirect: true)
         }
 
-        // Try to find an existing EXPLICITLY marked direct group with exactly two members: currentUser and friend
-        if let existingIndex = groups.firstIndex(where: {
-            $0.isDirect == true && Set($0.members.map(\.id)) == Set([currentUser.id, friend.id])
-        }) {
-            let existing = groups[existingIndex]
+        let friendMemberIds = accountFriendIdentityMemberIds(
+            for: [friend.id] + (friend.accountFriendMemberId.map { [$0] } ?? [])
+        )
+        if let existing = existingDirectGroup(for: friendMemberIds) {
             return existing
         }
 
@@ -3519,6 +3618,87 @@ func completeAuthentication(id: String, email: String, name: String?) {
         try await accountService.syncFriends(accountEmail: session.account.email, friends: currentFriends)
     }
 
+    /// Renames a caller-owned unlinked friend and keeps local identity caches aligned.
+    @MainActor
+    func renameUnlinkedFriend(memberId: UUID, to rawName: String) async throws {
+        guard let session else {
+            throw PayBackError.authSessionMissing
+        }
+
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let friendIndex = friends.firstIndex(where: { $0.memberId == memberId }) else {
+            throw PayBackError.underlying(message: "Enter a name for this friend.")
+        }
+
+        let friend = friends[friendIndex]
+        guard !friend.hasLinkedAccount,
+              friend.linkedAccountId == nil,
+              friend.linkedAccountEmail == nil else {
+            throw PayBackError.underlying(
+                message: "Linked account names cannot be changed. Set a nickname instead."
+            )
+        }
+
+        let previousName = friend.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let identityMemberIds = accountFriendIdentityMemberIds(for: [memberId])
+
+        func matchesFriend(_ candidateId: UUID) -> Bool {
+            identityMemberIds.contains { areSamePerson(candidateId, $0) }
+        }
+
+        friends[friendIndex].name = name
+
+        var changedGroups: [SpendingGroup] = []
+        for groupIndex in groups.indices {
+            var changed = false
+            for memberIndex in groups[groupIndex].members.indices where
+                matchesFriend(groups[groupIndex].members[memberIndex].id) {
+                groups[groupIndex].members[memberIndex].name = name
+                changed = true
+            }
+
+            if changed,
+               groups[groupIndex].isDirect == true,
+               groups[groupIndex].name.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare(previousName) == .orderedSame {
+                groups[groupIndex].name = name
+            }
+            if changed {
+                changedGroups.append(groups[groupIndex])
+            }
+        }
+
+        var changedExpenses: [Expense] = []
+        for expenseIndex in expenses.indices {
+            guard var participantNames = expenses[expenseIndex].participantNames else {
+                continue
+            }
+            let equivalentIds = participantNames.keys.filter(matchesFriend)
+            guard !equivalentIds.isEmpty else { continue }
+            for equivalentId in equivalentIds {
+                participantNames[equivalentId] = name
+            }
+            expenses[expenseIndex].participantNames = participantNames
+            changedExpenses.append(expenses[expenseIndex])
+        }
+
+        persistCurrentState()
+        try await accountService.syncFriends(
+            accountEmail: session.account.email,
+            friends: friends
+        )
+        for group in changedGroups {
+            try await groupCloudService.upsertGroup(group)
+        }
+        for expense in changedExpenses {
+            try await expenseCloudService.upsertExpense(
+                expenseForCloudSync(expense),
+                participants: makeParticipants(for: expense)
+            )
+        }
+    }
+
     /// Updates the preferNickname flag for a friend
     func updateFriendPreferNickname(memberId: UUID, prefer: Bool) async throws {
         guard session != nil else {
@@ -3566,21 +3746,38 @@ func completeAuthentication(id: String, email: String, name: String?) {
         try await accountService.syncFriends(accountEmail: session.account.email, friends: currentFriends)
     }
 
-    /// Merges an unlinked friend into a linked friend
+    /// Merges two caller-owned, confirmed, unlinked friend records.
     func mergeFriend(unlinkedMemberId: UUID, into targetMemberId: UUID) async throws {
-        guard session != nil else {
+        guard let session else {
             throw PayBackError.authSessionMissing
         }
 
-        // Optimistically remove the unlinked friend from local state to reflect merge
-        await MainActor.run {
-            friends.removeAll { $0.memberId == unlinkedMemberId }
+        let mergeIds = try await MainActor.run { () throws -> (source: String, target: String) in
+            guard unlinkedMemberId != targetMemberId,
+                  let source = friends.first(where: { $0.memberId == unlinkedMemberId }),
+                  let target = friends.first(where: { $0.memberId == targetMemberId }),
+                  isMergeableUnlinkedFriend(source),
+                  isMergeableUnlinkedFriend(target) else {
+                throw PayBackError.underlying(
+                    message: "Only confirmed unlinked friends can be merged."
+                )
+            }
+            return (source.memberId.uuidString, target.memberId.uuidString)
         }
 
-        // Call backend to merge
-        try await accountService.mergeMemberIds(from: unlinkedMemberId, to: targetMemberId)
+        try await accountService.mergeUnlinkedFriends(
+            friendId1: mergeIds.target,
+            friendId2: mergeIds.source
+        )
 
-        // Force a data reload to get the updated state (merged expenses, etc)
+        // Keep the local source until the backend acknowledges the transaction and
+        // returns a canonical friend snapshot. A failed hydration remains retryable.
+        let remoteFriends = try await accountService.fetchFriends(
+            accountEmail: session.account.email.lowercased()
+        )
+        await MainActor.run {
+            processFriendsUpdate(remoteFriends)
+        }
         await loadRemoteData()
     }
 
@@ -3786,7 +3983,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     /// Reconciles link state between local and remote data
-    private func reconcileLinkState() async {
+    @MainActor
+    private func reconcileLinkState(remoteLoadContext: RemoteLoadContext? = nil) async {
+        if let remoteLoadContext, !isCurrentRemoteLoad(remoteLoadContext) { return }
         guard let session = session else { return }
 
         // Check if reconciliation is needed
@@ -3807,25 +4006,26 @@ func completeAuthentication(id: String, email: String, name: String?) {
             let remoteFriends = try await accountService.fetchFriends(
                 accountEmail: session.account.email.lowercased()
             )
+            if let remoteLoadContext, !isCurrentRemoteLoad(remoteLoadContext) { return }
 
             // Reconcile with local state
-            let localFriends = await MainActor.run { self.friends }
+            let localFriends = friends
             let reconciledFriends = await stateReconciliation.reconcile(
                 localFriends: localFriends,
                 remoteFriends: remoteFriends
             )
+            if let remoteLoadContext, !isCurrentRemoteLoad(remoteLoadContext) { return }
 
             // Update local state if changes were made
-            await MainActor.run {
-                if self.friends != reconciledFriends {
-                    #if DEBUG
-                    print("[AppStore] Reconciliation updated \(reconciledFriends.count) friends (before dedupe)")
-                    #endif
-                    self.processFriendsUpdate(reconciledFriends)
-                }
+            if friends != reconciledFriends {
+                #if DEBUG
+                print("[AppStore] Reconciliation updated \(reconciledFriends.count) friends (before dedupe)")
+                #endif
+                processFriendsUpdate(reconciledFriends)
             }
 
             // Retry any failed operations
+            if let remoteLoadContext, !isCurrentRemoteLoad(remoteLoadContext) { return }
             await retryFailedLinkOperations()
 
         } catch {
@@ -3956,7 +4156,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             return false
         }
 
-        if let status, status == "friend" || status == "accepted" {
+        if let status, status == "friend" || status == "accepted" || status == "manual" {
             return true
         }
 
@@ -3973,6 +4173,19 @@ func completeAuthentication(id: String, email: String, name: String?) {
             return true
         }
         return !appearsInAnyNonDirectGroup(memberId: friend.memberId)
+    }
+
+    func isMergeableUnlinkedFriend(_ friend: AccountFriend) -> Bool {
+        guard !friend.hasLinkedAccount,
+              friend.linkedAccountId == nil,
+              friend.linkedAccountEmail == nil else {
+            return false
+        }
+        return isSelectableDirectExpenseFriend(friend)
+    }
+
+    var mergeableUnlinkedFriends: [AccountFriend] {
+        friends.filter(isMergeableUnlinkedFriend)
     }
 
     // MARK: - Friend Status Visibility Helpers

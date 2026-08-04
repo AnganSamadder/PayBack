@@ -340,6 +340,68 @@ final class AppStoreRemoteDataTests: XCTestCase {
         XCTAssertEqual(foundGroup.id, existingGroup.id)
     }
 
+    func testDirectGroupByMemberId_ReusesCanonicalGroupForFriendCardAlias() async throws {
+        let scenario = try await loadAliasedDirectGroupScenario()
+
+        let foundGroup = sut.directGroup(with: scenario.friendCardAliasId)
+
+        XCTAssertEqual(foundGroup?.id, scenario.existingGroup.id)
+    }
+
+    func testDirectGroupByMember_ReusesCanonicalGroupForFriendCardAlias() async throws {
+        let scenario = try await loadAliasedDirectGroupScenario()
+        let friendCardMember = GroupMember(
+            id: scenario.friendCardAliasId,
+            name: "Alice",
+            accountFriendMemberId: scenario.friendCardAliasId
+        )
+
+        let foundGroup = sut.directGroup(with: friendCardMember)
+
+        XCTAssertEqual(foundGroup.id, scenario.existingGroup.id)
+        XCTAssertEqual(sut.groups.count, 1, "Identity-equivalent direct groups must not be duplicated")
+    }
+
+    private func loadAliasedDirectGroupScenario() async throws -> (existingGroup: SpendingGroup, friendCardAliasId: UUID) {
+        let currentUserAliasId = UUID()
+        let friendCardAliasId = UUID()
+        let canonicalFriendId = UUID()
+        let account = UserAccount(
+            id: "test-123",
+            email: "test@example.com",
+            displayName: "Example User",
+            equivalentMemberIds: [currentUserAliasId]
+        )
+        let friend = AccountFriend(
+            memberId: friendCardAliasId,
+            name: "Alice",
+            hasLinkedAccount: true,
+            linkedAccountId: "alice-account",
+            linkedAccountEmail: "alice@example.com",
+            aliasMemberIds: [friendCardAliasId, canonicalFriendId]
+        )
+        let existingGroup = SpendingGroup(
+            name: "Alice",
+            members: [
+                GroupMember(id: currentUserAliasId, name: "Current User Alias"),
+                GroupMember(
+                    id: canonicalFriendId,
+                    name: "Alice",
+                    accountFriendMemberId: friendCardAliasId
+                )
+            ],
+            isDirect: true
+        )
+
+        await mockGroupCloudService.addGroup(existingGroup)
+        await mockAccountService.addAccount(account)
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [friend])
+        sut.session = UserSession(account: account)
+        await sut.loadRemoteData()
+
+        return (existingGroup, friendCardAliasId)
+    }
+
     // MARK: - Complex Normalization Tests (to increase coverage)
 
     func testCompleteAuthentication_WithCurrentUserAliasInGroup() async throws {

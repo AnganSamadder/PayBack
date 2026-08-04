@@ -5,6 +5,9 @@ import Foundation
 actor MockGroupCloudServiceForAppStore: GroupCloudService {
     private var groups: [UUID: SpendingGroup] = [:]
     private var shouldFail: Bool = false
+    private var queuedFetchGroups: [[SpendingGroup]] = []
+    private var queuedFetchDelaysNanoseconds: [UInt64] = []
+    private var fetchInvocationCount = 0
 
     func upsertGroup(_ group: SpendingGroup) async throws {
         if shouldFail {
@@ -17,7 +20,13 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         if shouldFail {
             throw PayBackError.authSessionMissing
         }
-        return Array(groups.values)
+        fetchInvocationCount += 1
+        let result = queuedFetchGroups.isEmpty ? Array(groups.values) : queuedFetchGroups.removeFirst()
+        let delay = queuedFetchDelaysNanoseconds.isEmpty ? 0 : queuedFetchDelaysNanoseconds.removeFirst()
+        if delay > 0 {
+            try await Task.sleep(nanoseconds: delay)
+        }
+        return result
     }
 
     func deleteGroups(_ groupIds: [UUID]) async throws {
@@ -56,8 +65,20 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         shouldFail = fail
     }
 
+    func queueFetches(groups: [[SpendingGroup]], delaysNanoseconds: [UInt64]) {
+        queuedFetchGroups = groups
+        queuedFetchDelaysNanoseconds = delaysNanoseconds
+    }
+
+    func currentFetchInvocationCount() -> Int {
+        fetchInvocationCount
+    }
+
     func reset() {
         groups.removeAll()
         shouldFail = false
+        queuedFetchGroups.removeAll()
+        queuedFetchDelaysNanoseconds.removeAll()
+        fetchInvocationCount = 0
     }
 }

@@ -109,6 +109,89 @@ final class UIViewsMinimalTests: XCTestCase {
         )
     }
 
+    func test_mergeFriends_combinedExpenseCountDeduplicatesAndResolvesAliases() {
+        let sourceId = UUID()
+        let sourceAliasId = UUID()
+        let targetId = UUID()
+        let unrelatedId = UUID()
+        let sharedExpense = Expense(
+            groupId: UUID(),
+            description: "Shared",
+            totalAmount: 30,
+            paidByMemberId: sourceId,
+            involvedMemberIds: [sourceId, targetId],
+            splits: []
+        )
+        let aliasExpense = Expense(
+            groupId: UUID(),
+            description: "Alias",
+            totalAmount: 10,
+            paidByMemberId: sourceAliasId,
+            involvedMemberIds: [sourceAliasId],
+            splits: []
+        )
+        let unrelatedExpense = Expense(
+            groupId: UUID(),
+            description: "Other",
+            totalAmount: 5,
+            paidByMemberId: unrelatedId,
+            involvedMemberIds: [unrelatedId],
+            splits: []
+        )
+
+        let count = MergeFriendsLogic.combinedExpenseCount(
+            expenses: [sharedExpense, aliasExpense, unrelatedExpense],
+            memberIds: [sourceId, targetId]
+        ) { lhs, rhs in
+            lhs == rhs || Set([lhs, rhs]) == Set([sourceId, sourceAliasId])
+        }
+
+        XCTAssertEqual(count, 2)
+    }
+
+    func test_friendNameEditing_removeNicknameIsLimitedToLinkedFriends() {
+        XCTAssertTrue(
+            FriendNameEditingLogic.shouldShowRemoveNickname(
+                isLinked: true,
+                currentNickname: "Nickname"
+            )
+        )
+        XCTAssertFalse(
+            FriendNameEditingLogic.shouldShowRemoveNickname(
+                isLinked: false,
+                currentNickname: "Legacy nickname"
+            )
+        )
+        XCTAssertFalse(
+            FriendNameEditingLogic.shouldShowRemoveNickname(
+                isLinked: true,
+                currentNickname: nil
+            )
+        )
+    }
+
+    func test_friendNameEditing_requiresNonemptyUnlinkedName() {
+        XCTAssertFalse(FriendNameEditingLogic.canSave(isLinked: false, text: "   \n"))
+        XCTAssertTrue(FriendNameEditingLogic.canSave(isLinked: false, text: "New Name"))
+    }
+
+    func test_friendNameEditing_allowsBlankLinkedNicknameForRemoval() {
+        XCTAssertTrue(FriendNameEditingLogic.canSave(isLinked: true, text: ""))
+    }
+
+    func test_friendNameEditing_preservesSpecificPayBackErrors() {
+        let validationError = PayBackError.underlying(message: "Enter a name for this friend.")
+
+        XCTAssertEqual(
+            FriendNameEditingLogic.displayError(from: validationError).errorDescription,
+            validationError.errorDescription
+        )
+        XCTAssertEqual(
+            FriendNameEditingLogic.displayError(from: NSError(domain: "test", code: 1)).errorDescription,
+            PayBackError.networkUnavailable.errorDescription
+        )
+    }
+
     // MARK: - ActivityView Tests
 
     func test_activityView_navigationState_hashable() {
