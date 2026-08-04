@@ -38,6 +38,7 @@ struct TabNavigationState: Equatable {
     }
 
     mutating func resetAllToRoot() {
+        selectedTab = .friends
         resetFriendsToRoot()
         resetGroupsToRoot()
         resetActivityToRoot()

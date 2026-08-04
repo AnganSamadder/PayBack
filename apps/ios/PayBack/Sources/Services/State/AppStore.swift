@@ -29,6 +29,7 @@ final class AppStore: ObservableObject {
     @Published var expenses: [Expense]
     @Published var currentUser: GroupMember
     @Published var session: UserSession?
+    @Published private(set) var dataEpoch = UUID()
     @Published var friends: [AccountFriend]
     @Published private(set) var incomingLinkRequests: [LinkRequest] = []
     @Published private(set) var outgoingLinkRequests: [LinkRequest] = []
@@ -738,6 +739,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         pendingExpenseUpsertIds.removeAll()
         pendingExpenseSettlementIds.removeAll()
         pendingExpenseDeleteIds.removeAll()
+        dataEpoch = UUID()
 
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
         // Without this, the next user logging in could inherit this user's member ID

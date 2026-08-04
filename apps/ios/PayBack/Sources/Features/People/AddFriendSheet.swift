@@ -15,6 +15,18 @@ struct AddFriendSheet: View {
         case error(String)
     }
 
+    static func shouldShowSubmissionStatus(
+        mode: AddMode,
+        state: SubmissionState
+    ) -> Bool {
+        switch state {
+        case .error:
+            true
+        case .idle, .sending:
+            mode == .byEmail
+        }
+    }
+
     struct EmailDraft {
         private(set) var memberId: UUID
         private var attemptedRecipientEmail: String?
@@ -95,8 +107,7 @@ struct AddFriendSheet: View {
                     emailInputSection
                 }
 
-                // Submission status (only for email mode)
-                if mode == .byEmail {
+                if Self.shouldShowSubmissionStatus(mode: mode, state: submissionState) {
                     submissionStatusSection
                 }
             }
@@ -131,6 +142,9 @@ struct AddFriendSheet: View {
             TextField("Friend's Name", text: $name)
                 .textContentType(.name)
                 .autocapitalization(.words)
+                .onChange(of: name) { _, _ in
+                    clearSubmissionError()
+                }
         } header: {
             Text("Friend's Name")
         } footer: {
@@ -165,6 +179,9 @@ struct AddFriendSheet: View {
                 .textContentType(.name)
                 .autocapitalization(.words)
                 .disabled(submissionState == .sending)
+                .onChange(of: name) { _, _ in
+                    clearSubmissionError()
+                }
         } header: {
             Text("Friend Details")
         } footer: {
@@ -209,7 +226,7 @@ struct AddFriendSheet: View {
                 }
                 .padding(.vertical, 4)
             } header: {
-                Text("Link Request")
+                Text(mode == .byEmail ? "Link Request" : "Friend")
             }
         }
     }
@@ -243,6 +260,12 @@ struct AddFriendSheet: View {
     }
 
     // MARK: - Actions
+
+    private func clearSubmissionError() {
+        if case .error = submissionState {
+            submissionState = .idle
+        }
+    }
 
     private func addFriendByName() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)

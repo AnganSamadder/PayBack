@@ -5,6 +5,7 @@ struct ActivityView: View {
     @Binding var path: [ActivityRoute]
     @Binding var selectedSegment: Int
     var rootResetToken: UUID = UUID()
+    @State private var showDebugClearConfirmation = false
 
     // Backward-compatible enum retained for tests that reference ActivityView.ActivityNavigationState.
     enum ActivityNavigationState: Hashable {
@@ -41,9 +42,12 @@ struct ActivityView: View {
                                     .fill(.orange.opacity(0.1))
                             )
                     }
+                    .accessibilityLabel("Seed Debug Data")
 
                     // Clear debug data button (red)
-                    Button(action: clearAllData) {
+                    Button {
+                        showDebugClearConfirmation = true
+                    } label: {
                         Image(systemName: "trash.circle.fill")
                             .font(.title2)
                             .foregroundStyle(.red)
@@ -53,6 +57,7 @@ struct ActivityView: View {
                                     .fill(.red.opacity(0.1))
                             )
                     }
+                    .accessibilityLabel("Clear Debug Data")
                 }
             }
             .padding(.horizontal, 16)
@@ -79,6 +84,12 @@ struct ActivityView: View {
                 .tag(1)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+        }
+        .alert("Clear Generated Debug Data?", isPresented: $showDebugClearConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear Generated Data", role: .destructive, action: clearAllData)
+        } message: {
+            Text("Only PayBack-generated debug groups and expenses will be removed.")
         }
     }
 

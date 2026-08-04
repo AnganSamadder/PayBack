@@ -94,6 +94,21 @@ final class UIViewsMinimalTests: XCTestCase {
         XCTAssertNotEqual(error1, error2)
     }
 
+    func test_addFriendSheet_nameModeShowsErrorsButNotEmailProgress() {
+        XCTAssertTrue(
+            AddFriendSheet.shouldShowSubmissionStatus(
+                mode: .byName,
+                state: .error("A friend with this name already exists.")
+            )
+        )
+        XCTAssertFalse(
+            AddFriendSheet.shouldShowSubmissionStatus(mode: .byName, state: .idle)
+        )
+        XCTAssertFalse(
+            AddFriendSheet.shouldShowSubmissionStatus(mode: .byName, state: .sending)
+        )
+    }
+
     // MARK: - ActivityView Tests
 
     func test_activityView_navigationState_hashable() {

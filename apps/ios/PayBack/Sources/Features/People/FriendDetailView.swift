@@ -1,5 +1,11 @@
 import SwiftUI
 
+enum FriendNameEditingLogic {
+    static func initialText(currentNickname: String?, fallbackName: String) -> String {
+        currentNickname ?? fallbackName
+    }
+}
+
 struct FriendDetailView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
@@ -879,7 +885,10 @@ struct FriendDetailView: View {
                 // Nickname edit button
                 Button(action: {
                     Haptics.selection()
-                    nicknameText = currentNickname ?? ""
+                    nicknameText = FriendNameEditingLogic.initialText(
+                        currentNickname: currentNickname,
+                        fallbackName: friend.name
+                    )
                     preferNickname = accountFriend?.preferNickname ?? false
                     displayPreferenceSelection = accountFriend?.displayPreference
                     isEditingNickname = true

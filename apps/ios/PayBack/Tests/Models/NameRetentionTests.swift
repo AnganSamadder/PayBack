@@ -7,6 +7,12 @@ import XCTest
 /// - A's originalName stores what A called B before
 /// - "Originally X" is displayed in the UI
 final class NameRetentionTests: XCTestCase {
+    func testEditNameDraftFallsBackToCurrentFriendName() {
+        XCTAssertEqual(
+            FriendNameEditingLogic.initialText(currentNickname: nil, fallbackName: "Alice"),
+            "Alice"
+        )
+    }
 
     // MARK: - Scenario 1: Different names - original stored
 
