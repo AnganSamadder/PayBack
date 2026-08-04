@@ -5,6 +5,7 @@ import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./a
 import { checkRateLimit } from "./rateLimit";
 import {
   assertIdentityMaterializationReady,
+  findAliasByAliasMemberId,
   findAccountByAuthIdOrDocId,
   normalizeMemberId,
   syncAccountAliasMaterialization
@@ -505,6 +506,9 @@ export const updateLinkedMemberId = mutation({
     }
 
     const requestedMemberId = normalizeMemberId(args.member_id);
+    if (!requestedMemberId) {
+      throw new Error("member_id is required");
+    }
     const existingCanonical = user.member_id ? normalizeMemberId(user.member_id) : undefined;
 
     // Harden against identity spoofing:
@@ -525,6 +529,9 @@ export const updateLinkedMemberId = mutation({
       .unique();
     if (takenByAccount && takenByAccount._id !== user._id) {
       throw new Error("Forbidden: member_id already in use");
+    }
+    if (await findAliasByAliasMemberId(ctx.db, args.member_id)) {
+      throw new Error("Forbidden: member_id already used as alias");
     }
 
     const updatedAliases = Array.from(

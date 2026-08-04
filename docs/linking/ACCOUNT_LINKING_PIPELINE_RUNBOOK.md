@@ -22,22 +22,29 @@ This runbook defines the canonical identity/linking pipeline for PayBack across 
 5. Alias conflicts (alias already mapped to a different canonical) must fail with deterministic error code `ALIAS_CONFLICT`.
 6. Alias cycles must fail with deterministic error code `ALIAS_CYCLE`.
 7. Invite claim and link-request accept must run the same backend claim core.
+8. An alias must never reuse any `accounts.member_id`; direct canonical accounts take precedence
+   during resolution and alias materialization rejects the collision with `ALIAS_CONFLICT`.
 
 ## Indexed Identity Rollout
 
 Identity mutations that depend on the complete alias index require
-`identity_materialization_state/member_identity_v1` to be `ready`. Missing or pending state fails
-atomically with `Identity maintenance required`; it must never enable an unindexed fallback scan.
+`identity_materialization_state/member_identity_v2` to be `ready`. Missing or pending state fails
+atomically with `Identity maintenance required`. Ordinary reads remain available during rollout
+through bounded compatibility reads over at most 512 account and alias rows. Those reads reject
+ambiguous alias ownership, canonical shadowing, or a larger deployment with an explicit identity
+maintenance error. Once v2 is ready, lookup is indexed-only and performs no compatibility table
+read. The former `member_identity_v1` marker is intentionally ignored because v2 adds the
+alias-versus-canonical-account collision audit.
 The following flows pause until the migration completes:
 
 - normal, merge-selected, and internal invite claims;
 - link-request acceptance;
-- bulk imports containing linked friend identity metadata;
+- all bulk imports, because every import canonicalizes and writes member IDs;
 - linked and unlinked friend cleanup;
 - legacy canonical-member bootstrap through `users:updateLinkedMemberId`;
 - explicit member/friend merge operations.
 
-Non-linked imports and operations that do not mutate canonical or alias identity remain available.
+Operations that do not canonicalize or mutate member identity remain available.
 
 Run the internal migration repeatedly after deploying the schema/backend change:
 
@@ -49,8 +56,9 @@ Repeat until the response reports `status: "ready"`. The migration first normali
 alias rows, then normalizes accounts and materializes account aliases in resumable batches. State
 stores the current account and alias offset, so a large account never requires one transaction.
 If `lastError` reports conflicting canonical ownership or an identity maintenance bound, repair the
-named identity and resume. Account-phase errors remain recorded without advancing the account
-cursor or committing a partial alias batch.
+named identity and resume. Before advancing each account, the migration also verifies that no
+normalized alias shadows its canonical member ID. Account-phase errors remain recorded without
+advancing the account cursor or committing a partial alias batch.
 
 For a clean installation, run the same command until ready; an empty database normally completes
 in two calls. Do not manually insert or flip the readiness row. Rollback requires removing the
@@ -62,8 +70,13 @@ Live writes are deliberately smaller than migration batches:
 - account alias arrays above 256 require maintenance instead of live scanning;
 - invite claim adds only its one new indexed account-alias row;
 - cleanup removes only explicitly requested `source_account_id` rows;
-- standalone aliases from `mergeMemberIds`, imports, and historical claims are never deleted by
-  unrelated account-array synchronization.
+- `bulkImport` never creates standalone aliases; identity aliases are created only by trusted
+  linking flows and are never deleted by unrelated account-array synchronization.
+
+Identity lookup and collision guards use exact-index probes first: normalized ID, then the trimmed
+raw value for legacy mixed-case rows. While v2 is pending, the shared compatibility helpers add the
+bounded reads described above so viewer, group, and expense identity surfaces do not lose aliases
+mid-rollout. Do not add unbounded fallback scans or bypass the shared conflict checks.
 
 ## Contract Versioning
 
@@ -203,6 +216,13 @@ Rules:
 - Resolve canonical IDs from aliases before write.
 - Normalize all member ID fields.
 - Never perform name-only auto merge as a canonical identity decision.
+- Treat imported `linked_account_id`, `linked_account_email`, and participant metadata as
+  untrusted hints; they cannot create a link, alias, or expense visibility row.
+- Preserve a linked friend only when its existing server row has `link_state: "linked"` and its
+  persisted `linked_account_id` resolves to an active account. Canonicalize email and member ID
+  from that account; otherwise import the friend as unlinked.
+- Derive imported expense participant metadata and fanout only from the authenticated account and
+  server-proven linked friends.
 
 ## Troubleshooting Checklist
 

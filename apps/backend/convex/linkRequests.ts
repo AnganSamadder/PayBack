@@ -224,6 +224,7 @@ export const accept = mutation({
       throw new Error("Requester account is no longer active");
     }
 
+    await assertIdentityMaterializationReady(ctx.db);
     const targetFriend = request.target_friend_id
       ? await ctx.db.get(request.target_friend_id)
       : await ctx.db
@@ -243,7 +244,6 @@ export const accept = mutation({
       throw new Error("Target member is no longer an unlinked friend owned by the requester");
     }
 
-    await assertIdentityMaterializationReady(ctx.db);
     // Update request status first to preserve idempotency semantics.
     await ctx.db.patch(request._id, {
       status: "accepted"

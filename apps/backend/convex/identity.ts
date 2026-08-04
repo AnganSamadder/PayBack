@@ -2,7 +2,12 @@ import { Doc } from "./_generated/dataModel";
 import { DatabaseReader, MutationCtx } from "./_generated/server";
 
 export const LINKING_CONTRACT_VERSION = 2;
-export const IDENTITY_MATERIALIZATION_KEY = "member_identity_v1";
+export const IDENTITY_MATERIALIZATION_KEY = "member_identity_v2";
+export const MAX_LIVE_ACCOUNT_ALIASES = 256;
+export const MAX_LIVE_ALIAS_DELTA = 16;
+export const MAX_ALIAS_ROWS_PER_MEMBER_ID = 8;
+
+const MAX_PENDING_IDENTITY_ROWS = 512;
 
 export const LINKING_ERROR_CODES = {
   aliasConflict: "ALIAS_CONFLICT",
@@ -30,33 +35,88 @@ export function deterministicLinkingError(code: string, details: string): Error 
   return new Error(`${code}:${details}`);
 }
 
-export async function assertIdentityMaterializationReady(db: DatabaseReader): Promise<void> {
+function pendingIdentityMaintenanceError(table: "accounts" | "aliases"): Error {
+  return new Error(
+    `Identity maintenance required: pending compatibility ${table} lookup exceeds ${MAX_PENDING_IDENTITY_ROWS} rows`
+  );
+}
+
+export async function isIdentityMaterializationReady(db: DatabaseReader): Promise<boolean> {
   const state = await db
     .query("identity_materialization_state")
     .withIndex("by_key", (q) => q.eq("key", IDENTITY_MATERIALIZATION_KEY))
     .unique();
-  if (state?.status !== "ready") {
+  return state?.status === "ready";
+}
+
+export async function assertIdentityMaterializationReady(db: DatabaseReader): Promise<void> {
+  if (!(await isIdentityMaterializationReady(db))) {
     throw new Error(
       "Identity maintenance required: indexed identity migration is not complete; try again later"
     );
   }
 }
 
-async function findCanonicalAccountByMemberId(db: DatabaseReader, memberId: string) {
+export async function findDirectAccountByMemberId(db: DatabaseReader, memberId: string) {
+  const raw = memberId.trim();
   const normalized = normalizeMemberId(memberId);
+  if (!normalized) return null;
+
   const exact = await db
     .query("accounts")
     .withIndex("by_member_id", (q) => q.eq("member_id", normalized))
     .first();
-  if (exact) return exact;
 
-  if (memberId !== normalized) {
-    return await db
+  let legacyExact: typeof exact = null;
+  if (raw !== normalized) {
+    legacyExact = await db
       .query("accounts")
-      .withIndex("by_member_id", (q) => q.eq("member_id", memberId))
+      .withIndex("by_member_id", (q) => q.eq("member_id", raw))
       .first();
   }
-  return null;
+
+  if (await isIdentityMaterializationReady(db)) return exact ?? legacyExact;
+  const accounts = await db.query("accounts").take(MAX_PENDING_IDENTITY_ROWS + 1);
+  if (accounts.length > MAX_PENDING_IDENTITY_ROWS) {
+    throw pendingIdentityMaintenanceError("accounts");
+  }
+  const matches = accounts.filter(
+    (account) => account.member_id && normalizeMemberId(account.member_id) === normalized
+  );
+  if (matches.length > 1) {
+    throw new Error(`Identity maintenance required: conflicting canonical identity ${normalized}`);
+  }
+  return matches[0] ?? null;
+}
+
+async function findPendingAccountByAliasMemberId(db: DatabaseReader, memberId: string) {
+  const normalized = normalizeMemberId(memberId);
+  if (!normalized || (await isIdentityMaterializationReady(db))) return null;
+
+  const accounts = await db.query("accounts").take(MAX_PENDING_IDENTITY_ROWS + 1);
+  if (accounts.length > MAX_PENDING_IDENTITY_ROWS) {
+    throw pendingIdentityMaintenanceError("accounts");
+  }
+  const matches = accounts.filter((account) =>
+    normalizeMemberIds(account.alias_member_ids).includes(normalized)
+  );
+  if (matches.length > 1) {
+    throw new Error(`Identity maintenance required: conflicting account alias ${normalized}`);
+  }
+  return matches[0] ?? null;
+}
+
+async function assertAliasDoesNotShadowCanonicalAccount(
+  db: DatabaseReader,
+  aliasMemberId: string
+): Promise<void> {
+  const account = await findDirectAccountByMemberId(db, aliasMemberId);
+  if (!account) return;
+
+  throw deterministicLinkingError(
+    LINKING_ERROR_CODES.aliasConflict,
+    `alias_member_id=${normalizeMemberId(aliasMemberId)},canonical_account_id=${account.id}`
+  );
 }
 
 /**
@@ -74,10 +134,24 @@ export async function findAccountByMemberId(
     if (!normalized || visited.has(normalized)) return null;
     visited.add(normalized);
 
-    const account = await findCanonicalAccountByMemberId(db, currentMemberId);
+    const account = await findDirectAccountByMemberId(db, currentMemberId);
     if (account) return account;
 
+    const pendingAliasAccount = await findPendingAccountByAliasMemberId(db, currentMemberId);
     const alias = await findAliasByAliasMemberId(db, currentMemberId);
+    if (pendingAliasAccount) {
+      const accountCanonical = pendingAliasAccount.member_id
+        ? normalizeMemberId(pendingAliasAccount.member_id)
+        : undefined;
+      if (
+        alias &&
+        accountCanonical &&
+        normalizeMemberId(alias.canonical_member_id) !== accountCanonical
+      ) {
+        throw new Error(`Identity maintenance required: conflicting account alias ${normalized}`);
+      }
+      return pendingAliasAccount;
+    }
     if (!alias) return null;
     currentMemberId = alias.canonical_member_id;
   }
@@ -117,17 +191,128 @@ export async function findAliasByAliasMemberId(
     .query("member_aliases")
     .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", normalized))
     .first();
-  if (exact) return exact;
 
+  let legacyExact: typeof exact = null;
   if (memberId !== normalized) {
-    const legacyExact = await db
+    legacyExact = await db
       .query("member_aliases")
       .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", memberId))
       .first();
-    if (legacyExact) return legacyExact;
   }
 
-  return null;
+  if (await isIdentityMaterializationReady(db)) return exact ?? legacyExact;
+  const aliases = await db.query("member_aliases").take(MAX_PENDING_IDENTITY_ROWS + 1);
+  if (aliases.length > MAX_PENDING_IDENTITY_ROWS) {
+    throw pendingIdentityMaintenanceError("aliases");
+  }
+  const matches = aliases.filter(
+    (alias) => normalizeMemberId(alias.alias_member_id) === normalized
+  );
+  const canonicalIds = new Set(
+    matches.map((alias) => normalizeMemberId(alias.canonical_member_id))
+  );
+  if (canonicalIds.size > 1) {
+    throw new Error(`Identity maintenance required: conflicting alias identity ${normalized}`);
+  }
+  return matches[0] ?? null;
+}
+
+export async function getEquivalentAliasMemberIds(
+  db: DatabaseReader,
+  canonicalMemberId: string
+): Promise<string[]> {
+  const raw = canonicalMemberId.trim();
+  const normalized = normalizeMemberId(canonicalMemberId);
+  const indexedRows = await db
+    .query("member_aliases")
+    .withIndex("by_canonical_member_id", (q) => q.eq("canonical_member_id", normalized))
+    .take(MAX_LIVE_ACCOUNT_ALIASES + 1);
+  if (indexedRows.length > MAX_LIVE_ACCOUNT_ALIASES) {
+    throw new Error("Identity maintenance required: too many aliases for a live lookup");
+  }
+
+  if (raw !== normalized) {
+    const rawRows = await db
+      .query("member_aliases")
+      .withIndex("by_canonical_member_id", (q) => q.eq("canonical_member_id", raw))
+      .take(MAX_LIVE_ACCOUNT_ALIASES + 1);
+    indexedRows.push(...rawRows);
+  }
+
+  const aliases = new Set(indexedRows.map((row) => normalizeMemberId(row.alias_member_id)));
+  if (!(await isIdentityMaterializationReady(db))) {
+    const [legacyAliases, accounts] = await Promise.all([
+      db.query("member_aliases").take(MAX_PENDING_IDENTITY_ROWS + 1),
+      db.query("accounts").take(MAX_PENDING_IDENTITY_ROWS + 1)
+    ]);
+    if (legacyAliases.length > MAX_PENDING_IDENTITY_ROWS) {
+      throw pendingIdentityMaintenanceError("aliases");
+    }
+    if (accounts.length > MAX_PENDING_IDENTITY_ROWS) {
+      throw pendingIdentityMaintenanceError("accounts");
+    }
+    for (const alias of legacyAliases) {
+      if (normalizeMemberId(alias.canonical_member_id) === normalized) {
+        aliases.add(normalizeMemberId(alias.alias_member_id));
+      }
+    }
+    for (const alias of aliases) {
+      const canonicalShadow = accounts.find(
+        (account) =>
+          account.member_id &&
+          normalizeMemberId(account.member_id) === alias &&
+          normalizeMemberId(account.member_id) !== normalized
+      );
+      if (canonicalShadow) {
+        throw new Error(
+          `Identity maintenance required: alias ${alias} shadows a canonical account`
+        );
+      }
+    }
+    const canonicalAccounts = accounts.filter(
+      (account) => account.member_id && normalizeMemberId(account.member_id) === normalized
+    );
+    if (canonicalAccounts.length > 1) {
+      throw new Error(
+        `Identity maintenance required: conflicting canonical identity ${normalized}`
+      );
+    }
+    for (const account of canonicalAccounts) {
+      for (const accountAlias of normalizeMemberIds(account.alias_member_ids)) {
+        const accountClaimants = accounts.filter((candidate) =>
+          normalizeMemberIds(candidate.alias_member_ids).includes(accountAlias)
+        );
+        if (accountClaimants.length > 1) {
+          throw new Error(
+            `Identity maintenance required: conflicting account alias ${accountAlias}`
+          );
+        }
+        const canonicalShadow = accounts.find(
+          (candidate) =>
+            candidate._id !== account._id &&
+            candidate.member_id &&
+            normalizeMemberId(candidate.member_id) === accountAlias
+        );
+        const conflictingAliasRow = legacyAliases.find(
+          (candidate) =>
+            normalizeMemberId(candidate.alias_member_id) === accountAlias &&
+            normalizeMemberId(candidate.canonical_member_id) !== normalized
+        );
+        if (canonicalShadow || conflictingAliasRow) {
+          throw new Error(
+            `Identity maintenance required: conflicting account alias ${accountAlias}`
+          );
+        }
+        aliases.add(accountAlias);
+      }
+    }
+  }
+
+  aliases.delete(normalized);
+  if (aliases.size > MAX_LIVE_ACCOUNT_ALIASES) {
+    throw new Error("Identity maintenance required: too many aliases for a live lookup");
+  }
+  return Array.from(aliases);
 }
 
 export type AliasMaterializationResult = {
@@ -135,10 +320,6 @@ export type AliasMaterializationResult = {
   updated: number;
   removed: number;
 };
-
-export const MAX_LIVE_ACCOUNT_ALIASES = 256;
-export const MAX_LIVE_ALIAS_DELTA = 16;
-export const MAX_ALIAS_ROWS_PER_MEMBER_ID = 8;
 
 function aliasMaintenanceError(details: string): Error {
   return new Error(`Identity maintenance required: ${details}`);
@@ -169,6 +350,7 @@ export async function preflightAccountAliasMaterialization(
     return { canonicalMemberId, normalizedAlias, alreadyMaterialized: true };
   }
 
+  await assertAliasDoesNotShadowCanonicalAccount(ctx.db, aliasMemberId);
   const rows = await boundedAliasRows(ctx, normalizedAlias);
   const conflictingRow = rows.find(
     (row) => normalizeMemberId(row.canonical_member_id) !== canonicalMemberId
@@ -230,6 +412,7 @@ export async function ensureStandaloneAlias(
   const canonicalMemberId = normalizeMemberId(input.canonicalMemberId);
   if (!aliasMemberId || aliasMemberId === canonicalMemberId) return false;
 
+  await assertAliasDoesNotShadowCanonicalAccount(ctx.db, input.aliasMemberId);
   const rows = await boundedAliasRows(ctx, aliasMemberId);
   const conflict = rows.find(
     (row) => normalizeMemberId(row.canonical_member_id) !== canonicalMemberId

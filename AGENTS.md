@@ -483,6 +483,25 @@ Failure impact:
 
 - Friend-of-friend participants (for example, Bob in a shared group) can appear as unintended direct friends.
 
+### 8.13 Bulk import link provenance
+
+`bulkImport` may restore local data but must not establish registered-account identity.
+
+Rules:
+
+1. Ignore client-provided linked account IDs/emails when creating or promoting friend links.
+2. Preserve a link only when the existing server row has `link_state: "linked"` and its persisted
+   `linked_account_id` resolves to an active account; canonicalize linked email/member ID from that account.
+3. New, legacy-unproven, deleted-account, and invalid links import as `link_state: "unlinked"`.
+4. Never create `member_aliases` from bulk import.
+5. Derive expense participant metadata, `participant_emails`, and `user_expenses` fanout only from
+   the authenticated account and server-proven linked friends; never trust participant payload IDs/emails.
+
+Failure impact:
+
+- A crafted backup could otherwise impersonate a registered account, poison global identity
+  resolution, or grant another user visibility into imported expenses.
+
 ## 9) Security Hardening Set (Provenance: 2026-02-20)
 
 ### 9.1 Group upsert authorization

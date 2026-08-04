@@ -3,8 +3,9 @@ import { Doc } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
   assertIdentityMaterializationReady,
+  findAccountByMemberId,
   findAliasByAliasMemberId,
-  MAX_LIVE_ACCOUNT_ALIASES,
+  getEquivalentAliasMemberIds,
   normalizeMemberId,
   normalizeMemberIds
 } from "./identity";
@@ -31,8 +32,13 @@ export async function resolveCanonicalMemberIdInternal(
   }
   visited.add(normalizedMemberId);
 
+  const account = await findAccountByMemberId(db, memberId);
+  if (account?.member_id) {
+    return normalizeMemberId(account.member_id);
+  }
+
   // Look up if this memberId is an alias pointing to something else
-  const alias = await findAliasByAliasMemberId(db, normalizedMemberId);
+  const alias = await findAliasByAliasMemberId(db, memberId);
 
   if (!alias) {
     // No alias exists - this is either the canonical ID or an unlinked member
@@ -55,7 +61,7 @@ export async function resolveCanonicalMemberIdInternal(
 export const resolveCanonicalMemberId = query({
   args: { memberId: v.string() },
   handler: async (ctx, args) => {
-    return await resolveCanonicalMemberIdInternal(ctx.db, normalizeMemberId(args.memberId));
+    return await resolveCanonicalMemberIdInternal(ctx.db, args.memberId);
   }
 });
 
@@ -66,7 +72,7 @@ export const resolveCanonicalMemberId = query({
 export const resolveCanonicalMemberIdInternalQuery = internalQuery({
   args: { memberId: v.string() },
   handler: async (ctx, args) => {
-    return await resolveCanonicalMemberIdInternal(ctx.db, normalizeMemberId(args.memberId));
+    return await resolveCanonicalMemberIdInternal(ctx.db, args.memberId);
   }
 });
 
@@ -82,15 +88,7 @@ export const resolveCanonicalMemberIdInternalQuery = internalQuery({
 export const getAliasesForMember = query({
   args: { canonicalMemberId: v.string() },
   handler: async (ctx, args) => {
-    const normalizedCanonical = normalizeMemberId(args.canonicalMemberId);
-    const aliases = await ctx.db
-      .query("member_aliases")
-      .withIndex("by_canonical_member_id", (q) => q.eq("canonical_member_id", normalizedCanonical))
-      .take(MAX_LIVE_ACCOUNT_ALIASES + 1);
-    if (aliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
-      throw new Error("Identity maintenance required: too many aliases for a live lookup");
-    }
-    return aliases.map((a) => normalizeMemberId(a.alias_member_id));
+    return await getEquivalentAliasMemberIds(ctx.db, args.canonicalMemberId);
   }
 });
 
@@ -110,15 +108,7 @@ export async function getAllEquivalentMemberIds(
   const canonicalId = await resolveCanonicalMemberIdInternal(db, normalizedMemberId);
 
   // Get all aliases pointing to this canonical
-  const aliases = await db
-    .query("member_aliases")
-    .withIndex("by_canonical_member_id", (q) => q.eq("canonical_member_id", canonicalId))
-    .take(MAX_LIVE_ACCOUNT_ALIASES + 1);
-  if (aliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
-    throw new Error("Identity maintenance required: too many aliases for a live lookup");
-  }
-
-  const aliasIds = aliases.map((a) => normalizeMemberId(a.alias_member_id));
+  const aliasIds = await getEquivalentAliasMemberIds(db, canonicalId);
 
   // Return canonical + all aliases (deduplicated)
   const allIds = new Set([canonicalId, ...aliasIds]);

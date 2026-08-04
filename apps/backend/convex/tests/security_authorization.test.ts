@@ -440,6 +440,91 @@ describe("Security Authorization", () => {
     expect(account?.member_id).toBe("member_original");
   });
 
+  test("users.updateLinkedMemberId rejects an empty legacy canonical ID", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "empty_legacy_id",
+        email: "empty-legacy@test.com",
+        display_name: "Empty Legacy",
+        created_at: Date.now()
+      });
+    });
+
+    const userCtx = t.withIdentity(identity("empty-legacy@test.com", "empty_legacy_id"));
+    await expect(
+      userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "  " })
+    ).rejects.toThrow("member_id is required");
+
+    const account = await t.run((ctx) =>
+      ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", "empty_legacy_id"))
+        .unique()
+    );
+    expect(account?.member_id).toBeUndefined();
+  });
+
+  test("users.updateLinkedMemberId rejects a canonical ID already used as an alias", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "alias_legacy_id",
+        email: "alias-legacy@test.com",
+        display_name: "Alias Legacy",
+        created_at: Date.now()
+      });
+      await ctx.db.insert("member_aliases", {
+        account_email: "historical@test.com",
+        alias_member_id: "claimed_member",
+        canonical_member_id: "existing_canonical",
+        created_at: Date.now()
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v2",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
+    });
+
+    const userCtx = t.withIdentity(identity("alias-legacy@test.com", "alias_legacy_id"));
+    await expect(
+      userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "claimed_member" })
+    ).rejects.toThrow("member_id already used as alias");
+
+    const account = await t.run((ctx) =>
+      ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", "alias_legacy_id"))
+        .unique()
+    );
+    expect(account?.member_id).toBeUndefined();
+  });
+
+  test("users.updateLinkedMemberId ignores a legacy v1 ready marker", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "v1_legacy_id",
+        email: "v1-legacy@test.com",
+        display_name: "V1 Legacy",
+        created_at: Date.now()
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v1",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
+    });
+
+    const userCtx = t.withIdentity(identity("v1-legacy@test.com", "v1_legacy_id"));
+    await expect(
+      userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "new_canonical" })
+    ).rejects.toThrow("Identity maintenance required");
+  });
+
   test("users.updateLinkedMemberId materializes aliases during legacy bootstrap", async () => {
     const t = convexTest(schema, modules);
 
@@ -452,7 +537,7 @@ describe("Security Authorization", () => {
         alias_member_ids: ["Legacy_Alias"]
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v1",
+        key: "member_identity_v2",
         status: "ready",
         phase: "complete",
         updated_at: Date.now()
@@ -521,6 +606,12 @@ describe("Security Authorization", () => {
         updated_at: Date.now(),
         is_direct: false
       });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v2",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
     });
 
     const callerCtx = t.withIdentity(identity("caller@test.com", "caller_id"));
@@ -585,7 +676,7 @@ describe("Security Authorization", () => {
         is_direct: false
       });
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v1",
+        key: "member_identity_v2",
         status: "ready",
         phase: "complete",
         updated_at: Date.now()
@@ -647,6 +738,12 @@ describe("Security Authorization", () => {
         created_at: Date.now(),
         updated_at: Date.now(),
         is_direct: false
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v2",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
       });
     });
 

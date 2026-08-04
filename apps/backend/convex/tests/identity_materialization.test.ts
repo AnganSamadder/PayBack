@@ -1,6 +1,8 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { internal } from "../_generated/api";
+import { api, internal } from "../_generated/api";
+import { resolveCanonicalMemberIdInternal } from "../aliases";
+import { ensureStandaloneAlias, preflightAccountAliasMaterialization } from "../identity";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
@@ -16,6 +18,115 @@ async function runMigrationToCompletion(t: ReturnType<typeof convexTest>, batchS
 }
 
 describe("identity materialization rollout", () => {
+  test("ignores a legacy v1 ready marker when bootstrapping v2", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v1",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
+    });
+
+    const result = await t.mutation(internal.migrations.runIdentityMaterializationMigration, {
+      batchSize: 10
+    });
+    expect(result).toMatchObject({ status: "pending", phase: "accounts" });
+
+    const states = await t.run(async (ctx) => ({
+      v1: await ctx.db
+        .query("identity_materialization_state")
+        .withIndex("by_key", (q) => q.eq("key", "member_identity_v1"))
+        .unique(),
+      v2: await ctx.db
+        .query("identity_materialization_state")
+        .withIndex("by_key", (q) => q.eq("key", "member_identity_v2"))
+        .unique()
+    }));
+    expect(states.v1?.status).toBe("ready");
+    expect(states.v2).toMatchObject({ status: "pending", phase: "accounts" });
+  });
+
+  test("standalone aliases cannot shadow a canonical account ID", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "canonical_auth",
+        email: "canonical@test.com",
+        display_name: "Canonical",
+        created_at: Date.now(),
+        member_id: "Canonical_Member"
+      });
+    });
+
+    await expect(
+      t.run((ctx) =>
+        ensureStandaloneAlias(ctx, {
+          aliasMemberId: "Canonical_Member",
+          canonicalMemberId: "different_member",
+          provenanceEmail: "actor@test.com"
+        })
+      )
+    ).rejects.toThrow("ALIAS_CONFLICT");
+
+    const aliases = await t.run((ctx) => ctx.db.query("member_aliases").collect());
+    expect(aliases).toEqual([]);
+  });
+
+  test("raw legacy canonical lookup takes precedence over a normalized conflicting alias", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "canonical_auth",
+        email: "canonical@test.com",
+        display_name: "Canonical",
+        created_at: Date.now(),
+        member_id: "Direct_Canonical"
+      });
+      await ctx.db.insert("member_aliases", {
+        account_email: "historical@test.com",
+        alias_member_id: "direct_canonical",
+        canonical_member_id: "wrong_target",
+        created_at: Date.now()
+      });
+    });
+
+    await expect(
+      t.run((ctx) => resolveCanonicalMemberIdInternal(ctx.db, "Direct_Canonical"))
+    ).resolves.toBe("direct_canonical");
+    await expect(
+      t.query(api.aliases.resolveCanonicalMemberId, { memberId: "Direct_Canonical" })
+    ).resolves.toBe("direct_canonical");
+  });
+
+  test("account alias preflight cannot shadow another canonical account ID", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "existing_auth",
+        email: "existing@test.com",
+        display_name: "Existing",
+        created_at: Date.now(),
+        member_id: "existing_member"
+      });
+    });
+
+    await expect(
+      t.run((ctx) =>
+        preflightAccountAliasMaterialization(
+          ctx,
+          {
+            id: "target_auth",
+            email: "target@test.com",
+            member_id: "target_member"
+          },
+          "existing_member"
+        )
+      )
+    ).rejects.toThrow("ALIAS_CONFLICT");
+  });
+
   test("bootstraps an empty installation to ready", async () => {
     const t = convexTest(schema, modules);
 
@@ -23,7 +134,7 @@ describe("identity materialization rollout", () => {
     const state = await t.run(async (ctx) =>
       ctx.db
         .query("identity_materialization_state")
-        .withIndex("by_key", (q) => q.eq("key", "member_identity_v1"))
+        .withIndex("by_key", (q) => q.eq("key", "member_identity_v2"))
         .unique()
     );
     expect(state).toMatchObject({ status: "ready", phase: "complete" });
@@ -166,7 +277,7 @@ describe("identity materialization rollout", () => {
     const before = await t.run(async (ctx) =>
       ctx.db
         .query("identity_materialization_state")
-        .withIndex("by_key", (q) => q.eq("key", "member_identity_v1"))
+        .withIndex("by_key", (q) => q.eq("key", "member_identity_v2"))
         .unique()
     );
 
@@ -179,7 +290,7 @@ describe("identity materialization rollout", () => {
     const after = await t.run(async (ctx) => ({
       state: await ctx.db
         .query("identity_materialization_state")
-        .withIndex("by_key", (q) => q.eq("key", "member_identity_v1"))
+        .withIndex("by_key", (q) => q.eq("key", "member_identity_v2"))
         .unique(),
       accountAliases: await Promise.all(
         ["safe_alias", "legacy_conflict"].map((aliasMemberId) =>
@@ -203,6 +314,63 @@ describe("identity materialization rollout", () => {
     expect(after.accountAliases).toEqual([null, null]);
   });
 
+  test("stops before advancing the account cursor when an alias shadows a canonical ID", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "safe_auth",
+        email: "safe@test.com",
+        display_name: "Safe",
+        created_at: now,
+        member_id: "safe_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "shadowed_auth",
+        email: "shadowed@test.com",
+        display_name: "Shadowed",
+        created_at: now,
+        member_id: "Shadowed_Canonical"
+      });
+      await ctx.db.insert("member_aliases", {
+        account_email: "historical@test.com",
+        alias_member_id: "Shadowed_Canonical",
+        canonical_member_id: "different_canonical",
+        created_at: now
+      });
+    });
+
+    await t.mutation(internal.migrations.runIdentityMaterializationMigration, { batchSize: 10 });
+    await t.mutation(internal.migrations.runIdentityMaterializationMigration, { batchSize: 10 });
+    const before = await t.run((ctx) =>
+      ctx.db
+        .query("identity_materialization_state")
+        .withIndex("by_key", (q) => q.eq("key", "member_identity_v2"))
+        .unique()
+    );
+
+    const result = await t.mutation(internal.migrations.runIdentityMaterializationMigration, {
+      batchSize: 10
+    });
+    expect(result).toMatchObject({ status: "pending", phase: "accounts" });
+    expect(result.lastError).toContain("shadows canonical account identity shadowed_canonical");
+
+    const after = await t.run(async (ctx) => ({
+      state: await ctx.db
+        .query("identity_materialization_state")
+        .withIndex("by_key", (q) => q.eq("key", "member_identity_v2"))
+        .unique(),
+      account: await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", "shadowed_auth"))
+        .unique()
+    }));
+    expect(after.state?.cursor).toBe(before?.cursor);
+    expect(after.state?.current_account_id).toBe(before?.current_account_id);
+    expect(after.state?.alias_offset).toBe(before?.alias_offset);
+    expect(after.account?.member_id).toBe("Shadowed_Canonical");
+  });
+
   test("resumes a 4,096-alias account at bounded alias offsets", async () => {
     const t = convexTest(schema, modules);
     const aliases = Array.from({ length: 4096 }, (_, index) => `Legacy_Alias_${index}`);
@@ -223,7 +391,7 @@ describe("identity materialization rollout", () => {
     const result = await t.run(async (ctx) => ({
       state: await ctx.db
         .query("identity_materialization_state")
-        .withIndex("by_key", (q) => q.eq("key", "member_identity_v1"))
+        .withIndex("by_key", (q) => q.eq("key", "member_identity_v2"))
         .unique(),
       boundaryRows: await Promise.all(
         ["legacy_alias_0", "legacy_alias_255", "legacy_alias_256"].map((alias) =>

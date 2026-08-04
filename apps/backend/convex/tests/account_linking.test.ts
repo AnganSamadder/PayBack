@@ -4,7 +4,7 @@ import { api } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
-test("comprehensive: group expenses, settlements, and linking", async () => {
+test("bulk import cannot link accounts or grant historical expense visibility", async () => {
   const t = convexTest(schema, modules);
 
   // 1. Setup User A (The Payer/Owner)
@@ -17,7 +17,7 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
       member_id: "member_a"
     });
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v1",
+      key: "member_identity_v2",
       status: "ready",
       phase: "complete",
       updated_at: Date.now()
@@ -26,7 +26,7 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
   });
 
   // 2. Setup User B (The Friend/Borrower) - Initially exists as an account but UNLINKED
-  const userB = await t.run(async (ctx) => {
+  await t.run(async (ctx) => {
     return await ctx.db.insert("accounts", {
       id: "user_b",
       email: "user_b@example.com",
@@ -120,8 +120,7 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
     await ctx.db.patch(expenseId, { is_settled: true });
   });
 
-  // 8. LINK ACCOUNTS (Simulate Import)
-  // User A imports contacts and links "User B Manual" to "User B Canonical"
+  // 8. Attempt to forge a registered-account link through an import.
   const importPayload = {
     friends: [
       {
@@ -150,25 +149,26 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
 
   await ctxA.mutation(api.bulkImport.bulkImport, importPayload);
 
-  // 9. VERIFY POST-LINK STATE
+  // 9. Verify the import remains local and cannot grant cross-account visibility.
 
   // A. Check for Duplicate Friends
   const friends = await t.run(async (ctx) => {
     return await ctx.db.query("account_friends").collect();
   });
-  console.log("Friends after link:", friends);
   expect(friends.length).toBe(1); // Should still be 1 friend
-  expect(friends[0].linked_member_id).toBe("member_b_canonical");
+  expect(friends[0]).toMatchObject({
+    has_linked_account: false,
+    link_state: "unlinked"
+  });
+  expect(friends[0]).not.toHaveProperty("linked_member_id");
+  expect(friends[0]).not.toHaveProperty("linked_account_id");
+  expect(friends[0]).not.toHaveProperty("linked_account_email");
 
   // B. Check Aliases
   const aliases = await t.run(async (ctx) => {
     return await ctx.db.query("member_aliases").collect();
   });
-  console.log("Aliases after link:", aliases);
-  const alias = aliases.find(
-    (a) => a.alias_member_id === manualFriendId && a.canonical_member_id === "member_b_canonical"
-  );
-  expect(alias).toBeDefined();
+  expect(aliases).toEqual([]);
 
   // C. Check Expense Visibility for User B (The Linked User)
   const userExpensesB = await t.run(async (ctx) => {
@@ -177,8 +177,7 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
       .withIndex("by_user_id", (q) => q.eq("user_id", "user_b"))
       .collect();
   });
-  console.log("User B Expenses:", userExpensesB);
-  expect(userExpensesB.length).toBe(1);
+  expect(userExpensesB.length).toBe(0);
 
   // D. Verify User A (Owner) STILL has visibility
   const userExpensesA = await t.run(async (ctx) => {
@@ -187,7 +186,6 @@ test("comprehensive: group expenses, settlements, and linking", async () => {
       .withIndex("by_user_id", (q) => q.eq("user_id", "user_a"))
       .collect();
   });
-  console.log("User A Expenses:", userExpensesA);
   expect(userExpensesA.length).toBe(1); // User A must not lose the expense
 
   // E. Check Settlement Status

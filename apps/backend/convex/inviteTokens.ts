@@ -4,6 +4,7 @@ import { getRandomAvatarColor } from "./utils";
 import { resolveCanonicalMemberIdInternal } from "./aliases";
 import { reconcileUserExpenses } from "./helpers";
 import {
+  assertIdentityMaterializationReady,
   deterministicLinkingError,
   ensureAccountAliasMaterialization,
   findAccountByMemberId,

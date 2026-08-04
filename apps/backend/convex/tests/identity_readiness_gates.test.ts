@@ -121,9 +121,9 @@ describe("identity mutation readiness gates", () => {
         created_at: now,
         member_id: "recipient_member"
       });
-      const targetFriendId = await ctx.db.insert("account_friends", {
+      await ctx.db.insert("account_friends", {
         account_email: "requester@test.com",
-        member_id: "legacy_recipient",
+        member_id: "Legacy_Recipient",
         name: "Recipient",
         profile_avatar_color: "#123456",
         has_linked_account: false,
@@ -136,7 +136,6 @@ describe("identity mutation readiness gates", () => {
         requester_name: "Requester",
         recipient_email: "recipient@test.com",
         target_member_id: "legacy_recipient",
-        target_friend_id: targetFriendId,
         target_member_name: "Recipient",
         created_at: now,
         status: "pending",
@@ -199,6 +198,78 @@ describe("identity mutation readiness gates", () => {
     }));
     expect(rows.friends).toHaveLength(0);
     expect(rows.aliases).toHaveLength(0);
+  });
+
+  test("unlinked bulk import cannot bypass a mixed-case legacy alias while pending", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "owner_auth",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: now,
+        member_id: "owner_member"
+      });
+      await ctx.db.insert("member_aliases", {
+        account_email: "historical@test.com",
+        alias_member_id: "Legacy_Target",
+        canonical_member_id: "canonical_target",
+        created_at: now
+      });
+    });
+
+    const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+    await expect(
+      owner.mutation(api.bulkImport.bulkImport, {
+        friends: [
+          {
+            member_id: "legacy_target",
+            name: "Legacy",
+            profile_avatar_color: "#123456",
+            has_linked_account: false
+          }
+        ],
+        groups: [
+          {
+            id: "pending_group",
+            name: "Pending",
+            members: [
+              { id: "owner_member", name: "Owner", is_current_user: true },
+              { id: "legacy_target", name: "Legacy" }
+            ]
+          }
+        ],
+        expenses: [
+          {
+            id: "pending_expense",
+            group_id: "pending_group",
+            description: "Pending",
+            date: now,
+            total_amount: 10,
+            paid_by_member_id: "owner_member",
+            involved_member_ids: ["owner_member", "legacy_target"],
+            splits: [
+              { id: "split_owner", member_id: "owner_member", amount: 5, is_settled: false },
+              { id: "split_legacy", member_id: "legacy_target", amount: 5, is_settled: false }
+            ],
+            is_settled: false,
+            participant_member_ids: ["owner_member", "legacy_target"],
+            participants: [
+              { member_id: "owner_member", name: "Owner" },
+              { member_id: "legacy_target", name: "Legacy" }
+            ]
+          }
+        ]
+      })
+    ).rejects.toThrow("Identity maintenance required");
+
+    const writes = await t.run(async (ctx) => ({
+      friends: await ctx.db.query("account_friends").collect(),
+      groups: await ctx.db.query("groups").collect(),
+      expenses: await ctx.db.query("expenses").collect()
+    }));
+    expect(writes).toEqual({ friends: [], groups: [], expenses: [] });
   });
 
   test.each([
@@ -271,5 +342,254 @@ describe("identity mutation readiness gates", () => {
         .unique()
     );
     expect(account?.member_id).toBeUndefined();
+  });
+});
+
+describe("identity pending-read compatibility", () => {
+  test.each(["aliases", "accounts"] as const)(
+    "preserves viewer, group, expense, and lookup identity during the %s phase",
+    async (phase) => {
+      const t = convexTest(schema, modules);
+      const now = Date.now();
+      await t.run(async (ctx) => {
+        await ctx.db.insert("accounts", {
+          id: "viewer_auth",
+          email: "viewer@test.com",
+          display_name: "Viewer",
+          created_at: now,
+          member_id: "Canonical_Member",
+          alias_member_ids: ["Account_Array_Alias"]
+        });
+        const owner = await ctx.db.insert("accounts", {
+          id: "owner_auth",
+          email: "owner@test.com",
+          display_name: "Owner",
+          created_at: now,
+          member_id: "owner_member"
+        });
+        await ctx.db.insert("identity_materialization_state", {
+          key: "member_identity_v2",
+          status: "pending",
+          phase,
+          updated_at: now
+        });
+        await ctx.db.insert("member_aliases", {
+          account_email: "viewer@test.com",
+          alias_member_id: phase === "aliases" ? "Legacy_Alias" : "legacy_alias",
+          canonical_member_id: phase === "aliases" ? "Canonical_Member" : "canonical_member",
+          created_at: now
+        });
+        const membershipId = phase === "aliases" ? "Legacy_Alias" : "Account_Array_Alias";
+        const group = await ctx.db.insert("groups", {
+          id: `pending_${phase}_group`,
+          name: "Pending Group",
+          members: [
+            { id: "owner_member", name: "Owner", is_current_user: true },
+            { id: membershipId, name: "Viewer" }
+          ],
+          owner_email: "owner@test.com",
+          owner_account_id: "owner_auth",
+          owner_id: owner,
+          is_direct: false,
+          created_at: now,
+          updated_at: now
+        });
+        await ctx.db.insert("expenses", {
+          id: `pending_${phase}_expense`,
+          group_id: `pending_${phase}_group`,
+          group_ref: group,
+          description: "Pending Expense",
+          date: now,
+          total_amount: 10,
+          paid_by_member_id: "owner_member",
+          involved_member_ids: ["owner_member", membershipId],
+          splits: [
+            { id: "owner_split", member_id: "owner_member", amount: 5, is_settled: false },
+            { id: "viewer_split", member_id: membershipId, amount: 5, is_settled: false }
+          ],
+          is_settled: false,
+          owner_email: "owner@test.com",
+          owner_account_id: "owner_auth",
+          owner_id: owner,
+          participant_member_ids: ["owner_member", membershipId],
+          participants: [
+            { member_id: "owner_member", name: "Owner" },
+            { member_id: membershipId, name: "Viewer" }
+          ],
+          participant_emails: ["owner@test.com", "viewer@test.com"],
+          created_at: now,
+          updated_at: now
+        });
+      });
+
+      const viewer = t.withIdentity(identity("viewer@test.com", "viewer_auth"));
+      const [account, groups, expenses, resolvedLegacy, resolvedAccountAlias, aliases] =
+        await Promise.all([
+          viewer.query(api.users.viewer, {}),
+          viewer.query(api.groups.list, {}),
+          viewer.query(api.expenses.listByGroup, { group_id: `pending_${phase}_group` }),
+          t.query(api.aliases.resolveCanonicalMemberId, { memberId: "legacy_alias" }),
+          t.query(api.aliases.resolveCanonicalMemberId, { memberId: "account_array_alias" }),
+          t.query(api.aliases.getAliasesForMember, { canonicalMemberId: "canonical_member" })
+        ]);
+
+      expect(account?.member_id).toBe("canonical_member");
+      expect(account?.alias_member_ids.sort()).toEqual(["account_array_alias", "legacy_alias"]);
+      expect(groups.map((group) => group.id)).toContain(`pending_${phase}_group`);
+      expect(expenses.map((expense) => expense.id)).toEqual([`pending_${phase}_expense`]);
+      expect(resolvedLegacy).toBe("canonical_member");
+      expect(resolvedAccountAlias).toBe("canonical_member");
+      expect(aliases.sort()).toEqual(["account_array_alias", "legacy_alias"]);
+    }
+  );
+
+  test("rejects conflicting account-array and materialized alias ownership", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "account_a",
+        email: "a@test.com",
+        display_name: "A",
+        created_at: Date.now(),
+        member_id: "canonical_a",
+        alias_member_ids: ["shared_alias"]
+      });
+      await ctx.db.insert("accounts", {
+        id: "account_b",
+        email: "b@test.com",
+        display_name: "B",
+        created_at: Date.now(),
+        member_id: "canonical_b"
+      });
+      await ctx.db.insert("member_aliases", {
+        account_email: "b@test.com",
+        alias_member_id: "shared_alias",
+        canonical_member_id: "canonical_b",
+        created_at: Date.now()
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v2",
+        status: "pending",
+        phase: "accounts",
+        updated_at: Date.now()
+      });
+    });
+
+    await expect(
+      t.query(api.aliases.resolveCanonicalMemberId, { memberId: "shared_alias" })
+    ).rejects.toThrow("conflicting account alias");
+  });
+
+  test.each(["duplicate_account_alias", "conflicting_alias_row", "canonical_shadow"] as const)(
+    "rejects reverse expansion for %s",
+    async (conflictKind) => {
+      const t = convexTest(schema, modules);
+      await t.run(async (ctx) => {
+        await ctx.db.insert("accounts", {
+          id: "canonical_auth",
+          email: "canonical@test.com",
+          display_name: "Canonical",
+          created_at: Date.now(),
+          member_id: "canonical_member",
+          alias_member_ids: ["shared_alias"]
+        });
+        if (conflictKind === "duplicate_account_alias") {
+          await ctx.db.insert("accounts", {
+            id: "other_auth",
+            email: "other@test.com",
+            display_name: "Other",
+            created_at: Date.now(),
+            member_id: "other_member",
+            alias_member_ids: ["shared_alias"]
+          });
+        } else if (conflictKind === "canonical_shadow") {
+          await ctx.db.insert("accounts", {
+            id: "other_auth",
+            email: "other@test.com",
+            display_name: "Other",
+            created_at: Date.now(),
+            member_id: "shared_alias"
+          });
+        } else {
+          await ctx.db.insert("member_aliases", {
+            account_email: "other@test.com",
+            alias_member_id: "shared_alias",
+            canonical_member_id: "other_member",
+            created_at: Date.now()
+          });
+        }
+        await ctx.db.insert("identity_materialization_state", {
+          key: "member_identity_v2",
+          status: "pending",
+          phase: "accounts",
+          updated_at: Date.now()
+        });
+      });
+
+      await expect(
+        t.query(api.aliases.getAliasesForMember, { canonicalMemberId: "canonical_member" })
+      ).rejects.toThrow("conflicting account alias");
+    }
+  );
+
+  test("rejects a reverse global alias that shadows another canonical account", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "canonical_auth",
+        email: "canonical@test.com",
+        display_name: "Canonical",
+        created_at: Date.now(),
+        member_id: "canonical_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "shadow_auth",
+        email: "shadow@test.com",
+        display_name: "Shadow",
+        created_at: Date.now(),
+        member_id: "shadow_alias"
+      });
+      await ctx.db.insert("member_aliases", {
+        account_email: "historical@test.com",
+        alias_member_id: "shadow_alias",
+        canonical_member_id: "canonical_member",
+        created_at: Date.now()
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v2",
+        status: "pending",
+        phase: "aliases",
+        updated_at: Date.now()
+      });
+    });
+
+    await expect(
+      t.query(api.aliases.getAliasesForMember, { canonicalMemberId: "canonical_member" })
+    ).rejects.toThrow("shadows a canonical account");
+  });
+
+  test("fails explicitly when pending compatibility exceeds its account bound", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      for (let index = 0; index < 513; index += 1) {
+        await ctx.db.insert("accounts", {
+          id: `account_${index}`,
+          email: `account-${index}@test.com`,
+          display_name: `Account ${index}`,
+          created_at: Date.now(),
+          member_id: `member_${index}`
+        });
+      }
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v2",
+        status: "pending",
+        phase: "accounts",
+        updated_at: Date.now()
+      });
+    });
+
+    await expect(
+      t.query(api.aliases.resolveCanonicalMemberId, { memberId: "missing_member" })
+    ).rejects.toThrow("pending compatibility accounts lookup exceeds 512 rows");
   });
 });

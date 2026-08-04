@@ -21,11 +21,11 @@ async function markIdentityReady(t: any) {
   await t.run(async (ctx) => {
     const existing = await ctx.db
       .query("identity_materialization_state")
-      .withIndex("by_key", (q) => q.eq("key", "member_identity_v1"))
+      .withIndex("by_key", (q) => q.eq("key", "member_identity_v2"))
       .unique();
     if (!existing) {
       await ctx.db.insert("identity_materialization_state", {
-        key: "member_identity_v1",
+        key: "member_identity_v2",
         status: "ready",
         phase: "complete",
         updated_at: Date.now()
@@ -66,7 +66,7 @@ async function createEligibilityScenario(
     });
     const identityStatus = options.identityStatus ?? "ready";
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v1",
+      key: "member_identity_v2",
       status: identityStatus,
       phase: identityStatus === "ready" ? "complete" : "aliases",
       updated_at: now

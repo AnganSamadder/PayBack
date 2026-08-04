@@ -1,14 +1,10 @@
-import { mutation } from "./_generated/server";
+import { Doc } from "./_generated/dataModel";
+import { MutationCtx, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import {
-  getCurrentUserOrThrow,
-  reconcileUserExpenses,
-  reconcileExpensesForMember
-} from "./helpers";
+import { getCurrentUserOrThrow, reconcileUserExpenses } from "./helpers";
 import { resolveCanonicalMemberIdInternal } from "./aliases";
 import {
   assertIdentityMaterializationReady,
-  ensureStandaloneAlias,
   findAliasByAliasMemberId,
   normalizeMemberId,
   normalizeMemberIds
@@ -78,6 +74,161 @@ const expenseValidator = v.object({
   subexpenses: v.optional(v.array(subexpenseValidator))
 });
 
+const MAX_IMPORT_IDENTITY_MATCHES = 8;
+const MAX_IMPORT_OWNER_FRIENDS = 256;
+
+function isGroupOwnedByAccount(group: Doc<"groups">, account: Doc<"accounts">): boolean {
+  return (
+    group.owner_id === account._id ||
+    group.owner_account_id === account.id ||
+    group.owner_email?.trim().toLowerCase() === account.email.trim().toLowerCase()
+  );
+}
+
+function isExpenseOwnedByAccount(expense: Doc<"expenses">, account: Doc<"accounts">): boolean {
+  return (
+    expense.owner_id === account._id ||
+    expense.owner_account_id === account.id ||
+    expense.owner_email?.trim().toLowerCase() === account.email.trim().toLowerCase()
+  );
+}
+
+function hasServerLinkedMarker(friend: Doc<"account_friends">): boolean {
+  return friend.link_state === "linked" && Boolean(friend.linked_account_id?.trim());
+}
+
+async function resolveServerProvenLinkedAccount(
+  ctx: MutationCtx,
+  friend: Doc<"account_friends">,
+  accountCache: Map<string, Doc<"accounts"> | null>
+): Promise<Doc<"accounts"> | null> {
+  const linkedAccountId = friend.linked_account_id?.trim();
+  if (friend.link_state !== "linked" || !linkedAccountId) return null;
+
+  const cached = accountCache.get(linkedAccountId);
+  const account =
+    cached === undefined
+      ? await ctx.db
+          .query("accounts")
+          .withIndex("by_auth_id", (q) => q.eq("id", linkedAccountId))
+          .unique()
+      : cached;
+  const activeAccount =
+    account && account.status !== "deleted" && account.member_id ? account : null;
+  if (!activeAccount) {
+    accountCache.set(linkedAccountId, null);
+    return null;
+  }
+  accountCache.set(linkedAccountId, activeAccount);
+
+  const canonicalMemberId = normalizeMemberId(activeAccount.member_id!);
+  const friendIdentityIds = normalizeMemberIds(
+    [friend.member_id, friend.linked_member_id, ...(friend.local_alias_member_ids ?? [])].filter(
+      (memberId): memberId is string => Boolean(memberId)
+    )
+  );
+  const hasCanonicalIdentity = friendIdentityIds.includes(canonicalMemberId);
+  const hasMaterializedAlias = hasCanonicalIdentity
+    ? true
+    : await Promise.all(
+        friendIdentityIds.map(async (memberId) => {
+          const alias = await ctx.db
+            .query("member_aliases")
+            .withIndex("by_source_account_and_alias", (q) =>
+              q.eq("source_account_id", activeAccount.id).eq("alias_member_id", memberId)
+            )
+            .first();
+          return (
+            alias !== null &&
+            normalizeMemberId(alias.canonical_member_id) === canonicalMemberId &&
+            alias.materialization_source === "account_alias"
+          );
+        })
+      ).then((matches) => matches.some(Boolean));
+
+  if (!hasMaterializedAlias) return null;
+  return activeAccount;
+}
+
+function registerTrustedLinkedAccount(
+  trustedAccountsByMemberId: Map<string, Doc<"accounts">>,
+  friend: Doc<"account_friends">,
+  account: Doc<"accounts">
+) {
+  const identityIds = [
+    friend.member_id,
+    friend.linked_member_id,
+    ...(friend.local_alias_member_ids ?? []),
+    account.member_id,
+    ...(account.alias_member_ids ?? [])
+  ];
+  for (const identityId of identityIds) {
+    if (identityId?.trim()) {
+      trustedAccountsByMemberId.set(normalizeMemberId(identityId), account);
+    }
+  }
+}
+
+async function findExistingImportedFriend(
+  ctx: MutationCtx,
+  accountEmail: string,
+  originalMemberId: string,
+  resolvedMemberId: string,
+  ownerFriends: Doc<"account_friends">[]
+): Promise<Doc<"account_friends"> | null> {
+  const identityIds = Array.from(new Set([originalMemberId, resolvedMemberId]));
+  const identityIdSet = new Set(identityIds);
+  const candidatePages = await Promise.all(
+    identityIds.flatMap((memberId) => [
+      ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", accountEmail).eq("member_id", memberId)
+        )
+        .take(MAX_IMPORT_IDENTITY_MATCHES + 1),
+      ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_linked_member_id", (q) =>
+          q.eq("account_email", accountEmail).eq("linked_member_id", memberId)
+        )
+        .take(MAX_IMPORT_IDENTITY_MATCHES + 1)
+    ])
+  );
+  if (candidatePages.some((page) => page.length > MAX_IMPORT_IDENTITY_MATCHES)) {
+    throw new Error("Identity maintenance required: too many matching friend identities");
+  }
+
+  const candidatesById = new Map<string, Doc<"account_friends">>();
+  for (const candidate of [
+    ...candidatePages.flat(),
+    ...ownerFriends.filter(
+      (friend) =>
+        identityIdSet.has(normalizeMemberId(friend.member_id)) ||
+        (friend.linked_member_id !== undefined &&
+          identityIdSet.has(normalizeMemberId(friend.linked_member_id)))
+    )
+  ]) {
+    candidatesById.set(String(candidate._id), candidate);
+  }
+  const candidates = Array.from(candidatesById.values());
+  return (
+    candidates.sort((left, right) => {
+      const linkedRank = Number(hasServerLinkedMarker(right)) - Number(hasServerLinkedMarker(left));
+      if (linkedRank !== 0) return linkedRank;
+
+      const originalRank =
+        Number(normalizeMemberId(right.member_id) === originalMemberId) -
+        Number(normalizeMemberId(left.member_id) === originalMemberId);
+      if (originalRank !== 0) return originalRank;
+
+      if (left._creationTime !== right._creationTime) {
+        return left._creationTime - right._creationTime;
+      }
+      return String(left._id).localeCompare(String(right._id));
+    })[0] ?? null
+  );
+}
+
 export const bulkImport = mutation({
   args: {
     friends: v.array(friendValidator),
@@ -87,19 +238,26 @@ export const bulkImport = mutation({
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
     const accountEmail = user.email.trim().toLowerCase();
-    const hasLinkedIdentityInput = args.friends.some(
-      (friend) =>
-        friend.has_linked_account === true ||
-        Boolean(friend.linked_account_id?.trim()) ||
-        Boolean(friend.linked_account_email?.trim())
-    );
-    if (hasLinkedIdentityInput) {
-      await assertIdentityMaterializationReady(ctx.db);
+    await assertIdentityMaterializationReady(ctx.db);
+    const ownerFriends =
+      args.friends.length === 0 && args.expenses.length === 0
+        ? []
+        : await ctx.db
+            .query("account_friends")
+            .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
+            .take(MAX_IMPORT_OWNER_FRIENDS + 1);
+    if (ownerFriends.length > MAX_IMPORT_OWNER_FRIENDS) {
+      throw new Error(
+        `Identity maintenance required: normalize identities before importing friends for accounts with more than ${MAX_IMPORT_OWNER_FRIENDS} friend rows`
+      );
     }
 
-    // Resolve canonical IDs in input
-    for (const friend of args.friends) {
-      const originalId = normalizeMemberId(friend.member_id);
+    // Retain caller IDs so canonical resolution cannot hide an existing linked legacy row.
+    const originalFriendMemberIds = args.friends.map((friend) =>
+      normalizeMemberId(friend.member_id)
+    );
+    for (const [index, friend] of args.friends.entries()) {
+      const originalId = originalFriendMemberIds[index];
       friend.member_id = await resolveCanonicalMemberIdInternal(ctx.db, originalId);
     }
 
@@ -154,63 +312,66 @@ export const bulkImport = mutation({
     }
 
     const memberIdMap = new Map<string, string>();
+    const linkedAccountCache = new Map<string, Doc<"accounts"> | null>();
 
     // Process Friends
-    for (const friend of args.friends) {
-      const existingExact = await ctx.db
-        .query("account_friends")
-        .withIndex("by_account_email_and_member_id", (q) =>
-          q.eq("account_email", accountEmail).eq("member_id", friend.member_id)
-        )
-        .unique();
-      const existing =
-        existingExact ??
-        (
-          await ctx.db
-            .query("account_friends")
-            .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
-            .collect()
-        ).find(
-          (candidate) =>
-            normalizeMemberId(candidate.member_id) === normalizeMemberId(friend.member_id)
-        );
+    for (const [index, friend] of args.friends.entries()) {
+      const existing = await findExistingImportedFriend(
+        ctx,
+        accountEmail,
+        originalFriendMemberIds[index],
+        normalizeMemberId(friend.member_id),
+        ownerFriends
+      );
 
       // Explicit-review policy: never canonicalize identity by name-only matching.
       const match = existing;
 
-      // Check if linked account still exists. If not, strip the link.
-      let finalLinkedEmail = friend.linked_account_email?.trim().toLowerCase() || undefined;
-      let finalLinkedAccountId = friend.linked_account_id;
+      let finalLinkedEmail: string | undefined;
+      let finalLinkedAccountId: string | undefined;
       let finalStatus = friend.status;
-      let finalHasLinked = friend.has_linked_account ?? false;
-
-      let linkedMemberId: string | undefined = undefined;
-
-      if (finalLinkedEmail) {
-        const linkedAccount = await ctx.db
-          .query("accounts")
-          .withIndex("by_email", (q) => q.eq("email", finalLinkedEmail!))
-          .unique();
-
-        if (!linkedAccount) {
-          console.log(`Stripping invalid link for ${friend.name} (${finalLinkedEmail})`);
-          finalLinkedEmail = undefined;
-          finalLinkedAccountId = undefined;
-          finalStatus = "manual";
-          finalHasLinked = false;
-        } else {
-          linkedMemberId = linkedAccount.member_id
-            ? normalizeMemberId(linkedAccount.member_id)
-            : undefined;
-        }
-      }
+      let finalHasLinked = false;
+      let finalLinkState: "linked" | "unlinked" = "unlinked";
+      let linkedMemberId: string | undefined;
 
       if (match) {
-        // Map the IMPORT ID to the EXISTING ID
-        memberIdMap.set(friend.member_id, normalizeMemberId(match.member_id));
+        const trustedLinkedAccount = await resolveServerProvenLinkedAccount(
+          ctx,
+          match,
+          linkedAccountCache
+        );
+        if (trustedLinkedAccount) {
+          finalHasLinked = true;
+          finalLinkState = "linked";
+          finalLinkedAccountId = trustedLinkedAccount.id;
+          finalLinkedEmail = trustedLinkedAccount.email.trim().toLowerCase();
+          linkedMemberId = normalizeMemberId(trustedLinkedAccount.member_id!);
+          finalStatus = match.status;
+        } else {
+          finalStatus = friend.status ?? match.status;
+        }
+
+        // Keep the persisted legacy friend ID stable while promoting new financial data to the
+        // linked canonical identity. Unlinked exact matches continue mapping to their own ID.
+        memberIdMap.set(friend.member_id, normalizeMemberId(linkedMemberId ?? friend.member_id));
 
         // Keep friend metadata up-to-date for existing rows, even when there is no new linking event.
         const patch: Record<string, any> = {};
+        if (match.name !== friend.name) {
+          patch.name = friend.name;
+        }
+        if (friend.nickname !== undefined && match.nickname !== friend.nickname) {
+          patch.nickname = friend.nickname;
+        }
+        if (match.profile_avatar_color !== friend.profile_avatar_color) {
+          patch.profile_avatar_color = friend.profile_avatar_color;
+        }
+        if (
+          friend.profile_image_url !== undefined &&
+          match.profile_image_url !== friend.profile_image_url
+        ) {
+          patch.profile_image_url = friend.profile_image_url;
+        }
         if ((match.has_linked_account ?? false) !== finalHasLinked) {
           patch.has_linked_account = finalHasLinked;
         }
@@ -223,6 +384,9 @@ export const bulkImport = mutation({
         if ((match.linked_member_id ?? undefined) !== linkedMemberId) {
           patch.linked_member_id = linkedMemberId;
         }
+        if ((match.link_state ?? undefined) !== finalLinkState) {
+          patch.link_state = finalLinkState;
+        }
         if ((match.status ?? undefined) !== finalStatus) {
           patch.status = finalStatus;
         }
@@ -232,26 +396,6 @@ export const bulkImport = mutation({
           created.friends++;
         }
 
-        // Trigger reconciliation only when introducing a link to a previously unlinked row.
-        if (finalLinkedEmail && !match.linked_account_email && linkedMemberId) {
-          const linkedAccount = await ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q) => q.eq("email", finalLinkedEmail!))
-            .unique();
-
-          if (linkedAccount) {
-            await reconcileExpensesForMember(ctx, accountEmail, match.member_id, linkedAccount.id);
-          }
-        }
-
-        // Ensure alias exists if we have a link (for existing records too)
-        if (linkedMemberId && match.member_id !== linkedMemberId) {
-          await ensureStandaloneAlias(ctx, {
-            aliasMemberId: match.member_id,
-            canonicalMemberId: linkedMemberId,
-            provenanceEmail: accountEmail
-          });
-        }
         continue;
       }
 
@@ -291,34 +435,31 @@ export const bulkImport = mutation({
         linked_account_id: finalLinkedAccountId,
         linked_account_email: finalLinkedEmail,
         linked_member_id: linkedMemberId,
+        link_state: finalLinkState,
         status: finalStatus,
         profile_image_url: friend.profile_image_url,
         updated_at: Date.now()
       });
 
-      // Ensure alias exists for new friend
-      if (linkedMemberId && friend.member_id !== linkedMemberId) {
-        await ensureStandaloneAlias(ctx, {
-          aliasMemberId: friend.member_id,
-          canonicalMemberId: linkedMemberId,
-          provenanceEmail: accountEmail
-        });
-      }
-
-      // Trigger reconciliation for new friend
-      if (finalLinkedEmail && linkedMemberId) {
-        const linkedAccount = await ctx.db
-          .query("accounts")
-          .withIndex("by_email", (q) => q.eq("email", finalLinkedEmail!))
-          .unique();
-
-        if (linkedAccount) {
-          await reconcileExpensesForMember(ctx, accountEmail, friend.member_id, linkedAccount.id);
-        }
-      }
-
       created.friends++;
     }
+
+    const trustedAccountsByMemberId = new Map<string, Doc<"accounts">>();
+    for (const existingFriend of ownerFriends) {
+      const linkedAccount = await resolveServerProvenLinkedAccount(
+        ctx,
+        existingFriend,
+        linkedAccountCache
+      );
+      if (linkedAccount) {
+        registerTrustedLinkedAccount(trustedAccountsByMemberId, existingFriend, linkedAccount);
+      }
+    }
+    const currentUserMemberIds = new Set(
+      [user.member_id, ...(user.alias_member_ids ?? [])]
+        .filter((memberId): memberId is string => Boolean(memberId?.trim()))
+        .map(normalizeMemberId)
+    );
 
     // Process Groups (Simplified logic as original)
     const existingGroups = await ctx.db
@@ -335,6 +476,9 @@ export const bulkImport = mutation({
         .withIndex("by_client_id", (q) => q.eq("id", group.id))
         .unique();
       if (existing) {
+        if (!isGroupOwnedByAccount(existing, user)) {
+          throw new Error(`Group ${group.id} belongs to another account`);
+        }
         groupRefMap.set(group.id, existing._id);
         continue;
       }
@@ -366,18 +510,17 @@ export const bulkImport = mutation({
         .query("expenses")
         .withIndex("by_client_id", (q) => q.eq("id", expense.id))
         .unique();
-      if (existing) continue;
+      if (existing) {
+        if (!isExpenseOwnedByAccount(existing, user)) {
+          throw new Error(`Expense ${expense.id} belongs to another account`);
+        }
+        continue;
+      }
 
       const groupRef = groupRefMap.get(expense.group_id);
       if (!groupRef) {
         errors.push(`expenses[${expense.id}]: could not resolve group_ref`);
         continue;
-      }
-
-      const participantEmails = new Set<string>([accountEmail]);
-      for (const p of expense.participants) {
-        const linkedEmail = p.linked_account_email?.trim().toLowerCase();
-        if (linkedEmail) participantEmails.add(linkedEmail);
       }
 
       // Remap IDs in Expense
@@ -394,10 +537,38 @@ export const bulkImport = mutation({
       const remappedParticipantIds = normalizeMemberIds(
         expense.participant_member_ids.map((id) => memberIdMap.get(normalizeMemberId(id)) || id)
       );
-      const remappedParticipants = expense.participants.map((p) => ({
-        ...p,
-        member_id: normalizeMemberId(memberIdMap.get(normalizeMemberId(p.member_id)) || p.member_id)
-      }));
+      const participantEmails = new Set<string>([accountEmail]);
+      const participantUserIds = new Set<string>([user.id]);
+      const addTrustedParticipant = (memberId: string) => {
+        const linkedAccount = currentUserMemberIds.has(memberId)
+          ? user
+          : trustedAccountsByMemberId.get(memberId);
+        if (!linkedAccount) return null;
+
+        participantEmails.add(linkedAccount.email.trim().toLowerCase());
+        participantUserIds.add(linkedAccount.id);
+        return linkedAccount;
+      };
+      for (const memberId of remappedParticipantIds) {
+        addTrustedParticipant(memberId);
+      }
+      const remappedParticipants = expense.participants.map((participant) => {
+        const memberId = normalizeMemberId(
+          memberIdMap.get(normalizeMemberId(participant.member_id)) || participant.member_id
+        );
+        const linkedAccount = addTrustedParticipant(memberId);
+        if (!linkedAccount) {
+          return { member_id: memberId, name: participant.name };
+        }
+
+        const linkedEmail = linkedAccount.email.trim().toLowerCase();
+        return {
+          member_id: memberId,
+          name: participant.name,
+          linked_account_id: linkedAccount.id,
+          linked_account_email: linkedEmail
+        };
+      });
 
       await ctx.db.insert("expenses", {
         id: expense.id,
@@ -416,25 +587,13 @@ export const bulkImport = mutation({
         participant_member_ids: remappedParticipantIds,
         participants: remappedParticipants,
         participant_emails: Array.from(participantEmails),
-        linked_participants: expense.linked_participants,
         subexpenses: expense.subexpenses,
         created_at: Date.now(),
         updated_at: Date.now()
       });
 
       // Reconcile user_expenses for this new expense
-      const participantUsers = await Promise.all(
-        Array.from(participantEmails).map((email) =>
-          ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q) => q.eq("email", email))
-            .unique()
-        )
-      );
-      const participantUserIds = participantUsers
-        .filter((u): u is NonNullable<typeof u> => u !== null)
-        .map((u) => u.id);
-      await reconcileUserExpenses(ctx, expense.id, participantUserIds);
+      await reconcileUserExpenses(ctx, expense.id, Array.from(participantUserIds));
 
       created.expenses++;
     }

@@ -20,7 +20,7 @@ function identity(email: string, subject: string) {
 async function markIdentityReady(t: any) {
   await t.run(async (ctx) => {
     await ctx.db.insert("identity_materialization_state", {
-      key: "member_identity_v1",
+      key: "member_identity_v2",
       status: "ready",
       phase: "complete",
       updated_at: Date.now()

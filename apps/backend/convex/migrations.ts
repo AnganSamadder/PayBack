@@ -6,6 +6,7 @@ import { reconcileUserExpenses } from "./helpers";
 import {
   ensureAccountAliasMaterialization,
   ensureStandaloneAlias,
+  findAliasByAliasMemberId,
   findAccountByAuthIdOrDocId,
   findAccountByMemberId,
   IDENTITY_MATERIALIZATION_KEY,
@@ -1080,6 +1081,13 @@ export const runIdentityMaterializationMigration = internalMutation({
       const collision = collisions.find((candidate) => candidate._id !== account!._id);
       if (collision) {
         const lastError = `Conflicting canonical account identity ${canonicalMemberId}`;
+        await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+        return { status: "pending" as const, phase: "accounts" as const, lastError };
+      }
+
+      const shadowingAlias = await findAliasByAliasMemberId(ctx.db, account.member_id!);
+      if (shadowingAlias) {
+        const lastError = `Alias ${shadowingAlias.alias_member_id} shadows canonical account identity ${canonicalMemberId}`;
         await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
         return { status: "pending" as const, phase: "accounts" as const, lastError };
       }

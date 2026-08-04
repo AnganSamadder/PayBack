@@ -72,6 +72,7 @@ export default defineSchema({
   })
     .index("by_account_email", ["account_email"])
     .index("by_account_email_and_member_id", ["account_email", "member_id"])
+    .index("by_account_email_and_linked_member_id", ["account_email", "linked_member_id"])
     .index("by_linked_account_id", ["linked_account_id"])
     .index("by_linked_account_email", ["linked_account_email"])
     .index("by_linked_member_id", ["linked_member_id"]),
