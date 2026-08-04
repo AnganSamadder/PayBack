@@ -1250,41 +1250,6 @@ private actor ControlledDeletionEmailAuthService: EmailAuthService {
     }
 }
 
-private actor SequencedAuthenticationSessionLoader {
-    enum Outcome {
-        case identity(AuthenticationSessionIdentity)
-        case noUser
-        case failure(Error)
-    }
-
-    private var outcomes: [Outcome]
-    private var callCount = 0
-
-    init(outcomes: [Outcome]) {
-        self.outcomes = outcomes
-    }
-
-    func load() throws -> AuthenticationSessionIdentity? {
-        callCount += 1
-        guard outcomes.isEmpty == false else {
-            return nil
-        }
-
-        switch outcomes.removeFirst() {
-        case .identity(let identity):
-            return identity
-        case .noUser:
-            return nil
-        case .failure(let error):
-            throw error
-        }
-    }
-
-    func loadCalls() -> Int {
-        callCount
-    }
-}
-
 private actor AmbiguousRetryLinkRequestService: LinkRequestService {
     private var attempts = 0
     private var requestIds: [UUID] = []
@@ -1357,4 +1322,39 @@ private actor MismatchedTargetLinkRequestService: LinkRequestService {
     }
     func declineLinkRequest(_ requestId: UUID) async throws {}
     func cancelLinkRequest(_ requestId: UUID) async throws {}
+}
+
+private actor SequencedAuthenticationSessionLoader {
+    enum Outcome {
+        case identity(AuthenticationSessionIdentity)
+        case noUser
+        case failure(Error)
+    }
+
+    private var outcomes: [Outcome]
+    private var callCount = 0
+
+    init(outcomes: [Outcome]) {
+        self.outcomes = outcomes
+    }
+
+    func load() throws -> AuthenticationSessionIdentity? {
+        callCount += 1
+        guard outcomes.isEmpty == false else {
+            return nil
+        }
+
+        switch outcomes.removeFirst() {
+        case .identity(let identity):
+            return identity
+        case .noUser:
+            return nil
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    func loadCalls() -> Int {
+        callCount
+    }
 }
