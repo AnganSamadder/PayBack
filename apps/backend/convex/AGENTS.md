@@ -75,6 +75,25 @@ Client sync and bulk import cannot create this marker. During migration of older
 unmarked link only when indexed claim/request or account-alias provenance proves the owner-account-
 member relationship, then rewrite the complete tuple from the live account.
 
+Global member aliases are trusted only when `materialization_source` is `account_alias` and
+`source_account_id` identifies the canonical account. Legacy unmarked rows stay quarantined until
+the identity migration corroborates them against that account's `alias_member_ids`; unproven rows
+must block readiness. Local friend merges belong in `account_friends.local_alias_member_ids`.
+
+Invite creation must bind `invite_tokens.target_friend_id` to the exact creator-owned unlinked
+friend row. Claim and link-request acceptance must revalidate that binding and the active creator,
+reject legacy unbound tokens, and rewrite only bounded creator-owned references.
+
+Current identity readiness is `member_identity_v3`; older markers never open mutation gates. During
+v3 rollout, unmarked aliases stay quarantined and compatibility may scan at most 512 accounts. Each
+migration page must preflight every conflict, duplicate, provenance tag, delete, and patch before any
+domain mutation; on failure only migration `last_error` may change.
+
+Public invite validation uses an allowlisted token DTO and creator-owned expenses through
+`expenses.by_owner_id`, with a hard preview cap and verified creator-owned `group_ref`. Do not expose
+raw invite-token documents or scan global expenses. Use the shared ghost predicate for both
+normalized `status` and `link_state`, and keep name-based identity repair endpoints disabled.
+
 ### Cleanup Functions
 
 | Function                      | Location     | When Called             | Behavior                                                  |

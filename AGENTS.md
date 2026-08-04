@@ -510,6 +510,32 @@ Failure impact:
 - A crafted backup could otherwise impersonate a registered account, poison global identity
   resolution, or grant another user visibility into imported expenses.
 
+### 8.14 Trusted alias and invite provenance
+
+1. Runtime global alias resolution trusts only `member_aliases` rows stamped with
+   `materialization_source: "account_alias"` and `source_account_id`.
+2. Legacy unmarked alias rows are quarantined. Migration may stamp them only when exactly one direct
+   canonical account corroborates the alias in `accounts.alias_member_ids`; otherwise readiness stays
+   blocked.
+3. Owner-local friend merges use `account_friends.local_alias_member_ids`; repair/debug/import paths
+   must not mint global aliases from names or historical rows.
+4. Every invite token must bind `target_friend_id` to the creator-owned unlinked friend row. Claim
+   revalidates the active creator, bound row ownership/identity/state, and token email; legacy unbound
+   tokens are rejected with recreation guidance.
+5. Invite claims rewrite only a bounded creator-owned identity surface and fail atomically when the
+   bound is exceeded. Never collect and rewrite the global groups table during a claim.
+6. Identity readiness uses `member_identity_v3`; v1/v2 markers never satisfy current mutation gates.
+   Pending reads may use trusted alias indexes and at most 512 accounts, but never unmarked aliases.
+7. Every migration page must finish validation and conflict planning before alias/account writes,
+   deletes, or provenance tags. A returned validation error may update only migration `last_error`.
+8. Public invite validation returns an allowlisted token DTO and previews only bounded expenses
+   owned by the token creator. Foreign groups, client-ID collisions, and over-cap previews must not
+   expose names, balances, or counts; do not expose a raw public token query.
+9. Ghost detection must use the shared normalized predicate over both `link_state` and `status`.
+   Status-only ghost imports persist `link_state: "ghost"`, normalized status, and no account tuple.
+10. Name-only repair is forbidden. Retired repair endpoints must fail without reading or rewriting
+    identity-bearing expense data.
+
 ## 9) Security Hardening Set (Provenance: 2026-02-20)
 
 ### 9.1 Group upsert authorization

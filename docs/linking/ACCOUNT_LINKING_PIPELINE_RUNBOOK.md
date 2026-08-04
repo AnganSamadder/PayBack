@@ -9,9 +9,9 @@ This runbook defines the canonical identity/linking pipeline for PayBack across 
 - `accounts.member_id`: canonical member ID (immutable after account creation).
 - `accounts.alias_member_ids`: account-level alias list (denormalized read path).
 - `member_aliases`: indexed alias materialization (`alias_member_id -> canonical_member_id`).
-  `account_email` records the actor/importer that created the row; it is audit provenance, not
-  ownership. Account-array rows are distinguished by `materialization_source=account_alias` and
-  `source_account_id`.
+  Runtime identity resolution trusts only rows with `materialization_source=account_alias` and a
+  `source_account_id`; `account_email` is audit metadata, not ownership. Unmarked legacy rows are
+  quarantined until the migration corroborates them against the canonical account's alias array.
 
 ## Hard Invariants
 
@@ -28,13 +28,14 @@ This runbook defines the canonical identity/linking pipeline for PayBack across 
 ## Indexed Identity Rollout
 
 Identity mutations that depend on the complete alias index require
-`identity_materialization_state/member_identity_v2` to be `ready`. Missing or pending state fails
+`identity_materialization_state/member_identity_v3` to be `ready`. Missing or pending state fails
 atomically with `Identity maintenance required`. Ordinary reads remain available during rollout
-through bounded compatibility reads over at most 512 account and alias rows. Those reads reject
-ambiguous alias ownership, canonical shadowing, or a larger deployment with an explicit identity
-maintenance error. Once v2 is ready, lookup is indexed-only and performs no compatibility table
-read. The former `member_identity_v1` marker is intentionally ignored because v2 adds the
-alias-versus-canonical-account collision audit.
+through trusted compound-index alias reads plus a compatibility scan of at most 512 accounts.
+Unmarked aliases never participate in runtime resolution. Compatibility reads reject ambiguous
+account-array ownership, canonical shadowing, or a larger deployment with an explicit identity
+maintenance error. Once v3 is ready, lookup is indexed-only and performs no compatibility table
+read. Existing v2 markers are intentionally ignored because they predate provenance classification;
+the v3 migration leaves those historical rows untouched.
 The following flows pause until the migration completes:
 
 - normal, merge-selected, and internal invite claims;
@@ -52,21 +53,24 @@ Run the internal migration repeatedly after deploying the schema/backend change:
 bunx convex run migrations:runIdentityMaterializationMigration '{"batchSize":128}'
 ```
 
-Repeat until the response reports `status: "ready"`. The migration uses three explicit passes:
+Repeat until the response reports `status: "ready"`. The migration uses four explicit passes:
 
-1. normalize and deduplicate standalone alias rows;
+1. normalize and deduplicate legacy alias rows;
 2. normalize and validate every account canonical/alias array;
-3. materialize account aliases with normalized, indexed-only conflict checks.
+3. classify legacy aliases as trusted account materializations only when one direct canonical
+   account corroborates them; unproven rows remain quarantined and block readiness;
+4. materialize account aliases with normalized, indexed-only conflict checks.
 
-The third pass batches alias-light account pages and stores the current account and alias offset for
+The fourth pass batches alias-light account pages and stores the current account and alias offset for
 dense pages, so neither a large deployment nor a large valid account requires one transaction.
 If `lastError` reports conflicting canonical ownership or an identity maintenance bound, repair the
 named identity and resume. The account pass rejects alias arrays above the live 256-alias limit and
-verifies that no normalized alias shadows a canonical member ID. Errors remain recorded without
-advancing the active cursor; each materialization batch is fully preflighted before writes.
+verifies that no normalized alias shadows a canonical member ID. Every mutating page in the alias,
+account, provenance, and materialization passes is fully preflighted before domain writes. On a
+validation failure, only `last_error` changes; data rows and the active cursor remain unchanged.
 
 For a clean installation, run the same command until ready; an empty database normally completes
-in three calls. Do not manually insert or flip the readiness row. Rollback requires removing the
+in four calls. Do not manually insert or flip the readiness row. Rollback requires removing the
 merge gate together with this schema version; deleting only the marker intentionally disables
 merge operations.
 
@@ -79,7 +83,7 @@ Live writes are deliberately smaller than migration batches:
   linking flows and are never deleted by unrelated account-array synchronization.
 
 Identity lookup and collision guards use exact-index probes first: normalized ID, then the trimmed
-raw value for legacy mixed-case rows. While v2 is pending, the shared compatibility helpers add the
+raw value for legacy mixed-case rows. While v3 is pending, the shared compatibility helpers add the
 bounded reads described above so viewer, group, and expense identity surfaces do not lose aliases
 mid-rollout. Do not add unbounded fallback scans or bypass the shared conflict checks.
 
@@ -109,6 +113,9 @@ Checks:
 - Authenticated claimant.
 - Not expired / not already claimed (`invite_tokens`, `link_requests`).
 - Not self-claim (`SELF_CLAIM`).
+- Creator account is still active and matches the token creator identity.
+- `invite_tokens.target_friend_id` still points to the exact unlinked `account_friends` row owned by
+  the creator and matching `target_member_id`. Legacy unbound tokens must be recreated.
 
 ### 2) Shared claim core
 
@@ -125,7 +132,8 @@ Core steps:
 5. Update claimant `accounts.alias_member_ids`.
 6. Update both users' `account_friends` rows from live account data and stamp
    `link_state: "linked"`.
-7. Canonicalize group membership and expense participant/split IDs from target -> canonical.
+7. Canonicalize only the creator's bounded group/expense identity surface from target -> canonical;
+   reject oversized work atomically instead of scanning or rewriting unrelated users' groups.
 8. Reconcile `user_expenses` visibility fanout for impacted participants.
 9. Return contract v2 payload.
 
