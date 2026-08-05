@@ -20,7 +20,7 @@ export default defineSchema({
     // Maintained in sync with member_aliases table for denormalized lookup.
     alias_member_ids: v.optional(v.array(v.string())),
 
-    status: v.optional(v.union(v.literal("active"), v.literal("deleted"))),
+    status: v.optional(v.union(v.literal("active"), v.literal("deleting"), v.literal("deleted"))),
     deleted_at: v.optional(v.number()),
     created_at: v.number(),
     updated_at: v.optional(v.number())
@@ -56,6 +56,7 @@ export default defineSchema({
       v.literal("preflight_owned_group_select"),
       v.literal("preflight_owned_group_expenses_by_client_id"),
       v.literal("preflight_owned_group_expenses_by_reference"),
+      v.literal("activate_deletion_fence"),
       v.literal("unlink_friends_account_id"),
       v.literal("unlink_friends_email"),
       v.literal("unlink_friends_member_id"),
@@ -83,6 +84,7 @@ export default defineSchema({
     current_group_id: v.optional(v.id("groups")),
     current_group_client_id: v.optional(v.string()),
     current_group_is_last: v.optional(v.boolean()),
+    fence_activated: v.optional(v.boolean()),
     friendships_unlinked: v.number(),
     processed_count: v.number(),
     started_at: v.number(),

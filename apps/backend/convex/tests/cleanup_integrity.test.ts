@@ -3258,13 +3258,17 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
     completed: false,
     inProgress: false
   });
-  let result = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {});
+  let result = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {
+    clientCapability: "bounded_progress_v1"
+  });
   const progressTokens = new Set<string>();
   for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {
     expect(result.inProgress).toBe(true);
     expect(progressTokens.has(result.progressToken)).toBe(false);
     progressTokens.add(result.progressToken);
-    result = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {});
+    result = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {
+      clientCapability: "bounded_progress_v1"
+    });
   }
   expect(result.success).toBe(true);
   expect(result.state).toBe("deleted");
@@ -3399,7 +3403,9 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
   expect(friendGhosts[0].linked_account_id).toBeUndefined();
   expect(friendGhosts[0].linked_account_email).toBeUndefined();
 
-  const retry = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {});
+  const retry = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {
+    clientCapability: "bounded_progress_v1"
+  });
   expect(retry).toMatchObject({
     success: true,
     state: "already_deleted",

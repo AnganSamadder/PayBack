@@ -1616,6 +1616,7 @@ async function updateSelfDeletionProgress(
       | "current_group_id"
       | "current_group_client_id"
       | "current_group_is_last"
+      | "fence_activated"
     >
   >,
   processedUnits: number
@@ -1710,7 +1711,12 @@ async function findPreparedSelfDeletionSteward(
     const pendingAccount = cache.memberAccounts.get(memberId);
     if (!pendingAccount) throw new Error("Account deletion identity preflight is incomplete");
     const account = await pendingAccount;
-    if (account && account.id !== excludedAccountId && account.status !== "deleted") {
+    if (
+      account &&
+      account.id !== excludedAccountId &&
+      account.status !== "deleting" &&
+      account.status !== "deleted"
+    ) {
       candidates.set(account.id, account);
     }
   }
@@ -2032,7 +2038,12 @@ async function advanceSelfDeletion(
         return await updateSelfDeletionProgress(
           ctx,
           progress,
-          { phase: "unlink_friends_account_id", cursor: undefined },
+          {
+            phase: progress.fence_activated
+              ? "unlink_friends_account_id"
+              : "activate_deletion_fence",
+            cursor: undefined
+          },
           1
         );
       }
@@ -2105,7 +2116,9 @@ async function advanceSelfDeletion(
         progress,
         progress.current_group_is_last
           ? {
-              phase: "unlink_friends_account_id",
+              phase: progress.fence_activated
+                ? "unlink_friends_account_id"
+                : "activate_deletion_fence",
               cursor: undefined,
               next_cursor: undefined,
               current_group_id: undefined,
@@ -2121,6 +2134,35 @@ async function advanceSelfDeletion(
               current_group_is_last: undefined
             },
         result.page.length + 1
+      );
+    }
+    case "activate_deletion_fence": {
+      if (
+        progress.fence_activated ||
+        account.status === "deleting" ||
+        account.status === "deleted" ||
+        progress.account_id !== account._id ||
+        progress.account_auth_id !== account.id ||
+        progress.account_email !== normalizeEmail(account.email)
+      ) {
+        throw new Error("Account deletion fence does not match the authenticated account");
+      }
+      const now = Date.now();
+      await ctx.db.patch(account._id, { status: "deleting", updated_at: now });
+      return await updateSelfDeletionProgress(
+        ctx,
+        progress,
+        {
+          phase: "preflight_groups_owner_id",
+          cursor: undefined,
+          next_cursor: undefined,
+          member_index: undefined,
+          current_group_id: undefined,
+          current_group_client_id: undefined,
+          current_group_is_last: undefined,
+          fence_activated: true
+        },
+        1
       );
     }
     case "unlink_friends_account_id":
@@ -2713,11 +2755,17 @@ async function advanceSelfDeletion(
 }
 
 export const selfDeleteAccount = mutation({
-  args: { accountEmail: v.optional(v.string()) },
+  args: {
+    accountEmail: v.optional(v.string()),
+    clientCapability: v.optional(v.literal("bounded_progress_v1"))
+  },
   returns: selfDeletionResponseValidator,
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Unauthenticated");
+    if (args.clientCapability !== "bounded_progress_v1") {
+      throw new Error("Please update PayBack before deleting your account");
+    }
     const priorReceipt = await ctx.db
       .query("account_deletion_receipts")
       .withIndex("by_auth_subject", (q) => q.eq("auth_subject", identity.subject))
@@ -2772,7 +2820,16 @@ export const selfDeleteAccount = mutation({
       ) {
         throw new Error("Account deletion progress does not match the authenticated account");
       }
+      if (
+        (progress.fence_activated && user.status !== "deleting") ||
+        (!progress.fence_activated && user.status === "deleting")
+      ) {
+        throw new Error("Account deletion fence does not match the authenticated account");
+      }
     } else {
+      if (user.status === "deleting") {
+        throw new Error("Account deletion progress is missing for a fenced account");
+      }
       const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id ?? user.id);
       const memberIds = Array.from(
         new Set(
