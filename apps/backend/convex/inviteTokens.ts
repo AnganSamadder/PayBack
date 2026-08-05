@@ -283,6 +283,85 @@ export const create = mutation({
 
 const MAX_PUBLIC_INVITE_PREVIEW_EXPENSES = 128;
 
+type PreviewOwnerIdentity = {
+  owner_id?: Doc<"accounts">["_id"];
+  owner_account_id?: string;
+  owner_email?: string;
+};
+
+function isPreviewRowOwnedByAccount(
+  row: PreviewOwnerIdentity,
+  account: Pick<Doc<"accounts">, "_id" | "id" | "email">
+) {
+  const ownerAccountId = row.owner_account_id?.trim();
+  const ownerEmail = row.owner_email?.trim().toLowerCase();
+  const hasOwnerDocumentId = Boolean(row.owner_id);
+  const hasOwnerAccountId = Boolean(ownerAccountId);
+  const hasOwnerEmail = Boolean(ownerEmail);
+
+  return (
+    (!hasOwnerDocumentId || row.owner_id === account._id) &&
+    (!hasOwnerAccountId || ownerAccountId === account.id) &&
+    (!hasOwnerEmail || ownerEmail === account.email.trim().toLowerCase()) &&
+    (hasOwnerDocumentId || hasOwnerAccountId || hasOwnerEmail)
+  );
+}
+
+async function collectCreatorExpensesForPreview(
+  ctx: Pick<QueryCtx, "db">,
+  creator: Doc<"accounts">
+) {
+  const indexedRows = [
+    await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_id", (q) => q.eq("owner_id", creator._id))
+      .take(MAX_PUBLIC_INVITE_PREVIEW_EXPENSES + 1),
+    await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", creator.id))
+      .take(MAX_PUBLIC_INVITE_PREVIEW_EXPENSES + 1),
+    await ctx.db
+      .query("expenses")
+      .withIndex("by_owner_email", (q) => q.eq("owner_email", creator.email))
+      .take(MAX_PUBLIC_INVITE_PREVIEW_EXPENSES + 1)
+  ];
+
+  if (indexedRows.some((rows) => rows.length > MAX_PUBLIC_INVITE_PREVIEW_EXPENSES)) {
+    return null;
+  }
+
+  const creatorExpenses = new Map<string, Doc<"expenses">>();
+  for (const expense of indexedRows.flat()) {
+    if (isPreviewRowOwnedByAccount(expense, creator)) {
+      creatorExpenses.set(String(expense._id), expense);
+    }
+  }
+
+  if (creatorExpenses.size > MAX_PUBLIC_INVITE_PREVIEW_EXPENSES) return null;
+  return Array.from(creatorExpenses.values());
+}
+
+async function resolveCreatorGroupNameForPreview(
+  ctx: Pick<QueryCtx, "db">,
+  expense: Doc<"expenses">,
+  creator: Doc<"accounts">
+) {
+  if (expense.group_ref) {
+    const group = await ctx.db.get(expense.group_ref);
+    if (group && group.id === expense.group_id && isPreviewRowOwnedByAccount(group, creator)) {
+      return group.name;
+    }
+    return null;
+  }
+
+  const candidates = await ctx.db
+    .query("groups")
+    .withIndex("by_client_id", (q) => q.eq("id", expense.group_id))
+    .take(2);
+  const ownedGroups = candidates.filter((group) => isPreviewRowOwnedByAccount(group, creator));
+  return ownedGroups.length === 1 ? ownedGroups[0].name : null;
+}
+
 const publicInviteTokenValidator = v.object({
   id: v.string(),
   creator_email: v.string(),
@@ -413,41 +492,41 @@ export const validate = query({
       };
     }
 
-    const creatorExpenses = await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_id", (q) => q.eq("owner_id", creatorAccount._id))
-      .take(MAX_PUBLIC_INVITE_PREVIEW_EXPENSES + 1);
+    const creatorExpenses = await collectCreatorExpensesForPreview(ctx, creatorAccount);
     let expensePreview: {
       expense_count: number;
       group_names: string[];
       total_balance: number;
     } | null = null;
-    if (creatorExpenses.length <= MAX_PUBLIC_INVITE_PREVIEW_EXPENSES) {
-      const targetMemberId = normalizeMemberId(token.target_member_id);
+    if (creatorExpenses) {
+      const targetIdentityMemberIds = new Set(
+        normalizeMemberIds([token.target_member_id, ...(targetFriend.local_alias_member_ids ?? [])])
+      );
+      const matchesTargetIdentity = (memberId: string) =>
+        targetIdentityMemberIds.has(normalizeMemberId(memberId));
       const memberExpenses = creatorExpenses.filter(
         (expense) =>
-          expense.involved_member_ids.some(
-            (memberId) => normalizeMemberId(memberId) === targetMemberId
-          ) || normalizeMemberId(expense.paid_by_member_id) === targetMemberId
+          matchesTargetIdentity(expense.paid_by_member_id) ||
+          expense.involved_member_ids.some(matchesTargetIdentity) ||
+          expense.splits.some((split) => matchesTargetIdentity(split.member_id)) ||
+          expense.participant_member_ids.some(matchesTargetIdentity) ||
+          expense.participants.some((participant) => matchesTargetIdentity(participant.member_id))
       );
       const groupNames = new Set<string>();
       let totalBalance = 0;
       for (const expense of memberExpenses) {
-        if (expense.group_ref) {
-          const group = await ctx.db.get(expense.group_ref);
-          if (group && group.owner_id === creatorAccount._id && group.id === expense.group_id) {
-            groupNames.add(group.name);
-          }
+        const groupName = await resolveCreatorGroupNameForPreview(ctx, expense, creatorAccount);
+        if (groupName) {
+          groupNames.add(groupName);
         }
-        if (normalizeMemberId(expense.paid_by_member_id) === targetMemberId) {
+        if (matchesTargetIdentity(expense.paid_by_member_id)) {
           totalBalance += expense.splits
-            .filter((split) => normalizeMemberId(split.member_id) !== targetMemberId)
+            .filter((split) => !matchesTargetIdentity(split.member_id) && !split.is_settled)
             .reduce((sum, split) => sum + split.amount, 0);
         } else {
-          const targetSplit = expense.splits.find(
-            (split) => normalizeMemberId(split.member_id) === targetMemberId
-          );
-          totalBalance -= targetSplit?.amount ?? 0;
+          totalBalance -= expense.splits
+            .filter((split) => matchesTargetIdentity(split.member_id) && !split.is_settled)
+            .reduce((sum, split) => sum + split.amount, 0);
         }
       }
       expensePreview = {
