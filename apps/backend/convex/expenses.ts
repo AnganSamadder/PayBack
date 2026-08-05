@@ -1,4 +1,5 @@
 import { mutation, query } from "./_generated/server";
+import { paginationOptsValidator } from "convex/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
@@ -20,6 +21,16 @@ import {
   MAX_EXPENSE_VIEWERS,
   MAX_EXPENSE_WRITE_OPERATIONS
 } from "./expenseWrites";
+import {
+  getAccountSyncRevision,
+  MAX_SYNC_PAGE_SIZE,
+  requireExpectedSyncRevision,
+  requireRevisionForContinuation,
+  requireSafeSyncPageSize,
+  requireSyncMaterializationReady,
+  syncV2NotReadyError
+} from "./syncState";
+import { USER_EXPENSE_REFS_MATERIALIZATION_KEY } from "./migrations/userExpenseRefs";
 
 function assertExpenseArgumentBounds(args: {
   involved_member_ids: readonly string[];
@@ -1203,6 +1214,49 @@ export const list = query({
     );
 
     return expenses.filter((e) => e !== null);
+  }
+});
+
+export const listV2 = query({
+  args: {
+    paginationOpts: paginationOptsValidator,
+    expectedRevision: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    requireSafeSyncPageSize(args.paginationOpts.numItems);
+    requireRevisionForContinuation(args.paginationOpts.cursor, args.expectedRevision);
+    await requireSyncMaterializationReady(ctx.db, USER_EXPENSE_REFS_MATERIALIZATION_KEY);
+    const revision = await getAccountSyncRevision(ctx.db, user._id, "expenses");
+    requireExpectedSyncRevision(revision, args.expectedRevision);
+
+    const visibilityPage = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_account_ref_and_updated_at", (query) => query.eq("account_ref", user._id))
+      .order("desc")
+      .paginate({
+        ...args.paginationOpts,
+        maximumRowsRead: MAX_SYNC_PAGE_SIZE,
+        maximumBytesRead: 1024 * 1024
+      } as typeof args.paginationOpts);
+    const page: Doc<"expenses">[] = [];
+    for (const visibility of visibilityPage.page) {
+      if (!visibility.expense_ref) {
+        throw syncV2NotReadyError("expense visibility is missing its canonical reference");
+      }
+      const expense = await ctx.db.get(visibility.expense_ref);
+      if (!expense || expense.id !== visibility.expense_id) {
+        throw syncV2NotReadyError("expense visibility is inconsistent");
+      }
+      page.push(expense);
+    }
+    return {
+      page,
+      continueCursor: visibilityPage.continueCursor,
+      isDone: visibilityPage.isDone,
+      revision
+    };
   }
 });
 

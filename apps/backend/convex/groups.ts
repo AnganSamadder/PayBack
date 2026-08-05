@@ -1,4 +1,6 @@
 import { mutation, query } from "./_generated/server";
+import { paginationOptsValidator } from "convex/server";
+import { Doc } from "./_generated/dataModel";
 import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
@@ -15,6 +17,16 @@ import {
   type ExpenseWriteOperation,
   MAX_EXPENSE_WRITE_OPERATIONS
 } from "./expenseWrites";
+import {
+  getAccountSyncRevision,
+  MAX_SYNC_PAGE_SIZE,
+  requireExpectedSyncRevision,
+  requireRevisionForContinuation,
+  requireSafeSyncPageSize,
+  requireSyncMaterializationReady,
+  syncV2NotReadyError
+} from "./syncState";
+import { GROUP_VISIBILITY_MATERIALIZATION_KEY } from "./migrations/groupVisibility";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -330,6 +342,46 @@ export const list = query({
   args: {},
   handler: async (ctx) => {
     return await listInternal(ctx);
+  }
+});
+
+export const listV2 = query({
+  args: {
+    paginationOpts: paginationOptsValidator,
+    expectedRevision: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    requireSafeSyncPageSize(args.paginationOpts.numItems);
+    requireRevisionForContinuation(args.paginationOpts.cursor, args.expectedRevision);
+    await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
+    const revision = await getAccountSyncRevision(ctx.db, user._id, "groups");
+    requireExpectedSyncRevision(revision, args.expectedRevision);
+
+    const visibilityPage = await ctx.db
+      .query("group_visibility")
+      .withIndex("by_account_id_and_group_updated_at", (query) => query.eq("account_id", user._id))
+      .order("desc")
+      .paginate({
+        ...args.paginationOpts,
+        maximumRowsRead: MAX_SYNC_PAGE_SIZE,
+        maximumBytesRead: 1024 * 1024
+      } as typeof args.paginationOpts);
+    const page: Doc<"groups">[] = [];
+    for (const visibility of visibilityPage.page) {
+      const group = await ctx.db.get(visibility.group_id);
+      if (!group) {
+        throw syncV2NotReadyError("group visibility references a missing group");
+      }
+      page.push(group);
+    }
+    return {
+      page,
+      continueCursor: visibilityPage.continueCursor,
+      isDone: visibilityPage.isDone,
+      revision
+    };
   }
 });
 
