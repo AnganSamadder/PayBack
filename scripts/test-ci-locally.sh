@@ -107,6 +107,21 @@ echo -e "${YELLOW}[2/10] Environment Snapshot...${NC}"
 HOST_ARCH=$(uname -m)
 echo "  Host architecture: $HOST_ARCH"
 xcodebuild -version | head -2 | sed 's/^/  /'
+XCODE_VERSION=$(xcodebuild -version | awk 'NR == 1 { print $2 }')
+XCODE_MAJOR=${XCODE_VERSION%%.*}
+if ! [[ "$XCODE_MAJOR" =~ ^[0-9]+$ ]] || [ "$XCODE_MAJOR" -lt 26 ]; then
+	echo -e "${RED}✗ Xcode 26 or newer is required (selected: ${XCODE_VERSION:-unknown})${NC}"
+	echo "  Clerk 1.3.6 requires the Swift 6.2 toolchain shipped with Xcode 26."
+	exit 1
+fi
+IOS_SDK_VERSION=$(xcodebuild -showsdks | grep -o 'iphoneos[0-9]*\.[0-9]*' | sed 's/iphoneos//' | sort -V | tail -1)
+IOS_SDK_MAJOR=${IOS_SDK_VERSION%%.*}
+if ! [[ "$IOS_SDK_MAJOR" =~ ^[0-9]+$ ]]; then
+	echo -e "${RED}✗ Could not detect the selected Xcode's iOS SDK${NC}"
+	exit 1
+fi
+export PAYBACK_IOS_SDK_MAJOR="$IOS_SDK_MAJOR"
+echo "  iOS SDK: $IOS_SDK_VERSION"
 echo "  CI_FLAVOR: $CI_FLAVOR"
 echo "  SANITIZER: $SANITIZER"
 echo "  FAIL_ON_WARNINGS: $FAIL_ON_WARNINGS"
@@ -239,7 +254,7 @@ import os
 import subprocess
 import sys
 
-def parse_runtime(runtime: str):
+def parse_runtime(runtime: str, target_major: int):
   if ".iOS-" not in runtime:
     return (), ""
   version_raw = runtime.split(".iOS-")[-1].replace("-", ".")
@@ -247,6 +262,8 @@ def parse_runtime(runtime: str):
   for token in version_raw.split('.'):
     token = ''.join(ch for ch in token if ch.isdigit()) or '0'
     parts.append(int(token))
+  if parts and parts[0] != target_major:
+    return (), ""
   return tuple(parts), version_raw
 
 def get_device_priority(name: str):
@@ -294,8 +311,9 @@ except subprocess.CalledProcessError as exc:
 
 data = json.loads(result)
 candidates = []
+target_major = int(os.environ["PAYBACK_IOS_SDK_MAJOR"])
 for runtime, devices in data.get("devices", {}).items():
-  version_tuple, version_str = parse_runtime(runtime)
+  version_tuple, version_str = parse_runtime(runtime, target_major)
   if not version_tuple:
     continue
   for device in devices:
@@ -310,7 +328,10 @@ for runtime, devices in data.get("devices", {}).items():
     candidates.append((version_tuple, name, udid, version_str))
 
 if not candidates:
-  print("ERROR: No available iPhone simulator found", file=sys.stderr)
+  print(
+    f"ERROR: No available iPhone simulator found for iOS {target_major}",
+    file=sys.stderr,
+  )
   sys.exit(1)
 
 requested_udid = os.environ.get("PAYBACK_SIMULATOR_UDID", "").strip()

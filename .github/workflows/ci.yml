@@ -178,7 +178,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   ios-build:
     name: iOS Build
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 45
     needs: [quality-gate]
     if: "!contains(github.event.pull_request.title, '[skip-ios]')"
@@ -190,9 +190,8 @@ jobs:
       - name: Detect latest stable Xcode (not beta)
         id: detect-xcode
         run: |
-          # Get all stable Xcode versions (format: Xcode_16.1.app)
-          # Exclude RC, beta, and Xcode 26+ (iOS 26 ecosystem not yet stable for CI)
-          LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | grep -v "^Xcode_26\." | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
+          # Get all stable Xcode versions (format: Xcode_26.1.app).
+          LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
           if [ -z "$LATEST_STABLE" ]; then
             echo "ERROR: No stable Xcode version found in /Applications"
             echo "Available Xcode installations:"
@@ -377,7 +376,7 @@ jobs:
 
   ios-tests:
     name: iOS Tests (${{ matrix.sanitizer }})
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: ${{ matrix.timeout }}
     needs: [quality-gate]
     if: "!contains(github.event.pull_request.title, '[skip-ios]')"
@@ -411,7 +410,7 @@ jobs:
         if: matrix.run_on_pr == true || github.event_name == 'push'
         id: detect-xcode
         run: |
-          LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | grep -v "^Xcode_26\." | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
+          LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
           if [ -z "$LATEST_STABLE" ]; then
             echo "ERROR: No stable Xcode version found in /Applications"
             echo "Available Xcode installations:"
