@@ -104,7 +104,7 @@ describe("central expense writes", () => {
     expect(result.states.every((state) => state.expenses_revision === 1)).toBe(true);
   });
 
-  test("repairs duplicates deterministically without a logical revision", async () => {
+  test("repairs duplicates deterministically and bumps the affected revision", async () => {
     const t = convexTest(schema, modules);
     const fixture = await t.run(async (ctx) => {
       const ownerId = await insertAccount(ctx, "owner");
@@ -150,7 +150,45 @@ describe("central expense writes", () => {
       expense_ref: fixture.expenseId,
       updated_at: 10
     });
-    expect(result.states).toEqual([]);
+    expect(result.states).toHaveLength(1);
+    expect(result.states[0]).toMatchObject({
+      account_id: fixture.ownerId,
+      expenses_revision: 1
+    });
+  });
+
+  test("does not bump revisions for a true visibility no-op", async () => {
+    const t = convexTest(schema, modules);
+    const ownerId = await t.run((ctx) => insertAccount(ctx, "noop_owner"));
+
+    await t.run((ctx) =>
+      applyExpenseWriteBatch(ctx, [
+        {
+          kind: "insert",
+          expense: expenseValue(ownerId, "noop_expense"),
+          viewerAccountIds: [ownerId]
+        }
+      ])
+    );
+
+    await t.run(async (ctx) => {
+      const expense = await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (query) => query.eq("id", "noop_expense"))
+        .unique();
+      if (!expense) throw new Error("missing expense fixture");
+      await applyExpenseWriteBatch(ctx, [
+        { kind: "visibility", expense, viewerAccountIds: [ownerId] }
+      ]);
+    });
+
+    const state = await t.run((ctx) =>
+      ctx.db
+        .query("account_sync_state")
+        .withIndex("by_account_id", (query) => query.eq("account_id", ownerId))
+        .unique()
+    );
+    expect(state?.expenses_revision).toBe(1);
   });
 
   test("fails closed on conflicting live account identities", async () => {
@@ -255,6 +293,97 @@ describe("central expense writes", () => {
 
     const current = await t.run((ctx) => ctx.db.get(fixture.expenseId));
     expect(current).toMatchObject({ id: "immutable_client_id", updated_at: 10 });
+  });
+
+  test("fails closed when a non-insert client ID identifies duplicate expenses", async () => {
+    const t = convexTest(schema, modules);
+    const fixture = await t.run(async (ctx) => {
+      const ownerId = await insertAccount(ctx, "duplicate_expense_owner");
+      const firstId = await ctx.db.insert(
+        "expenses",
+        expenseValue(ownerId, "duplicate_expense_client")
+      );
+      await ctx.db.insert("expenses", expenseValue(ownerId, "duplicate_expense_client"));
+      return { ownerId, firstId };
+    });
+
+    await expect(
+      t.run(async (ctx) => {
+        const expense = await ctx.db.get(fixture.firstId);
+        if (!expense) throw new Error("missing expense fixture");
+        await applyExpenseWriteBatch(ctx, [
+          { kind: "visibility", expense, viewerAccountIds: [fixture.ownerId] }
+        ]);
+      })
+    ).rejects.toThrow("Expense duplicate_expense_client is not unique");
+
+    const result = await t.run(async (ctx) => ({
+      rows: await ctx.db.query("user_expenses").collect(),
+      states: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(result).toEqual({ rows: [], states: [] });
+  });
+
+  test("supports 66 disjoint revision accounts in one bounded batch", async () => {
+    const t = convexTest(schema, modules);
+    const accountIds = await t.run(async (ctx) => {
+      const ids: Id<"accounts">[] = [];
+      for (let index = 0; index < 66; index += 1) {
+        ids.push(await insertAccount(ctx, `disjoint_${index}`));
+      }
+      return ids;
+    });
+
+    const result = await t.run((ctx) =>
+      applyExpenseWriteBatch(
+        ctx,
+        accountIds.map((accountId, index) => ({
+          kind: "insert" as const,
+          expense: expenseValue(accountId, `disjoint_expense_${index}`),
+          viewerAccountIds: [accountId]
+        }))
+      )
+    );
+
+    expect(result.operations).toHaveLength(66);
+    expect(result.revisionsBumped).toBe(66);
+    const persisted = await t.run(async (ctx) => ({
+      expenses: await ctx.db.query("expenses").collect(),
+      rows: await ctx.db.query("user_expenses").collect(),
+      states: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(persisted.expenses).toHaveLength(66);
+    expect(persisted.rows).toHaveLength(66);
+    expect(persisted.states).toHaveLength(66);
+  });
+
+  test("rejects an oversized expense write batch before persisting documents", async () => {
+    const t = convexTest(schema, modules);
+    const ownerId = await t.run((ctx) => insertAccount(ctx, "large_expense_owner"));
+    const largeNotes = "x".repeat(900 * 1024);
+
+    await expect(
+      t.run((ctx) =>
+        applyExpenseWriteBatch(
+          ctx,
+          Array.from({ length: 14 }, (_, index) => ({
+            kind: "insert" as const,
+            expense: {
+              ...expenseValue(ownerId, `large_expense_${index}`),
+              notes: largeNotes
+            },
+            viewerAccountIds: [ownerId]
+          }))
+        )
+      )
+    ).rejects.toThrow("Expense write limit exceeded: more than");
+
+    const result = await t.run(async (ctx) => ({
+      expenses: await ctx.db.query("expenses").collect(),
+      rows: await ctx.db.query("user_expenses").collect(),
+      states: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(result).toEqual({ expenses: [], rows: [], states: [] });
   });
 
   test("accepts exactly 65 viewers and rejects 66 before writing", async () => {

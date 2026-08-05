@@ -17,14 +17,19 @@ export const GROUP_VISIBILITY_BATCH_LIMITS = {
   queries: 3072,
   rows: 3072,
   bytes: 8 * 1024 * 1024,
-  writes: 2048
+  writes: 2048,
+  writeBytes: 12 * 1024 * 1024
 } as const;
+
+const INSERT_SYSTEM_FIELD_RESERVATION = 512;
+const SYNC_STATE_WRITE_BYTE_RESERVATION = 1024;
 
 type GroupVisibilityBatchLimits = {
   queries: number;
   rows: number;
   bytes: number;
   writes: number;
+  writeBytes: number;
 };
 
 type VisibilityWriteResult = {
@@ -104,11 +109,15 @@ async function resolveAccountByMemberId(
     visited.add(currentMemberId);
 
     tracker.chargeQuery();
-    const account = await ctx.db
+    const accounts = await ctx.db
       .query("accounts")
       .withIndex("by_member_id", (query) => query.eq("member_id", currentMemberId))
-      .first();
-    tracker.chargeRows(account ? [account as Value] : []);
+      .take(2);
+    tracker.chargeRows(accounts as Value[]);
+    if (accounts.length > 1) {
+      throw new Error(`Group visibility has duplicate account member ID ${currentMemberId}`);
+    }
+    const account = accounts[0];
     if (account) {
       for (const visitedId of visited) cache.byMemberId.set(visitedId, account);
       cache.byAccountId.set(String(account._id), account);
@@ -116,13 +125,17 @@ async function resolveAccountByMemberId(
     }
 
     tracker.chargeQuery();
-    const alias = await ctx.db
+    const aliases = await ctx.db
       .query("member_aliases")
       .withIndex("by_alias_member_id_and_source", (query) =>
         query.eq("alias_member_id", currentMemberId).eq("materialization_source", "account_alias")
       )
-      .first();
-    tracker.chargeRows(alias ? [alias as Value] : []);
+      .take(2);
+    tracker.chargeRows(aliases as Value[]);
+    if (aliases.length > 1) {
+      throw new Error(`Group visibility has duplicate account alias ${currentMemberId}`);
+    }
+    const alias = aliases[0];
     if (!alias) {
       for (const visitedId of visited) cache.byMemberId.set(visitedId, null);
       return null;
@@ -201,6 +214,7 @@ type GroupVisibilityBatchBudget = {
   rows: number;
   bytes: number;
   writes: number;
+  writeBytes: number;
 };
 
 type VisibilityPlan = {
@@ -209,12 +223,49 @@ type VisibilityPlan = {
   deletes: Doc<"group_visibility">[];
 };
 
+function convexValueSize(value: Record<string, unknown>): number {
+  return getConvexSize(
+    Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as Value
+  );
+}
+
+function insertedDocumentSize(value: Record<string, unknown>): number {
+  return convexValueSize(value) + INSERT_SYSTEM_FIELD_RESERVATION;
+}
+
+function visibilityPlanWriteBytes(
+  group: Pick<Doc<"groups">, "_id" | "updated_at">,
+  plan: VisibilityPlan
+): number {
+  const now = Date.now();
+  const insertBytes = plan.inserts.reduce(
+    (total, accountId) =>
+      total +
+      insertedDocumentSize({
+        account_id: accountId,
+        group_id: group._id,
+        group_updated_at: group.updated_at,
+        created_at: now,
+        updated_at: now
+      }),
+    0
+  );
+  const updateBytes = plan.updates.reduce(
+    (total, row) =>
+      total + convexValueSize({ ...row, group_updated_at: group.updated_at, updated_at: now }),
+    0
+  );
+  const deleteBytes = plan.deletes.reduce((total, row) => total + getConvexSize(row as Value), 0);
+  return insertBytes + updateBytes + deleteBytes;
+}
+
 export class GroupVisibilityWriteBatch {
   private readonly budget: GroupVisibilityBatchBudget = {
     queries: 0,
     rows: 0,
     bytes: 0,
-    writes: 0
+    writes: 0,
+    writeBytes: 0
   };
   private readonly limits: GroupVisibilityBatchLimits;
   private readonly hooks: GroupVisibilityBatchBudgetHooks;
@@ -243,6 +294,10 @@ export class GroupVisibilityWriteBatch {
       writes: Math.min(
         options.limits?.writes ?? GROUP_VISIBILITY_BATCH_LIMITS.writes,
         GROUP_VISIBILITY_BATCH_LIMITS.writes
+      ),
+      writeBytes: Math.min(
+        options.limits?.writeBytes ?? GROUP_VISIBILITY_BATCH_LIMITS.writeBytes,
+        GROUP_VISIBILITY_BATCH_LIMITS.writeBytes
       )
     };
     this.hooks = options.budget ?? {};
@@ -272,14 +327,23 @@ export class GroupVisibilityWriteBatch {
     this.hooks.chargeRows?.(rows);
   }
 
-  private reserveWrites(count: number, revisionAccountIds: readonly Id<"accounts">[]): void {
+  private reserveWrites(
+    count: number,
+    revisionAccountIds: readonly Id<"accounts">[],
+    writeBytes: number
+  ): void {
     const newRevisionAccountIds = uniqueAccountIds(revisionAccountIds).filter(
       (accountId) => !this.revisionAccountIds.has(String(accountId))
     );
     const reservation = count + newRevisionAccountIds.length;
     this.budget.writes += reservation;
+    this.budget.writeBytes +=
+      writeBytes + newRevisionAccountIds.length * SYNC_STATE_WRITE_BYTE_RESERVATION;
     if (this.budget.writes > this.limits.writes) {
       throw new Error("Group visibility batch exceeds the safe write limit");
+    }
+    if (this.budget.writeBytes > this.limits.writeBytes) {
+      throw new Error("Group visibility batch exceeds the safe write byte limit");
     }
     this.hooks.chargeWrites?.(reservation);
     for (const accountId of newRevisionAccountIds) {
@@ -386,7 +450,23 @@ export class GroupVisibilityWriteBatch {
       value.members.map((member) => member.id),
       value.owner_id
     );
-    this.reserveWrites(1 + visibleAccountIds.length, visibleAccountIds);
+    const estimatedVisibilityBytes = visibleAccountIds.reduce(
+      (total, accountId) =>
+        total +
+        insertedDocumentSize({
+          account_id: accountId,
+          group_updated_at: value.updated_at,
+          created_at: Date.now(),
+          updated_at: Date.now()
+        }) +
+        INSERT_SYSTEM_FIELD_RESERVATION,
+      0
+    );
+    this.reserveWrites(
+      1 + visibleAccountIds.length,
+      visibleAccountIds,
+      insertedDocumentSize(value) + estimatedVisibilityBytes
+    );
 
     const groupId = await this.ctx.db.insert("groups", value);
     await this.applyVisibilityPlan(
@@ -422,7 +502,8 @@ export class GroupVisibilityWriteBatch {
     ]);
     this.reserveWrites(
       1 + plan.inserts.length + plan.updates.length + plan.deletes.length,
-      revisionAccountIds
+      revisionAccountIds,
+      convexValueSize(nextGroup) + visibilityPlanWriteBytes(nextGroup, plan)
     );
 
     await this.ctx.db.patch(groupId, value);
@@ -442,7 +523,12 @@ export class GroupVisibilityWriteBatch {
       ...previousVisibleAccountIds,
       ...existingRows.map((row) => row.account_id)
     ]);
-    this.reserveWrites(1 + existingRows.length, revisionAccountIds);
+    this.reserveWrites(
+      1 + existingRows.length,
+      revisionAccountIds,
+      getConvexSize(group as Value) +
+        existingRows.reduce((total, row) => total + getConvexSize(row as Value), 0)
+    );
     for (const row of existingRows) await this.ctx.db.delete(row._id);
     await this.ctx.db.delete(groupId);
   }

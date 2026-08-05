@@ -108,6 +108,149 @@ describe("group visibility writes", () => {
     expect(result).toEqual({ groups: [], visibility: [], syncStates: [] });
   });
 
+  test("rejects an oversized group write batch before persisting documents", async () => {
+    const t = convexTest(schema, modules);
+    const ownerId = await t.run((ctx) =>
+      ctx.db.insert("accounts", {
+        id: "large_group_owner_auth",
+        email: "large-group-owner@test.com",
+        display_name: "Owner",
+        member_id: "large_group_owner_member",
+        created_at: 1
+      })
+    );
+    const largeName = "x".repeat(900 * 1024);
+
+    await expect(
+      t.run(async (ctx) => {
+        const batch = new GroupVisibilityWriteBatch(ctx);
+        for (let index = 0; index < 14; index += 1) {
+          await batch.insert({
+            id: `large_group_${index}`,
+            name: largeName,
+            members: [{ id: "large_group_owner_member", name: "Owner" }],
+            owner_email: "large-group-owner@test.com",
+            owner_account_id: "large_group_owner_auth",
+            owner_id: ownerId,
+            created_at: 1,
+            updated_at: 1
+          });
+        }
+        await batch.flush();
+      })
+    ).rejects.toThrow("Group visibility batch exceeds the safe write byte limit");
+
+    const result = await t.run(async (ctx) => ({
+      groups: await ctx.db.query("groups").collect(),
+      visibility: await ctx.db.query("group_visibility").collect(),
+      syncStates: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(result).toEqual({ groups: [], visibility: [], syncStates: [] });
+  });
+
+  test("fails closed when a member ID maps to duplicate accounts", async () => {
+    const t = convexTest(schema, modules);
+    const fixture = await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "duplicate_member_owner_auth",
+        email: "duplicate-member-owner@test.com",
+        display_name: "Owner",
+        member_id: "duplicate_member_owner",
+        created_at: 1
+      });
+      for (const suffix of ["first", "second"]) {
+        await ctx.db.insert("accounts", {
+          id: `duplicate_member_${suffix}_auth`,
+          email: `duplicate-member-${suffix}@test.com`,
+          display_name: suffix,
+          member_id: "duplicate_shared_member",
+          created_at: 1
+        });
+      }
+      return { ownerId };
+    });
+
+    await expect(
+      t.run((ctx) =>
+        insertGroupWithVisibility(ctx, {
+          id: "duplicate_member_group",
+          name: "Duplicate",
+          members: [
+            { id: "duplicate_member_owner", name: "Owner" },
+            { id: "duplicate_shared_member", name: "Duplicate" }
+          ],
+          owner_email: "duplicate-member-owner@test.com",
+          owner_account_id: "duplicate_member_owner_auth",
+          owner_id: fixture.ownerId,
+          created_at: 1,
+          updated_at: 1
+        })
+      )
+    ).rejects.toThrow("duplicate account member ID duplicate_shared_member");
+
+    const result = await t.run(async (ctx) => ({
+      groups: await ctx.db.query("groups").collect(),
+      visibility: await ctx.db.query("group_visibility").collect(),
+      syncStates: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(result).toEqual({ groups: [], visibility: [], syncStates: [] });
+  });
+
+  test("fails closed when an account alias maps to duplicate rows", async () => {
+    const t = convexTest(schema, modules);
+    const fixture = await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "duplicate_alias_owner_auth",
+        email: "duplicate-alias-owner@test.com",
+        display_name: "Owner",
+        member_id: "duplicate_alias_owner",
+        created_at: 1
+      });
+      for (const suffix of ["first", "second"]) {
+        await ctx.db.insert("accounts", {
+          id: `duplicate_alias_${suffix}_auth`,
+          email: `duplicate-alias-${suffix}@test.com`,
+          display_name: suffix,
+          member_id: `duplicate_alias_${suffix}_canonical`,
+          created_at: 1
+        });
+        await ctx.db.insert("member_aliases", {
+          canonical_member_id: `duplicate_alias_${suffix}_canonical`,
+          alias_member_id: "duplicate_shared_alias",
+          account_email: `duplicate-alias-${suffix}@test.com`,
+          materialization_source: "account_alias",
+          created_at: 1
+        });
+      }
+      return { ownerId };
+    });
+
+    await expect(
+      t.run((ctx) =>
+        insertGroupWithVisibility(ctx, {
+          id: "duplicate_alias_group",
+          name: "Duplicate Alias",
+          members: [
+            { id: "duplicate_alias_owner", name: "Owner" },
+            { id: "duplicate_shared_alias", name: "Alias" }
+          ],
+          owner_email: "duplicate-alias-owner@test.com",
+          owner_account_id: "duplicate_alias_owner_auth",
+          owner_id: fixture.ownerId,
+          created_at: 1,
+          updated_at: 1
+        })
+      )
+    ).rejects.toThrow("duplicate account alias duplicate_shared_alias");
+
+    const result = await t.run(async (ctx) => ({
+      groups: await ctx.db.query("groups").collect(),
+      visibility: await ctx.db.query("group_visibility").collect(),
+      syncStates: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(result).toEqual({ groups: [], visibility: [], syncStates: [] });
+  });
+
   test("a batch can only be flushed once", async () => {
     const t = convexTest(schema, modules);
     await expect(

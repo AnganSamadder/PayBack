@@ -1,7 +1,7 @@
 import { getConvexSize, type Value } from "convex/values";
+import type { PaginationResult } from "convex/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx } from "./_generated/server";
-import { bumpAccountSyncRevisions, MAX_SYNC_REVISION_ACCOUNTS } from "./syncState";
 
 export const MAX_EXPENSE_VIEWERS = 65;
 export const MAX_EXPENSE_VISIBILITY_ROWS = 128;
@@ -10,9 +10,10 @@ export const MAX_EXPENSE_WRITE_READ_ROWS = 2048;
 export const MAX_EXPENSE_WRITE_QUERIES = 2048;
 export const MAX_EXPENSE_WRITE_READ_BYTES = 8 * 1024 * 1024;
 export const MAX_EXPENSE_WRITE_WRITES = 2048;
+export const MAX_EXPENSE_WRITE_BYTES = 12 * 1024 * 1024;
 
-const SYNC_REVISION_ROWS_PER_ACCOUNT = 2;
-const SYNC_REVISION_READ_BYTES = 4 * 1024 * 1024;
+const VISIBILITY_READ_PAGE_SIZE = 4;
+const INSERT_SYSTEM_FIELD_RESERVATION = 512;
 
 type ExpenseInsert = Omit<Doc<"expenses">, "_id" | "_creationTime">;
 type ExpensePatch = Partial<Omit<ExpenseInsert, "id" | "created_at">>;
@@ -61,10 +62,17 @@ type VisibilityAccountRows = {
 
 type PreparedOperation = {
   operation: ExpenseWriteOperation;
+  updatedAt: number;
   desiredAccounts: Map<string, Doc<"accounts">>;
   rowsByAccount: Map<string, VisibilityAccountRows>;
   rowsToDelete: Map<string, Doc<"user_expenses">>;
   revisionAccountIds: Set<Id<"accounts">>;
+};
+
+type PreparedRevisionWrite = {
+  accountId: Id<"accounts">;
+  existing: Doc<"account_sync_state"> | null;
+  nextValue: Omit<Doc<"account_sync_state">, "_id" | "_creationTime">;
 };
 
 type PreflightCache = {
@@ -95,22 +103,14 @@ function chargeRows(budget: ReadBudget, rows: readonly Value[]): void {
   }
 }
 
-function reserveReadBudget(
-  budget: ReadBudget,
-  reservation: { rows: number; queries: number; bytes: number }
-): void {
-  budget.rows += reservation.rows;
-  budget.queries += reservation.queries;
-  budget.bytes += reservation.bytes;
-  if (budget.rows > MAX_EXPENSE_WRITE_READ_ROWS) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_READ_ROWS} rows`);
-  }
-  if (budget.queries > MAX_EXPENSE_WRITE_QUERIES) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_QUERIES} queries`);
-  }
-  if (budget.bytes > MAX_EXPENSE_WRITE_READ_BYTES) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_READ_BYTES} bytes`);
-  }
+function convexValueSize(value: Record<string, unknown>): number {
+  return getConvexSize(
+    Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as Value
+  );
+}
+
+function insertedDocumentSize(value: Record<string, unknown>): number {
+  return convexValueSize(value) + INSERT_SYSTEM_FIELD_RESERVATION;
 }
 
 function isActiveAccount(account: Doc<"accounts">): boolean {
@@ -198,17 +198,42 @@ async function validateDesiredAccounts(
   return accounts;
 }
 
+async function collectVisibilityRowsByIndex(
+  loadPage: (
+    cursor: string | null,
+    numItems: number
+  ) => Promise<PaginationResult<Doc<"user_expenses">>>,
+  budget: ReadBudget
+): Promise<Doc<"user_expenses">[]> {
+  const rows: Doc<"user_expenses">[] = [];
+  let cursor: string | null = null;
+  while (rows.length <= MAX_EXPENSE_VISIBILITY_ROWS) {
+    chargeQuery(budget);
+    const result = await loadPage(
+      cursor,
+      Math.min(VISIBILITY_READ_PAGE_SIZE, MAX_EXPENSE_VISIBILITY_ROWS + 1 - rows.length)
+    );
+    chargeRows(budget, result.page as Value[]);
+    rows.push(...result.page);
+    if (result.isDone || rows.length > MAX_EXPENSE_VISIBILITY_ROWS) break;
+    cursor = result.continueCursor;
+  }
+  return rows;
+}
+
 async function collectVisibilityRows(
   ctx: MutationCtx,
   operation: ExpenseWriteOperation,
   budget: ReadBudget
 ): Promise<Doc<"user_expenses">[]> {
-  chargeQuery(budget);
-  const legacyRows = await ctx.db
-    .query("user_expenses")
-    .withIndex("by_expense_id", (query) => query.eq("expense_id", operation.expense.id))
-    .take(MAX_EXPENSE_VISIBILITY_ROWS + 1);
-  chargeRows(budget, legacyRows as Value[]);
+  const legacyRows = await collectVisibilityRowsByIndex(
+    (cursor, numItems) =>
+      ctx.db
+        .query("user_expenses")
+        .withIndex("by_expense_id", (query) => query.eq("expense_id", operation.expense.id))
+        .paginate({ cursor, numItems }),
+    budget
+  );
   if (legacyRows.length > MAX_EXPENSE_VISIBILITY_ROWS) {
     throw expenseWriteLimitError(
       `more than ${MAX_EXPENSE_VISIBILITY_ROWS} visibility rows for ${operation.expense.id}`
@@ -217,12 +242,14 @@ async function collectVisibilityRows(
 
   if (operation.kind === "insert") return legacyRows;
 
-  chargeQuery(budget);
-  const referencedRows = await ctx.db
-    .query("user_expenses")
-    .withIndex("by_expense_ref", (query) => query.eq("expense_ref", operation.expense._id))
-    .take(MAX_EXPENSE_VISIBILITY_ROWS + 1);
-  chargeRows(budget, referencedRows as Value[]);
+  const referencedRows = await collectVisibilityRowsByIndex(
+    (cursor, numItems) =>
+      ctx.db
+        .query("user_expenses")
+        .withIndex("by_expense_ref", (query) => query.eq("expense_ref", operation.expense._id))
+        .paginate({ cursor, numItems }),
+    budget
+  );
   if (referencedRows.length > MAX_EXPENSE_VISIBILITY_ROWS) {
     throw expenseWriteLimitError(
       `more than ${MAX_EXPENSE_VISIBILITY_ROWS} visibility rows for ${operation.expense.id}`
@@ -249,21 +276,22 @@ async function assertOperationTarget(
   if (operation.kind === "patch" && "id" in operation.patch) {
     throw new Error(`Expense ${operation.expense.id} cannot change its client ID`);
   }
+  chargeQuery(budget);
+  const matches = await ctx.db
+    .query("expenses")
+    .withIndex("by_client_id", (query) => query.eq("id", operation.expense.id))
+    .take(2);
+  chargeRows(budget, matches as Value[]);
   if (operation.kind === "insert") {
-    chargeQuery(budget);
-    const matches = await ctx.db
-      .query("expenses")
-      .withIndex("by_client_id", (query) => query.eq("id", operation.expense.id))
-      .take(2);
-    chargeRows(budget, matches as Value[]);
     if (matches.length > 0) throw new Error(`Expense ${operation.expense.id} already exists`);
     return;
   }
-
-  const current = await loadExpenseById(ctx, operation.expense._id, budget, cache);
-  if (!current || current.id !== operation.expense.id) {
+  if (matches.length > 1) throw new Error(`Expense ${operation.expense.id} is not unique`);
+  const current = matches[0];
+  if (!current || current._id !== operation.expense._id) {
     throw new Error(`Expense ${operation.expense.id} does not exist`);
   }
+  cache.expensesById.set(String(current._id), current);
 }
 
 async function resolveVisibilityAccount(
@@ -340,12 +368,30 @@ async function prepareOperation(
     Array.from(desiredAccounts.values()).map((account) => account._id)
   );
   const revisionAccountIds = new Set<Id<"accounts">>();
+  const updatedAt =
+    operation.kind === "patch"
+      ? (operation.patch.updated_at ?? Date.now())
+      : operation.expense.updated_at;
   if (operation.kind === "visibility") {
     for (const accountId of beforeAccountIds) {
       if (!afterAccountIds.has(accountId)) revisionAccountIds.add(accountId);
     }
     for (const accountId of afterAccountIds) {
       if (!beforeAccountIds.has(accountId)) revisionAccountIds.add(accountId);
+    }
+    for (const { account, rows: accountRows } of rowsByAccount.values()) {
+      const keeper = accountRows[0];
+      if (
+        accountRows.length > 1 ||
+        (keeper &&
+          (keeper.user_id !== account.id ||
+            keeper.expense_id !== operation.expense.id ||
+            keeper.account_ref !== account._id ||
+            keeper.expense_ref !== operation.expense._id ||
+            keeper.updated_at !== updatedAt))
+      ) {
+        revisionAccountIds.add(account._id);
+      }
     }
   } else if (operation.kind === "delete") {
     for (const accountId of beforeAccountIds) revisionAccountIds.add(accountId);
@@ -356,6 +402,7 @@ async function prepareOperation(
 
   return {
     operation,
+    updatedAt,
     desiredAccounts,
     rowsByAccount,
     rowsToDelete,
@@ -412,6 +459,102 @@ async function applyVisibilityPlan(
   }
 }
 
+async function prepareRevisionWrites(
+  ctx: MutationCtx,
+  accountIds: readonly Id<"accounts">[],
+  budget: ReadBudget
+): Promise<PreparedRevisionWrite[]> {
+  const now = Date.now();
+  const writes: PreparedRevisionWrite[] = [];
+  for (const accountId of accountIds) {
+    chargeQuery(budget);
+    const matches = await ctx.db
+      .query("account_sync_state")
+      .withIndex("by_account_id", (query) => query.eq("account_id", accountId))
+      .take(2);
+    chargeRows(budget, matches as Value[]);
+    if (matches.length > 1) {
+      throw new Error(`Sync maintenance required: duplicate account state ${String(accountId)}`);
+    }
+    const existing = matches[0] ?? null;
+    writes.push({
+      accountId,
+      existing,
+      nextValue: {
+        account_id: accountId,
+        groups_revision: existing?.groups_revision ?? 0,
+        expenses_revision: (existing?.expenses_revision ?? 0) + 1,
+        updated_at: now
+      }
+    });
+  }
+  return writes;
+}
+
+function visibilityWriteBytes(plan: PreparedOperation): number {
+  let bytes = Array.from(plan.rowsToDelete.values()).reduce(
+    (total, row) => total + getConvexSize(row as Value),
+    0
+  );
+  if (plan.operation.kind === "delete") return bytes;
+
+  for (const [accountId, account] of plan.desiredAccounts) {
+    const keeper = plan.rowsByAccount.get(accountId)?.rows[0];
+    const value = {
+      user_id: account.id,
+      expense_id: plan.operation.expense.id,
+      account_ref: account._id,
+      expense_ref: plan.operation.kind === "insert" ? undefined : plan.operation.expense._id,
+      updated_at: plan.updatedAt
+    };
+    if (!keeper) {
+      bytes += insertedDocumentSize(value);
+      if (plan.operation.kind === "insert") bytes += INSERT_SYSTEM_FIELD_RESERVATION;
+      continue;
+    }
+    if (
+      plan.operation.kind === "insert" ||
+      keeper.user_id !== value.user_id ||
+      keeper.expense_id !== value.expense_id ||
+      keeper.account_ref !== value.account_ref ||
+      keeper.expense_ref !== value.expense_ref ||
+      keeper.updated_at !== value.updated_at
+    ) {
+      bytes += convexValueSize({ ...keeper, ...value });
+    }
+  }
+  return bytes;
+}
+
+function expenseWriteBytes(plan: PreparedOperation): number {
+  const { operation } = plan;
+  if (operation.kind === "visibility") return 0;
+  if (operation.kind === "insert") return insertedDocumentSize(operation.expense);
+  if (operation.kind === "delete") return getConvexSize(operation.expense as Value);
+  return convexValueSize({ ...operation.expense, ...operation.patch, updated_at: plan.updatedAt });
+}
+
+function revisionWriteBytes(writes: readonly PreparedRevisionWrite[]): number {
+  return writes.reduce(
+    (total, write) =>
+      total +
+      (write.existing
+        ? convexValueSize({ ...write.existing, ...write.nextValue })
+        : insertedDocumentSize(write.nextValue)),
+    0
+  );
+}
+
+async function applyRevisionWrites(
+  ctx: MutationCtx,
+  writes: readonly PreparedRevisionWrite[]
+): Promise<void> {
+  for (const write of writes) {
+    if (write.existing) await ctx.db.patch(write.existing._id, write.nextValue);
+    else await ctx.db.insert("account_sync_state", write.nextValue);
+  }
+}
+
 export async function applyExpenseWriteBatch(
   ctx: MutationCtx,
   operations: readonly ExpenseWriteOperation[]
@@ -446,17 +589,20 @@ export async function applyExpenseWriteBatch(
       revisionAccountIds.set(String(accountId), accountId);
     }
   }
-  if (revisionAccountIds.size > MAX_SYNC_REVISION_ACCOUNTS) {
-    throw expenseWriteLimitError(`more than ${MAX_SYNC_REVISION_ACCOUNTS} revision accounts`);
-  }
-  reserveReadBudget(budget, {
-    rows: revisionAccountIds.size * SYNC_REVISION_ROWS_PER_ACCOUNT,
-    queries: revisionAccountIds.size,
-    bytes: revisionAccountIds.size > 0 ? SYNC_REVISION_READ_BYTES : 0
-  });
-  writeCount += revisionAccountIds.size;
+  const revisionWrites = await prepareRevisionWrites(
+    ctx,
+    Array.from(revisionAccountIds.values()),
+    budget
+  );
+  writeCount += revisionWrites.length;
   if (writeCount > MAX_EXPENSE_WRITE_WRITES) {
     throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_WRITES} writes`);
+  }
+  const writeBytes =
+    plans.reduce((total, plan) => total + expenseWriteBytes(plan) + visibilityWriteBytes(plan), 0) +
+    revisionWriteBytes(revisionWrites);
+  if (writeBytes > MAX_EXPENSE_WRITE_BYTES) {
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_BYTES} write bytes`);
   }
 
   const operationResults: ExpenseWriteBatchResult["operations"] = [];
@@ -491,7 +637,7 @@ export async function applyExpenseWriteBatch(
       continue;
     }
     if (operation.kind === "patch") {
-      const updatedAt = operation.patch.updated_at ?? Date.now();
+      const updatedAt = plan.updatedAt;
       await ctx.db.patch(operation.expense._id, { ...operation.patch, updated_at: updatedAt });
       await applyVisibilityPlan(ctx, plan, operation.expense._id, operation.expense.id, updatedAt);
       operationResults.push({
@@ -515,10 +661,6 @@ export async function applyExpenseWriteBatch(
     });
   }
 
-  const revisionsBumped = await bumpAccountSyncRevisions(
-    ctx,
-    Array.from(revisionAccountIds.values()),
-    "expenses"
-  );
-  return { operations: operationResults, revisionsBumped };
+  await applyRevisionWrites(ctx, revisionWrites);
+  return { operations: operationResults, revisionsBumped: revisionWrites.length };
 }
