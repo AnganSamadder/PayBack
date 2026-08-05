@@ -24,7 +24,7 @@ import {
   normalizeMemberIds
 } from "./identity";
 import { isGhostFriendIdentity } from "./friendLinkProvenance";
-import { assertAccountIsNotDeleting } from "./helpers";
+import { assertAccountCanAcceptChanges, isAccountDeletionFenced } from "./helpers";
 
 // Helper to get current authenticated user
 async function getCurrentUser(ctx: any, budget?: LinkingReadBudget) {
@@ -38,7 +38,7 @@ async function getCurrentUser(ctx: any, budget?: LinkingReadBudget) {
     .withIndex("by_email", (q) => q.eq("email", identity.email!))
     .unique();
   if (budget) accountLinkingRows(budget, user ? [user] : []);
-  assertAccountIsNotDeleting(user);
+  assertAccountCanAcceptChanges(user);
 
   return { identity, user };
 }
@@ -480,7 +480,7 @@ export const validate = query({
 
     if (
       !creatorAccount ||
-      creatorAccount.status === "deleted" ||
+      isAccountDeletionFenced(creatorAccount) ||
       creatorAccount.email.trim().toLowerCase() !== token.creator_email.trim().toLowerCase()
     ) {
       return {
@@ -665,7 +665,7 @@ export async function prepareClaimForUser(
   accountLinkingRows(budget, creatorAccount ? [creatorAccount] : []);
   if (
     !creatorAccount ||
-    creatorAccount.status === "deleted" ||
+    isAccountDeletionFenced(creatorAccount) ||
     creatorAccount.email.trim().toLowerCase() !== linkContext.creatorEmail
   ) {
     throw new Error("Invite creator account is no longer active");
@@ -1051,7 +1051,7 @@ export const _internalClaimForAccount = internalMutation({
     const user = await ctx.db.get(args.userAccountId);
     accountLinkingRows(budget, user ? [user] : []);
     if (!user) throw new Error("User not found");
-    assertAccountIsNotDeleting(user);
+    assertAccountCanAcceptChanges(user);
 
     chargeLinkingQueries(budget, 1);
     const token = await ctx.db
@@ -1108,7 +1108,7 @@ export const _internalClaimTargetMemberForAccount = internalMutation({
     const user = await ctx.db.get(args.userAccountId);
     accountLinkingRows(budget, user ? [user] : []);
     if (!user) throw new Error("User not found");
-    assertAccountIsNotDeleting(user);
+    assertAccountCanAcceptChanges(user);
 
     const claimPlan = await prepareClaimForUser(
       ctx,

@@ -1,6 +1,12 @@
 import { mutation, query } from "./_generated/server";
+import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { reconcileExpenseVisibility, reconcileUserExpenses } from "./helpers";
+import {
+  assertAccountCanAcceptChanges,
+  isAccountDeletionFenced,
+  reconcileExpenseVisibility,
+  reconcileUserExpenses
+} from "./helpers";
 import { checkRateLimit } from "./rateLimit";
 import {
   findAccountByAuthIdOrDocId,
@@ -19,6 +25,7 @@ async function getCurrentUser(ctx: any) {
     .query("accounts")
     .withIndex("by_email", (q) => q.eq("email", identity.email!))
     .unique();
+  assertAccountCanAcceptChanges(user);
 
   return { identity, user };
 }
@@ -230,6 +237,81 @@ function requireMatchingMemberSets(values: {
   }
 }
 
+type ExpenseParticipant = Doc<"expenses">["participants"][number];
+
+function expenseMemberIds(expense: Doc<"expenses">) {
+  return normalizeMemberIds([
+    expense.paid_by_member_id,
+    ...expense.involved_member_ids,
+    ...expense.participant_member_ids,
+    ...expense.splits.map((split) => split.member_id),
+    ...expense.participants.map((participant) => participant.member_id)
+  ]);
+}
+
+async function prepareDeletionSafeExpenseParticipants(
+  ctx: any,
+  values: {
+    existing: Doc<"expenses"> | null;
+    participants: ExpenseParticipant[];
+    referencedMemberIds: string[];
+    inactiveMemberIds: Set<string>;
+  }
+) {
+  const inactiveMemberIds = new Set(Array.from(values.inactiveMemberIds, normalizeMemberId));
+  const existingMemberIds = new Set(
+    values.existing ? expenseMemberIds(values.existing) : ([] as string[])
+  );
+  const existingAccountIds = new Set<string>();
+  for (const memberId of existingMemberIds) {
+    const account = await findAccountByMemberId(ctx.db, memberId);
+    if (account) existingAccountIds.add(account.id);
+  }
+
+  const assertCanReference = (account: any, normalizedMemberId: string) => {
+    if (!isAccountDeletionFenced(account)) return;
+    const existed =
+      existingMemberIds.has(normalizedMemberId) || existingAccountIds.has(String(account.id));
+    if (!existed) assertAccountCanAcceptChanges(account);
+    inactiveMemberIds.add(normalizedMemberId);
+    if (account.member_id) inactiveMemberIds.add(normalizeMemberId(account.member_id));
+  };
+
+  for (const memberId of normalizeMemberIds(values.referencedMemberIds)) {
+    const account = await findAccountByMemberId(ctx.db, memberId);
+    assertCanReference(account, memberId);
+  }
+
+  const participants: ExpenseParticipant[] = [];
+  for (const participant of values.participants) {
+    const normalizedMemberId = normalizeMemberId(participant.member_id);
+    let account = participant.linked_account_id
+      ? await findAccountByAuthIdOrDocId(ctx.db, participant.linked_account_id)
+      : null;
+    if (!account && participant.linked_account_email?.trim()) {
+      account = await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q: any) =>
+          q.eq("email", participant.linked_account_email!.trim().toLowerCase())
+        )
+        .unique();
+    }
+    account ??= await findAccountByMemberId(ctx.db, normalizedMemberId);
+    assertCanReference(account, normalizedMemberId);
+
+    if (inactiveMemberIds.has(normalizedMemberId) || isAccountDeletionFenced(account)) {
+      participants.push({
+        member_id: account?.member_id ? normalizeMemberId(account.member_id) : normalizedMemberId,
+        name: "Deleted User"
+      });
+    } else {
+      participants.push({ ...participant, member_id: normalizedMemberId });
+    }
+  }
+
+  return { participants, inactiveMemberIds };
+}
+
 function computedSettledFromSplits(splits: { is_settled: boolean }[]) {
   return splits.length > 0 && splits.every((split) => split.is_settled);
 }
@@ -315,13 +397,28 @@ export const create = mutation({
       member_id: normalizeMemberId(split.member_id)
     }));
     const normalizedParticipantMemberIds = normalizeMemberIds(args.participant_member_ids);
-    const normalizedParticipants = args.participants.map((participant) => ({
+    const normalizedParticipantInput = args.participants.map((participant) => ({
       ...participant,
       member_id: normalizeMemberId(participant.member_id)
     }));
-    const inactiveParticipantMemberIds = new Set(
+    const existingInactiveParticipantMemberIds = new Set(
       (existing?.inactive_participant_member_ids ?? []).map(normalizeMemberId)
     );
+    const preparedParticipants = await prepareDeletionSafeExpenseParticipants(ctx, {
+      existing,
+      participants: normalizedParticipantInput,
+      referencedMemberIds: [
+        normalizedPaidBy,
+        ...normalizedInvolved,
+        ...normalizedParticipantMemberIds,
+        ...normalizedSplits.map((split) => split.member_id)
+      ],
+      inactiveMemberIds: existingInactiveParticipantMemberIds
+    });
+    const normalizedParticipants = preparedParticipants.participants;
+    const inactiveParticipantMemberIds = preparedParticipants.inactiveMemberIds;
+    const deletionSafeLinkedParticipants =
+      inactiveParticipantMemberIds.size > 0 ? undefined : args.linked_participants;
     const requestedContextKind = args.context_kind;
     const existingGroup = existing?.group_ref ? await ctx.db.get(existing.group_ref) : null;
     const inferredExistingContextKind = existing
@@ -382,6 +479,8 @@ export const create = mutation({
         }
       }
 
+      assertAccountCanAcceptChanges(linkedAccount);
+
       if (cacheKey) {
         linkedAccountCache.set(cacheKey, linkedAccount ?? null);
       }
@@ -417,6 +516,7 @@ export const create = mutation({
       for (const memberId of involvedMemberIds) {
         if (inactiveMemberIds.has(normalizeMemberId(memberId))) continue;
         const account = await findAccountByMemberId(ctx.db, memberId);
+        assertAccountCanAcceptChanges(account);
         if (account?.email) {
           participantEmailSet.add(String(account.email).trim().toLowerCase());
         }
@@ -615,6 +715,7 @@ export const create = mutation({
       );
       group = groupAccess.group;
       callerEquivalentIds = groupAccess.callerEquivalentIds;
+      assertAccountCanAcceptChanges(await ctx.db.get(group.owner_id as Id<"accounts">));
       contextKind =
         requestedContextKind === "grouped_individual"
           ? "grouped_individual"
@@ -727,7 +828,7 @@ export const create = mutation({
           canonicalizeParticipants(existing.participants) ||
         canonicalizeSubexpenses(args.subexpenses) !==
           canonicalizeSubexpenses(existing.subexpenses) ||
-        JSON.stringify(args.linked_participants ?? null) !==
+        JSON.stringify(deletionSafeLinkedParticipants ?? null) !==
           JSON.stringify(existing.linked_participants ?? null) ||
         (args.is_payback_generated_mock_data ?? false) !==
           (existing.is_payback_generated_mock_data ?? false);
@@ -804,7 +905,7 @@ export const create = mutation({
           : undefined
         : existing.subexpenses;
       const nextLinkedParticipants = callerOwnsExpense
-        ? args.linked_participants
+        ? deletionSafeLinkedParticipants
         : existing.linked_participants;
       const nextMockData = callerOwnsExpense
         ? (args.is_payback_generated_mock_data ?? existing.is_payback_generated_mock_data)
@@ -864,7 +965,7 @@ export const create = mutation({
       participant_member_ids: normalizedParticipantMemberIds,
       participants: normalizedParticipants,
       participant_emails: participantEmails,
-      linked_participants: args.linked_participants,
+      linked_participants: deletionSafeLinkedParticipants,
       subexpenses: args.subexpenses && args.subexpenses.length >= 2 ? args.subexpenses : undefined,
       is_payback_generated_mock_data: args.is_payback_generated_mock_data ?? false,
       created_at: Date.now(),

@@ -16,8 +16,22 @@ export async function getCurrentUserOrThrow(ctx: QueryCtx | MutationCtx) {
   if (!user) {
     throw new Error("User not found");
   }
+  assertAccountCanAcceptChanges(user);
 
   return { user, identity };
+}
+
+export function assertAccountCanAcceptChanges(account: { status?: string } | null | undefined) {
+  if (account?.status === "deleting") {
+    throw new Error("Account is being deleted and cannot accept new changes");
+  }
+  if (account?.status === "deleted") {
+    throw new Error("Account has been deleted and cannot accept new changes");
+  }
+}
+
+export function isAccountDeletionFenced(account: { status?: string } | null | undefined): boolean {
+  return account?.status === "deleting" || account?.status === "deleted";
 }
 
 /**
@@ -100,7 +114,7 @@ function cachedAccountResolution(
 }
 
 function isActiveAccount(account: Doc<"accounts"> | null): account is Doc<"accounts"> {
-  return account !== null && account.status !== "deleted";
+  return account !== null && account.status !== "deleting" && account.status !== "deleted";
 }
 
 type ExpenseOwnerSource = Pick<Doc<"expenses">, "owner_id" | "owner_account_id" | "owner_email">;

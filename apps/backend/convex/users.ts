@@ -10,6 +10,7 @@ import {
   normalizeMemberId,
   syncAccountAliasMaterialization
 } from "./identity";
+import { assertAccountCanAcceptChanges } from "./helpers";
 
 const MAX_SAMPLE_IDS = 10;
 const MAX_EQUIVALENT_MEMBER_IDS = 50;
@@ -504,6 +505,7 @@ export const updateLinkedMemberId = mutation({
     if (!user) {
       throw new Error("User not found");
     }
+    assertAccountCanAcceptChanges(user);
 
     const requestedMemberId = normalizeMemberId(args.member_id);
     if (!requestedMemberId) {
@@ -673,7 +675,7 @@ export const sessionStatus = query({
       .withIndex("by_email", (q) => q.eq("email", identity.email!))
       .unique();
 
-    return user ? "active" : "deleted";
+    return user?.status === "deleting" ? "deleting" : user ? "active" : "deleted";
   }
 });
 

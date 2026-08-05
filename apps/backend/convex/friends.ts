@@ -3,7 +3,13 @@ import { internal } from "./_generated/api";
 import { Doc } from "./_generated/dataModel";
 import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { findAccountByAuthIdOrDocId, normalizeMemberId, normalizeMemberIds } from "./identity";
+import {
+  findAccountByAuthIdOrDocId,
+  findAccountByMemberId,
+  normalizeMemberId,
+  normalizeMemberIds
+} from "./identity";
+import { assertAccountCanAcceptChanges, isAccountDeletionFenced } from "./helpers";
 import {
   isGhostFriendIdentity,
   ProvenFriendLink,
@@ -439,7 +445,30 @@ export const upsert = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Unauthenticated");
+    const accountEmail = identity.email!.trim().toLowerCase();
+    const caller = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", accountEmail))
+      .unique();
+    if (!caller) throw new Error("User not found");
+    assertAccountCanAcceptChanges(caller);
     const normalizedMemberId = normalizeMemberId(args.member_id);
+
+    let targetAccount = args.linked_account_id
+      ? await findAccountByAuthIdOrDocId(ctx.db, args.linked_account_id)
+      : null;
+    if (!targetAccount && args.linked_account_email?.trim()) {
+      targetAccount = await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) =>
+          q.eq("email", args.linked_account_email!.trim().toLowerCase())
+        )
+        .unique();
+    }
+    targetAccount ??= await findAccountByMemberId(ctx.db, normalizedMemberId);
+    const requestedLinkedTarget = Boolean(
+      args.has_linked_account || args.linked_account_id || args.linked_account_email
+    );
 
     // Ensure name is never empty
     const safeName = args.name?.trim() || "Unknown";
@@ -452,7 +481,7 @@ export const upsert = mutation({
     const existing = await ctx.db
       .query("account_friends")
       .withIndex("by_account_email_and_member_id", (q) =>
-        q.eq("account_email", identity.email!).eq("member_id", normalizedMemberId)
+        q.eq("account_email", accountEmail).eq("member_id", normalizedMemberId)
       )
       .unique();
     let existingLegacy = existing;
@@ -461,13 +490,39 @@ export const upsert = mutation({
       existingLegacy = await ctx.db
         .query("account_friends")
         .withIndex("by_account_email_and_member_id", (q) =>
-          q.eq("account_email", identity.email!).eq("member_id", rawMemberId)
+          q.eq("account_email", accountEmail).eq("member_id", rawMemberId)
         )
         .unique();
     }
-    existingLegacy ??= await findBoundedLegacyFriend(ctx, identity.email!, normalizedMemberId);
+    existingLegacy ??= await findBoundedLegacyFriend(ctx, accountEmail, normalizedMemberId);
+
+    if (requestedLinkedTarget && isAccountDeletionFenced(targetAccount) && !existingLegacy) {
+      assertAccountCanAcceptChanges(targetAccount);
+    }
 
     if (existingLegacy) {
+      if (isAccountDeletionFenced(targetAccount) || isGhostFriendIdentity(existingLegacy)) {
+        await ctx.db.patch(existingLegacy._id, {
+          member_id: normalizedMemberId,
+          name: "Deleted User",
+          nickname: undefined,
+          original_name: undefined,
+          original_nickname: undefined,
+          prefer_nickname: undefined,
+          first_name: undefined,
+          last_name: undefined,
+          display_preference: undefined,
+          profile_image_url: undefined,
+          has_linked_account: false,
+          linked_account_id: undefined,
+          linked_account_email: undefined,
+          linked_member_id: undefined,
+          link_state: "ghost",
+          status: "ghost",
+          updated_at: Date.now()
+        });
+        return existingLegacy._id;
+      }
       const provenLink = await resolveProvenFriendLink(ctx, existingLegacy);
       const isGhost = isGhostFriendIdentity(existingLegacy);
 
@@ -495,18 +550,19 @@ export const upsert = mutation({
       });
       return existingLegacy._id;
     } else {
-      const isGhost = args.status?.trim().toLowerCase() === "ghost";
+      const isGhost =
+        args.status?.trim().toLowerCase() === "ghost" || isAccountDeletionFenced(targetAccount);
       return await ctx.db.insert("account_friends", {
-        account_email: identity.email!,
+        account_email: accountEmail,
         member_id: normalizedMemberId,
-        name: safeName,
-        nickname: normalizedNickname,
-        original_name: args.original_name,
-        original_nickname: args.original_nickname,
-        prefer_nickname: args.prefer_nickname,
-        first_name: args.first_name,
-        last_name: args.last_name,
-        display_preference: args.display_preference,
+        name: isGhost ? "Deleted User" : safeName,
+        nickname: isGhost ? undefined : normalizedNickname,
+        original_name: isGhost ? undefined : args.original_name,
+        original_nickname: isGhost ? undefined : args.original_nickname,
+        prefer_nickname: isGhost ? undefined : args.prefer_nickname,
+        first_name: isGhost ? undefined : args.first_name,
+        last_name: isGhost ? undefined : args.last_name,
+        display_preference: isGhost ? undefined : args.display_preference,
         profile_avatar_color: getRandomAvatarColor(),
         has_linked_account: false,
         link_state: isGhost ? "ghost" : "unlinked",

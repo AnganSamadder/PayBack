@@ -1,9 +1,13 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { normalizeMemberId } from "./identity";
-import { reconcileUserExpenses } from "./helpers";
+import {
+  assertAccountCanAcceptChanges,
+  isAccountDeletionFenced,
+  reconcileUserExpenses
+} from "./helpers";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -15,6 +19,7 @@ async function getCurrentUser(ctx: any) {
     .query("accounts")
     .withIndex("by_email", (q: any) => q.eq("email", identity.email!))
     .unique();
+  assertAccountCanAcceptChanges(user);
 
   return { identity, user };
 }
@@ -50,6 +55,134 @@ async function deleteGroupWithExpenses(ctx: any, group: any) {
   await ctx.db.delete(group._id);
 }
 
+const MAX_GROUP_MEMBERS = 64;
+const GROUP_IDENTITY_READ_LIMITS = {
+  rows: 256,
+  queries: 512,
+  bytes: 8 * 1024 * 1024
+} as const;
+type GroupMemberInput = {
+  id: string;
+  name: string;
+  profile_image_url?: string;
+  profile_avatar_color?: string;
+  is_current_user?: boolean;
+};
+
+async function prepareGroupMembers(
+  ctx: any,
+  incomingMembers: GroupMemberInput[],
+  existingMembers: GroupMemberInput[] = []
+) {
+  if (incomingMembers.length > MAX_GROUP_MEMBERS) {
+    throw new Error(`Groups cannot contain more than ${MAX_GROUP_MEMBERS} members`);
+  }
+  if (existingMembers.length > MAX_GROUP_MEMBERS) {
+    throw new Error("The stored group exceeds the 64-member safety limit");
+  }
+
+  const readBudget = { rows: 0, queries: 0, bytes: 0 };
+  const accountCache = new Map<string, any | null>();
+  const accountRead = (rows: readonly unknown[]) => {
+    readBudget.rows += rows.length;
+    readBudget.bytes += rows.reduce<number>((total, row) => total + getConvexSize(row as Value), 0);
+    if (
+      readBudget.rows > GROUP_IDENTITY_READ_LIMITS.rows ||
+      readBudget.bytes > GROUP_IDENTITY_READ_LIMITS.bytes
+    ) {
+      throw new Error("Group member identity lookup is too large to complete safely");
+    }
+  };
+  const chargeQuery = () => {
+    readBudget.queries += 1;
+    if (readBudget.queries > GROUP_IDENTITY_READ_LIMITS.queries) {
+      throw new Error("Group member identity lookup is too large to complete safely");
+    }
+  };
+  const resolveAccount = async (memberId: string) => {
+    let currentMemberId = normalizeMemberId(memberId);
+    const visited = new Set<string>();
+    for (let depth = 0; depth < 20; depth += 1) {
+      if (!currentMemberId || visited.has(currentMemberId)) return null;
+      const cached = accountCache.get(currentMemberId);
+      if (cached !== undefined) return cached;
+      visited.add(currentMemberId);
+
+      chargeQuery();
+      const account = await ctx.db
+        .query("accounts")
+        .withIndex("by_member_id", (q: any) => q.eq("member_id", currentMemberId))
+        .first();
+      accountRead(account ? [account] : []);
+      if (account) {
+        for (const visitedId of visited) accountCache.set(visitedId, account);
+        return account;
+      }
+
+      chargeQuery();
+      const alias = await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id_and_source", (q: any) =>
+          q.eq("alias_member_id", currentMemberId).eq("materialization_source", "account_alias")
+        )
+        .first();
+      accountRead(alias ? [alias] : []);
+      if (!alias) {
+        for (const visitedId of visited) accountCache.set(visitedId, null);
+        return null;
+      }
+      currentMemberId = normalizeMemberId(alias.canonical_member_id);
+    }
+    return null;
+  };
+  const resolveIdentity = async (memberId: string) => {
+    const normalizedMemberId = normalizeMemberId(memberId);
+    if (!normalizedMemberId) throw new Error("Group member IDs cannot be empty");
+    const account = await resolveAccount(normalizedMemberId);
+    const canonicalMemberId = account?.member_id
+      ? normalizeMemberId(account.member_id)
+      : normalizedMemberId;
+    return {
+      account,
+      canonicalMemberId,
+      key: account ? `account:${account.id}` : `member:${canonicalMemberId}`
+    };
+  };
+
+  const existingByIdentity = new Map<string, GroupMemberInput>();
+  for (const member of existingMembers) {
+    const identity = await resolveIdentity(member.id);
+    existingByIdentity.set(identity.key, member);
+  }
+
+  const normalizedByIdentity = new Map<string, GroupMemberInput>();
+  for (const member of incomingMembers) {
+    const identity = await resolveIdentity(member.id);
+    const existingMember = existingByIdentity.get(identity.key);
+    let normalizedMember: GroupMemberInput;
+    if (isAccountDeletionFenced(identity.account)) {
+      if (!existingMember) assertAccountCanAcceptChanges(identity.account);
+      normalizedMember = {
+        id: identity.canonicalMemberId,
+        name: "Deleted User"
+      };
+    } else {
+      normalizedMember = {
+        ...member,
+        id: identity.canonicalMemberId,
+        name: member.name.trim() || "Unknown"
+      };
+    }
+
+    const prior = normalizedByIdentity.get(identity.key);
+    if (!prior || (!prior.is_current_user && normalizedMember.is_current_user)) {
+      normalizedByIdentity.set(identity.key, normalizedMember);
+    }
+  }
+
+  return Array.from(normalizedByIdentity.values());
+}
+
 export const create = mutation({
   args: {
     id: v.optional(v.string()),
@@ -82,10 +215,10 @@ export const create = mutation({
           throw new Error("Forbidden: cannot update a group you do not own");
         }
 
-        // If it exists, update it instead of creating a duplicate
+        const members = await prepareGroupMembers(ctx, args.members, existing.members);
         await ctx.db.patch(existing._id, {
           name: args.name,
-          members: args.members,
+          members,
           is_direct: args.is_direct ?? existing.is_direct,
           is_payback_generated_mock_data:
             args.is_payback_generated_mock_data ?? existing.is_payback_generated_mock_data,
@@ -96,10 +229,11 @@ export const create = mutation({
       }
     }
 
+    const members = await prepareGroupMembers(ctx, args.members);
     const groupId = await ctx.db.insert("groups", {
       id: args.id || crypto.randomUUID(),
       name: args.name,
-      members: args.members,
+      members,
       owner_email: user.email,
       owner_account_id: user.id,
       owner_id: user._id,

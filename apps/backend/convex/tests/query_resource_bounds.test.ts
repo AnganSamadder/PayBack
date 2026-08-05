@@ -812,6 +812,13 @@ test("friends:upsert rejects an oversized legacy fallback scan without writing",
   const now = Date.now();
 
   await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now
+    });
     for (let index = 0; index < 257; index += 1) {
       await ctx.db.insert("account_friends", {
         account_email: "owner@example.com",

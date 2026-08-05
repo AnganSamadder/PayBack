@@ -4,6 +4,7 @@ import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { resolveCanonicalMemberIdInternal } from "./aliases";
+import { assertAccountCanAcceptChanges } from "./helpers";
 
 /**
  * Sends a friend request to a user by email.
@@ -19,12 +20,14 @@ export const send = mutation({
       .withIndex("by_email", (q) => q.eq("email", identity.email!))
       .unique();
     if (!sender) throw new Error("Sender account not found");
+    assertAccountCanAcceptChanges(sender);
 
     const recipient = await ctx.db
       .query("accounts")
       .withIndex("by_email", (q) => q.eq("email", args.email))
       .unique();
     if (!recipient) throw new Error("Recipient account not found");
+    assertAccountCanAcceptChanges(recipient);
 
     if (sender._id === recipient._id) throw new Error("Cannot add yourself");
 
@@ -100,12 +103,14 @@ export const accept = mutation({
 
     const sender = await ctx.db.get(request.sender_id);
     if (!sender) throw new Error("Sender account not found");
+    assertAccountCanAcceptChanges(sender);
 
     const recipient = await ctx.db
       .query("accounts")
       .withIndex("by_email", (q) => q.eq("email", identity.email!))
       .unique();
     if (!recipient) throw new Error("Recipient account not found");
+    assertAccountCanAcceptChanges(recipient);
 
     // 1. Update Request
     await ctx.db.patch(request._id, {

@@ -1,7 +1,7 @@
 import { Doc } from "./_generated/dataModel";
 import { MutationCtx, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUserOrThrow } from "./helpers";
+import { assertAccountCanAcceptChanges, getCurrentUserOrThrow } from "./helpers";
 import {
   assertIdentityMaterializationReady,
   findDirectAccountByMemberId,
@@ -233,6 +233,7 @@ async function resolveServerProvenLinkedAccount(
     accountImportRows(importBudget, rows)
   );
   const account = provenLink?.account ?? null;
+  assertAccountCanAcceptChanges(account);
   friendCache.set(cacheKey, account);
   return account;
 }
@@ -413,6 +414,7 @@ export const bulkImport = mutation({
         chargeIdentityQueries(3);
         const account = await findDirectAccountByMemberId(ctx.db, currentMemberId);
         accountImportRows(importBudget, account ? [account] : []);
+        assertAccountCanAcceptChanges(account);
         if (account?.member_id) {
           currentMemberId = normalizeMemberId(account.member_id);
           break;

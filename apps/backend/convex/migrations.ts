@@ -28,10 +28,12 @@ function normalizeEmail(value: string | undefined | null): string | undefined {
 }
 
 async function deriveExpenseParticipantEmails(ctx: any, expense: any): Promise<string[]> {
-  const accounts = await resolveActiveExpenseParticipantAccounts(ctx, {
-    ...expense,
-    participant_emails: []
-  });
+  const accounts = (
+    await resolveActiveExpenseParticipantAccounts(ctx, {
+      ...expense,
+      participant_emails: []
+    })
+  ).filter((account) => account.status !== "deleting" && account.status !== "deleted");
   return Array.from(
     new Set(
       accounts
@@ -658,7 +660,10 @@ export const backfillParticipantEmails = internalMutation({
           )
         );
         const visibilityUserIds = visibilityUsers
-          .filter((account): account is NonNullable<typeof account> => account !== null)
+          .filter(
+            (account): account is NonNullable<typeof account> =>
+              account !== null && account.status !== "deleting" && account.status !== "deleted"
+          )
           .map((account) => account.id);
         await reconcileUserExpenses(ctx, expense.id, visibilityUserIds);
         updated++;
@@ -680,7 +685,9 @@ export const backfillParticipantEmailsAdvanced = internalMutation({
   args: {},
   handler: async (ctx) => {
     // Build a map of member_id -> account email
-    const accounts = await ctx.db.query("accounts").collect();
+    const accounts = (await ctx.db.query("accounts").collect()).filter(
+      (account) => account.status !== "deleting" && account.status !== "deleted"
+    );
     const memberIdToEmail = new Map<string, string>();
 
     for (const account of accounts) {
@@ -749,7 +756,10 @@ export const backfillParticipantEmailsAdvanced = internalMutation({
           )
         );
         const visibilityUserIds = visibilityUsers
-          .filter((account): account is NonNullable<typeof account> => account !== null)
+          .filter(
+            (account): account is NonNullable<typeof account> =>
+              account !== null && account.status !== "deleting" && account.status !== "deleted"
+          )
           .map((account) => account.id);
         await reconcileUserExpenses(ctx, expense.id, visibilityUserIds);
         updated++;
@@ -821,7 +831,10 @@ export const repairExpenseSettlementAndVisibility = internalMutation({
         )
       );
       const participantUserIds = participantUsers
-        .filter((user): user is NonNullable<typeof user> => user !== null)
+        .filter(
+          (user): user is NonNullable<typeof user> =>
+            user !== null && user.status !== "deleting" && user.status !== "deleted"
+        )
         .map((user) => user.id);
       await reconcileUserExpenses(ctx, expense.id, participantUserIds);
       reconciledCount += 1;

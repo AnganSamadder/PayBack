@@ -3,7 +3,7 @@ import { getConvexSize, type Value, v } from "convex/values";
 import { accountLinkingRows, chargeLinkingQueries, createLinkingReadBudget } from "./aliases";
 import { normalizeMemberId } from "./identity";
 import { isGhostFriendIdentity } from "./friendLinkProvenance";
-import { assertAccountIsNotDeleting } from "./helpers";
+import { assertAccountCanAcceptChanges } from "./helpers";
 import {
   applyClaimForUser,
   assertBudgetedIdentityMaterializationReady,
@@ -139,7 +139,7 @@ async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequ
     .unique();
 
   if (!user) throw new Error("User not found");
-  assertAccountIsNotDeleting(user);
+  assertAccountCanAcceptChanges(user);
 
   const recipientEmail = args.recipient_email.trim().toLowerCase();
   const targetMemberId = normalizeMemberId(args.target_member_id);
@@ -153,6 +153,12 @@ async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequ
   if (!targetMemberName) {
     throw new Error("Friend name is required");
   }
+
+  const recipient = await ctx.db
+    .query("accounts")
+    .withIndex("by_email", (q) => q.eq("email", recipientEmail))
+    .unique();
+  assertAccountCanAcceptChanges(recipient);
 
   const existing = await ctx.db
     .query("link_requests")
@@ -372,7 +378,7 @@ export const accept = mutation({
     accountLinkingRows(budget, user ? [user] : []);
 
     if (!user) throw new Error("User not found");
-    assertAccountIsNotDeleting(user);
+    assertAccountCanAcceptChanges(user);
 
     chargeLinkingQueries(budget, 1);
     const request = await ctx.db
