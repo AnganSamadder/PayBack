@@ -5,8 +5,90 @@ import { findAccountByAuthIdOrDocId, normalizeMemberId, normalizeMemberIds } fro
 import {
   isGhostFriendIdentity,
   ProvenFriendLink,
+  provenFriendLinkQueryWork,
   resolveProvenFriendLink
 } from "./friendLinkProvenance";
+
+const FRIEND_LIST_LIMITS = {
+  friends: 512,
+  readRows: 2048,
+  queries: 1024,
+  estimatedReadBytes: 8 * 1024 * 1024,
+  hardReadSafetyBytes: 10 * 1024 * 1024,
+  maximumDocumentReservationBytes: 2 * 1024 * 1024,
+  maximumPageRows: 5
+} as const;
+
+type FriendListBudget = {
+  friendRows: number;
+  readRows: number;
+  queries: number;
+  estimatedReadBytes: number;
+};
+
+function friendListLimitError() {
+  return new Error("Friend list is too large to load safely");
+}
+
+function chargeFriendListQueries(budget: FriendListBudget, count: number) {
+  budget.queries += count;
+  if (budget.queries > FRIEND_LIST_LIMITS.queries) throw friendListLimitError();
+}
+
+function accountFriendListRows(
+  budget: FriendListBudget,
+  rows: readonly unknown[],
+  areFriendRows = false
+) {
+  budget.readRows += rows.length;
+  if (areFriendRows) budget.friendRows += rows.length;
+  budget.estimatedReadBytes += rows.reduce<number>(
+    (total, row) => total + new TextEncoder().encode(JSON.stringify(row) ?? "").length,
+    0
+  );
+  if (
+    budget.friendRows > FRIEND_LIST_LIMITS.friends ||
+    budget.readRows > FRIEND_LIST_LIMITS.readRows ||
+    budget.estimatedReadBytes > FRIEND_LIST_LIMITS.estimatedReadBytes
+  ) {
+    throw friendListLimitError();
+  }
+}
+
+async function collectFriendListRows<T>(
+  budget: FriendListBudget,
+  readPage: (
+    cursor: string | null,
+    limit: number
+  ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>
+): Promise<T[]> {
+  const rows: T[] = [];
+  let cursor: string | null = null;
+
+  while (true) {
+    const remainingFriends = FRIEND_LIST_LIMITS.friends - budget.friendRows + 1;
+    const remainingRows = FRIEND_LIST_LIMITS.readRows - budget.readRows + 1;
+    const remainingHardBytes = FRIEND_LIST_LIMITS.hardReadSafetyBytes - budget.estimatedReadBytes;
+    const byteReservedRows = Math.floor(
+      remainingHardBytes / FRIEND_LIST_LIMITS.maximumDocumentReservationBytes
+    );
+    const pageSize = Math.min(
+      FRIEND_LIST_LIMITS.maximumPageRows,
+      remainingFriends,
+      remainingRows,
+      byteReservedRows
+    );
+    if (pageSize <= 0) throw friendListLimitError();
+
+    chargeFriendListQueries(budget, 1);
+    const result = await readPage(cursor, pageSize);
+    accountFriendListRows(budget, result.page, true);
+    rows.push(...result.page);
+    if (result.isDone) return rows;
+    if (result.continueCursor === cursor) throw friendListLimitError();
+    cursor = result.continueCursor;
+  }
+}
 
 export const list = query({
   args: {},
@@ -14,17 +96,29 @@ export const list = query({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
 
+    const budget: FriendListBudget = {
+      friendRows: 0,
+      readRows: 0,
+      queries: 0,
+      estimatedReadBytes: 0
+    };
+
+    chargeFriendListQueries(budget, 1);
     const user = await ctx.db
       .query("accounts")
       .withIndex("by_email", (q) => q.eq("email", identity.email!))
       .unique();
+    accountFriendListRows(budget, user ? [user] : []);
 
     if (!user) return [];
 
-    const friends = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
-      .collect();
+    const friends = await collectFriendListRows(budget, async (cursor, limit) =>
+      ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    );
 
     type LinkedIdentityContext = {
       provenLink: ProvenFriendLink;
@@ -46,7 +140,10 @@ export const list = query({
       (friend) => friend.has_linked_account || friend.link_state === "linked"
     );
     for (const friend of linkedFriends) {
-      const provenLink = await resolveProvenFriendLink(ctx, friend);
+      chargeFriendListQueries(budget, provenFriendLinkQueryWork(friend));
+      const provenLink = await resolveProvenFriendLink(ctx, friend, (rows) =>
+        accountFriendListRows(budget, rows)
+      );
       if (!provenLink) continue;
       provenLinksByFriendId.set(String(friend._id), provenLink);
 
@@ -107,9 +204,11 @@ export const list = query({
         Boolean(friend.linked_member_id);
       if (hasPersistedLinkClaim) {
         if (!provenLink) {
+          if (friend.linked_account_id) chargeFriendListQueries(budget, 2);
           const persistedAccount = friend.linked_account_id
             ? await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id)
             : null;
+          accountFriendListRows(budget, persistedAccount ? [persistedAccount] : []);
           const isGhost = persistedAccount?.status === "deleted";
           validatedFriends.push({
             ...friend,

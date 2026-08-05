@@ -229,6 +229,12 @@ export default defineSchema({
     .index("by_recipient_email", ["recipient_email"])
     .index("by_requester_id", ["requester_id"])
     .index("by_requester_id_and_recipient_email", ["requester_id", "recipient_email"])
+    .index("by_requester_recipient_status_and_expiry", [
+      "requester_id",
+      "recipient_email",
+      "status",
+      "expires_at"
+    ])
     .index("by_requester_email", ["requester_email"])
     .index("by_client_id", ["id"]),
 

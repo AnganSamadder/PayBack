@@ -35,6 +35,8 @@ type CreateLinkRequestArgs = {
   target_member_name: string;
 };
 
+const MAX_ACTIVE_DUPLICATE_CANDIDATES = 1;
+
 async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequestArgs) {
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) throw new Error("Unauthenticated");
@@ -87,15 +89,24 @@ async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequ
   }
 
   const now = Date.now();
-  const duplicate = await ctx.db
+  const activeCandidates = await ctx.db
     .query("link_requests")
-    .withIndex("by_requester_id_and_recipient_email", (q) =>
-      q.eq("requester_id", user.id).eq("recipient_email", recipientEmail)
+    .withIndex("by_requester_recipient_status_and_expiry", (q) =>
+      q
+        .eq("requester_id", user.id)
+        .eq("recipient_email", recipientEmail)
+        .eq("status", "pending")
+        .gt("expires_at", now)
     )
-    .collect();
-  const activeDuplicate = duplicate.find(
-    (request) => request.status === "pending" && request.expires_at > now
-  );
+    .order("asc")
+    .take(MAX_ACTIVE_DUPLICATE_CANDIDATES + 1);
+  if (activeCandidates.length > MAX_ACTIVE_DUPLICATE_CANDIDATES) {
+    throw new Error("Too many active link requests for this recipient");
+  }
+  const activeDuplicate =
+    activeCandidates.find(
+      (request) => normalizeMemberId(request.target_member_id) === targetMemberId
+    ) ?? activeCandidates[0];
   if (activeDuplicate) {
     if (normalizeMemberId(activeDuplicate.target_member_id) === targetMemberId) {
       return activeDuplicate;
