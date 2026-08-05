@@ -1143,6 +1143,85 @@ test("cleanup.deleteUnlinkedFriend preserves standalone aliases while pruning ac
   expect(ownerAccount?.alias_member_ids ?? []).not.toContain("friend_member");
 });
 
+test("cleanup.deleteUnlinkedFriend preflights alias materialization bounds before destructive writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "alias_bound_owner_auth",
+      email: "alias-bound-owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "alias_bound_owner",
+      alias_member_ids: ["alias_bound_friend"]
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "alias-bound-owner@test.com",
+      member_id: "alias_bound_friend",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    await ctx.db.insert("groups", {
+      id: "alias_bound_group",
+      name: "Alias bound group",
+      members: [
+        { id: "alias_bound_owner", name: "Owner" },
+        { id: "alias_bound_friend", name: "Friend" },
+        { id: "alias_bound_survivor", name: "Survivor" }
+      ],
+      owner_email: "alias-bound-owner@test.com",
+      owner_account_id: "alias_bound_owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+    for (let index = 0; index < 9; index += 1) {
+      await ctx.db.insert("member_aliases", {
+        account_email: `alias-source-${index}@test.com`,
+        canonical_member_id: "alias_bound_owner",
+        alias_member_id: "alias_bound_friend",
+        materialization_source: "account_alias",
+        source_account_id: "alias_bound_owner_auth",
+        created_at: now
+      });
+    }
+  });
+  await markIdentityReady(t);
+
+  await expect(
+    t
+      .withIdentity(identity("alias-bound-owner@test.com", "alias_bound_owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "alias_bound_friend" })
+  ).rejects.toThrow("Friend cleanup is too large to complete safely");
+
+  const state = await t.run(async (ctx) => ({
+    friend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "alias-bound-owner@test.com").eq("member_id", "alias_bound_friend")
+      )
+      .unique(),
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "alias_bound_group"))
+      .unique(),
+    aliasRows: await ctx.db
+      .query("member_aliases")
+      .withIndex("by_source_account_and_alias", (q) =>
+        q
+          .eq("source_account_id", "alias_bound_owner_auth")
+          .eq("alias_member_id", "alias_bound_friend")
+      )
+      .collect()
+  }));
+  expect(state.friend).not.toBeNull();
+  expect(state.group?.members.map((member) => member.id)).toContain("alias_bound_friend");
+  expect(state.aliasRows).toHaveLength(9);
+});
+
 test("cleanup.deleteUnlinkedFriend throws for a group-derived non-friend and leaves data unchanged", async () => {
   const t = convexTest(schema, modules);
 
@@ -1550,6 +1629,124 @@ test("cleanup.deleteUnlinkedFriend preserves group-less survivors across drifted
   );
 });
 
+test("cleanup.deleteUnlinkedFriend preserves a distinct participant with conflicting link metadata", async () => {
+  const t = convexTest(schema, modules);
+  await markIdentityReady(t);
+
+  await t.run(async (ctx) => {
+    const now = Date.now();
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "conflicting_link_owner_auth",
+      email: "conflicting-link-owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "conflicting_link_owner"
+    });
+    await ctx.db.insert("accounts", {
+      id: "conflicting_link_other_auth",
+      email: "conflicting-link-other@test.com",
+      display_name: "Other account",
+      created_at: now,
+      member_id: "conflicting_link_other"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "conflicting-link-owner@test.com",
+      member_id: "conflicting_link_removed",
+      name: "Removed friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    await ctx.db.insert("expenses", {
+      id: "conflicting_link_cleanup_expense",
+      group_id: "missing_group",
+      context_kind: "grouped_individual",
+      description: "Preserve distinct survivor",
+      date: now,
+      total_amount: 30,
+      paid_by_member_id: "conflicting_link_owner",
+      involved_member_ids: [
+        "conflicting_link_owner",
+        "conflicting_link_removed",
+        "conflicting_link_survivor"
+      ],
+      splits: [
+        {
+          id: "conflicting_link_owner_split",
+          member_id: "conflicting_link_owner",
+          amount: 10,
+          is_settled: false
+        },
+        {
+          id: "conflicting_link_removed_split",
+          member_id: "conflicting_link_removed",
+          amount: 10,
+          is_settled: false
+        },
+        {
+          id: "conflicting_link_survivor_split",
+          member_id: "conflicting_link_survivor",
+          amount: 10,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "conflicting-link-owner@test.com",
+      owner_account_id: "conflicting_link_owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: [
+        "conflicting_link_owner",
+        "conflicting_link_removed",
+        "conflicting_link_survivor"
+      ],
+      participant_emails: ["conflicting-link-owner@test.com", "conflicting-link-other@test.com"],
+      participants: [
+        { member_id: "conflicting_link_owner", name: "Owner" },
+        { member_id: "conflicting_link_removed", name: "Removed friend" },
+        {
+          member_id: "conflicting_link_survivor",
+          name: "Distinct survivor",
+          linked_account_id: "conflicting_link_owner_auth",
+          linked_account_email: "conflicting-link-other@test.com"
+        }
+      ],
+      created_at: now,
+      updated_at: now
+    });
+    await ctx.db.insert("user_expenses", {
+      user_id: "conflicting_link_owner_auth",
+      expense_id: "conflicting_link_cleanup_expense",
+      updated_at: now
+    });
+  });
+
+  const owner = t.withIdentity(
+    identity("conflicting-link-owner@test.com", "conflicting_link_owner_auth")
+  );
+  await expect(
+    owner.mutation(api.cleanup.deleteUnlinkedFriend, {
+      friendMemberId: "conflicting_link_removed"
+    })
+  ).resolves.toMatchObject({ expensesDeleted: 0, expensesModified: 1 });
+
+  const state = await t.run(async (ctx) => ({
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "conflicting_link_cleanup_expense"))
+      .unique(),
+    visibility: await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "conflicting_link_cleanup_expense"))
+      .collect()
+  }));
+  expect(state.expense?.participant_member_ids).toEqual([
+    "conflicting_link_owner",
+    "conflicting_link_survivor"
+  ]);
+  expect(state.expense?.participant_emails).toEqual(["conflicting-link-owner@test.com"]);
+  expect(state.visibility.map((row) => row.user_id)).toEqual(["conflicting_link_owner_auth"]);
+});
+
 test("cleanup.deleteUnlinkedFriend counts an authoritative owner with only inactive history", async () => {
   const t = convexTest(schema, modules);
   await markIdentityReady(t);
@@ -1757,7 +1954,7 @@ test("cleanup.deleteUnlinkedFriend rejects conflicting legacy expense ownership"
     owner.mutation(api.cleanup.deleteUnlinkedFriend, {
       friendMemberId: "legacy_cleanup_removed"
     })
-  ).rejects.toThrow("conflicting grouped-individual ownership");
+  ).rejects.toThrow("Expense owner identity is inconsistent");
 
   const result = await t.run(async (ctx) => {
     const expense = await ctx.db
@@ -1777,6 +1974,1143 @@ test("cleanup.deleteUnlinkedFriend rejects conflicting legacy expense ownership"
   expect(result.expense).not.toBeNull();
   expect(result.friend).not.toBeNull();
 });
+
+test("cleanup.deleteUnlinkedFriend rejects a caller-owned group with a conflicting owner email", async () => {
+  const t = convexTest(schema, modules);
+  await markIdentityReady(t);
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "group_tuple_owner_auth",
+      email: "group-tuple-owner@test.com",
+      display_name: "Owner",
+      created_at: Date.now(),
+      member_id: "group_tuple_owner"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "group-tuple-owner@test.com",
+      member_id: "group_tuple_removed",
+      name: "Removed",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("groups", {
+      id: "conflicting_owner_email_group",
+      name: "Conflicting owner email",
+      members: [
+        { id: "group_tuple_owner", name: "Owner" },
+        { id: "group_tuple_removed", name: "Removed" },
+        { id: "group_tuple_survivor", name: "Survivor" }
+      ],
+      owner_email: "foreign-owner@test.com",
+      owner_account_id: "group_tuple_owner_auth",
+      owner_id: ownerId,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+  });
+
+  await expect(
+    t
+      .withIdentity(identity("group-tuple-owner@test.com", "group_tuple_owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, {
+        friendMemberId: "group_tuple_removed"
+      })
+  ).rejects.toThrow("Cannot clean records with a conflicting owner identity");
+
+  const state = await t.run(async (ctx) => ({
+    friend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "group-tuple-owner@test.com").eq("member_id", "group_tuple_removed")
+      )
+      .unique(),
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "conflicting_owner_email_group"))
+      .unique()
+  }));
+  expect(state.friend).not.toBeNull();
+  expect(state.group?.members.map((member) => member.id)).toContain("group_tuple_removed");
+});
+
+test("cleanup.deleteLinkedFriend removes history referenced only by an owner-local alias", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      local_alias_member_ids: ["historical_friend_member"],
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: true,
+      linked_account_id: "friend_auth",
+      linked_account_email: "friend@test.com",
+      updated_at: now
+    });
+    const groupRef = await ctx.db.insert("groups", {
+      id: "historical_direct_group",
+      name: "Historical direct group",
+      is_direct: true,
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "historical_friend_member", name: "Friend" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+    const expenseBase = {
+      description: "Historical linked expense",
+      date: now,
+      total_amount: 2,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "historical_friend_member"],
+      splits: [
+        { id: "owner_split", member_id: "owner_member", amount: 1, is_settled: false },
+        {
+          id: "friend_split",
+          member_id: "historical_friend_member",
+          amount: 1,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: ["owner_member", "historical_friend_member"],
+      participant_emails: ["owner@test.com"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "historical_friend_member", name: "Friend" }
+      ],
+      created_at: now,
+      updated_at: now
+    };
+    await ctx.db.insert("expenses", {
+      ...expenseBase,
+      id: "historical_group_ref_expense",
+      group_id: "stale_group_id",
+      group_ref: groupRef
+    });
+    await ctx.db.insert("expenses", {
+      ...expenseBase,
+      id: "historical_missing_group_expense",
+      group_id: "missing_group"
+    });
+  });
+
+  await markIdentityReady(t);
+  const result = await t
+    .withIdentity(identity("owner@test.com", "owner_auth"))
+    .mutation(api.cleanup.deleteLinkedFriend, { friendMemberId: "friend_member" });
+
+  expect(result.directGroupDeleted).toBe(true);
+  expect(result.expensesDeleted).toBe(2);
+  expect(
+    await t.run(async (ctx) =>
+      ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "historical_direct_group"))
+        .unique()
+    )
+  ).toBeNull();
+  expect(await t.run(async (ctx) => ctx.db.query("expenses").collect())).toHaveLength(0);
+});
+
+test("cleanup.deleteUnlinkedFriend removes history referenced only by an owner-local alias", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      local_alias_member_ids: ["historical_friend_member"],
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    const groupId = await ctx.db.insert("groups", {
+      id: "historical_shared_group",
+      name: "Historical shared group",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "historical_friend_member", name: "Friend" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+    await ctx.db.insert("expenses", {
+      id: "historical_shared_expense",
+      group_id: "historical_shared_group",
+      group_ref: groupId,
+      description: "Historical expense",
+      date: now,
+      total_amount: 20,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "historical_friend_member"],
+      splits: [
+        { id: "owner_split", member_id: "owner_member", amount: 10, is_settled: false },
+        {
+          id: "friend_split",
+          member_id: "historical_friend_member",
+          amount: 10,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: ["owner_member", "historical_friend_member"],
+      participant_emails: ["owner@test.com"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "historical_friend_member", name: "Friend" }
+      ],
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  await markIdentityReady(t);
+  const result = await t
+    .withIdentity(identity("owner@test.com", "owner_auth"))
+    .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" });
+
+  expect(result.groupsModified).toBe(1);
+  expect(result.expensesDeleted).toBe(1);
+  const state = await t.run(async (ctx) => ({
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "historical_shared_group"))
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "historical_shared_expense"))
+      .unique()
+  }));
+  expect(state.group).toBeNull();
+  expect(state.expense).toBeNull();
+});
+
+test("cleanup.deleteUnlinkedFriend cleans owner-scoped group-ref and missing-group alias expenses", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      local_alias_member_ids: ["historical_alias"],
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    const groupRef = await ctx.db.insert("groups", {
+      id: "legacy_group",
+      name: "Legacy group",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "historical_alias", name: "Friend" },
+        { id: "other_member", name: "Other" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+    const expenseBase = {
+      description: "Legacy expense",
+      date: now,
+      total_amount: 3,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "historical_alias", "other_member"],
+      splits: [
+        { id: "owner_split", member_id: "owner_member", amount: 1, is_settled: false },
+        { id: "friend_split", member_id: "historical_alias", amount: 1, is_settled: false },
+        { id: "other_split", member_id: "other_member", amount: 1, is_settled: false }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: ["owner_member", "historical_alias", "other_member"],
+      participant_emails: ["owner@test.com"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "historical_alias", name: "Friend" },
+        { member_id: "other_member", name: "Other" }
+      ],
+      created_at: now,
+      updated_at: now
+    };
+    await ctx.db.insert("expenses", {
+      ...expenseBase,
+      id: "group_ref_only_expense",
+      group_id: "stale_group_id",
+      group_ref: groupRef
+    });
+    await ctx.db.insert("expenses", {
+      ...expenseBase,
+      id: "missing_group_expense",
+      group_id: "missing_group"
+    });
+    for (const expenseId of ["group_ref_only_expense", "missing_group_expense"]) {
+      await ctx.db.insert("user_expenses", {
+        user_id: "owner_auth",
+        expense_id: expenseId,
+        updated_at: now
+      });
+    }
+  });
+
+  await markIdentityReady(t);
+  const result = await t
+    .withIdentity(identity("owner@test.com", "owner_auth"))
+    .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" });
+
+  expect(result.groupsModified).toBe(1);
+  expect(result.expensesModified).toBe(2);
+  const state = await t.run(async (ctx) => ({
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "legacy_group"))
+      .unique(),
+    expenses: await ctx.db.query("expenses").collect()
+  }));
+  expect(state.group?.members.map((member) => member.id)).not.toContain("historical_alias");
+  expect(state.expenses).toHaveLength(2);
+  for (const expense of state.expenses) {
+    expect(expense.participant_member_ids).not.toContain("historical_alias");
+    expect(expense.involved_member_ids).not.toContain("historical_alias");
+    expect(expense.splits.map((split) => split.member_id)).toContain("historical_alias");
+    expect(expense.participants.map((participant) => participant.member_id)).toContain(
+      "historical_alias"
+    );
+  }
+});
+
+test("cleanup.deleteUnlinkedFriend fails closed on a foreign group-ref expense", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    const foreignId = await ctx.db.insert("accounts", {
+      id: "foreign_auth",
+      email: "foreign@test.com",
+      display_name: "Foreign",
+      created_at: now,
+      member_id: "foreign_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    const groupRef = await ctx.db.insert("groups", {
+      id: "shared_group",
+      name: "Shared",
+      members: [
+        { id: "owner_member", name: "Owner" },
+        { id: "friend_member", name: "Friend" },
+        { id: "foreign_member", name: "Foreign" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+    await ctx.db.insert("expenses", {
+      id: "foreign_group_ref_expense",
+      group_id: "stale_group_id",
+      group_ref: groupRef,
+      description: "Foreign expense",
+      date: now,
+      total_amount: 2,
+      paid_by_member_id: "foreign_member",
+      involved_member_ids: ["foreign_member", "friend_member"],
+      splits: [{ id: "split", member_id: "friend_member", amount: 2, is_settled: false }],
+      is_settled: false,
+      owner_email: "foreign@test.com",
+      owner_account_id: "foreign_auth",
+      owner_id: foreignId,
+      participant_member_ids: ["foreign_member", "friend_member"],
+      participant_emails: ["foreign@test.com"],
+      participants: [
+        { member_id: "foreign_member", name: "Foreign" },
+        { member_id: "friend_member", name: "Friend" }
+      ],
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  await markIdentityReady(t);
+  await expect(
+    t
+      .withIdentity(identity("owner@test.com", "owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
+  ).rejects.toThrow("foreign-owned expenses");
+
+  const state = await t.run(async (ctx) => ({
+    friend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "friend_member")
+      )
+      .unique(),
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "shared_group"))
+      .unique()
+  }));
+  expect(state.friend).not.toBeNull();
+  expect(state.group?.members.map((member) => member.id)).toContain("friend_member");
+});
+
+test("cleanup.deleteUnlinkedFriend caps aggregate attached expenses before writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  let ownerId: any;
+  await t.run(async (ctx) => {
+    ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    const foreignId = await ctx.db.insert("accounts", {
+      id: "foreign_auth",
+      email: "foreign@test.com",
+      display_name: "Foreign",
+      created_at: now,
+      member_id: "foreign_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+
+    for (let groupIndex = 0; groupIndex < 2; groupIndex += 1) {
+      const groupId = `aggregate_group_${groupIndex}`;
+      const groupRef = await ctx.db.insert("groups", {
+        id: groupId,
+        name: `Aggregate ${groupIndex}`,
+        members: [
+          { id: "owner_member", name: "Owner" },
+          { id: "friend_member", name: "Friend" },
+          { id: `other_member_${groupIndex}`, name: "Other" }
+        ],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        created_at: now,
+        updated_at: now
+      });
+      for (let expenseIndex = 0; expenseIndex < 300; expenseIndex += 1) {
+        await ctx.db.insert("expenses", {
+          id: `aggregate_expense_${groupIndex}_${expenseIndex}`,
+          group_id: groupId,
+          group_ref: groupRef,
+          description: "Foreign history",
+          date: now,
+          total_amount: 1,
+          paid_by_member_id: "foreign_member",
+          involved_member_ids: ["foreign_member"],
+          splits: [
+            {
+              id: `split_${groupIndex}_${expenseIndex}`,
+              member_id: "foreign_member",
+              amount: 1,
+              is_settled: false
+            }
+          ],
+          is_settled: false,
+          owner_email: "foreign@test.com",
+          owner_account_id: "foreign_auth",
+          owner_id: foreignId,
+          participant_member_ids: ["foreign_member"],
+          participant_emails: ["foreign@test.com"],
+          participants: [{ member_id: "foreign_member", name: "Foreign" }],
+          created_at: now,
+          updated_at: now
+        });
+      }
+    }
+  });
+
+  await markIdentityReady(t);
+  await expect(
+    t
+      .withIdentity(identity("owner@test.com", "owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
+  ).rejects.toThrow("Friend cleanup is too large to complete safely");
+
+  const state = await t.run(async (ctx) => ({
+    friend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "friend_member")
+      )
+      .unique(),
+    groups: await ctx.db
+      .query("groups")
+      .withIndex("by_owner_id", (q) => q.eq("owner_id", ownerId))
+      .collect()
+  }));
+  expect(state.friend).not.toBeNull();
+  expect(state.groups).toHaveLength(2);
+  expect(
+    state.groups.every((group) => group.members.some((member) => member.id === "friend_member"))
+  ).toBe(true);
+}, 30_000);
+
+test("cleanup.deleteUnlinkedFriend bounds owned-group bytes before writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const largeText = "x".repeat(400 * 1024);
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    for (let index = 0; index < 22; index += 1) {
+      await ctx.db.insert("groups", {
+        id: `large_group_${index}`,
+        name: `Large ${index}`,
+        members: [{ id: `unrelated_${index}`, name: largeText }],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        created_at: now,
+        updated_at: now
+      });
+    }
+  });
+  await markIdentityReady(t);
+
+  await expect(
+    t
+      .withIdentity(identity("owner@test.com", "owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
+  ).rejects.toThrow("Friend cleanup is too large to complete safely");
+  expect(await t.run(async (ctx) => ctx.db.query("account_friends").collect())).toHaveLength(1);
+});
+
+test("cleanup.deleteUnlinkedFriend bounds owned-expense bytes before writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const largeText = "x".repeat(400 * 1024);
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    for (let index = 0; index < 22; index += 1) {
+      await ctx.db.insert("expenses", {
+        id: `large_expense_${index}`,
+        group_id: `missing_group_${index}`,
+        description: largeText,
+        date: now,
+        total_amount: 1,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member"],
+        splits: [{ id: `split_${index}`, member_id: "owner_member", amount: 1, is_settled: false }],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        participant_member_ids: ["owner_member"],
+        participant_emails: ["owner@test.com"],
+        participants: [{ member_id: "owner_member", name: "Owner" }],
+        created_at: now,
+        updated_at: now
+      });
+    }
+  });
+  await markIdentityReady(t);
+
+  await expect(
+    t
+      .withIdentity(identity("owner@test.com", "owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
+  ).rejects.toThrow("Friend cleanup is too large to complete safely");
+  expect(await t.run(async (ctx) => ctx.db.query("account_friends").collect())).toHaveLength(1);
+});
+
+test("cleanup.deleteUnlinkedFriend bounds attached-expense bytes before writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const largeText = "x".repeat(400 * 1024);
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    const foreignId = await ctx.db.insert("accounts", {
+      id: "foreign_auth",
+      email: "foreign@test.com",
+      display_name: "Foreign",
+      created_at: now,
+      member_id: "foreign_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    const groupRef = await ctx.db.insert("groups", {
+      id: "attached_group",
+      name: "Attached",
+      members: [
+        { id: "owner_member", name: "Owner" },
+        { id: "friend_member", name: "Friend" },
+        { id: "other_member", name: "Other" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+    for (let index = 0; index < 22; index += 1) {
+      await ctx.db.insert("expenses", {
+        id: `large_attached_expense_${index}`,
+        group_id: "attached_group",
+        group_ref: groupRef,
+        description: largeText,
+        date: now,
+        total_amount: 1,
+        paid_by_member_id: "foreign_member",
+        involved_member_ids: ["foreign_member"],
+        splits: [
+          { id: `split_${index}`, member_id: "foreign_member", amount: 1, is_settled: false }
+        ],
+        is_settled: false,
+        owner_email: "foreign@test.com",
+        owner_account_id: "foreign_auth",
+        owner_id: foreignId,
+        participant_member_ids: ["foreign_member"],
+        participant_emails: ["foreign@test.com"],
+        participants: [{ member_id: "foreign_member", name: "Foreign" }],
+        created_at: now,
+        updated_at: now
+      });
+    }
+  });
+  await markIdentityReady(t);
+
+  await expect(
+    t
+      .withIdentity(identity("owner@test.com", "owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
+  ).rejects.toThrow("Friend cleanup is too large to complete safely");
+  expect(await t.run(async (ctx) => ctx.db.query("account_friends").collect())).toHaveLength(1);
+});
+
+test("cleanup.deleteUnlinkedFriend bounds visibility rows before writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const excessiveVisibilityRows = 513;
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    const groupRef = await ctx.db.insert("groups", {
+      id: "visibility_heavy_group",
+      name: "Visibility Heavy",
+      members: [
+        { id: "owner_member", name: "Owner" },
+        { id: "friend_member", name: "Friend" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+    await ctx.db.insert("expenses", {
+      id: "visibility_heavy_expense",
+      group_id: "visibility_heavy_group",
+      group_ref: groupRef,
+      description: "Visibility Heavy",
+      date: now,
+      total_amount: 2,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "friend_member"],
+      splits: [
+        { id: "owner_split", member_id: "owner_member", amount: 1, is_settled: false },
+        { id: "friend_split", member_id: "friend_member", amount: 1, is_settled: false }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: ["owner_member", "friend_member"],
+      participant_emails: ["owner@test.com"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "friend_member", name: "Friend" }
+      ],
+      created_at: now,
+      updated_at: now
+    });
+    for (let index = 0; index < excessiveVisibilityRows; index += 1) {
+      await ctx.db.insert("user_expenses", {
+        user_id: `viewer_${index}`,
+        expense_id: "visibility_heavy_expense",
+        updated_at: now
+      });
+    }
+  });
+  await markIdentityReady(t);
+
+  await expect(
+    t
+      .withIdentity(identity("owner@test.com", "owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
+  ).rejects.toThrow("Friend cleanup is too large to complete safely");
+
+  const state = await t.run(async (ctx) => ({
+    friend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "friend_member")
+      )
+      .unique(),
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "visibility_heavy_group"))
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "visibility_heavy_expense"))
+      .unique(),
+    visibility: await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "visibility_heavy_expense"))
+      .collect()
+  }));
+  expect(state.friend).not.toBeNull();
+  expect(state.group).not.toBeNull();
+  expect(state.expense).not.toBeNull();
+  expect(state.visibility).toHaveLength(excessiveVisibilityRows);
+}, 30_000);
+
+test("cleanup.deleteUnlinkedFriend bounds participant identity work before writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const unrelatedMemberIds = Array.from({ length: 140 }, (_, index) => `ghost_${index}`);
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    const groupRef = await ctx.db.insert("groups", {
+      id: "identity_heavy_group",
+      name: "Identity Heavy",
+      members: [
+        { id: "owner_member", name: "Owner" },
+        { id: "friend_member", name: "Friend" },
+        ...unrelatedMemberIds.map((memberId) => ({ id: memberId, name: memberId }))
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+    const participantMemberIds = ["owner_member", "friend_member", ...unrelatedMemberIds];
+    await ctx.db.insert("expenses", {
+      id: "identity_heavy_expense",
+      group_id: "identity_heavy_group",
+      group_ref: groupRef,
+      description: "Identity Heavy",
+      date: now,
+      total_amount: participantMemberIds.length,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: participantMemberIds,
+      splits: participantMemberIds.map((memberId, index) => ({
+        id: `split_${index}`,
+        member_id: memberId,
+        amount: 1,
+        is_settled: false
+      })),
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: participantMemberIds,
+      participant_emails: ["owner@test.com"],
+      participants: participantMemberIds.map((memberId) => ({
+        member_id: memberId,
+        name: memberId
+      })),
+      created_at: now,
+      updated_at: now
+    });
+    await ctx.db.insert("user_expenses", {
+      user_id: "owner_auth",
+      expense_id: "identity_heavy_expense",
+      updated_at: now
+    });
+  });
+  await markIdentityReady(t);
+
+  await expect(
+    t
+      .withIdentity(identity("owner@test.com", "owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
+  ).rejects.toThrow("Friend cleanup is too large to complete safely");
+
+  const state = await t.run(async (ctx) => ({
+    friend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "friend_member")
+      )
+      .unique(),
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "identity_heavy_group"))
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "identity_heavy_expense"))
+      .unique()
+  }));
+  expect(state.friend).not.toBeNull();
+  expect(state.group?.members.some((member) => member.id === "friend_member")).toBe(true);
+  expect(state.expense?.participant_member_ids).toContain("friend_member");
+});
+
+async function createTransitiveAliasCleanupScenario(chainCount: number) {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const chainedParticipantIds = Array.from(
+    { length: chainCount },
+    (_, index) => `chain_${index}_0`
+  );
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+
+    for (
+      let participantIndex = 0;
+      participantIndex < chainedParticipantIds.length;
+      participantIndex += 1
+    ) {
+      for (let depth = 0; depth < 19; depth += 1) {
+        await ctx.db.insert("member_aliases", {
+          alias_member_id: `chain_${participantIndex}_${depth}`,
+          canonical_member_id: `chain_${participantIndex}_${depth + 1}`,
+          account_email: "owner@test.com",
+          materialization_source: "account_alias",
+          source_account_id: `chain_account_${participantIndex}`,
+          created_at: now
+        });
+      }
+    }
+
+    const participantMemberIds = ["owner_member", "friend_member", ...chainedParticipantIds];
+    const groupRef = await ctx.db.insert("groups", {
+      id: "transitive_identity_group",
+      name: "Transitive Identity",
+      members: participantMemberIds.map((memberId) => ({ id: memberId, name: memberId })),
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+    await ctx.db.insert("expenses", {
+      id: "transitive_identity_expense",
+      group_id: "transitive_identity_group",
+      group_ref: groupRef,
+      description: "Transitive Identity",
+      date: now,
+      total_amount: participantMemberIds.length,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: participantMemberIds,
+      splits: participantMemberIds.map((memberId, index) => ({
+        id: `split_${index}`,
+        member_id: memberId,
+        amount: 1,
+        is_settled: false
+      })),
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: participantMemberIds,
+      participant_emails: ["owner@test.com"],
+      participants: participantMemberIds.map((memberId) => ({
+        member_id: memberId,
+        name: memberId
+      })),
+      created_at: now,
+      updated_at: now
+    });
+  });
+  await markIdentityReady(t);
+  return t;
+}
+
+test("cleanup.deleteUnlinkedFriend avoids repeated readiness reads across alias hops", async () => {
+  const t = await createTransitiveAliasCleanupScenario(10);
+
+  await expect(
+    t
+      .withIdentity(identity("owner@test.com", "owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
+  ).resolves.toMatchObject({ success: true, expensesModified: 1 });
+});
+
+test("cleanup.deleteUnlinkedFriend bounds aggregate transitive alias resolution before writes", async () => {
+  const t = await createTransitiveAliasCleanupScenario(14);
+
+  await expect(
+    t
+      .withIdentity(identity("owner@test.com", "owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
+  ).rejects.toThrow("Friend cleanup is too large to complete safely");
+
+  const state = await t.run(async (ctx) => ({
+    friend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "friend_member")
+      )
+      .unique(),
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "transitive_identity_group"))
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "transitive_identity_expense"))
+      .unique()
+  }));
+  expect(state.friend).not.toBeNull();
+  expect(state.group?.members.some((member) => member.id === "friend_member")).toBe(true);
+  expect(state.expense?.participant_member_ids).toContain("friend_member");
+});
+
+test("cleanup.deleteUnlinkedFriend accounts repeated owner-document rows before writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "O".repeat(300_000),
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      updated_at: now
+    });
+    const groupRef = await ctx.db.insert("groups", {
+      id: "owner_document_heavy_group",
+      name: "Owner Document Heavy",
+      members: [
+        { id: "owner_member", name: "Owner" },
+        { id: "friend_member", name: "Friend" },
+        { id: "ghost_member", name: "Ghost" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+    for (let index = 0; index < 28; index += 1) {
+      await ctx.db.insert("expenses", {
+        id: `owner_document_heavy_expense_${index}`,
+        group_id: "owner_document_heavy_group",
+        group_ref: groupRef,
+        description: `Owner Document Heavy ${index}`,
+        date: now,
+        total_amount: 3,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member", "friend_member", "ghost_member"],
+        splits: [
+          { id: `owner_split_${index}`, member_id: "owner_member", amount: 1, is_settled: false },
+          {
+            id: `friend_split_${index}`,
+            member_id: "friend_member",
+            amount: 1,
+            is_settled: false
+          },
+          { id: `ghost_split_${index}`, member_id: "ghost_member", amount: 1, is_settled: false }
+        ],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        participant_member_ids: ["owner_member", "friend_member", "ghost_member"],
+        participant_emails: ["owner@test.com"],
+        participants: [
+          { member_id: "owner_member", name: "Owner" },
+          { member_id: "friend_member", name: "Friend" },
+          { member_id: "ghost_member", name: "Ghost" }
+        ],
+        created_at: now,
+        updated_at: now
+      });
+    }
+  });
+  await markIdentityReady(t);
+
+  await expect(
+    t
+      .withIdentity(identity("owner@test.com", "owner_auth"))
+      .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
+  ).rejects.toThrow("Friend cleanup is too large to complete safely");
+
+  const state = await t.run(async (ctx) => ({
+    friend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "friend_member")
+      )
+      .unique(),
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "owner_document_heavy_group"))
+      .unique(),
+    expenses: await ctx.db
+      .query("expenses")
+      .withIndex("by_group_id", (q) => q.eq("group_id", "owner_document_heavy_group"))
+      .collect()
+  }));
+  expect(state.friend).not.toBeNull();
+  expect(state.group?.members.some((member) => member.id === "friend_member")).toBe(true);
+  expect(state.expenses).toHaveLength(28);
+  expect(
+    state.expenses.every((expense) => expense.participant_member_ids.includes("friend_member"))
+  ).toBe(true);
+}, 30_000);
 
 test("cleanup.selfDeleteAccount removes account PII, preserves shared history, and is idempotent", async () => {
   const t = convexTest(schema, modules);

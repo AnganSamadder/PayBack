@@ -1,21 +1,23 @@
-import { mutation, internalMutation, query } from "./_generated/server";
+import { mutation, internalMutation, query, MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { Doc } from "./_generated/dataModel";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import {
   assertIdentityMaterializationReady,
-  findAccountByAuthIdOrDocId,
   findAccountByMemberId,
+  MAX_ALIAS_ROWS_PER_MEMBER_ID,
   MAX_LIVE_ACCOUNT_ALIASES,
   MAX_LIVE_ALIAS_DELTA,
-  normalizeMemberId,
-  removeAccountAliasMaterialization
+  normalizeMemberId
 } from "./identity";
 import {
   collectActiveExpenseMemberIds,
+  createExpenseIdentityResolutionCache,
+  ExpenseIdentityResolutionCache,
   reconcileExpenseVisibility,
   reconcileUserExpenses,
-  resolveActiveExpenseParticipantAccounts
+  resolveActiveExpenseParticipantAccounts,
+  resolveConsistentExpenseParticipantAccount
 } from "./helpers";
 
 // Helper to get current user or throw
@@ -74,110 +76,462 @@ function expenseReferencesEquivalentMember(
   );
 }
 
-type RemovedFriendExpenseOutcome = "unchanged" | "deleted" | "modified";
-const MAX_GROUPED_INDIVIDUAL_EXPENSES_PER_FRIEND_CLEANUP = 128;
+const FRIEND_CLEANUP_LIMITS = {
+  groups: 256,
+  expenses: 512,
+  attachedExpenses: 512,
+  readRows: 2048,
+  queries: 512,
+  estimatedReadBytes: 8 * 1024 * 1024,
+  hardReadSafetyBytes: 10 * 1024 * 1024,
+  maximumDocumentReservationBytes: 2 * 1024 * 1024,
+  maximumPageRows: 5,
+  participantIdentityKeys: 128,
+  visibilityRows: 512,
+  writes: 2048
+} as const;
+
+type FriendCleanupAggregateBudget = {
+  attachedExpenseIds: Set<string>;
+  identityResolutionKeys: Set<string>;
+  readRows: number;
+  queries: number;
+  estimatedReadBytes: number;
+  visibilityRows: number;
+  writes: number;
+};
+
+function createFriendCleanupAggregateBudget(): FriendCleanupAggregateBudget {
+  return {
+    attachedExpenseIds: new Set(),
+    identityResolutionKeys: new Set(),
+    readRows: 0,
+    queries: 0,
+    estimatedReadBytes: 0,
+    visibilityRows: 0,
+    writes: 0
+  };
+}
+
+function friendCleanupLimitError() {
+  return new Error("Friend cleanup is too large to complete safely");
+}
+
+function accountFriendCleanupRows(budget: FriendCleanupAggregateBudget, rows: readonly unknown[]) {
+  budget.readRows += rows.length;
+  budget.estimatedReadBytes += rows.reduce<number>(
+    (total, row) => total + new TextEncoder().encode(JSON.stringify(row) ?? "").length,
+    0
+  );
+  if (
+    budget.readRows > FRIEND_CLEANUP_LIMITS.readRows ||
+    budget.estimatedReadBytes > FRIEND_CLEANUP_LIMITS.estimatedReadBytes
+  ) {
+    throw friendCleanupLimitError();
+  }
+}
+
+function chargeFriendCleanupQueries(budget: FriendCleanupAggregateBudget, count: number) {
+  budget.queries += count;
+  if (budget.queries > FRIEND_CLEANUP_LIMITS.queries) {
+    throw friendCleanupLimitError();
+  }
+}
+
+async function resolveBudgetedFriendCleanupMemberAccount(
+  ctx: MutationCtx,
+  memberId: string,
+  budget: FriendCleanupAggregateBudget
+): Promise<Doc<"accounts"> | null> {
+  let currentMemberId = normalizeMemberId(memberId);
+  const visited = new Set<string>();
+
+  for (let depth = 0; depth < 20; depth += 1) {
+    if (!currentMemberId || visited.has(currentMemberId)) return null;
+    visited.add(currentMemberId);
+
+    // Cleanup asserts identity materialization once before planning. Read the normalized ready
+    // indexes directly so each hop has exactly one account range and one alias range.
+    chargeFriendCleanupQueries(budget, 1);
+    const account = await ctx.db
+      .query("accounts")
+      .withIndex("by_member_id", (q) => q.eq("member_id", currentMemberId))
+      .first();
+    accountFriendCleanupRows(budget, account ? [account] : []);
+    if (account) return account;
+
+    chargeFriendCleanupQueries(budget, 1);
+    const alias = await ctx.db
+      .query("member_aliases")
+      .withIndex("by_alias_member_id_and_source", (q) =>
+        q.eq("alias_member_id", currentMemberId).eq("materialization_source", "account_alias")
+      )
+      .first();
+    accountFriendCleanupRows(budget, alias ? [alias] : []);
+    if (!alias) return null;
+    currentMemberId = normalizeMemberId(alias.canonical_member_id);
+  }
+
+  return null;
+}
+
+async function prepareFriendCleanupIdentityReads(
+  ctx: MutationCtx,
+  budget: FriendCleanupAggregateBudget,
+  expense: Doc<"expenses">,
+  cache: ExpenseIdentityResolutionCache
+) {
+  const keys = new Set<string>();
+  const addKey = (
+    kind: "document" | "email" | "linked" | "member",
+    value: string | undefined | null
+  ) => {
+    const trimmed = value?.trim();
+    if (!trimmed) return;
+    const normalized = kind === "email" || kind === "member" ? trimmed.toLowerCase() : trimmed;
+    keys.add(`${kind}:${normalized}`);
+  };
+
+  for (const memberId of collectActiveExpenseMemberIds(expense)) {
+    addKey("member", normalizeMemberId(memberId));
+  }
+  for (const memberId of expense.inactive_participant_member_ids ?? []) {
+    addKey("member", normalizeMemberId(memberId));
+  }
+  for (const participant of expense.participants) {
+    addKey("member", normalizeMemberId(participant.member_id));
+    addKey("linked", participant.linked_account_id);
+    addKey("email", participant.linked_account_email);
+  }
+  for (const email of expense.participant_emails) addKey("email", email);
+  addKey("linked", expense.owner_account_id);
+  addKey("email", expense.owner_email);
+  // Owner document reads are not part of the shared helper cache, so reserve one per expense.
+  if (expense.owner_id) addKey("document", `${expense._id}:${expense.owner_id}`);
+
+  const memberIdsToResolve: string[] = [];
+  for (const key of keys) {
+    if (!budget.identityResolutionKeys.has(key)) {
+      budget.identityResolutionKeys.add(key);
+      if (key.startsWith("member:")) {
+        memberIdsToResolve.push(key.slice("member:".length));
+      } else if (key.startsWith("linked:")) {
+        chargeFriendCleanupQueries(budget, 2);
+      } else {
+        chargeFriendCleanupQueries(budget, 1);
+      }
+    }
+  }
+  if (budget.identityResolutionKeys.size > FRIEND_CLEANUP_LIMITS.participantIdentityKeys) {
+    throw friendCleanupLimitError();
+  }
+
+  for (const memberId of memberIdsToResolve.sort()) {
+    if (cache.memberAccounts.has(memberId)) continue;
+    const pendingAccount = resolveBudgetedFriendCleanupMemberAccount(ctx, memberId, budget);
+    cache.memberAccounts.set(memberId, pendingAccount);
+    await pendingAccount;
+  }
+}
+
+function reserveFriendCleanupWrites(budget: FriendCleanupAggregateBudget, count: number) {
+  budget.writes += count;
+  if (budget.writes > FRIEND_CLEANUP_LIMITS.writes) {
+    throw friendCleanupLimitError();
+  }
+}
+
+async function collectSequentialFriendCleanupRows<T>(
+  budget: FriendCleanupAggregateBudget,
+  readPage: (
+    cursor: string | null,
+    limit: number
+  ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>,
+  accountSecondaryRows?: (rows: readonly T[]) => void
+): Promise<T[]> {
+  const rows: T[] = [];
+  let cursor: string | null = null;
+  while (true) {
+    const remainingRows = FRIEND_CLEANUP_LIMITS.readRows - budget.readRows + 1;
+    const remainingHardBytes =
+      FRIEND_CLEANUP_LIMITS.hardReadSafetyBytes - budget.estimatedReadBytes;
+    const byteReservedRows = Math.floor(
+      remainingHardBytes / FRIEND_CLEANUP_LIMITS.maximumDocumentReservationBytes
+    );
+    const pageSize = Math.min(
+      FRIEND_CLEANUP_LIMITS.maximumPageRows,
+      remainingRows,
+      byteReservedRows
+    );
+    if (pageSize <= 0) throw friendCleanupLimitError();
+
+    budget.queries += 1;
+    if (budget.queries > FRIEND_CLEANUP_LIMITS.queries) {
+      throw friendCleanupLimitError();
+    }
+    const result = await readPage(cursor, pageSize);
+    accountFriendCleanupRows(budget, result.page);
+    accountSecondaryRows?.(result.page);
+    rows.push(...result.page);
+    if (result.isDone) return rows;
+    if (result.continueCursor === cursor) throw friendCleanupLimitError();
+    cursor = result.continueCursor;
+  }
+}
+
+function hasConsistentGroupOwner(group: Doc<"groups">, account: Doc<"accounts">) {
+  const hasAccountId = Boolean(group.owner_account_id?.trim());
+  const hasDocumentId = Boolean(group.owner_id);
+  const ownerEmail = normalizeEmail(group.owner_email);
+  return (
+    (!hasAccountId || group.owner_account_id === account.id) &&
+    (!hasDocumentId || group.owner_id === account._id) &&
+    (ownerEmail === undefined || ownerEmail === normalizeEmail(account.email)) &&
+    (hasAccountId || hasDocumentId || ownerEmail !== undefined)
+  );
+}
+
+function hasConsistentExpenseOwner(expense: Doc<"expenses">, account: Doc<"accounts">) {
+  const hasAccountId = Boolean(expense.owner_account_id?.trim());
+  const hasDocumentId = Boolean(expense.owner_id);
+  const ownerEmail = normalizeEmail(expense.owner_email);
+  return (
+    (!hasAccountId || expense.owner_account_id?.trim() === account.id) &&
+    (!hasDocumentId || expense.owner_id === account._id) &&
+    (ownerEmail === undefined || ownerEmail === normalizeEmail(account.email)) &&
+    (hasAccountId || hasDocumentId || ownerEmail !== undefined)
+  );
+}
+
+async function collectFriendCleanupGroups(
+  ctx: MutationCtx,
+  account: Doc<"accounts">,
+  budget: FriendCleanupAggregateBudget
+) {
+  const pages = [
+    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
+      ctx.db
+        .query("groups")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    ),
+    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
+      ctx.db
+        .query("groups")
+        .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", account.id))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    ),
+    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
+      ctx.db
+        .query("groups")
+        .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    )
+  ];
+  if (pages.some((page) => page.length > FRIEND_CLEANUP_LIMITS.groups)) {
+    throw friendCleanupLimitError();
+  }
+  const groups = new Map<string, Doc<"groups">>();
+  for (const group of pages.flat()) {
+    if (!hasConsistentGroupOwner(group, account)) {
+      throw new Error("Cannot clean records with a conflicting owner identity");
+    }
+    groups.set(String(group._id), group);
+  }
+  if (groups.size > FRIEND_CLEANUP_LIMITS.groups) throw friendCleanupLimitError();
+  return groups;
+}
+
+async function collectFriendCleanupExpenses(
+  ctx: MutationCtx,
+  account: Doc<"accounts">,
+  budget: FriendCleanupAggregateBudget
+) {
+  const pages = [
+    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    ),
+    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", account.id))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    ),
+    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    )
+  ];
+  if (pages.some((page) => page.length > FRIEND_CLEANUP_LIMITS.expenses)) {
+    throw friendCleanupLimitError();
+  }
+  const expenses = new Map<string, Doc<"expenses">>();
+  for (const expense of pages.flat()) {
+    if (!hasConsistentExpenseOwner(expense, account)) {
+      throw new Error("Expense owner identity is inconsistent");
+    }
+    expenses.set(String(expense._id), expense);
+  }
+  if (expenses.size > FRIEND_CLEANUP_LIMITS.expenses) throw friendCleanupLimitError();
+  return expenses;
+}
+
+async function collectAttachedFriendCleanupExpenses(
+  ctx: MutationCtx,
+  group: Doc<"groups">,
+  budget: FriendCleanupAggregateBudget
+): Promise<Doc<"expenses">[]> {
+  const pages = [
+    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_group_id", (q) => q.eq("group_id", group.id))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    ),
+    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_group_ref", (q) => q.eq("group_ref", group._id))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    )
+  ];
+  if (pages.some((page) => page.length > FRIEND_CLEANUP_LIMITS.expenses)) {
+    throw friendCleanupLimitError();
+  }
+  const expenses = new Map<string, Doc<"expenses">>();
+  for (const expense of pages.flat()) {
+    const expenseId = String(expense._id);
+    expenses.set(expenseId, expense);
+    budget.attachedExpenseIds.add(expenseId);
+  }
+  if (budget.attachedExpenseIds.size > FRIEND_CLEANUP_LIMITS.attachedExpenses) {
+    throw friendCleanupLimitError();
+  }
+  if (expenses.size > FRIEND_CLEANUP_LIMITS.expenses) throw friendCleanupLimitError();
+  return Array.from(expenses.values());
+}
+
+async function collectFriendCleanupVisibilityRows(
+  ctx: MutationCtx,
+  expenseIds: ReadonlySet<string>,
+  budget: FriendCleanupAggregateBudget
+): Promise<Map<string, Doc<"user_expenses">[]>> {
+  const rowsByExpenseId = new Map<string, Doc<"user_expenses">[]>();
+  for (const expenseId of Array.from(expenseIds).sort()) {
+    const rows = await collectSequentialFriendCleanupRows(
+      budget,
+      async (cursor, limit) =>
+        ctx.db
+          .query("user_expenses")
+          .withIndex("by_expense_id", (q) => q.eq("expense_id", expenseId))
+          .order("asc")
+          .paginate({ cursor, numItems: limit }),
+      (page) => {
+        budget.visibilityRows += page.length;
+        if (budget.visibilityRows > FRIEND_CLEANUP_LIMITS.visibilityRows) {
+          throw friendCleanupLimitError();
+        }
+      }
+    );
+    rowsByExpenseId.set(expenseId, rows);
+  }
+  return rowsByExpenseId;
+}
+
+function visibilityWriteCount(
+  existingRows: readonly Doc<"user_expenses">[],
+  targetUserIds: readonly string[]
+) {
+  const existingUserIds = new Set(existingRows.map((row) => row.user_id));
+  const targetUserIdSet = new Set(targetUserIds);
+  const inserts = targetUserIds.filter((userId) => !existingUserIds.has(userId)).length;
+  const deletes = existingRows.filter((row) => !targetUserIdSet.has(row.user_id)).length;
+  return inserts + deletes;
+}
+
+async function deletePreloadedUserExpenses(
+  ctx: MutationCtx,
+  rows: readonly Doc<"user_expenses">[]
+) {
+  await Promise.all(rows.map((row) => ctx.db.delete(row._id)));
+}
+
+async function reconcilePreloadedUserExpenses(
+  ctx: MutationCtx,
+  expenseId: string,
+  targetUserIds: readonly string[],
+  existingRows: readonly Doc<"user_expenses">[]
+) {
+  const existingUserIds = new Set(existingRows.map((row) => row.user_id));
+  const targetUserIdSet = new Set(targetUserIds);
+  const userIdsToAdd = targetUserIds.filter((userId) => !existingUserIds.has(userId));
+  const rowsToDelete = existingRows.filter((row) => !targetUserIdSet.has(row.user_id));
+
+  await Promise.all([
+    ...userIdsToAdd.map((userId) =>
+      ctx.db.insert("user_expenses", {
+        user_id: userId,
+        expense_id: expenseId,
+        updated_at: Date.now()
+      })
+    ),
+    ...rowsToDelete.map((row) => ctx.db.delete(row._id))
+  ]);
+}
+
+type PreparedRemovedFriendExpense =
+  | { outcome: "unchanged"; expense: Doc<"expenses"> }
+  | { outcome: "deleted"; expense: Doc<"expenses"> }
+  | {
+      outcome: "modified";
+      expense: Doc<"expenses">;
+      participantUserIds: string[];
+      patch: Pick<
+        Doc<"expenses">,
+        | "participant_member_ids"
+        | "inactive_participant_member_ids"
+        | "involved_member_ids"
+        | "participant_emails"
+        | "updated_at"
+      >;
+    };
 
 async function resolveActiveMemberAccount(
-  ctx: any,
+  ctx: MutationCtx,
   expense: Doc<"expenses">,
-  normalizedMemberId: string
+  normalizedMemberId: string,
+  cache: ExpenseIdentityResolutionCache
 ): Promise<Doc<"accounts"> | null> {
-  let account = await findAccountByMemberId(ctx.db, normalizedMemberId);
-  if (!account) {
-    const participant = expense.participants.find(
-      (candidate) => normalizeMemberId(candidate.member_id) === normalizedMemberId
-    );
-    if (participant?.linked_account_id?.trim()) {
-      account = await findAccountByAuthIdOrDocId(ctx.db, participant.linked_account_id.trim());
-    }
-    const linkedEmail = participant?.linked_account_email?.trim().toLowerCase();
-    if (!account && linkedEmail) {
-      account = await ctx.db
-        .query("accounts")
-        .withIndex("by_email", (q: any) => q.eq("email", linkedEmail))
-        .unique();
-    }
-  }
-  return account?.status === "deleted" ? null : account;
+  const participant = expense.participants.find(
+    (candidate) => normalizeMemberId(candidate.member_id) === normalizedMemberId
+  ) ?? { member_id: normalizedMemberId, name: "" };
+  return await resolveConsistentExpenseParticipantAccount(ctx, participant, cache);
 }
 
-async function findOwnedGroupedIndividualExpenses(
-  ctx: any,
-  user: Doc<"accounts">,
-  normalizedAccountEmail: string
-): Promise<Doc<"expenses">[]> {
-  const queryLimit = MAX_GROUPED_INDIVIDUAL_EXPENSES_PER_FRIEND_CLEANUP + 1;
-  const candidatePages: Doc<"expenses">[][] = [];
-  candidatePages.push(
-    await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_id_and_context_kind", (q: any) =>
-        q.eq("owner_id", user._id).eq("context_kind", "grouped_individual")
-      )
-      .take(queryLimit)
-  );
-  candidatePages.push(
-    await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_account_id_and_context_kind", (q: any) =>
-        q.eq("owner_account_id", user.id).eq("context_kind", "grouped_individual")
-      )
-      .take(queryLimit)
-  );
-  const ownerEmailKeys = new Set([normalizedAccountEmail, user.email.trim()]);
-  for (const ownerEmail of ownerEmailKeys) {
-    candidatePages.push(
-      await ctx.db
-        .query("expenses")
-        .withIndex("by_owner_email_and_context_kind", (q: any) =>
-          q.eq("owner_email", ownerEmail).eq("context_kind", "grouped_individual")
-        )
-        .take(queryLimit)
-    );
-  }
-  if (candidatePages.some((page) => page.length >= queryLimit)) {
-    throw new Error(
-      "Identity maintenance required: too many grouped-individual expenses for live friend cleanup"
-    );
-  }
-
-  const candidatesById = new Map<string, Doc<"expenses">>();
-  for (const page of candidatePages) {
-    for (const expense of page) candidatesById.set(String(expense._id), expense);
-  }
-  if (candidatesById.size > MAX_GROUPED_INDIVIDUAL_EXPENSES_PER_FRIEND_CLEANUP) {
-    throw new Error(
-      "Identity maintenance required: too many grouped-individual expenses for live friend cleanup"
-    );
-  }
-
-  for (const expense of candidatesById.values()) {
-    const legacyExpense = expense as Doc<"expenses"> & {
-      owner_id?: Doc<"accounts">["_id"];
-      owner_account_id?: string;
-      owner_email?: string;
-    };
-    const ownerIdConflicts =
-      legacyExpense.owner_id !== undefined && String(legacyExpense.owner_id) !== String(user._id);
-    const ownerAccountIdConflicts =
-      typeof legacyExpense.owner_account_id === "string" &&
-      legacyExpense.owner_account_id.trim().length > 0 &&
-      legacyExpense.owner_account_id.trim() !== user.id;
-    const ownerEmail = normalizeEmail(legacyExpense.owner_email);
-    const ownerEmailConflicts = ownerEmail !== undefined && ownerEmail !== normalizedAccountEmail;
-    if (ownerIdConflicts || ownerAccountIdConflicts || ownerEmailConflicts) {
-      throw new Error("Identity maintenance required: conflicting grouped-individual ownership");
-    }
-  }
-  return Array.from(candidatesById.values()).filter((expense) => expense.group_ref === undefined);
-}
-
-async function removeEquivalentMemberFromExpense(
+async function prepareEquivalentMemberRemovalFromExpense(
   ctx: any,
   expense: Doc<"expenses">,
-  normalizedEquivalentIds: ReadonlySet<string>
-): Promise<RemovedFriendExpenseOutcome> {
-  if (!expenseReferencesEquivalentMember(expense, normalizedEquivalentIds)) return "unchanged";
+  normalizedEquivalentIds: ReadonlySet<string>,
+  budget: FriendCleanupAggregateBudget,
+  cache: ExpenseIdentityResolutionCache,
+  ownerAccount: Doc<"accounts">
+): Promise<PreparedRemovedFriendExpense> {
+  if (!expenseReferencesEquivalentMember(expense, normalizedEquivalentIds)) {
+    return { outcome: "unchanged", expense };
+  }
 
   const remainingParticipants = collectActiveExpenseMemberIds(expense, normalizedEquivalentIds);
   const removedFriendWasPayer = matchesEquivalentMemberId(
@@ -186,9 +540,7 @@ async function removeEquivalentMemberFromExpense(
   );
 
   if (removedFriendWasPayer) {
-    await deleteUserExpensesForExpense(ctx, expense.id);
-    await ctx.db.delete(expense._id);
-    return "deleted";
+    return { outcome: "deleted", expense };
   }
 
   const inactiveParticipantMemberIds = Array.from(
@@ -204,9 +556,15 @@ async function removeEquivalentMemberFromExpense(
     inactive_participant_member_ids: inactiveParticipantMemberIds,
     participant_emails: []
   };
+  // The shared identity cache does not cover resolveAuthoritativeExpenseOwnerAccount's
+  // owner_id lookup, so account its returned row once for every prepared expense.
+  if (visibilityExpense.owner_id) accountFriendCleanupRows(budget, [ownerAccount]);
+  await prepareFriendCleanupIdentityReads(ctx, budget, visibilityExpense, cache);
   const activeParticipantAccounts = await resolveActiveExpenseParticipantAccounts(
     ctx,
-    visibilityExpense
+    visibilityExpense,
+    new Set(),
+    cache
   );
   const participantEmails = Array.from(
     new Set(activeParticipantAccounts.map((account) => account.email.trim().toLowerCase()))
@@ -215,46 +573,79 @@ async function removeEquivalentMemberFromExpense(
     activeParticipantAccounts.map((account) => `account:${account.id}`)
   );
   for (const memberId of remainingParticipants) {
-    const account = await resolveActiveMemberAccount(ctx, visibilityExpense, memberId);
+    const account = await resolveActiveMemberAccount(ctx, visibilityExpense, memberId, cache);
     activePartyKeys.add(account ? `account:${account.id}` : `member:${memberId}`);
   }
   if (activePartyKeys.size <= 1) {
-    await deleteUserExpensesForExpense(ctx, expense.id);
-    await ctx.db.delete(expense._id);
-    return "deleted";
+    return { outcome: "deleted", expense };
   }
 
-  await ctx.db.patch(expense._id, {
-    participant_member_ids: remainingParticipants,
-    inactive_participant_member_ids: inactiveParticipantMemberIds,
-    involved_member_ids: remainingParticipants,
-    participant_emails: participantEmails,
-    updated_at: Date.now()
-  });
-  await reconcileUserExpenses(
-    ctx,
-    expense.id,
-    activeParticipantAccounts.map((account) => account.id)
-  );
-  return "modified";
+  return {
+    outcome: "modified",
+    expense,
+    participantUserIds: activeParticipantAccounts.map((account) => account.id),
+    patch: {
+      participant_member_ids: remainingParticipants,
+      inactive_participant_member_ids: inactiveParticipantMemberIds,
+      involved_member_ids: remainingParticipants,
+      participant_emails: participantEmails,
+      updated_at: Date.now()
+    }
+  };
 }
 
-async function pruneAliasMemberIdsFromAccount(
-  ctx: any,
-  accountEmail: string,
-  memberIdsToRemove: string[]
-): Promise<number> {
-  const account = await ctx.db
-    .query("accounts")
-    .withIndex("by_email", (q: any) => q.eq("email", accountEmail))
-    .unique();
-  if (!account || !Array.isArray(account.alias_member_ids)) return 0;
+async function accountPreparedIdentityReads(
+  budget: FriendCleanupAggregateBudget,
+  cache: ExpenseIdentityResolutionCache
+) {
+  const pendingAccounts = new Set<Promise<Doc<"accounts"> | null>>([
+    ...cache.linkedIdAccounts.values(),
+    ...cache.emailAccounts.values()
+  ]);
+  const accounts = (await Promise.all(pendingAccounts)).filter(
+    (account): account is Doc<"accounts"> => account !== null
+  );
+  accountFriendCleanupRows(budget, accounts);
+}
 
+async function applyPreparedRemovedFriendExpense(
+  ctx: MutationCtx,
+  plan: Exclude<PreparedRemovedFriendExpense, { outcome: "unchanged" }>,
+  visibilityRows: readonly Doc<"user_expenses">[]
+) {
+  if (plan.outcome === "deleted") {
+    await deletePreloadedUserExpenses(ctx, visibilityRows);
+    await ctx.db.delete(plan.expense._id);
+    return;
+  }
+
+  await ctx.db.patch(plan.expense._id, plan.patch);
+  await reconcilePreloadedUserExpenses(
+    ctx,
+    plan.expense.id,
+    plan.participantUserIds,
+    visibilityRows
+  );
+}
+
+type PreparedAliasPrune = {
+  accountId: Doc<"accounts">["_id"];
+  nextAliasIds: string[];
+  rowsToDelete: Doc<"member_aliases">[];
+};
+
+async function prepareAliasMemberIdPrune(
+  ctx: MutationCtx,
+  account: Doc<"accounts">,
+  memberIdsToRemove: string[],
+  budget: FriendCleanupAggregateBudget
+): Promise<PreparedAliasPrune | null> {
+  if (!Array.isArray(account.alias_member_ids)) return null;
   const removeSet = new Set(memberIdsToRemove.map((id) => normalizeMemberId(id)));
   const hasAliasToRemove = account.alias_member_ids.some((memberId: string) =>
     removeSet.has(normalizeMemberId(memberId))
   );
-  if (!hasAliasToRemove) return 0;
+  if (!hasAliasToRemove) return null;
   if (account.alias_member_ids.length > MAX_LIVE_ACCOUNT_ALIASES) {
     throw new Error("Identity maintenance required: account alias cleanup must be migrated");
   }
@@ -264,16 +655,37 @@ async function pruneAliasMemberIdsFromAccount(
   const nextAliasIds = account.alias_member_ids.filter(
     (memberId: string) => !removeSet.has(normalizeMemberId(memberId))
   );
-  await assertIdentityMaterializationReady(ctx.db);
-  let aliasesDeleted = 0;
-  for (const memberId of removeSet) {
-    aliasesDeleted += await removeAccountAliasMaterialization(ctx, account.id, memberId);
+  const rowsById = new Map<string, Doc<"member_aliases">>();
+  for (const memberId of Array.from(removeSet).sort()) {
+    chargeFriendCleanupQueries(budget, 1);
+    const rows = await ctx.db
+      .query("member_aliases")
+      .withIndex("by_source_account_and_alias", (q) =>
+        q.eq("source_account_id", account.id).eq("alias_member_id", memberId)
+      )
+      .take(MAX_ALIAS_ROWS_PER_MEMBER_ID + 1);
+    accountFriendCleanupRows(budget, rows);
+    if (rows.length > MAX_ALIAS_ROWS_PER_MEMBER_ID) {
+      throw friendCleanupLimitError();
+    }
+    for (const row of rows) rowsById.set(String(row._id), row);
   }
-  await ctx.db.patch(account._id, {
-    alias_member_ids: nextAliasIds,
+  const rowsToDelete = Array.from(rowsById.values());
+  reserveFriendCleanupWrites(budget, rowsToDelete.length + 1);
+  return { accountId: account._id, nextAliasIds, rowsToDelete };
+}
+
+async function applyPreparedAliasPrune(
+  ctx: MutationCtx,
+  plan: PreparedAliasPrune | null
+): Promise<number> {
+  if (!plan) return 0;
+  await Promise.all(plan.rowsToDelete.map((row) => ctx.db.delete(row._id)));
+  await ctx.db.patch(plan.accountId, {
+    alias_member_ids: plan.nextAliasIds,
     updated_at: Date.now()
   });
-  return aliasesDeleted;
+  return plan.rowsToDelete.length;
 }
 
 async function findDeterministicSteward(
@@ -743,7 +1155,9 @@ export const deleteLinkedFriend = mutation({
 
     await assertIdentityMaterializationReady(ctx.db);
     const equivalentIds = await getAllEquivalentMemberIds(ctx.db, friendMemberId);
-    const normalizedEquivalentIds = new Set(equivalentIds.map(normalizeMemberId));
+    const normalizedEquivalentIds = new Set(
+      [...equivalentIds, ...(friend.local_alias_member_ids ?? [])].map(normalizeMemberId)
+    );
 
     const userAccount = await ctx.db
       .query("accounts")
@@ -757,12 +1171,29 @@ export const deleteLinkedFriend = mutation({
     let directGroupDeleted = false;
     let expensesDeleted = 0;
 
-    const ownedGroups = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", accountEmail))
-      .collect();
+    const aggregateBudget = createFriendCleanupAggregateBudget();
+    const ownedGroups = await collectFriendCleanupGroups(ctx, userAccount, aggregateBudget);
+    const ownedExpenses = await collectFriendCleanupExpenses(ctx, userAccount, aggregateBudget);
+    const handledExpenseIds = new Set<string>();
+    const attachedExpensesByGroup = new Map<string, Doc<"expenses">[]>();
 
-    for (const group of ownedGroups) {
+    for (const group of ownedGroups.values()) {
+      if (
+        group.is_direct &&
+        group.members.some((member) =>
+          matchesEquivalentMemberId(member.id, normalizedEquivalentIds)
+        )
+      ) {
+        attachedExpensesByGroup.set(
+          String(group._id),
+          await collectAttachedFriendCleanupExpenses(ctx, group, aggregateBudget)
+        );
+      }
+    }
+
+    const groupsToDelete: Doc<"groups">[] = [];
+    const expensesToDelete = new Map<string, Doc<"expenses">>();
+    for (const group of ownedGroups.values()) {
       if (!group.is_direct) continue;
 
       const hasFriend = group.members.some((member) =>
@@ -770,22 +1201,57 @@ export const deleteLinkedFriend = mutation({
       );
       if (!hasFriend) continue;
 
-      const groupExpenses = await ctx.db
-        .query("expenses")
-        .withIndex("by_group_id", (q) => q.eq("group_id", group.id))
-        .collect();
-
-      for (const expense of groupExpenses) {
-        await deleteUserExpensesForExpense(ctx, expense.id);
-        await ctx.db.delete(expense._id);
-        expensesDeleted++;
+      const attachedExpenses = attachedExpensesByGroup.get(String(group._id)) ?? [];
+      if (attachedExpenses.some((expense) => !hasConsistentExpenseOwner(expense, userAccount))) {
+        throw new Error("Cannot clean a group with foreign-owned expenses");
       }
-
-      await ctx.db.delete(group._id);
-      directGroupDeleted = true;
+      groupsToDelete.push(group);
+      for (const expense of attachedExpenses) {
+        expensesToDelete.set(String(expense._id), expense);
+        handledExpenseIds.add(String(expense._id));
+      }
     }
 
-    const aliasesDeleted = await pruneAliasMemberIdsFromAccount(ctx, accountEmail, equivalentIds);
+    const knownGroupIds = new Set(Array.from(ownedGroups.values()).map((group) => group.id));
+    const knownGroupRefs = new Set(ownedGroups.keys());
+    for (const expense of ownedExpenses.values()) {
+      if (handledExpenseIds.has(String(expense._id))) continue;
+      const hasKnownGroup =
+        knownGroupIds.has(expense.group_id) ||
+        (expense.group_ref !== undefined && knownGroupRefs.has(String(expense.group_ref)));
+      if (!hasKnownGroup && expenseReferencesEquivalentMember(expense, normalizedEquivalentIds)) {
+        expensesToDelete.set(String(expense._id), expense);
+      }
+    }
+
+    const visibilityRowsByExpenseId = await collectFriendCleanupVisibilityRows(
+      ctx,
+      new Set(Array.from(expensesToDelete.values()).map((expense) => expense.id)),
+      aggregateBudget
+    );
+    for (const expense of expensesToDelete.values()) {
+      reserveFriendCleanupWrites(
+        aggregateBudget,
+        visibilityRowsByExpenseId.get(expense.id)?.length ?? 0
+      );
+    }
+    const aliasPrunePlan = await prepareAliasMemberIdPrune(
+      ctx,
+      userAccount,
+      equivalentIds,
+      aggregateBudget
+    );
+    reserveFriendCleanupWrites(aggregateBudget, expensesToDelete.size + groupsToDelete.length + 1);
+
+    for (const expense of expensesToDelete.values()) {
+      await deletePreloadedUserExpenses(ctx, visibilityRowsByExpenseId.get(expense.id) ?? []);
+      await ctx.db.delete(expense._id);
+    }
+    for (const group of groupsToDelete) await ctx.db.delete(group._id);
+    directGroupDeleted = groupsToDelete.length > 0;
+    expensesDeleted = expensesToDelete.size;
+
+    const aliasesDeleted = await applyPreparedAliasPrune(ctx, aliasPrunePlan);
 
     await ctx.db.delete(friend._id);
 
@@ -835,25 +1301,42 @@ export const deleteUnlinkedFriend = mutation({
 
     await assertIdentityMaterializationReady(ctx.db);
     const equivalentIds = await getAllEquivalentMemberIds(ctx.db, friendMemberId);
-    const normalizedEquivalentIds = new Set(equivalentIds.map(normalizeMemberId));
+    const normalizedEquivalentIds = new Set(
+      [...equivalentIds, ...(friend.local_alias_member_ids ?? [])].map(normalizeMemberId)
+    );
 
     let groupsModified = 0;
     let expensesDeleted = 0;
     let expensesModified = 0;
     let aliasesDeleted = 0;
 
-    const groupedIndividualExpenses = await findOwnedGroupedIndividualExpenses(
-      ctx,
-      user,
-      accountEmail
-    );
+    const aggregateBudget = createFriendCleanupAggregateBudget();
+    const ownedGroups = await collectFriendCleanupGroups(ctx, user, aggregateBudget);
+    const ownedExpenses = await collectFriendCleanupExpenses(ctx, user, aggregateBudget);
+    const handledExpenseIds = new Set<string>();
+    const attachedExpensesByGroup = new Map<string, Doc<"expenses">[]>();
 
-    const ownedGroups = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", accountEmail))
-      .collect();
+    for (const group of ownedGroups.values()) {
+      if (
+        group.members.some((member) =>
+          matchesEquivalentMemberId(member.id, normalizedEquivalentIds)
+        )
+      ) {
+        attachedExpensesByGroup.set(
+          String(group._id),
+          await collectAttachedFriendCleanupExpenses(ctx, group, aggregateBudget)
+        );
+      }
+    }
 
-    for (const group of ownedGroups) {
+    const groupPlans: Array<{
+      group: Doc<"groups">;
+      remainingMembers: Doc<"groups">["members"];
+      shouldDelete: boolean;
+    }> = [];
+    const expensesToDelete = new Map<string, Doc<"expenses">>();
+    const expensesToPrepare = new Map<string, Doc<"expenses">>();
+    for (const group of ownedGroups.values()) {
       const hasFriend = group.members.some((member) =>
         matchesEquivalentMemberId(member.id, normalizedEquivalentIds)
       );
@@ -862,55 +1345,139 @@ export const deleteUnlinkedFriend = mutation({
       const remainingMembers = group.members.filter(
         (member) => !matchesEquivalentMemberId(member.id, normalizedEquivalentIds)
       );
+      const attachedExpenses = attachedExpensesByGroup.get(String(group._id)) ?? [];
+      const foreignAttachedExpense = attachedExpenses.find(
+        (expense) =>
+          !hasConsistentExpenseOwner(expense, user) &&
+          (remainingMembers.length <= 1 ||
+            expenseReferencesEquivalentMember(expense, normalizedEquivalentIds))
+      );
+      if (foreignAttachedExpense) {
+        throw new Error("Cannot clean a group with foreign-owned expenses");
+      }
+      const groupExpenses = attachedExpenses.filter((expense) =>
+        hasConsistentExpenseOwner(expense, user)
+      );
 
+      groupPlans.push({
+        group,
+        remainingMembers,
+        shouldDelete: remainingMembers.length <= 1
+      });
       if (remainingMembers.length <= 1) {
-        const groupExpenses = await ctx.db
-          .query("expenses")
-          .withIndex("by_group_id", (q) => q.eq("group_id", group.id))
-          .collect();
-
         for (const expense of groupExpenses) {
-          await deleteUserExpensesForExpense(ctx, expense.id);
-          await ctx.db.delete(expense._id);
-          expensesDeleted++;
+          expensesToDelete.set(String(expense._id), expense);
+          handledExpenseIds.add(String(expense._id));
         }
-
-        await ctx.db.delete(group._id);
       } else {
-        await ctx.db.patch(group._id, {
-          members: remainingMembers,
-          updated_at: Date.now()
-        });
-
-        const groupExpenses = await ctx.db
-          .query("expenses")
-          .withIndex("by_group_id", (q) => q.eq("group_id", group.id))
-          .collect();
-
         for (const expense of groupExpenses) {
-          const outcome = await removeEquivalentMemberFromExpense(
-            ctx,
-            expense,
-            normalizedEquivalentIds
-          );
-          if (outcome === "deleted") expensesDeleted++;
-          if (outcome === "modified") expensesModified++;
+          expensesToPrepare.set(String(expense._id), expense);
+          handledExpenseIds.add(String(expense._id));
         }
       }
-      groupsModified++;
     }
 
-    for (const expense of groupedIndividualExpenses) {
-      const outcome = await removeEquivalentMemberFromExpense(
-        ctx,
-        expense,
-        normalizedEquivalentIds
+    for (const expense of ownedExpenses.values()) {
+      if (
+        handledExpenseIds.has(String(expense._id)) ||
+        !expenseReferencesEquivalentMember(expense, normalizedEquivalentIds)
+      ) {
+        continue;
+      }
+      expensesToPrepare.set(String(expense._id), expense);
+    }
+
+    const identityCache = createExpenseIdentityResolutionCache();
+    const preparedExpenses = new Map<string, PreparedRemovedFriendExpense>();
+    for (const [expenseDocumentId, expense] of expensesToPrepare) {
+      if (expensesToDelete.has(expenseDocumentId)) continue;
+      preparedExpenses.set(
+        expenseDocumentId,
+        await prepareEquivalentMemberRemovalFromExpense(
+          ctx,
+          expense,
+          normalizedEquivalentIds,
+          aggregateBudget,
+          identityCache,
+          user
+        )
       );
-      if (outcome === "deleted") expensesDeleted++;
-      if (outcome === "modified") expensesModified++;
+    }
+    await accountPreparedIdentityReads(aggregateBudget, identityCache);
+
+    const visibilityExpenseIds = new Set(
+      Array.from(expensesToDelete.values()).map((expense) => expense.id)
+    );
+    for (const plan of preparedExpenses.values()) {
+      if (plan.outcome !== "unchanged") visibilityExpenseIds.add(plan.expense.id);
+    }
+    const visibilityRowsByExpenseId = await collectFriendCleanupVisibilityRows(
+      ctx,
+      visibilityExpenseIds,
+      aggregateBudget
+    );
+    for (const expense of expensesToDelete.values()) {
+      reserveFriendCleanupWrites(
+        aggregateBudget,
+        visibilityRowsByExpenseId.get(expense.id)?.length ?? 0
+      );
+    }
+    for (const plan of preparedExpenses.values()) {
+      if (plan.outcome === "unchanged") continue;
+      const visibilityRows = visibilityRowsByExpenseId.get(plan.expense.id) ?? [];
+      reserveFriendCleanupWrites(
+        aggregateBudget,
+        plan.outcome === "deleted"
+          ? visibilityRows.length
+          : visibilityWriteCount(visibilityRows, plan.participantUserIds)
+      );
+    }
+    const aliasPrunePlan = await prepareAliasMemberIdPrune(
+      ctx,
+      user,
+      equivalentIds,
+      aggregateBudget
+    );
+    const preparedExpenseWriteCount = Array.from(preparedExpenses.values()).filter(
+      (plan) => plan.outcome !== "unchanged"
+    ).length;
+    reserveFriendCleanupWrites(
+      aggregateBudget,
+      groupPlans.length + expensesToDelete.size + preparedExpenseWriteCount + 1
+    );
+
+    for (const groupPlan of groupPlans) {
+      if (groupPlan.shouldDelete) {
+        await ctx.db.delete(groupPlan.group._id);
+      } else {
+        await ctx.db.patch(groupPlan.group._id, {
+          owner_id: user._id,
+          owner_account_id: user.id,
+          owner_email: user.email,
+          members: groupPlan.remainingMembers,
+          updated_at: Date.now()
+        });
+      }
+    }
+    groupsModified = groupPlans.length;
+
+    for (const expense of expensesToDelete.values()) {
+      await deletePreloadedUserExpenses(ctx, visibilityRowsByExpenseId.get(expense.id) ?? []);
+      await ctx.db.delete(expense._id);
+      expensesDeleted += 1;
+    }
+    for (const plan of preparedExpenses.values()) {
+      if (plan.outcome === "unchanged") continue;
+      await applyPreparedRemovedFriendExpense(
+        ctx,
+        plan,
+        visibilityRowsByExpenseId.get(plan.expense.id) ?? []
+      );
+      if (plan.outcome === "deleted") expensesDeleted += 1;
+      if (plan.outcome === "modified") expensesModified += 1;
     }
 
-    aliasesDeleted = await pruneAliasMemberIdsFromAccount(ctx, accountEmail, equivalentIds);
+    aliasesDeleted = await applyPreparedAliasPrune(ctx, aliasPrunePlan);
 
     await ctx.db.delete(friend._id);
 
