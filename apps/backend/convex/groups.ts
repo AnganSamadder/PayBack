@@ -3,17 +3,18 @@ import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { normalizeMemberId } from "./identity";
-import {
-  assertAccountCanAcceptChanges,
-  isAccountDeletionFenced,
-  reconcileUserExpenses
-} from "./helpers";
+import { assertAccountCanAcceptChanges, isAccountDeletionFenced } from "./helpers";
 import {
   deleteGroupWithVisibility,
   GroupVisibilityWriteBatch,
   insertGroupWithVisibility,
   patchGroupWithVisibility
 } from "./groupVisibility";
+import {
+  applyExpenseWriteBatch,
+  type ExpenseWriteOperation,
+  MAX_EXPENSE_WRITE_OPERATIONS
+} from "./expenseWrites";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -41,25 +42,50 @@ function isGroupOwner(group: any, user: any): boolean {
 async function deleteGroupWithExpenses(
   ctx: any,
   group: any,
-  groupVisibilityBatch?: GroupVisibilityWriteBatch
+  groupVisibilityBatch?: GroupVisibilityWriteBatch,
+  expenseOperations?: ExpenseWriteOperation[]
 ) {
   const expenseByDocId = new Map<string, any>();
 
   const byGroupRef = await ctx.db
     .query("expenses")
     .withIndex("by_group_ref", (q: any) => q.eq("group_ref", group._id))
-    .collect();
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+  if (byGroupRef.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw new Error(
+      `Group deletion requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
+    );
+  }
   byGroupRef.forEach((expense: any) => expenseByDocId.set(expense._id, expense));
 
   const byGroupId = await ctx.db
     .query("expenses")
     .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-    .collect();
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+  if (byGroupId.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw new Error(
+      `Group deletion requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
+    );
+  }
   byGroupId.forEach((expense: any) => expenseByDocId.set(expense._id, expense));
 
-  for (const expense of expenseByDocId.values()) {
-    await reconcileUserExpenses(ctx, expense.id, []);
-    await ctx.db.delete(expense._id);
+  if (expenseByDocId.size > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw new Error(
+      `Group deletion requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
+    );
+  }
+  const deleteOperations: ExpenseWriteOperation[] = Array.from(expenseByDocId.values()).map(
+    (expense) => ({ kind: "delete", expense })
+  );
+  if (expenseOperations) {
+    if (expenseOperations.length + deleteOperations.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(
+        `Group deletion requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
+      );
+    }
+    expenseOperations.push(...deleteOperations);
+  } else {
+    await applyExpenseWriteBatch(ctx, deleteOperations);
   }
 
   if (groupVisibilityBatch) {
@@ -386,9 +412,13 @@ export const deleteGroups = mutation({
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    if (args.ids.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(`Group deletion supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} IDs`);
+    }
     const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
+    const expenseOperations: ExpenseWriteOperation[] = [];
 
-    for (const id of args.ids) {
+    for (const id of new Set(args.ids)) {
       const group = await ctx.db
         .query("groups")
         .withIndex("by_client_id", (q) => q.eq("id", id))
@@ -401,8 +431,9 @@ export const deleteGroups = mutation({
         continue;
       }
 
-      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch);
+      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch, expenseOperations);
     }
+    await applyExpenseWriteBatch(ctx, expenseOperations);
     await groupVisibilityBatch.flush();
   }
 });
@@ -414,6 +445,7 @@ export const clearAllForUser = mutation({
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
     const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
+    const expenseOperations: ExpenseWriteOperation[] = [];
 
     // Resolve all member IDs that represent this user so we can leave shared groups too.
     const canonicalMemberId = await resolveCanonicalMemberIdInternal(
@@ -431,12 +463,20 @@ export const clearAllForUser = mutation({
     const ownedGroups = await ctx.db
       .query("groups")
       .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
-      .collect();
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
 
     const byEmail = await ctx.db
       .query("groups")
       .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
-      .collect();
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    if (
+      ownedGroups.length > MAX_EXPENSE_WRITE_OPERATIONS ||
+      byEmail.length > MAX_EXPENSE_WRITE_OPERATIONS
+    ) {
+      throw new Error(
+        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} groups`
+      );
+    }
 
     // Merge and dedupe
     const ownedGroupIdSet = new Set<string>();
@@ -445,15 +485,25 @@ export const clearAllForUser = mutation({
     const ownedGroupMap = new Map<string, any>();
     ownedGroups.forEach((g) => ownedGroupMap.set(g._id, g));
     byEmail.forEach((g) => ownedGroupMap.set(g._id, g));
+    if (ownedGroupMap.size > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(
+        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} groups`
+      );
+    }
 
     // Delete owned groups and cascade-delete their expenses.
     for (const group of ownedGroupMap.values()) {
-      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch);
+      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch, expenseOperations);
     }
 
     // 2) Leave any remaining shared groups where this user is still a member.
     // Note: Inefficient full scan, but acceptable for "nuclear" infrequent op.
-    const allGroups = await ctx.db.query("groups").collect();
+    const allGroups = await ctx.db.query("groups").take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    if (allGroups.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(
+        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} groups`
+      );
+    }
     let sharedGroupsUpdated = 0;
     let emptySharedGroupsDeleted = 0;
 
@@ -470,7 +520,7 @@ export const clearAllForUser = mutation({
       );
 
       if (remainingMembers.length === 0) {
-        await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch);
+        await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch, expenseOperations);
         emptySharedGroupsDeleted += 1;
         continue;
       }
@@ -482,6 +532,7 @@ export const clearAllForUser = mutation({
       sharedGroupsUpdated += 1;
     }
 
+    await applyExpenseWriteBatch(ctx, expenseOperations);
     await groupVisibilityBatch.flush();
 
     return null;
@@ -494,6 +545,7 @@ export const clearDebugDataForUser = mutation({
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
     const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
+    const expenseOperations: ExpenseWriteOperation[] = [];
 
     const canonicalMemberId = await resolveCanonicalMemberIdInternal(
       ctx.db,
@@ -507,17 +559,23 @@ export const clearDebugDataForUser = mutation({
       .withIndex("by_is_payback_generated_mock_data", (q) =>
         q.eq("is_payback_generated_mock_data", true)
       )
-      .collect();
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    if (debugGroups.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(
+        `Debug cleanup requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} groups`
+      );
+    }
 
     let deleted = 0;
     for (const group of debugGroups) {
       const isOwner = membershipIds.has(normalizeMemberId(group.owner_id as any));
       if (!isOwner) continue;
 
-      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch);
+      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch, expenseOperations);
       deleted += 1;
     }
 
+    await applyExpenseWriteBatch(ctx, expenseOperations);
     await groupVisibilityBatch.flush();
 
     return null;

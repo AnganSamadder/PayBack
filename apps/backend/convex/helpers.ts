@@ -1,7 +1,13 @@
 import { MutationCtx, QueryCtx } from "./_generated/server";
-import { Doc } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import { ConvexError } from "convex/values";
 import { findAccountByAuthIdOrDocId, findAccountByMemberId, normalizeMemberId } from "./identity";
+import {
+  applyExpenseWriteBatch,
+  type ExpenseWriteOperation,
+  MAX_EXPENSE_VIEWERS,
+  MAX_EXPENSE_WRITE_OPERATIONS
+} from "./expenseWrites";
 
 export async function getCurrentUserOrThrow(ctx: QueryCtx | MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
@@ -44,29 +50,32 @@ export async function reconcileUserExpenses(
   expenseId: string,
   participantUserIds: string[]
 ) {
-  const existingRows = await ctx.db
-    .query("user_expenses")
-    .withIndex("by_expense_id", (q) => q.eq("expense_id", expenseId))
-    .collect();
+  if (participantUserIds.length > MAX_EXPENSE_VIEWERS) {
+    throw new Error(`Expense visibility supports at most ${MAX_EXPENSE_VIEWERS} viewers`);
+  }
+  const uniqueUserIds = Array.from(new Set(participantUserIds));
+  if (uniqueUserIds.length > MAX_EXPENSE_VIEWERS) {
+    throw new Error(`Expense visibility supports at most ${MAX_EXPENSE_VIEWERS} viewers`);
+  }
+  const expenseMatches = await ctx.db
+    .query("expenses")
+    .withIndex("by_client_id", (query) => query.eq("id", expenseId))
+    .take(2);
+  if (expenseMatches.length > 1) throw new Error(`Expense ${expenseId} is not unique`);
+  const expense = expenseMatches[0];
+  if (!expense) throw new Error(`Expense ${expenseId} not found`);
 
-  const existingUserIds = new Set(existingRows.map((r) => r.user_id));
-  const targetUserIds = new Set(participantUserIds);
-
-  const toAdd = participantUserIds.filter((id) => !existingUserIds.has(id));
-
-  const toRemoveRows = existingRows.filter((r) => !targetUserIds.has(r.user_id));
-
-  await Promise.all(
-    toAdd.map((userId) =>
-      ctx.db.insert("user_expenses", {
-        user_id: userId,
-        expense_id: expenseId,
-        updated_at: Date.now()
-      })
-    )
-  );
-
-  await Promise.all(toRemoveRows.map((row) => ctx.db.delete(row._id)));
+  const viewerAccountIds: Id<"accounts">[] = [];
+  for (const userId of uniqueUserIds) {
+    const accounts = await ctx.db
+      .query("accounts")
+      .withIndex("by_auth_id", (query) => query.eq("id", userId))
+      .take(2);
+    if (accounts.length > 1) throw new Error(`Account auth ID ${userId} is not unique`);
+    const account = accounts[0];
+    if (isActiveAccount(account ?? null)) viewerAccountIds.push(account._id);
+  }
+  await applyExpenseWriteBatch(ctx, [{ kind: "visibility", expense, viewerAccountIds }]);
 }
 
 export type ExpenseVisibilitySource = Pick<
@@ -115,6 +124,27 @@ function cachedAccountResolution(
 
 function isActiveAccount(account: Doc<"accounts"> | null): account is Doc<"accounts"> {
   return account !== null && account.status !== "deleting" && account.status !== "deleted";
+}
+
+function assertExpenseVisibilitySourceBounded(expense: ExpenseVisibilitySource): void {
+  const candidateMemberIds = collectActiveExpenseMemberIds(expense);
+  const participantEmails = new Set(
+    (expense.participant_emails ?? [])
+      .filter((email): email is string => Boolean(email?.trim()))
+      .map((email) => email.trim().toLowerCase())
+  );
+  if (
+    expense.involved_member_ids.length > MAX_EXPENSE_VIEWERS ||
+    expense.participant_member_ids.length > MAX_EXPENSE_VIEWERS ||
+    expense.participants.length > MAX_EXPENSE_VIEWERS ||
+    expense.splits.length > MAX_EXPENSE_VIEWERS ||
+    (expense.inactive_participant_member_ids?.length ?? 0) > MAX_EXPENSE_VIEWERS ||
+    (expense.participant_emails?.length ?? 0) > MAX_EXPENSE_VIEWERS ||
+    candidateMemberIds.length > MAX_EXPENSE_VIEWERS ||
+    participantEmails.size > MAX_EXPENSE_VIEWERS
+  ) {
+    throw new Error(`Expense visibility supports at most ${MAX_EXPENSE_VIEWERS} participants`);
+  }
 }
 
 type ExpenseOwnerSource = Pick<Doc<"expenses">, "owner_id" | "owner_account_id" | "owner_email">;
@@ -276,6 +306,7 @@ export async function resolveActiveExpenseParticipantAccounts(
   excludedAccountIds: ReadonlySet<string> = new Set(),
   cache?: ExpenseIdentityResolutionCache
 ): Promise<Doc<"accounts">[]> {
+  assertExpenseVisibilitySourceBounded(expense);
   const accounts = new Map<string, Doc<"accounts">>();
   const inactiveMemberIds = new Set(
     (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
@@ -310,7 +341,7 @@ export async function resolveActiveExpenseParticipantAccounts(
   }
 
   const addAccount = (account: Doc<"accounts"> | null) => {
-    if (account && account.status !== "deleted" && excludedAccountIds.has(account.id) === false) {
+    if (isActiveAccount(account) && excludedAccountIds.has(account.id) === false) {
       accounts.set(account.id, account);
       return account;
     }
@@ -381,12 +412,21 @@ export async function reconcileExpenseVisibility(
   expense: ExpenseVisibilitySource,
   excludedAccountIds: ReadonlySet<string> = new Set()
 ) {
-  const participantUserIds = await resolveActiveExpenseParticipantUserIds(
-    ctx,
-    expense,
-    excludedAccountIds
-  );
-  await reconcileUserExpenses(ctx, expense.id, participantUserIds);
+  const accounts = await resolveActiveExpenseParticipantAccounts(ctx, expense, excludedAccountIds);
+  const matches = await ctx.db
+    .query("expenses")
+    .withIndex("by_client_id", (query) => query.eq("id", expense.id))
+    .take(2);
+  if (matches.length > 1) throw new Error(`Expense ${expense.id} is not unique`);
+  const storedExpense = matches[0];
+  if (!storedExpense) throw new Error(`Expense ${expense.id} not found`);
+  await applyExpenseWriteBatch(ctx, [
+    {
+      kind: "visibility",
+      expense: storedExpense,
+      viewerAccountIds: accounts.map((account) => account._id)
+    }
+  ]);
 }
 
 /**
@@ -399,30 +439,40 @@ export async function reconcileExpensesForMember(
   memberId: string,
   targetUserId: string
 ) {
+  const targetAccounts = await ctx.db
+    .query("accounts")
+    .withIndex("by_auth_id", (query) => query.eq("id", targetUserId))
+    .take(2);
+  if (targetAccounts.length > 1) throw new Error(`Account auth ID ${targetUserId} is not unique`);
+  const targetAccount = targetAccounts[0];
+  if (!isActiveAccount(targetAccount ?? null)) return;
+
   const expenses = await ctx.db
     .query("expenses")
     .withIndex("by_owner_email", (q) => q.eq("owner_email", ownerEmail))
-    .collect();
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+  if (expenses.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw new Error(
+      `Expense reconciliation supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
+    );
+  }
 
   const relevantExpenses = expenses.filter(
     (e) => e.involved_member_ids.includes(memberId) || e.paid_by_member_id === memberId
   );
 
-  await Promise.all(
-    relevantExpenses.map(async (expense) => {
-      const userExpenses = await ctx.db
-        .query("user_expenses")
-        .withIndex("by_expense_id", (q) => q.eq("expense_id", expense.id))
-        .filter((q) => q.eq(q.field("user_id"), targetUserId))
-        .first();
-
-      if (!userExpenses) {
-        await ctx.db.insert("user_expenses", {
-          user_id: targetUserId,
-          expense_id: expense.id,
-          updated_at: Date.now()
-        });
-      }
-    })
-  );
+  const operations: ExpenseWriteOperation[] = [];
+  for (const expense of relevantExpenses) {
+    const viewerAccounts = await resolveActiveExpenseParticipantAccounts(ctx, expense);
+    const viewerAccountIds = new Map(
+      viewerAccounts.map((account) => [String(account._id), account._id])
+    );
+    viewerAccountIds.set(String(targetAccount._id), targetAccount._id);
+    operations.push({
+      kind: "visibility" as const,
+      expense,
+      viewerAccountIds: Array.from(viewerAccountIds.values())
+    });
+  }
+  await applyExpenseWriteBatch(ctx, operations);
 }

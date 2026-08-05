@@ -4,8 +4,7 @@ import { v } from "convex/values";
 import {
   assertAccountCanAcceptChanges,
   isAccountDeletionFenced,
-  reconcileExpenseVisibility,
-  reconcileUserExpenses
+  resolveActiveExpenseParticipantAccounts
 } from "./helpers";
 import { checkRateLimit } from "./rateLimit";
 import {
@@ -15,6 +14,44 @@ import {
   normalizeMemberIds
 } from "./identity";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
+import {
+  applyExpenseWriteBatch,
+  type ExpenseWriteOperation,
+  MAX_EXPENSE_VIEWERS,
+  MAX_EXPENSE_WRITE_OPERATIONS
+} from "./expenseWrites";
+
+function assertExpenseArgumentBounds(args: {
+  involved_member_ids: readonly string[];
+  splits: readonly unknown[];
+  participant_member_ids: readonly string[];
+  participants: readonly unknown[];
+  subexpenses?: readonly unknown[];
+}): void {
+  if (
+    args.involved_member_ids.length > MAX_EXPENSE_VIEWERS ||
+    args.splits.length > MAX_EXPENSE_VIEWERS ||
+    args.participant_member_ids.length > MAX_EXPENSE_VIEWERS ||
+    args.participants.length > MAX_EXPENSE_VIEWERS
+  ) {
+    throw new Error(`Expenses support at most ${MAX_EXPENSE_VIEWERS} participants`);
+  }
+  if ((args.subexpenses?.length ?? 0) > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw new Error(`Expenses support at most ${MAX_EXPENSE_WRITE_OPERATIONS} subexpenses`);
+  }
+}
+
+async function resolveExpenseViewerAccountIds(
+  ctx: any,
+  expense: Parameters<typeof resolveActiveExpenseParticipantAccounts>[1],
+  excludedAccountIds: ReadonlySet<string> = new Set()
+): Promise<Id<"accounts">[]> {
+  const accounts = await resolveActiveExpenseParticipantAccounts(ctx, expense, excludedAccountIds);
+  if (accounts.length > MAX_EXPENSE_VIEWERS) {
+    throw new Error(`Expenses support at most ${MAX_EXPENSE_VIEWERS} viewers`);
+  }
+  return accounts.map((account) => account._id);
+}
 
 async function getCurrentUser(ctx: any) {
   const identity = await ctx.auth.getUserIdentity();
@@ -376,6 +413,7 @@ export const create = mutation({
     const { identity, user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
+    assertExpenseArgumentBounds(args);
     await checkRateLimit(ctx, identity.subject, "expenses:create", 10);
     const notesWereProvided = args.notes !== undefined;
     const trimmedNotes = args.notes?.trim();
@@ -554,7 +592,12 @@ export const create = mutation({
       const ownerFriendRows = await ctx.db
         .query("account_friends")
         .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
-        .collect();
+        .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+      if (ownerFriendRows.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+        throw new Error(
+          `Direct expense validation supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} friends`
+        );
+      }
 
       const ownerFriendIdentityRows: { friend: any; identityIds: Set<string> }[] = [];
       for (const friend of ownerFriendRows) {
@@ -927,8 +970,13 @@ export const create = mutation({
         is_payback_generated_mock_data: nextMockData,
         updated_at: Date.now()
       };
-      await ctx.db.patch(existing._id, expensePatch);
-      await reconcileExpenseVisibility(ctx, { ...existing, ...expensePatch });
+      const viewerAccountIds = await resolveExpenseViewerAccountIds(ctx, {
+        ...existing,
+        ...expensePatch
+      });
+      await applyExpenseWriteBatch(ctx, [
+        { kind: "patch", expense: existing, patch: expensePatch, viewerAccountIds }
+      ]);
 
       return existing._id;
     }
@@ -938,7 +986,7 @@ export const create = mutation({
       involvedMemberIds: normalizedInvolved
     });
     const isSettled = computedSettledFromSplits(normalizedSplits);
-    const expenseId = await ctx.db.insert("expenses", {
+    const expenseInsert = {
       id: args.id,
       group_id: args.group_id,
       context_kind: contextKind,
@@ -961,20 +1009,12 @@ export const create = mutation({
       is_payback_generated_mock_data: args.is_payback_generated_mock_data ?? false,
       created_at: Date.now(),
       updated_at: Date.now()
-    });
-
-    const participantUsers = await Promise.all(
-      participantEmails.map((email) =>
-        ctx.db
-          .query("accounts")
-          .withIndex("by_email", (q) => q.eq("email", email))
-          .unique()
-      )
-    );
-    const participantUserIds = participantUsers.filter((u) => u !== null).map((u) => u!.id);
-    await reconcileUserExpenses(ctx, args.id, participantUserIds);
-
-    return expenseId;
+    };
+    const viewerAccountIds = await resolveExpenseViewerAccountIds(ctx, expenseInsert);
+    const result = await applyExpenseWriteBatch(ctx, [
+      { kind: "insert", expense: expenseInsert, viewerAccountIds }
+    ]);
+    return result.operations[0].expenseId;
   }
 });
 
@@ -989,6 +1029,9 @@ export const setSettlementState = mutation({
     if (!user) throw new Error("User not found");
 
     await checkRateLimit(ctx, identity.subject, "expenses:setSettlementState", 20);
+    if ((args.memberIds?.length ?? 0) > MAX_EXPENSE_VIEWERS) {
+      throw new Error(`Settlement supports at most ${MAX_EXPENSE_VIEWERS} members`);
+    }
 
     const expense = await loadExpenseByClientId(ctx, args.expenseId);
     const callerEquivalentIds = await buildUserEquivalentMemberIds(ctx.db, user);
@@ -1070,11 +1113,13 @@ export const setSettlementState = mutation({
     const nextIsSettled = computedSettledFromSplits(nextSplits);
     const updatedAt = Date.now();
 
-    await ctx.db.patch(expense._id, {
+    const patch = {
       splits: nextSplits,
       is_settled: nextIsSettled,
       updated_at: updatedAt
-    });
+    };
+    const viewerAccountIds = await resolveExpenseViewerAccountIds(ctx, expense);
+    await applyExpenseWriteBatch(ctx, [{ kind: "patch", expense, patch, viewerAccountIds }]);
 
     return {
       ...expense,
@@ -1187,8 +1232,7 @@ export const deleteExpense = mutation({
       throw new Error("Not authorized to delete this expense");
     }
 
-    await reconcileUserExpenses(ctx, args.id, []);
-    await ctx.db.delete(expense._id);
+    await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense }]);
   }
 });
 
@@ -1198,13 +1242,17 @@ export const deleteExpenses = mutation({
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    if (args.ids.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(`Expense deletion supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} IDs`);
+    }
 
     const userMemberIds = new Set([
       ...(user.member_id ? [user.member_id] : []),
       ...(user.alias_member_ids ?? [])
     ]);
 
-    for (const id of args.ids) {
+    const operations: ExpenseWriteOperation[] = [];
+    for (const id of new Set(args.ids)) {
       const expense = await ctx.db
         .query("expenses")
         .withIndex("by_client_id", (q) => q.eq("id", id))
@@ -1219,9 +1267,9 @@ export const deleteExpenses = mutation({
         continue;
       }
 
-      await reconcileUserExpenses(ctx, id, []);
-      await ctx.db.delete(expense._id);
+      operations.push({ kind: "delete" as const, expense });
     }
+    await applyExpenseWriteBatch(ctx, operations);
   }
 });
 
@@ -1236,32 +1284,83 @@ export const clearAllForUser = mutation({
     const ownedExpenses = await ctx.db
       .query("expenses")
       .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-      .collect();
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
 
     const byEmail = await ctx.db
       .query("expenses")
       .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
-      .collect();
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    if (
+      ownedExpenses.length > MAX_EXPENSE_WRITE_OPERATIONS ||
+      byEmail.length > MAX_EXPENSE_WRITE_OPERATIONS
+    ) {
+      throw new Error(
+        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
+      );
+    }
 
     // Merge and dedupe by client UUID so we can reconcile user_expenses correctly.
     const ownedExpenseByClientId = new Map<string, any>();
-    ownedExpenses.forEach((expense) => ownedExpenseByClientId.set(expense.id, expense));
-    byEmail.forEach((expense) => ownedExpenseByClientId.set(expense.id, expense));
-
-    // Delete all owned expenses and fully reconcile fan-out rows.
-    for (const expense of ownedExpenseByClientId.values()) {
-      await reconcileUserExpenses(ctx, expense.id, []);
-      await ctx.db.delete(expense._id);
+    for (const expense of [...ownedExpenses, ...byEmail]) {
+      const existing = ownedExpenseByClientId.get(expense.id);
+      if (existing && existing._id !== expense._id) {
+        throw new Error(`Expense ${expense.id} is not unique`);
+      }
+      ownedExpenseByClientId.set(expense.id, expense);
     }
 
     // Also remove this user from user_expenses visibility rows for shared expenses.
     const viewerExpenseRows = await ctx.db
       .query("user_expenses")
       .withIndex("by_user_id", (q) => q.eq("user_id", user.id))
-      .collect();
-    for (const row of viewerExpenseRows) {
-      await ctx.db.delete(row._id);
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    if (viewerExpenseRows.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(
+        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} visibility rows`
+      );
     }
+
+    const ownedDocumentIds = new Set(
+      Array.from(ownedExpenseByClientId.values()).map((expense) => String(expense._id))
+    );
+    const sharedExpenses = new Map<string, Doc<"expenses">>();
+    for (const row of viewerExpenseRows) {
+      let expense = row.expense_ref ? await ctx.db.get(row.expense_ref) : null;
+      if (!expense) {
+        const matches = await ctx.db
+          .query("expenses")
+          .withIndex("by_client_id", (query) => query.eq("id", row.expense_id))
+          .take(2);
+        if (matches.length > 1) throw new Error(`Expense ${row.expense_id} is not unique`);
+        expense = matches[0] ?? null;
+      }
+      if (!expense) {
+        throw new Error("Expense visibility maintenance is required before clearing all data");
+      }
+      if (!ownedDocumentIds.has(String(expense._id))) {
+        sharedExpenses.set(String(expense._id), expense);
+      }
+    }
+
+    const operations: ExpenseWriteOperation[] = Array.from(ownedExpenseByClientId.values()).map(
+      (expense) => ({
+        kind: "delete" as const,
+        expense
+      })
+    );
+    for (const expense of sharedExpenses.values()) {
+      operations.push({
+        kind: "visibility" as const,
+        expense,
+        viewerAccountIds: await resolveExpenseViewerAccountIds(ctx, expense, new Set([user.id]))
+      });
+    }
+    if (operations.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(
+        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
+      );
+    }
+    await applyExpenseWriteBatch(ctx, operations);
 
     return null;
   }
@@ -1285,17 +1384,23 @@ export const clearDebugDataForUser = mutation({
       .withIndex("by_is_payback_generated_mock_data", (q) =>
         q.eq("is_payback_generated_mock_data", true)
       )
-      .collect();
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    if (debugExpenses.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(
+        `Debug cleanup requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
+      );
+    }
 
     let deleted = 0;
+    const operations: ExpenseWriteOperation[] = [];
     for (const expense of debugExpenses) {
       const isOwner = membershipIds.has(normalizeMemberId(expense.paid_by_member_id));
       if (!isOwner) continue;
 
-      await reconcileUserExpenses(ctx, expense.id, []);
-      await ctx.db.delete(expense._id);
+      operations.push({ kind: "delete" as const, expense });
       deleted += 1;
     }
+    await applyExpenseWriteBatch(ctx, operations);
 
     return null;
   }
