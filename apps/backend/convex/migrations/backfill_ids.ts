@@ -1,10 +1,11 @@
 import { internalMutation } from "../_generated/server";
-import { patchGroupWithVisibility } from "../groupVisibility";
+import { GroupVisibilityWriteBatch } from "../groupVisibility";
 
 export const backfillIds = internalMutation({
   args: {},
   handler: async (ctx) => {
     const groups = await ctx.db.query("groups").collect();
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     let groupsProcessed = 0;
     let groupsUpdated = 0;
 
@@ -17,13 +18,14 @@ export const backfillIds = internalMutation({
           .unique();
 
         if (account) {
-          await patchGroupWithVisibility(ctx, group._id, {
+          await groupVisibilityBatch.patch(group._id, {
             owner_id: account._id
           });
           groupsUpdated++;
         }
       }
     }
+    await groupVisibilityBatch.flush();
     console.log(`Processed ${groupsProcessed} groups, updated ${groupsUpdated}`);
 
     const expenses = await ctx.db.query("expenses").collect();

@@ -14,7 +14,7 @@ import {
   provenFriendLinkQueryWork,
   resolveProvenFriendLink
 } from "./friendLinkProvenance";
-import { insertGroupWithVisibility } from "./groupVisibility";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
 
 const friendValidator = v.object({
   member_id: v.string(),
@@ -366,7 +366,6 @@ export const bulkImport = mutation({
     chargeImportWrites(
       importBudget,
       normalizedIncomingFriends.size +
-        importedGroups.length +
         importedExpenses.reduce((total, expense) => {
           const participantMemberIds = new Set(
             [
@@ -744,6 +743,13 @@ export const bulkImport = mutation({
     }
 
     // All database reads and application-level limits are complete. Apply the prepared writes.
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx, {
+      budget: {
+        chargeQueries: (count) => chargeImportQueries(importBudget, count),
+        chargeRows: (rows) => accountImportRows(importBudget, rows),
+        chargeWrites: (count) => chargeImportWrites(importBudget, count)
+      }
+    });
     for (const plan of friendPatches) {
       await ctx.db.patch(plan.id, plan.patch);
       created.friends += 1;
@@ -762,7 +768,7 @@ export const bulkImport = mutation({
         id: normalizeMemberId(memberIdMap.get(normalizeMemberId(m.id)) || m.id)
       }));
 
-      const groupDocId = await insertGroupWithVisibility(ctx, {
+      const groupDocId = await groupVisibilityBatch.insert({
         id: group.id,
         name: group.name,
         members: remappedMembers,
@@ -776,6 +782,7 @@ export const bulkImport = mutation({
       groupRefMap.set(group.id, groupDocId);
       created.groups++;
     }
+    await groupVisibilityBatch.flush();
 
     // Process Expenses
     for (const expense of importedExpenses) {

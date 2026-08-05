@@ -1,6 +1,6 @@
 import { internalMutation } from "./_generated/server";
 import { assertIdentityMaterializationReady } from "./identity";
-import { patchGroupWithVisibility } from "./groupVisibility";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
 
 export const repairAlias = internalMutation({
   args: {},
@@ -63,6 +63,7 @@ export const repairAlias = internalMutation({
 
     if (idA === idB) {
       const groups = await ctx.db.query("groups").collect();
+      const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
       let updatedCount = 0;
       for (const group of groups) {
         let changed = false;
@@ -74,10 +75,11 @@ export const repairAlias = internalMutation({
           return m;
         });
         if (changed) {
-          await patchGroupWithVisibility(ctx, group._id, { members: newMembers });
+          await groupVisibilityBatch.patch(group._id, { members: newMembers });
           updatedCount++;
         }
       }
+      await groupVisibilityBatch.flush();
       const expenses = await ctx.db.query("expenses").collect();
       let updatedExpenses = 0;
       for (const expense of expenses) {

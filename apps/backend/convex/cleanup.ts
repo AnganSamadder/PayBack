@@ -19,7 +19,11 @@ import {
   resolveActiveExpenseParticipantAccounts,
   resolveConsistentExpenseParticipantAccount
 } from "./helpers";
-import { deleteGroupWithVisibility, patchGroupWithVisibility } from "./groupVisibility";
+import {
+  deleteGroupWithVisibility,
+  GroupVisibilityWriteBatch,
+  patchGroupWithVisibility
+} from "./groupVisibility";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -836,6 +840,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   const groupIds: string[] = [];
   const groupExpenseIds: string[] = [];
   const deletedExpenseIds = new Set<string>();
+  const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
   for (const group of groupsById.values()) {
     const groupExpenses = await ctx.db
       .query("expenses")
@@ -848,9 +853,10 @@ async function performHardDelete(ctx: any, account: any, source: string) {
       deletedExpenseIds.add(expense._id);
       groupExpenseIds.push(expense._id);
     }
-    await deleteGroupWithVisibility(ctx, group._id);
+    await groupVisibilityBatch.delete(group._id);
     groupIds.push(group._id);
   }
+  await groupVisibilityBatch.flush();
   logHardDelete(baseLog, "delete_groups", {
     deletedCount: groupIds.length,
     sampleIds: sampleIds(groupIds)
@@ -1258,13 +1264,19 @@ export const deleteLinkedFriend = mutation({
       equivalentIds,
       aggregateBudget
     );
-    reserveFriendCleanupWrites(aggregateBudget, expensesToDelete.size + groupsToDelete.length + 1);
+    reserveFriendCleanupWrites(aggregateBudget, expensesToDelete.size + 1);
 
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx, {
+      budget: {
+        chargeWrites: (count) => reserveFriendCleanupWrites(aggregateBudget, count)
+      }
+    });
     for (const expense of expensesToDelete.values()) {
       await deletePreloadedUserExpenses(ctx, visibilityRowsByExpenseId.get(expense.id) ?? []);
       await ctx.db.delete(expense._id);
     }
-    for (const group of groupsToDelete) await deleteGroupWithVisibility(ctx, group._id);
+    for (const group of groupsToDelete) await groupVisibilityBatch.delete(group._id);
+    await groupVisibilityBatch.flush();
     directGroupDeleted = groupsToDelete.length > 0;
     expensesDeleted = expensesToDelete.size;
 
@@ -1460,14 +1472,19 @@ export const deleteUnlinkedFriend = mutation({
     ).length;
     reserveFriendCleanupWrites(
       aggregateBudget,
-      groupPlans.length + expensesToDelete.size + preparedExpenseWriteCount + 1
+      expensesToDelete.size + preparedExpenseWriteCount + 1
     );
 
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx, {
+      budget: {
+        chargeWrites: (count) => reserveFriendCleanupWrites(aggregateBudget, count)
+      }
+    });
     for (const groupPlan of groupPlans) {
       if (groupPlan.shouldDelete) {
-        await deleteGroupWithVisibility(ctx, groupPlan.group._id);
+        await groupVisibilityBatch.delete(groupPlan.group._id);
       } else {
-        await patchGroupWithVisibility(ctx, groupPlan.group._id, {
+        await groupVisibilityBatch.patch(groupPlan.group._id, {
           owner_id: user._id,
           owner_account_id: user.id,
           owner_email: user.email,
@@ -1476,6 +1493,7 @@ export const deleteUnlinkedFriend = mutation({
         });
       }
     }
+    await groupVisibilityBatch.flush();
     groupsModified = groupPlans.length;
 
     for (const expense of expensesToDelete.values()) {

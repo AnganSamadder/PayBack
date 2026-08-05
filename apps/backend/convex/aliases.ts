@@ -11,7 +11,7 @@ import {
 } from "./identity";
 import { getCurrentUserOrThrow } from "./helpers";
 import { isGhostFriendIdentity } from "./friendLinkProvenance";
-import { patchGroupWithVisibility } from "./groupVisibility";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
 
 /**
  * Internal helper for transitive alias resolution.
@@ -1062,12 +1062,14 @@ export async function applyCanonicalReferenceRewrite(
   ctx: MutationCtx,
   plan: CanonicalReferenceRewritePlan
 ) {
+  const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
   for (const { group, members } of plan.groupUpdates) {
-    await patchGroupWithVisibility(ctx, group._id, {
+    await groupVisibilityBatch.patch(group._id, {
       members,
       updated_at: Date.now()
     });
   }
+  await groupVisibilityBatch.flush();
 
   for (const { expense, patch } of plan.expenseUpdates) {
     await ctx.db.patch(expense._id, patch);

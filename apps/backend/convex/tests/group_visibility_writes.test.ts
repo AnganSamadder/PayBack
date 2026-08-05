@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import {
   deleteGroupWithVisibility,
+  GroupVisibilityWriteBatch,
   insertGroupWithVisibility,
   patchGroupWithVisibility
 } from "../groupVisibility";
@@ -9,6 +10,147 @@ import schema from "../schema";
 import { modules } from "../test.setup";
 
 describe("group visibility writes", () => {
+  test("a batch bumps a common viewer once after many group writes", async () => {
+    const t = convexTest(schema, modules);
+    const ownerId = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("accounts", {
+        id: "batch_owner_auth",
+        email: "batch-owner@test.com",
+        display_name: "Owner",
+        member_id: "batch_owner_member",
+        created_at: 1
+      });
+      const batch = new GroupVisibilityWriteBatch(ctx);
+      for (let index = 0; index < 40; index += 1) {
+        await batch.insert({
+          id: `batch_group_${index}`,
+          name: `Group ${index}`,
+          members: [
+            { id: "batch_owner_member", name: "Owner" },
+            { id: `local_member_${index}`, name: `Local ${index}` }
+          ],
+          owner_email: "batch-owner@test.com",
+          owner_account_id: "batch_owner_auth",
+          owner_id: id,
+          created_at: 1,
+          updated_at: 1
+        });
+      }
+      expect(await ctx.db.query("account_sync_state").collect()).toEqual([]);
+      await batch.flush();
+      return id;
+    });
+
+    const result = await t.run(async (ctx) => ({
+      groups: await ctx.db.query("groups").collect(),
+      visibility: await ctx.db.query("group_visibility").collect(),
+      state: await ctx.db
+        .query("account_sync_state")
+        .withIndex("by_account_id", (query) => query.eq("account_id", ownerId))
+        .unique()
+    }));
+    expect(result.groups).toHaveLength(40);
+    expect(result.visibility).toHaveLength(40);
+    expect(result.state?.groups_revision).toBe(1);
+  });
+
+  test("an over-limit disjoint batch rolls back all group writes", async () => {
+    const t = convexTest(schema, modules);
+
+    await expect(
+      t.run(async (ctx) => {
+        const firstOwnerId = await ctx.db.insert("accounts", {
+          id: "first_batch_auth",
+          email: "first-batch@test.com",
+          display_name: "First",
+          member_id: "first_batch_member",
+          created_at: 1
+        });
+        const secondOwnerId = await ctx.db.insert("accounts", {
+          id: "second_batch_auth",
+          email: "second-batch@test.com",
+          display_name: "Second",
+          member_id: "second_batch_member",
+          created_at: 1
+        });
+        const batch = new GroupVisibilityWriteBatch(ctx, {
+          limits: { writes: 4 }
+        });
+        await batch.insert({
+          id: "first_batch_group",
+          name: "First",
+          members: [{ id: "first_batch_member", name: "First" }],
+          owner_email: "first-batch@test.com",
+          owner_account_id: "first_batch_auth",
+          owner_id: firstOwnerId,
+          created_at: 1,
+          updated_at: 1
+        });
+        await batch.insert({
+          id: "second_batch_group",
+          name: "Second",
+          members: [{ id: "second_batch_member", name: "Second" }],
+          owner_email: "second-batch@test.com",
+          owner_account_id: "second_batch_auth",
+          owner_id: secondOwnerId,
+          created_at: 1,
+          updated_at: 1
+        });
+        await batch.flush();
+      })
+    ).rejects.toThrow("Group visibility batch exceeds the safe write limit");
+
+    const result = await t.run(async (ctx) => ({
+      groups: await ctx.db.query("groups").collect(),
+      visibility: await ctx.db.query("group_visibility").collect(),
+      syncStates: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(result).toEqual({ groups: [], visibility: [], syncStates: [] });
+  });
+
+  test("a batch can only be flushed once", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.run(async (ctx) => {
+        const batch = new GroupVisibilityWriteBatch(ctx);
+        await batch.flush();
+        await batch.flush();
+      })
+    ).rejects.toThrow("Group visibility batch has already been flushed");
+  });
+
+  test("patches reject client ID reassignment from untyped callers", async () => {
+    const t = convexTest(schema, modules);
+    const groupId = await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "immutable_owner_auth",
+        email: "immutable-owner@test.com",
+        display_name: "Owner",
+        member_id: "immutable_owner_member",
+        created_at: 1
+      });
+      return await insertGroupWithVisibility(ctx, {
+        id: "immutable_group_id",
+        name: "Immutable",
+        members: [{ id: "immutable_owner_member", name: "Owner" }],
+        owner_email: "immutable-owner@test.com",
+        owner_account_id: "immutable_owner_auth",
+        owner_id: ownerId,
+        created_at: 1,
+        updated_at: 1
+      });
+    });
+
+    await expect(
+      t.run(async (ctx) => {
+        const batch = new GroupVisibilityWriteBatch(ctx);
+        await batch.patch(groupId, { id: "replacement_group_id" } as never);
+        await batch.flush();
+      })
+    ).rejects.toThrow("Group client IDs cannot be reassigned");
+    expect((await t.run((ctx) => ctx.db.get(groupId)))?.id).toBe("immutable_group_id");
+  });
+
   test("content-only patches bump unchanged viewers exactly once", async () => {
     const t = convexTest(schema, modules);
     const fixture = await t.run(async (ctx) => {

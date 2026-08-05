@@ -10,6 +10,7 @@ import {
 } from "./helpers";
 import {
   deleteGroupWithVisibility,
+  GroupVisibilityWriteBatch,
   insertGroupWithVisibility,
   patchGroupWithVisibility
 } from "./groupVisibility";
@@ -37,7 +38,11 @@ function isGroupOwner(group: any, user: any): boolean {
   );
 }
 
-async function deleteGroupWithExpenses(ctx: any, group: any) {
+async function deleteGroupWithExpenses(
+  ctx: any,
+  group: any,
+  groupVisibilityBatch?: GroupVisibilityWriteBatch
+) {
   const expenseByDocId = new Map<string, any>();
 
   const byGroupRef = await ctx.db
@@ -57,7 +62,11 @@ async function deleteGroupWithExpenses(ctx: any, group: any) {
     await ctx.db.delete(expense._id);
   }
 
-  await deleteGroupWithVisibility(ctx, group._id);
+  if (groupVisibilityBatch) {
+    await groupVisibilityBatch.delete(group._id);
+  } else {
+    await deleteGroupWithVisibility(ctx, group._id);
+  }
 }
 
 const MAX_GROUP_MEMBERS = 64;
@@ -377,6 +386,7 @@ export const deleteGroups = mutation({
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
 
     for (const id of args.ids) {
       const group = await ctx.db
@@ -391,8 +401,9 @@ export const deleteGroups = mutation({
         continue;
       }
 
-      await deleteGroupWithExpenses(ctx, group);
+      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch);
     }
+    await groupVisibilityBatch.flush();
   }
 });
 
@@ -402,6 +413,7 @@ export const clearAllForUser = mutation({
   handler: async (ctx) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
 
     // Resolve all member IDs that represent this user so we can leave shared groups too.
     const canonicalMemberId = await resolveCanonicalMemberIdInternal(
@@ -436,7 +448,7 @@ export const clearAllForUser = mutation({
 
     // Delete owned groups and cascade-delete their expenses.
     for (const group of ownedGroupMap.values()) {
-      await deleteGroupWithExpenses(ctx, group);
+      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch);
     }
 
     // 2) Leave any remaining shared groups where this user is still a member.
@@ -458,17 +470,19 @@ export const clearAllForUser = mutation({
       );
 
       if (remainingMembers.length === 0) {
-        await deleteGroupWithExpenses(ctx, group);
+        await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch);
         emptySharedGroupsDeleted += 1;
         continue;
       }
 
-      await patchGroupWithVisibility(ctx, group._id, {
+      await groupVisibilityBatch.patch(group._id, {
         members: remainingMembers,
         updated_at: Date.now()
       });
       sharedGroupsUpdated += 1;
     }
+
+    await groupVisibilityBatch.flush();
 
     return null;
   }
@@ -479,6 +493,7 @@ export const clearDebugDataForUser = mutation({
   handler: async (ctx) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
 
     const canonicalMemberId = await resolveCanonicalMemberIdInternal(
       ctx.db,
@@ -499,9 +514,11 @@ export const clearDebugDataForUser = mutation({
       const isOwner = membershipIds.has(normalizeMemberId(group.owner_id as any));
       if (!isOwner) continue;
 
-      await deleteGroupWithExpenses(ctx, group);
+      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch);
       deleted += 1;
     }
+
+    await groupVisibilityBatch.flush();
 
     return null;
   }

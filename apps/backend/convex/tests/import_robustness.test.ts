@@ -1025,6 +1025,33 @@ test("bulkImport caps distinct incoming group IDs before writes", async () => {
   expect(await t.run(async (ctx) => ctx.db.query("groups").collect())).toHaveLength(0);
 });
 
+test("bulkImport materializes the maximum same-owner local-only group batch", async () => {
+  const { t, owner } = await createBoundedImportScenario();
+  const groups = Array.from({ length: 256 }, (_, index) => ({
+    id: `bounded_group_${index}`,
+    name: `Group ${index}`,
+    members: [
+      { id: "owner_member", name: "Owner" },
+      { id: `local_member_${index}`, name: `Local ${index}` }
+    ]
+  }));
+
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, { friends: [], groups, expenses: [] })
+  ).resolves.toMatchObject({ created: { groups: 256 } });
+
+  const state = await t.run(async (ctx) => ({
+    groups: await ctx.db.query("groups").collect(),
+    visibility: await ctx.db.query("group_visibility").collect(),
+    syncStates: await ctx.db.query("account_sync_state").collect()
+  }));
+  expect(state.groups).toHaveLength(256);
+  expect(state.visibility).toHaveLength(256);
+  expect(new Set(state.visibility.map((row) => row.account_id))).toHaveLength(1);
+  expect(state.syncStates).toHaveLength(1);
+  expect(state.syncStates[0]?.groups_revision).toBe(1);
+});
+
 test("bulkImport caps distinct incoming expense IDs before writes", async () => {
   const { t, owner, now } = await createBoundedImportScenario();
   await t.run(async (ctx) => {

@@ -20,7 +20,7 @@ import {
   normalizeMemberIds,
   preflightNormalizedAccountAliasMaterialization
 } from "./identity";
-import { patchGroupWithVisibility } from "./groupVisibility";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
 
 function normalizeEmail(value: string | undefined | null): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -294,6 +294,7 @@ export const createMemberAliasesFromClaimedTokens = internalMutation({
 export const backfillProfileColors = internalMutation({
   args: {},
   handler: async (ctx) => {
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     // Backfill accounts
     const accounts = await ctx.db.query("accounts").collect();
     let accountsUpdated = 0;
@@ -332,10 +333,11 @@ export const backfillProfileColors = internalMutation({
       });
 
       if (groupChanged) {
-        await patchGroupWithVisibility(ctx, group._id, { members: newMembers });
+        await groupVisibilityBatch.patch(group._id, { members: newMembers });
         groupsUpdated++;
       }
     }
+    await groupVisibilityBatch.flush();
 
     return { accountsUpdated, friendsUpdated, groupsUpdated };
   }
@@ -507,6 +509,7 @@ export const fixAllExpenseMemberIds = internalMutation({
     limit: v.optional(v.number())
   },
   handler: async (ctx, args) => {
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     const { old_member_id, new_member_id, account_email } = args;
     const limit = args.limit ?? 32;
     validateExpenseRepairBatchSize(limit);
@@ -549,7 +552,7 @@ export const fixAllExpenseMemberIds = internalMutation({
                 ? normalizeMemberId(new_member_id)
                 : member.id
           }));
-          await patchGroupWithVisibility(ctx, group._id, {
+          await groupVisibilityBatch.patch(group._id, {
             members: newMembers,
             updated_at: Date.now()
           });
@@ -557,6 +560,7 @@ export const fixAllExpenseMemberIds = internalMutation({
         }
       }
     }
+    await groupVisibilityBatch.flush();
 
     return {
       expensesFixed: fixed,

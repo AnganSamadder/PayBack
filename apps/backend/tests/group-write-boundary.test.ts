@@ -5,9 +5,9 @@ import { describe, expect, test } from "vitest";
 
 const allowedGroupWriteFiles = new Set(["groupVisibility.ts"]);
 const directGroupWritePatterns = [
-  /\.insert\(\s*["']groups["']/,
-  /\.(?:patch|delete)\(\s*[\w.]*group[\w.]*\._id/i,
-  /\.(?:patch|delete)\(\s*[\w.]*group(?:Id|Ref)\b/i
+  /\.db\.insert\(\s*["']groups["']/,
+  /\.db\.(?:patch|delete)\(\s*[\w.]*group[\w.]*\._id/i,
+  /\.db\.(?:patch|delete)\(\s*[\w.]*group(?:Id|Ref)\b/i
 ];
 
 function typescriptFiles(directory: string): string[] {
@@ -33,6 +33,20 @@ describe("group write boundary", () => {
           ? [`${relativePath}:${index + 1}`]
           : []
       );
+    });
+
+    expect(violations).toEqual([]);
+  });
+
+  test("multi-group callers flush their shared visibility batch", () => {
+    const convexRoot = resolve(fileURLToPath(new URL("../convex", import.meta.url)));
+    const violations = typescriptFiles(convexRoot).flatMap((file) => {
+      const relativePath = relative(convexRoot, file);
+      if (allowedGroupWriteFiles.has(relativePath)) return [];
+      const source = readFileSync(file, "utf8");
+      const constructors = source.match(/new GroupVisibilityWriteBatch\(/g)?.length ?? 0;
+      const flushes = source.match(/await groupVisibilityBatch\.flush\(\)/g)?.length ?? 0;
+      return constructors === flushes ? [] : [`${relativePath}: ${constructors}/${flushes}`];
     });
 
     expect(violations).toEqual([]);

@@ -13,6 +13,20 @@ const IDENTITY_READ_LIMITS = {
   bytes: 8 * 1024 * 1024
 } as const;
 
+export const GROUP_VISIBILITY_BATCH_LIMITS = {
+  queries: 3072,
+  rows: 3072,
+  bytes: 8 * 1024 * 1024,
+  writes: 2048
+} as const;
+
+type GroupVisibilityBatchLimits = {
+  queries: number;
+  rows: number;
+  bytes: number;
+  writes: number;
+};
+
 type VisibilityWriteResult = {
   inserted: number;
   updated: number;
@@ -49,6 +63,16 @@ type IdentityReadBudget = {
   bytes: number;
 };
 
+type IdentityReadTracker = {
+  chargeQuery: () => void;
+  chargeRows: (rows: readonly Value[]) => void;
+};
+
+type IdentityAccountCache = {
+  byMemberId: Map<string, Doc<"accounts"> | null>;
+  byAccountId: Map<string, Doc<"accounts"> | null>;
+};
+
 function chargeIdentityQuery(budget: IdentityReadBudget): void {
   budget.queries += 1;
   if (budget.queries > IDENTITY_READ_LIMITS.queries) {
@@ -67,39 +91,40 @@ function chargeIdentityRows(budget: IdentityReadBudget, rows: readonly Value[]):
 async function resolveAccountByMemberId(
   ctx: MutationCtx,
   memberId: string,
-  budget: IdentityReadBudget,
-  cache: Map<string, Doc<"accounts"> | null>
+  tracker: IdentityReadTracker,
+  cache: IdentityAccountCache
 ): Promise<Doc<"accounts"> | null> {
   let currentMemberId = normalizeMemberId(memberId);
   const visited = new Set<string>();
 
   for (let depth = 0; depth < 20; depth += 1) {
     if (!currentMemberId || visited.has(currentMemberId)) return null;
-    const cached = cache.get(currentMemberId);
+    const cached = cache.byMemberId.get(currentMemberId);
     if (cached !== undefined) return cached;
     visited.add(currentMemberId);
 
-    chargeIdentityQuery(budget);
+    tracker.chargeQuery();
     const account = await ctx.db
       .query("accounts")
       .withIndex("by_member_id", (query) => query.eq("member_id", currentMemberId))
       .first();
-    chargeIdentityRows(budget, account ? [account as Value] : []);
+    tracker.chargeRows(account ? [account as Value] : []);
     if (account) {
-      for (const visitedId of visited) cache.set(visitedId, account);
+      for (const visitedId of visited) cache.byMemberId.set(visitedId, account);
+      cache.byAccountId.set(String(account._id), account);
       return account;
     }
 
-    chargeIdentityQuery(budget);
+    tracker.chargeQuery();
     const alias = await ctx.db
       .query("member_aliases")
       .withIndex("by_alias_member_id_and_source", (query) =>
         query.eq("alias_member_id", currentMemberId).eq("materialization_source", "account_alias")
       )
       .first();
-    chargeIdentityRows(budget, alias ? [alias as Value] : []);
+    tracker.chargeRows(alias ? [alias as Value] : []);
     if (!alias) {
-      for (const visitedId of visited) cache.set(visitedId, null);
+      for (const visitedId of visited) cache.byMemberId.set(visitedId, null);
       return null;
     }
     currentMemberId = normalizeMemberId(alias.canonical_member_id);
@@ -108,31 +133,358 @@ async function resolveAccountByMemberId(
   return null;
 }
 
-async function resolveActiveAccountIds(
+async function resolveActiveAccountIdsTracked(
   ctx: MutationCtx,
   memberIds: readonly string[],
-  ownerId?: Id<"accounts">
+  ownerId: Id<"accounts"> | undefined,
+  tracker: IdentityReadTracker,
+  cache: IdentityAccountCache
 ): Promise<Id<"accounts">[]> {
   const accountIds: Id<"accounts">[] = [];
-  const budget: IdentityReadBudget = { rows: 0, queries: 0, bytes: 0 };
-  const cache = new Map<string, Doc<"accounts"> | null>();
   if (ownerId) {
-    chargeIdentityQuery(budget);
-    const owner = await ctx.db.get(ownerId);
-    chargeIdentityRows(budget, owner ? [owner as Value] : []);
+    const cacheKey = String(ownerId);
+    let owner = cache.byAccountId.get(cacheKey);
+    if (owner === undefined) {
+      tracker.chargeQuery();
+      owner = await ctx.db.get(ownerId);
+      tracker.chargeRows(owner ? [owner as Value] : []);
+      cache.byAccountId.set(cacheKey, owner);
+      if (owner?.member_id) {
+        cache.byMemberId.set(normalizeMemberId(owner.member_id), owner);
+      }
+    }
     if (owner && isVisibleAccount(owner)) accountIds.push(owner._id);
   }
 
   for (const memberId of memberIds) {
-    const account = await resolveAccountByMemberId(ctx, memberId, budget, cache);
+    const account = await resolveAccountByMemberId(ctx, memberId, tracker, cache);
     if (account && isVisibleAccount(account)) accountIds.push(account._id);
   }
 
   return uniqueAccountIds(accountIds);
 }
 
+async function resolveActiveAccountIds(
+  ctx: MutationCtx,
+  memberIds: readonly string[],
+  ownerId?: Id<"accounts">
+): Promise<Id<"accounts">[]> {
+  const budget: IdentityReadBudget = { rows: 0, queries: 0, bytes: 0 };
+  return await resolveActiveAccountIdsTracked(
+    ctx,
+    memberIds,
+    ownerId,
+    {
+      chargeQuery: () => chargeIdentityQuery(budget),
+      chargeRows: (rows) => chargeIdentityRows(budget, rows)
+    },
+    { byMemberId: new Map(), byAccountId: new Map() }
+  );
+}
+
 type GroupInsert = Omit<Doc<"groups">, "_id" | "_creationTime">;
-type GroupPatch = Partial<GroupInsert>;
+type GroupPatch = Partial<Omit<GroupInsert, "id">>;
+
+export type GroupVisibilityBatchBudgetHooks = {
+  chargeQueries?: (count: number) => void;
+  chargeRows?: (rows: readonly Value[]) => void;
+  chargeWrites?: (count: number) => void;
+};
+
+export type GroupVisibilityBatchOptions = {
+  limits?: Partial<GroupVisibilityBatchLimits>;
+  budget?: GroupVisibilityBatchBudgetHooks;
+};
+
+type GroupVisibilityBatchBudget = {
+  queries: number;
+  rows: number;
+  bytes: number;
+  writes: number;
+};
+
+type VisibilityPlan = {
+  inserts: Id<"accounts">[];
+  updates: Doc<"group_visibility">[];
+  deletes: Doc<"group_visibility">[];
+};
+
+export class GroupVisibilityWriteBatch {
+  private readonly budget: GroupVisibilityBatchBudget = {
+    queries: 0,
+    rows: 0,
+    bytes: 0,
+    writes: 0
+  };
+  private readonly limits: GroupVisibilityBatchLimits;
+  private readonly hooks: GroupVisibilityBatchBudgetHooks;
+  private readonly memberAccountCache = new Map<string, Doc<"accounts"> | null>();
+  private readonly accountByIdCache = new Map<string, Doc<"accounts"> | null>();
+  private readonly revisionAccountIds = new Map<string, Id<"accounts">>();
+  private hasFlushed = false;
+
+  constructor(
+    private readonly ctx: MutationCtx,
+    options: GroupVisibilityBatchOptions = {}
+  ) {
+    this.limits = {
+      queries: Math.min(
+        options.limits?.queries ?? GROUP_VISIBILITY_BATCH_LIMITS.queries,
+        GROUP_VISIBILITY_BATCH_LIMITS.queries
+      ),
+      rows: Math.min(
+        options.limits?.rows ?? GROUP_VISIBILITY_BATCH_LIMITS.rows,
+        GROUP_VISIBILITY_BATCH_LIMITS.rows
+      ),
+      bytes: Math.min(
+        options.limits?.bytes ?? GROUP_VISIBILITY_BATCH_LIMITS.bytes,
+        GROUP_VISIBILITY_BATCH_LIMITS.bytes
+      ),
+      writes: Math.min(
+        options.limits?.writes ?? GROUP_VISIBILITY_BATCH_LIMITS.writes,
+        GROUP_VISIBILITY_BATCH_LIMITS.writes
+      )
+    };
+    this.hooks = options.budget ?? {};
+  }
+
+  private assertOpen(): void {
+    if (this.hasFlushed) throw new Error("Group visibility batch has already been flushed");
+  }
+
+  private chargeQuery(count = 1): void {
+    this.budget.queries += count;
+    if (this.budget.queries > this.limits.queries) {
+      throw new Error("Group visibility batch exceeds the safe query limit");
+    }
+    this.hooks.chargeQueries?.(count);
+  }
+
+  private chargeRows(rows: readonly Value[]): void {
+    this.budget.rows += rows.length;
+    this.budget.bytes += rows.reduce<number>((total, row) => total + getConvexSize(row), 0);
+    if (this.budget.rows > this.limits.rows) {
+      throw new Error("Group visibility batch exceeds the safe row limit");
+    }
+    if (this.budget.bytes > this.limits.bytes) {
+      throw new Error("Group visibility batch exceeds the safe byte limit");
+    }
+    this.hooks.chargeRows?.(rows);
+  }
+
+  private reserveWrites(count: number, revisionAccountIds: readonly Id<"accounts">[]): void {
+    const newRevisionAccountIds = uniqueAccountIds(revisionAccountIds).filter(
+      (accountId) => !this.revisionAccountIds.has(String(accountId))
+    );
+    const reservation = count + newRevisionAccountIds.length;
+    this.budget.writes += reservation;
+    if (this.budget.writes > this.limits.writes) {
+      throw new Error("Group visibility batch exceeds the safe write limit");
+    }
+    this.hooks.chargeWrites?.(reservation);
+    for (const accountId of newRevisionAccountIds) {
+      this.revisionAccountIds.set(String(accountId), accountId);
+    }
+  }
+
+  private async resolveVisibleAccountIds(
+    memberIds: readonly string[],
+    ownerId?: Id<"accounts">
+  ): Promise<Id<"accounts">[]> {
+    return await resolveActiveAccountIdsTracked(
+      this.ctx,
+      memberIds,
+      ownerId,
+      {
+        chargeQuery: () => this.chargeQuery(),
+        chargeRows: (rows) => this.chargeRows(rows)
+      },
+      {
+        byMemberId: this.memberAccountCache,
+        byAccountId: this.accountByIdCache
+      }
+    );
+  }
+
+  private async getGroup(groupId: Id<"groups">): Promise<Doc<"groups"> | null> {
+    this.chargeQuery();
+    const group = await this.ctx.db.get(groupId);
+    this.chargeRows(group ? [group as Value] : []);
+    return group;
+  }
+
+  private async getVisibilityRows(groupId: Id<"groups">): Promise<Doc<"group_visibility">[]> {
+    this.chargeQuery();
+    const rows = await this.ctx.db
+      .query("group_visibility")
+      .withIndex("by_group_id", (query) => query.eq("group_id", groupId))
+      .take(MAX_GROUP_VISIBILITY_ACCOUNTS + 1);
+    this.chargeRows(rows as Value[]);
+    if (rows.length > MAX_GROUP_VISIBILITY_ACCOUNTS) {
+      throw new Error(
+        `Group ${String(groupId)} has more than ${MAX_GROUP_VISIBILITY_ACCOUNTS} visibility rows`
+      );
+    }
+    return rows;
+  }
+
+  private visibilityPlan(
+    group: Pick<Doc<"groups">, "_id" | "updated_at">,
+    desiredAccountIds: readonly Id<"accounts">[],
+    existingRows: readonly Doc<"group_visibility">[]
+  ): VisibilityPlan {
+    const existingByAccountId = new Map<string, Doc<"group_visibility">>();
+    for (const row of existingRows) {
+      const accountId = String(row.account_id);
+      if (existingByAccountId.has(accountId)) {
+        throw new Error(
+          `Group ${String(group._id)} has duplicate visibility for account ${accountId}`
+        );
+      }
+      existingByAccountId.set(accountId, row);
+    }
+    const desiredIds = new Set(desiredAccountIds.map(String));
+    return {
+      inserts: desiredAccountIds.filter((accountId) => !existingByAccountId.has(String(accountId))),
+      updates: desiredAccountIds.flatMap((accountId) => {
+        const row = existingByAccountId.get(String(accountId));
+        return row && row.group_updated_at !== group.updated_at ? [row] : [];
+      }),
+      deletes: existingRows.filter((row) => !desiredIds.has(String(row.account_id)))
+    };
+  }
+
+  private async applyVisibilityPlan(
+    group: Pick<Doc<"groups">, "_id" | "updated_at">,
+    plan: VisibilityPlan
+  ): Promise<void> {
+    const now = Date.now();
+    for (const accountId of plan.inserts) {
+      await this.ctx.db.insert("group_visibility", {
+        account_id: accountId,
+        group_id: group._id,
+        group_updated_at: group.updated_at,
+        created_at: now,
+        updated_at: now
+      });
+    }
+    for (const row of plan.updates) {
+      await this.ctx.db.patch(row._id, {
+        group_updated_at: group.updated_at,
+        updated_at: now
+      });
+    }
+    for (const row of plan.deletes) await this.ctx.db.delete(row._id);
+  }
+
+  async insert(value: GroupInsert): Promise<Id<"groups">> {
+    this.assertOpen();
+    if (value.members.length > MAX_GROUP_VISIBILITY_MEMBERS) {
+      throw new Error(`Group visibility supports at most ${MAX_GROUP_VISIBILITY_MEMBERS} members`);
+    }
+    const visibleAccountIds = await this.resolveVisibleAccountIds(
+      value.members.map((member) => member.id),
+      value.owner_id
+    );
+    this.reserveWrites(1 + visibleAccountIds.length, visibleAccountIds);
+
+    const groupId = await this.ctx.db.insert("groups", value);
+    await this.applyVisibilityPlan(
+      { _id: groupId, updated_at: value.updated_at },
+      { inserts: visibleAccountIds, updates: [], deletes: [] }
+    );
+    return groupId;
+  }
+
+  async patch(groupId: Id<"groups">, value: GroupPatch): Promise<void> {
+    this.assertOpen();
+    if ("id" in value) throw new Error("Group client IDs cannot be reassigned");
+    const previousGroup = await this.getGroup(groupId);
+    if (!previousGroup) throw new Error(`Group ${String(groupId)} not found`);
+    const nextGroup: Doc<"groups"> = { ...previousGroup, ...value };
+    if (nextGroup.members.length > MAX_GROUP_VISIBILITY_MEMBERS) {
+      throw new Error(`Group visibility supports at most ${MAX_GROUP_VISIBILITY_MEMBERS} members`);
+    }
+    const previousVisibleAccountIds = await this.resolveVisibleAccountIds(
+      previousGroup.members.map((member) => member.id),
+      previousGroup.owner_id
+    );
+    const visibleAccountIds = await this.resolveVisibleAccountIds(
+      nextGroup.members.map((member) => member.id),
+      nextGroup.owner_id
+    );
+    const existingRows = await this.getVisibilityRows(groupId);
+    const plan = this.visibilityPlan(nextGroup, visibleAccountIds, existingRows);
+    const revisionAccountIds = uniqueAccountIds([
+      ...previousVisibleAccountIds,
+      ...visibleAccountIds,
+      ...existingRows.map((row) => row.account_id)
+    ]);
+    this.reserveWrites(
+      1 + plan.inserts.length + plan.updates.length + plan.deletes.length,
+      revisionAccountIds
+    );
+
+    await this.ctx.db.patch(groupId, value);
+    await this.applyVisibilityPlan(nextGroup, plan);
+  }
+
+  async delete(groupId: Id<"groups">): Promise<void> {
+    this.assertOpen();
+    const group = await this.getGroup(groupId);
+    if (!group) return;
+    const previousVisibleAccountIds = await this.resolveVisibleAccountIds(
+      group.members.map((member) => member.id),
+      group.owner_id
+    );
+    const existingRows = await this.getVisibilityRows(groupId);
+    const revisionAccountIds = uniqueAccountIds([
+      ...previousVisibleAccountIds,
+      ...existingRows.map((row) => row.account_id)
+    ]);
+    this.reserveWrites(1 + existingRows.length, revisionAccountIds);
+    for (const row of existingRows) await this.ctx.db.delete(row._id);
+    await this.ctx.db.delete(groupId);
+  }
+
+  async flush(): Promise<void> {
+    this.assertOpen();
+    this.hasFlushed = true;
+    const states: Array<{
+      accountId: Id<"accounts">;
+      existing: Doc<"account_sync_state"> | null;
+    }> = [];
+    for (const accountId of this.revisionAccountIds.values()) {
+      this.chargeQuery();
+      const matches = await this.ctx.db
+        .query("account_sync_state")
+        .withIndex("by_account_id", (query) => query.eq("account_id", accountId))
+        .take(2);
+      this.chargeRows(matches as Value[]);
+      if (matches.length > 1) {
+        throw new Error(`Sync maintenance required: duplicate account state ${String(accountId)}`);
+      }
+      states.push({ accountId, existing: matches[0] ?? null });
+    }
+
+    const now = Date.now();
+    for (const { accountId, existing } of states) {
+      if (existing) {
+        await this.ctx.db.patch(existing._id, {
+          groups_revision: existing.groups_revision + 1,
+          updated_at: now
+        });
+      } else {
+        await this.ctx.db.insert("account_sync_state", {
+          account_id: accountId,
+          groups_revision: 1,
+          expenses_revision: 0,
+          updated_at: now
+        });
+      }
+    }
+  }
+}
 
 async function getBoundedGroupVisibilityRows(ctx: MutationCtx, groupId: Id<"groups">) {
   const rows = await ctx.db
@@ -252,10 +604,9 @@ export async function insertGroupWithVisibility(
   ctx: MutationCtx,
   value: GroupInsert
 ): Promise<Id<"groups">> {
-  const groupId = await ctx.db.insert("groups", value);
-  const group = await ctx.db.get(groupId);
-  if (!group) throw new Error("Inserted group disappeared before visibility reconciliation");
-  await reconcileGroupVisibility(ctx, group);
+  const batch = new GroupVisibilityWriteBatch(ctx);
+  const groupId = await batch.insert(value);
+  await batch.flush();
   return groupId;
 }
 
@@ -264,36 +615,18 @@ export async function patchGroupWithVisibility(
   groupId: Id<"groups">,
   value: GroupPatch
 ): Promise<void> {
-  const previousGroup = await ctx.db.get(groupId);
-  if (!previousGroup) throw new Error(`Group ${String(groupId)} not found`);
-  const previousVisibleAccountIds = await resolveActiveAccountIds(
-    ctx,
-    previousGroup.members.map((member) => member.id),
-    previousGroup.owner_id
-  );
-
-  await ctx.db.patch(groupId, value);
-  const group = await ctx.db.get(groupId);
-  if (!group) throw new Error("Patched group disappeared before visibility reconciliation");
-  await reconcileGroupVisibility(ctx, group, {
-    additionalRevisionAccountIds: previousVisibleAccountIds,
-    forceRevision: true
-  });
+  const batch = new GroupVisibilityWriteBatch(ctx);
+  await batch.patch(groupId, value);
+  await batch.flush();
 }
 
 export async function deleteGroupWithVisibility(
   ctx: MutationCtx,
   groupId: Id<"groups">
 ): Promise<void> {
-  const group = await ctx.db.get(groupId);
-  if (!group) return;
-  const previousVisibleAccountIds = await resolveActiveAccountIds(
-    ctx,
-    group.members.map((member) => member.id),
-    group.owner_id
-  );
-  await deleteGroupVisibility(ctx, groupId, previousVisibleAccountIds);
-  await ctx.db.delete(groupId);
+  const batch = new GroupVisibilityWriteBatch(ctx);
+  await batch.delete(groupId);
+  await batch.flush();
 }
 
 export async function materializeGroupVisibilitySlice(

@@ -11,7 +11,7 @@ import {
   syncAccountAliasMaterialization
 } from "./identity";
 import { assertAccountCanAcceptChanges } from "./helpers";
-import { deleteGroupWithVisibility } from "./groupVisibility";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
 
 const MAX_SAMPLE_IDS = 10;
 const MAX_EQUIVALENT_MEMBER_IDS = 50;
@@ -105,6 +105,7 @@ export async function cleanupOrphanedDataForEmail(
   const groupIds: string[] = [];
   const groupExpenseIds: string[] = [];
   const deletedExpenseIds = new Set<string>();
+  const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
   for (const group of groupsById.values()) {
     const groupExpenses = await ctx.db
       .query("expenses")
@@ -118,9 +119,10 @@ export async function cleanupOrphanedDataForEmail(
       groupExpenseIds.push(expense._id);
     }
 
-    await deleteGroupWithVisibility(ctx, group._id);
+    await groupVisibilityBatch.delete(group._id);
     groupIds.push(group._id);
   }
+  await groupVisibilityBatch.flush();
   logSelfHeal(baseLog, "delete_groups", {
     deletedCount: groupIds.length,
     sampleIds: sampleIds(groupIds)
@@ -295,6 +297,7 @@ export async function hardCleanupOrphanedAccount(ctx: any, { email }: { email: s
 
   let groupsDeleted = 0;
   let expensesDeleted = 0;
+  const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
   for (const group of groupsByEmail) {
     const expenses = await ctx.db
       .query("expenses")
@@ -306,9 +309,10 @@ export async function hardCleanupOrphanedAccount(ctx: any, { email }: { email: s
       expensesDeleted++;
     }
 
-    await deleteGroupWithVisibility(ctx, group._id);
+    await groupVisibilityBatch.delete(group._id);
     groupsDeleted++;
   }
+  await groupVisibilityBatch.flush();
 
   const expensesByEmail = await ctx.db
     .query("expenses")
