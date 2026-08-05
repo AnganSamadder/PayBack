@@ -3,11 +3,105 @@ import Foundation
 
 struct ConvexSelfDeletionReceiptDTO: Decodable, Sendable {
     let success: Bool
+    let inProgress: Bool
     let state: String
     let requestId: String
     let deletedAt: Double
     let friendshipsUnlinked: Int
     let expensesPreserved: Bool
+    let phase: String
+    let progressToken: String
+    let processedCount: Int
+    let message: String
+
+    private enum CodingKeys: String, CodingKey {
+        case success
+        case inProgress
+        case state
+        case requestId
+        case deletedAt
+        case friendshipsUnlinked
+        case expensesPreserved
+        case phase
+        case progressToken
+        case processedCount
+        case message
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        success = try container.decode(Bool.self, forKey: .success)
+        state = try container.decode(String.self, forKey: .state)
+        requestId = try container.decode(String.self, forKey: .requestId)
+        deletedAt = try container.decode(Double.self, forKey: .deletedAt)
+        friendshipsUnlinked = try container.decode(Int.self, forKey: .friendshipsUnlinked)
+        expensesPreserved = try container.decode(Bool.self, forKey: .expensesPreserved)
+
+        // Defaults keep the client compatible while a backend deployment rolls out.
+        inProgress = try container.decodeIfPresent(Bool.self, forKey: .inProgress) ?? false
+        phase = try container.decodeIfPresent(String.self, forKey: .phase) ?? "complete"
+        progressToken = try container.decodeIfPresent(String.self, forKey: .progressToken)
+            ?? "legacy:\(requestId):\(deletedAt)"
+        processedCount = try container.decodeIfPresent(Int.self, forKey: .processedCount) ?? 0
+        message = try container.decodeIfPresent(String.self, forKey: .message) ?? ""
+    }
+}
+
+enum SelfDeletionProgressDriver {
+    static func run(
+        maximumSteps: Int = 4_096,
+        maximumNoProgressResponses: Int = 2,
+        next: () async throws -> ConvexSelfDeletionReceiptDTO
+    ) async throws -> ConvexSelfDeletionReceiptDTO {
+        guard maximumSteps > 0, maximumNoProgressResponses > 0 else {
+            throw PayBackError.underlying(message: "Account deletion retry limits are invalid.")
+        }
+
+        var previousProgressToken: String?
+        var noProgressResponses = 0
+
+        for _ in 0 ..< maximumSteps {
+            try Task.checkCancellation()
+            let receipt = try await next()
+
+            if receipt.success {
+                let isFinalState = receipt.state == "deleted" || receipt.state == "already_deleted"
+                guard
+                    !receipt.inProgress,
+                    receipt.expensesPreserved,
+                    isFinalState,
+                    receipt.phase == "complete",
+                    receipt.deletedAt > 0
+                else {
+                    throw PayBackError.underlying(message: "Account deletion returned an invalid final receipt.")
+                }
+                return receipt
+            }
+
+            guard receipt.inProgress else {
+                let message = receipt.message.isEmpty
+                    ? "Account deletion was not acknowledged."
+                    : receipt.message
+                throw PayBackError.underlying(message: message)
+            }
+
+            if previousProgressToken == receipt.progressToken {
+                noProgressResponses += 1
+                if noProgressResponses >= maximumNoProgressResponses {
+                    throw PayBackError.underlying(
+                        message: "Account deletion stopped making progress. Please try again."
+                    )
+                }
+            } else {
+                previousProgressToken = receipt.progressToken
+                noProgressResponses = 0
+            }
+        }
+
+        throw PayBackError.underlying(
+            message: "Account deletion did not finish within the safe retry limit. Please try again."
+        )
+    }
 }
 
 // MARK: - Expense DTOs

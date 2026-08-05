@@ -325,27 +325,35 @@ actor ConvexAccountService: AccountService {
     }
 
     func selfDeleteAccount() async throws {
-        let receipt: ConvexSelfDeletionReceiptDTO = try await client.mutation(
-            "cleanup:selfDeleteAccount",
-            with: [:]
-        )
-        guard receipt.success, receipt.expensesPreserved else {
-            throw PayBackError.underlying(message: "Account deletion was not acknowledged.")
+        _ = try await SelfDeletionProgressDriver.run {
+            let receipt: ConvexSelfDeletionReceiptDTO = try await client.mutation(
+                "cleanup:selfDeleteAccount",
+                with: [:]
+            )
+            return receipt
         }
     }
 
     private struct SelfDeletionStatusDTO: Decodable {
         let completed: Bool
+        let inProgress: Bool?
     }
 
     func hasCompletedSelfDeletion() async throws -> Bool {
+        try await selfDeletionStatus().completed
+    }
+
+    func selfDeletionStatus() async throws -> AccountSelfDeletionStatus {
         for try await status in client.subscribe(
             to: "cleanup:selfDeletionStatus",
             yielding: SelfDeletionStatusDTO.self
         ).values {
-            return status.completed
+            return AccountSelfDeletionStatus(
+                completed: status.completed,
+                inProgress: status.inProgress ?? false
+            )
         }
-        return false
+        return AccountSelfDeletionStatus(completed: false, inProgress: false)
     }
 
     /// Monitors the current user's session status in real-time

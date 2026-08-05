@@ -36,6 +36,9 @@ protocol AccountService: Actor {
     /// Returns whether the authenticated identity has a durable deletion receipt.
     func hasCompletedSelfDeletion() async throws -> Bool
 
+    /// Returns durable backend deletion state so interrupted deletion can resume after relaunch.
+    func selfDeletionStatus() async throws -> AccountSelfDeletionStatus
+
     /// Monitors the current user's session status in real-time
     nonisolated func monitorSession() -> AsyncStream<UserAccount?>
 
@@ -64,6 +67,18 @@ protocol AccountService: Actor {
 
 extension AccountService {
     func hasCompletedSelfDeletion() async throws -> Bool { false }
+
+    func selfDeletionStatus() async throws -> AccountSelfDeletionStatus {
+        AccountSelfDeletionStatus(
+            completed: try await hasCompletedSelfDeletion(),
+            inProgress: false
+        )
+    }
+}
+
+struct AccountSelfDeletionStatus: Sendable, Equatable {
+    let completed: Bool
+    let inProgress: Bool
 }
 
 struct LinkedAccountInfo: Codable, Sendable, Equatable {
