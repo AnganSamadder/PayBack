@@ -9,6 +9,9 @@ actor MockAccountServiceForAppStore: AccountService {
     private var friendSyncHistory: [String: [[AccountFriend]]] = [:] // email -> sync snapshots
     private var shouldFail: Bool = false
     private var shouldFailNextFriendFetch = false
+    private var shouldSuspendNextFriendFetch = false
+    private var friendFetchWaiters: [CheckedContinuation<Void, Never>] = []
+    private var friendFetchContinuation: CheckedContinuation<Void, Never>?
     private var selfDeleteCallCount = 0
     private var completedSelfDeletion = false
     private var mergeMemberIdCalls: [(source: UUID, target: UUID)] = []
@@ -62,6 +65,15 @@ actor MockAccountServiceForAppStore: AccountService {
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
+        if shouldSuspendNextFriendFetch {
+            shouldSuspendNextFriendFetch = false
+            let waiters = friendFetchWaiters
+            friendFetchWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+            await withCheckedContinuation { continuation in
+                friendFetchContinuation = continuation
+            }
+        }
         if shouldFailNextFriendFetch {
             shouldFailNextFriendFetch = false
             throw PayBackError.networkUnavailable
@@ -99,12 +111,33 @@ actor MockAccountServiceForAppStore: AccountService {
         shouldFail = fail
     }
 
+    func suspendNextFriendFetch() {
+        shouldSuspendNextFriendFetch = true
+    }
+
+    func waitUntilFriendFetchSuspends() async {
+        guard shouldSuspendNextFriendFetch else { return }
+        await withCheckedContinuation { continuation in
+            friendFetchWaiters.append(continuation)
+        }
+    }
+
+    func resumeFriendFetch() {
+        friendFetchContinuation?.resume()
+        friendFetchContinuation = nil
+    }
+
     func reset() {
         accounts.removeAll()
         friends.removeAll()
         friendSyncHistory.removeAll()
         shouldFail = false
         shouldFailNextFriendFetch = false
+        shouldSuspendNextFriendFetch = false
+        friendFetchWaiters.forEach { $0.resume() }
+        friendFetchWaiters.removeAll()
+        friendFetchContinuation?.resume()
+        friendFetchContinuation = nil
         selfDeleteCallCount = 0
         completedSelfDeletion = false
         mergeMemberIdCalls.removeAll()

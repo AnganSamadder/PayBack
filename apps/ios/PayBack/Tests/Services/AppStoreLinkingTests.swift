@@ -511,6 +511,138 @@ final class AppStoreLinkingTests: XCTestCase {
         XCTAssertTrue(sut.friends.contains(where: { $0.memberId == canonicalFriend.memberId }))
     }
 
+    func testClaimInviteToken_ReconcilesCommittedMergeAfterCallerCancellation() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let tokenId = UUID()
+        let targetMemberId = UUID()
+        let creatorMemberId = UUID()
+        let claimerCanonicalMemberId = await mockInviteLinkService.claimerCanonicalMemberId()
+        let mergeFriend = AccountFriend(memberId: UUID(), name: "Chuck", hasLinkedAccount: false)
+        let canonicalFriend = AccountFriend(
+            memberId: creatorMemberId,
+            name: "Creator",
+            hasLinkedAccount: true,
+            linkedAccountId: "creator-account",
+            linkedAccountEmail: "creator@example.com"
+        )
+
+        sut.friends = [mergeFriend]
+        try await mockAccountService.syncFriends(
+            accountEmail: account.email,
+            friends: [canonicalFriend]
+        )
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: targetMemberId,
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.suspendClaimAfterCommit(tokenId)
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId, mergingLocalFriend: mergeFriend)
+        }
+        await mockInviteLinkService.waitUntilClaimCommitted(tokenId)
+        claimTask.cancel()
+        await mockInviteLinkService.resumeClaimAfterCommit(tokenId)
+
+        try await claimTask.value
+
+        XCTAssertEqual(sut.session?.account.linkedMemberId, claimerCanonicalMemberId)
+        XCTAssertTrue(sut.session?.account.equivalentMemberIds.contains(targetMemberId) == true)
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == mergeFriend.memberId }))
+        XCTAssertTrue(sut.friends.contains(where: { $0.memberId == canonicalFriend.memberId }))
+    }
+
+    func testClaimInviteToken_DoesNotRetryAfterAccountSwitch() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+
+        sut = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
+            retryPolicy: RetryPolicy(maxAttempts: 2, baseDelay: 0, maxDelay: 0),
+            skipClerkInit: true
+        )
+        sut.session = UserSession(account: account)
+
+        let tokenId = UUID()
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.suspendNextClaim(with: PayBackError.networkUnavailable)
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId)
+        }
+        await mockInviteLinkService.waitUntilClaimAttempted()
+        sut.session = UserSession(
+            account: UserAccount(id: "test-456", email: "other@example.com", displayName: "Other User")
+        )
+        await mockInviteLinkService.resumeSuspendedClaim()
+
+        do {
+            try await claimTask.value
+            XCTFail("Expected the claim to stop when the initiating account changed")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        let claimAttempts = await mockInviteLinkService.claimAttempts()
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertEqual(claimAttempts, 1)
+        XCTAssertNil(claimedTokenId)
+    }
+
+    func testClaimInviteToken_DoesNotApplyRemoteFriendsAfterAccountSwitch() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.session = UserSession(account: account)
+
+        let tokenId = UUID()
+        let oldAccountFriend = AccountFriend(memberId: UUID(), name: "Old Account Friend")
+        let newAccountFriend = AccountFriend(memberId: UUID(), name: "New Account Friend")
+        try await mockAccountService.syncFriends(
+            accountEmail: account.email,
+            friends: [oldAccountFriend]
+        )
+        await mockAccountService.suspendNextFriendFetch()
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId)
+        }
+        await mockAccountService.waitUntilFriendFetchSuspends()
+        sut.session = UserSession(
+            account: UserAccount(id: "test-456", email: "other@example.com", displayName: "Other User")
+        )
+        sut.friends = [newAccountFriend]
+        await mockAccountService.resumeFriendFetch()
+
+        do {
+            try await claimTask.value
+            XCTFail("Expected the claim refresh to stop when the initiating account changed")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        XCTAssertEqual(sut.friends.map(\.memberId), [newAccountFriend.memberId])
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == oldAccountFriend.memberId }))
+    }
+
     func testClaimInviteToken_WithMergeFriend_KeepsFriendWhenClaimFails() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)

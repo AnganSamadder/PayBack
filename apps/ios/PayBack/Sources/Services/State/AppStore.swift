@@ -68,7 +68,7 @@ final class AppStore: ObservableObject {
     /// an explicit remote hydration. This prevents empty startup snapshots from clobbering
     /// locally restored or test-seeded state.
     private var hasCompletedInitialRemoteLoad = false
-    private let retryPolicy: RetryPolicy = .linkingDefault
+    private let retryPolicy: RetryPolicy
     private let stateReconciliation = LinkStateReconciliation()
     private let failureTracker = LinkFailureTracker()
 
@@ -105,6 +105,7 @@ final class AppStore: ObservableObject {
         linkRequestService: LinkRequestService = Dependencies.current.linkRequestService,
         inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService,
         emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
+        retryPolicy: RetryPolicy = .linkingDefault,
         skipClerkInit: Bool = false,
         authenticationSessionLoader: (@Sendable () async throws -> AuthenticationSessionIdentity?)? = nil,
         convexAuthenticator: (@Sendable () async throws -> Void)? = nil
@@ -118,6 +119,7 @@ final class AppStore: ObservableObject {
         self.linkRequestService = linkRequestService
         self.inviteLinkService = inviteLinkService
         self.emailAuthService = emailAuthService
+        self.retryPolicy = retryPolicy
         self.skipClerkInit = skipClerkInit
         self.authenticationSessionLoader = authenticationSessionLoader ?? {
             let clerk = await Clerk.shared
@@ -3497,7 +3499,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Claims an invite token and optionally merges an existing unlinked friend atomically.
     func claimInviteToken(_ tokenId: UUID, mergingLocalFriend friend: AccountFriend?) async throws {
-        guard session != nil else {
+        guard let claimingSession = session else {
             throw PayBackError.authSessionMissing
         }
 
@@ -3513,19 +3515,41 @@ func completeAuthentication(id: String, email: String, name: String?) {
             }
         }
 
-        let result = try await retryPolicy.execute {
-            try await self.inviteLinkService.claimInviteToken(
-                tokenId,
-                mergeLocalFriendMemberId: friend?.memberId
-            )
+        let claimingAccountId = claimingSession.account.id
+        let mergeMemberId = friend?.memberId
+
+        // The mutation can commit before its acknowledgement reaches the app. Keep the
+        // idempotent retry and canonical refresh alive if the presenting view disappears,
+        // while preventing a late result from crossing into a different account session.
+        let operation = Task { @MainActor [weak self] in
+            guard let self else { throw PayBackError.authSessionMissing }
+            let result = try await retryPolicy.execute {
+                guard self.session?.account.id == claimingAccountId else {
+                    throw PayBackError.authSessionMissing
+                }
+                return try await self.inviteLinkService.claimInviteToken(
+                    tokenId,
+                    mergeLocalFriendMemberId: mergeMemberId
+                )
+            }
+
+            guard self.session?.account.id == claimingAccountId else {
+                throw PayBackError.authSessionMissing
+            }
+            self.applyLinkAcceptResult(result)
+            await self.stateReconciliation.invalidate()
+            guard self.session?.account.id == claimingAccountId else {
+                throw PayBackError.authSessionMissing
+            }
+
+            // Fetch the canonical friend, group, and expense state only after the
+            // atomic backend claim/merge succeeds. This avoids optimistic UI loss.
+            await self.loadRemoteData()
+            guard self.session?.account.id == claimingAccountId else {
+                throw PayBackError.authSessionMissing
+            }
         }
-
-        await applyLinkAcceptResult(result)
-        await reconcileAfterNetworkRecovery()
-
-        // Fetch the canonical friend, group, and expense state only after the
-        // atomic backend claim/merge succeeds. This avoids optimistic UI loss.
-        await loadRemoteData()
+        try await operation.value
     }
 
     @MainActor
