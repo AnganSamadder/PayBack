@@ -1,5 +1,108 @@
 import SwiftUI
 
+struct InviteLinkClaimSuccessCopy: Equatable {
+    let title: String
+    let message: String
+
+    init(mergedFriendName: String?) {
+        if let mergedFriendName, !mergedFriendName.isEmpty {
+            title = "Merged with \(mergedFriendName)"
+            message = "Your transaction history has been combined."
+        } else {
+            title = "Invite Claimed!"
+            message = "Your account has been linked successfully"
+        }
+    }
+}
+
+enum InviteLinkClaimFailureCopy {
+    static func message(mergingExistingFriend: Bool) -> String {
+        if mergingExistingFriend {
+            return "We couldn’t claim this invite. Your existing friend was not changed."
+        }
+
+        return "We couldn’t claim this invite. Please try again."
+    }
+}
+
+enum InviteMergeFriendFilter {
+    static func excludedIdentityRoots(
+        currentUserId: UUID,
+        linkedMemberId: UUID?,
+        accountEquivalentMemberIds: [UUID],
+        inviteTargetMemberId: UUID?
+    ) -> Set<UUID> {
+        var roots = Set(accountEquivalentMemberIds)
+        roots.insert(currentUserId)
+        if let linkedMemberId {
+            roots.insert(linkedMemberId)
+        }
+        if let inviteTargetMemberId {
+            roots.insert(inviteTargetMemberId)
+        }
+        return roots
+    }
+
+    static func availableFriends(
+        from friends: [AccountFriend],
+        excludedMemberIds: Set<UUID>,
+        isMergeable: (AccountFriend) -> Bool,
+        areSamePerson: (UUID, UUID) -> Bool = { $0 == $1 }
+    ) -> [AccountFriend] {
+        friends.filter { friend in
+            let identityIds = Set(
+                [friend.memberId] +
+                    (friend.linkedMemberId.map { [$0] } ?? []) +
+                    (friend.aliasMemberIds ?? [])
+            )
+            let isExcluded = identityIds.contains { identityId in
+                excludedMemberIds.contains { excludedId in
+                    areSamePerson(identityId, excludedId)
+                }
+            }
+            return isMergeable(friend) && !isExcluded
+        }
+    }
+}
+
+struct InviteLinkClaimMergeConfirmation: Identifiable, Equatable {
+    let sourceFriend: AccountFriend
+    let sourceName: String
+    let destinationName: String
+
+    var sourceMemberId: UUID { sourceFriend.memberId }
+    var id: UUID { sourceMemberId }
+    var title: String { "Merge \(sourceName) into \(destinationName)?" }
+    var message: String {
+        "All expenses and balances assigned to \(sourceName) will move to \(destinationName), and \(sourceName) will be removed from your friends. This cannot be undone."
+    }
+    var actionTitle: String { "Merge & Link" }
+}
+
+enum InviteMergeDestination {
+    static func displayName(creatorName: String?, creatorEmail: String) -> String {
+        if let name = creatorName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty {
+            return name
+        }
+        return creatorEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum InviteMergeClaimSource {
+    static func validatedFriend(
+        for confirmation: InviteLinkClaimMergeConfirmation,
+        availableFriends: [AccountFriend]
+    ) -> AccountFriend? {
+        guard availableFriends.contains(where: {
+            $0.memberId == confirmation.sourceMemberId
+        }) else {
+            return nil
+        }
+        return confirmation.sourceFriend
+    }
+}
+
 struct InviteLinkClaimView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
@@ -15,9 +118,38 @@ struct InviteLinkClaimView: View {
     @State private var successScale: CGFloat = 0.5
     @State private var successOpacity: Double = 0
     @State private var subscriptionTask: Task<Void, Never>?
+    @State private var claimTask: Task<Void, Never>?
 
+    // Merge Flow State
+    @State private var showMergeSheet = false
+    @State private var selectedMergeFriend: AccountFriend?
+    @State private var mergedFriendName: String?
+    @State private var mergeSelectionWarning: String?
+    @State private var mergeConfirmation: InviteLinkClaimMergeConfirmation?
     private var needsAuthentication: Bool {
         store.session == nil
+    }
+
+    private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
+    private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
+
+    private var availableMergeFriends: [AccountFriend] {
+        let excludedRoots = InviteMergeFriendFilter.excludedIdentityRoots(
+            currentUserId: store.currentUser.id,
+            linkedMemberId: store.session?.account.linkedMemberId,
+            accountEquivalentMemberIds: store.session?.account.equivalentMemberIds ?? [],
+            inviteTargetMemberId: validation?.token?.targetMemberId
+        )
+        let excludedMemberIds = store.accountFriendIdentityMemberIds(
+            for: Array(excludedRoots)
+        )
+
+        return InviteMergeFriendFilter.availableFriends(
+            from: store.friends,
+            excludedMemberIds: excludedMemberIds,
+            isMergeable: store.isMergeableUnlinkedFriend,
+            areSamePerson: store.areSamePerson
+        )
     }
 
     var body: some View {
@@ -55,17 +187,60 @@ struct InviteLinkClaimView: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .disabled(isProcessing)
                 }
             }
             .task {
                 if !needsAuthentication {
-                    await subscribeToValidation()
+                    startValidationSubscription()
                 }
             }
             .onDisappear {
                 subscriptionTask?.cancel()
+                claimTask?.cancel()
+                claimTask = nil
+            }
+            .sheet(isPresented: $showMergeSheet) {
+                MergeExistingFriendSheet(
+                    friends: availableMergeFriends,
+                    preselected: selectedMergeFriend,
+                    onSelect: { friend in
+                        selectedMergeFriend = friend
+                        mergeSelectionWarning = nil
+                    },
+                    onClear: {
+                        selectedMergeFriend = nil
+                    }
+                )
+                .environmentObject(store)
+                .onAppear {
+                    validateSelectedMergeFriend()
+                }
+            }
+            .onChange(of: store.friends) { _, _ in
+                validateSelectedMergeFriend()
+            }
+            .alert(item: $mergeConfirmation) { confirmation in
+                Alert(
+                    title: Text(confirmation.title),
+                    message: Text(confirmation.message),
+                    primaryButton: .destructive(Text(confirmation.actionTitle)) {
+                        guard let confirmedFriend = InviteMergeClaimSource.validatedFriend(
+                            for: confirmation,
+                            availableFriends: availableMergeFriends
+                        ) else {
+                            selectedMergeFriend = nil
+                            mergeConfirmation = nil
+                            mergeSelectionWarning = "That friend is no longer available to merge. Please pick another unlinked friend."
+                            return
+                        }
+                        startClaimTask(merging: confirmedFriend)
+                    },
+                    secondaryButton: .cancel()
+                )
             }
         }
+        .interactiveDismissDisabled(isProcessing)
     }
 
     // MARK: - Authentication Required View
@@ -128,22 +303,130 @@ struct InviteLinkClaimView: View {
     @ViewBuilder
     private func validTokenView(token: InviteToken, preview: ExpensePreview?) -> some View {
         VStack(spacing: 24) {
-            // Sender info section
+            mergeFriendCard
             senderInfoSection(token: token)
-
-            // Name confirmation prompt
             nameConfirmationSection(token: token)
-
-            // Expense preview
+            if let errorMessage {
+                errorSection(message: errorMessage)
+            }
             if let preview = preview {
                 expensePreviewSection(token: token, preview: preview)
             }
-
-            // Action buttons (only show if not processing or successful)
             if !showSuccess {
                 actionButtons
             }
         }
+    }
+
+    @ViewBuilder
+    private var mergeFriendCard: some View {
+        let isDisabled = isProcessing || claimSucceeded || showSuccess
+
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                Button {
+                    Haptics.selection()
+                    showMergeSheet = true
+                } label: {
+                    HStack(spacing: 12) {
+                        if let friend = selectedMergeFriend {
+                            AvatarView(
+                                name: mergeFriendDisplayName(friend),
+                                size: 40,
+                                imageUrl: friend.profileImageUrl,
+                                colorHex: friend.profileColorHex
+                            )
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(mergeFriendDisplayName(friend))
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+
+                                Text(mergeFriendBalanceText(friend))
+                                    .font(.caption)
+                                    .foregroundStyle(balanceColor(mergeFriendBalance(friend)))
+                            }
+                        } else {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(AppTheme.brand.opacity(0.14))
+                                    .frame(width: 40, height: 40)
+
+                                Image(systemName: "person.2.circle.fill")
+                                    .font(.system(size: 22, weight: .semibold))
+                                    .foregroundStyle(AppTheme.brand)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Merge with existing friend")
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+
+                                Text("Combine expenses and balances with a contact you already track.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Spacer(minLength: 12)
+
+                        HStack(spacing: 4) {
+                            if selectedMergeFriend != nil {
+                                Text("Change")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(AppTheme.brand)
+                            }
+
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isDisabled)
+                .accessibilityLabel(mergeCardAccessibilityLabel)
+                .accessibilityHint("Opens a sheet to pick an unlinked friend to merge")
+
+                if selectedMergeFriend != nil {
+                    Button {
+                        Haptics.selection()
+                        selectedMergeFriend = nil
+                        mergeConfirmation = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isDisabled)
+                    .accessibilityLabel("Clear merge selection")
+                    .padding(.trailing, 6)
+                }
+            }
+
+            if let mergeSelectionWarning {
+                Text(mergeSelectionWarning)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal)
+                    .padding(.bottom)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.card)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(AppTheme.brand.opacity(selectedMergeFriend == nil ? 0.14 : 0.28), lineWidth: 1)
+        )
+        .cornerRadius(16)
+        .opacity(isDisabled ? 0.65 : 1.0)
+        .animation(AppAnimation.springy, value: selectedMergeFriend?.memberId)
     }
 
     // MARK: - Sender Info Section
@@ -383,6 +666,8 @@ struct InviteLinkClaimView: View {
 
     @ViewBuilder
     private var successSection: some View {
+        let copy = InviteLinkClaimSuccessCopy(mergedFriendName: mergedFriendName)
+
         VStack(spacing: 12) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 60))
@@ -390,12 +675,12 @@ struct InviteLinkClaimView: View {
                 .scaleEffect(successScale)
                 .opacity(successOpacity)
 
-            Text("Invite Claimed!")
+            Text(copy.title)
                 .font(.title3)
                 .fontWeight(.semibold)
                 .opacity(successOpacity)
 
-            Text("Your account has been linked successfully")
+            Text(copy.message)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .opacity(successOpacity)
@@ -418,11 +703,18 @@ struct InviteLinkClaimView: View {
     private var actionButtons: some View {
         VStack(spacing: 12) {
             Button(action: {
-                // Trigger selection haptic
                 Haptics.selection()
-
-                Task {
-                    await claimToken()
+                if let selectedMergeFriend, let token = validation?.token {
+                    mergeConfirmation = InviteLinkClaimMergeConfirmation(
+                        sourceFriend: selectedMergeFriend,
+                        sourceName: mergeFriendDisplayName(selectedMergeFriend),
+                        destinationName: InviteMergeDestination.displayName(
+                            creatorName: token.creatorName,
+                            creatorEmail: token.creatorEmail
+                        )
+                    )
+                } else {
+                    startClaimTask(merging: nil)
                 }
             }) {
                 HStack {
@@ -470,33 +762,49 @@ struct InviteLinkClaimView: View {
 
     // MARK: - Helper Methods
 
-    /// Subscribe to live updates for the invite validation
-    private func subscribeToValidation() async {
-        isLoading = true
-        errorMessage = nil
+    private func startClaimTask(merging mergeFriend: AccountFriend?) {
+        claimTask?.cancel()
+        claimTask = Task {
+            await claimToken(merging: mergeFriend)
+        }
+    }
 
+    /// Subscribe to live updates for invite validation.
+    @MainActor
+    private func startValidationSubscription(clearError: Bool = true) {
+        subscriptionTask?.cancel()
+        if validation == nil {
+            isLoading = true
+        }
+        if clearError {
+            errorMessage = nil
+        }
         subscriptionTask = Task {
             do {
                 for try await result in store.subscribeToInviteValidation(tokenId) {
+                    guard !Task.isCancelled else { return }
                     await MainActor.run {
+                        guard !isProcessing, !claimSucceeded else { return }
                         validation = result
                         isLoading = false
                     }
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !isProcessing, !claimSucceeded else { return }
                     validation = InviteTokenValidation(
                         isValid: false,
                         token: nil,
                         expensePreview: nil,
-                        errorMessage: error.localizedDescription
+                        errorMessage: error.userFacingMessage(
+                            fallback: "We couldn’t validate this invite. Please try again."
+                        )
                     )
                     isLoading = false
                 }
             }
         }
-
-        await subscriptionTask?.value
     }
 
     /// One-shot validation (kept for backward compatibility)
@@ -517,33 +825,36 @@ struct InviteLinkClaimView: View {
                     isValid: false,
                     token: nil,
                     expensePreview: nil,
-                    errorMessage: error.localizedDescription
+                    errorMessage: error.userFacingMessage(
+                        fallback: "We couldn’t validate this invite. Please try again."
+                    )
                 )
                 isLoading = false
             }
         }
     }
 
-    private func claimToken() async {
+    private func claimToken(merging mergeFriend: AccountFriend?) async {
+        subscriptionTask?.cancel()
+        subscriptionTask = nil
         isProcessing = true
         errorMessage = nil
 
         do {
-            try await store.claimInviteToken(tokenId)
+            try await store.claimInviteToken(tokenId, mergingLocalFriend: mergeFriend)
 
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 isProcessing = false
-
-                // Mark claim as succeeded FIRST to prevent error view from showing
+                errorMessage = nil
                 claimSucceeded = true
-
-                // Cancel the subscription to prevent it from receiving "claimed" status
-                // which would show as an error alongside the success message
+                claimTask = nil
                 subscriptionTask?.cancel()
                 subscriptionTask = nil
-
-                // Trigger success haptic
                 Haptics.notify(.success)
+                if let mergeFriend {
+                    mergedFriendName = mergeFriendDisplayName(mergeFriend)
+                }
 
                 withAnimation(AppAnimation.springy) {
                     showSuccess = true
@@ -555,19 +866,17 @@ struct InviteLinkClaimView: View {
             }
         } catch {
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 isProcessing = false
-
-                // Set the validation to invalid to hide the expense preview
-                // and show the error view instead
-                validation = InviteTokenValidation(
-                    isValid: false,
-                    token: validation?.token,
-                    expensePreview: nil,
-                    errorMessage: error.localizedDescription
+                errorMessage = error.userFacingMessage(
+                    fallback: InviteLinkClaimFailureCopy.message(
+                        mergingExistingFriend: mergeFriend != nil
+                    )
                 )
-
-                // Trigger error haptic
                 Haptics.notify(.error)
+                validateSelectedMergeFriend()
+                startValidationSubscription(clearError: false)
+                claimTask = nil
             }
         }
     }
@@ -608,4 +917,48 @@ struct InviteLinkClaimView: View {
         return nil
     }
 
+    private func validateSelectedMergeFriend() {
+        guard !isProcessing else { return }
+        guard let selectedMergeFriend else { return }
+        guard availableMergeFriends.contains(where: { $0.memberId == selectedMergeFriend.memberId }) else {
+            if mergeConfirmation?.sourceMemberId == selectedMergeFriend.memberId {
+                mergeConfirmation = nil
+            }
+            self.selectedMergeFriend = nil
+            mergeSelectionWarning = "That friend is no longer available to merge. Please pick another unlinked friend."
+            return
+        }
+        mergeSelectionWarning = nil
+    }
+
+    private func mergeFriendDisplayName(_ friend: AccountFriend) -> String {
+        friend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
+    }
+
+    private func mergeFriendBalance(_ friend: AccountFriend) -> Double {
+        store.netBalance(forFriend: GroupMember(
+            id: friend.memberId,
+            name: friend.name,
+            profileImageUrl: friend.profileImageUrl,
+            profileColorHex: friend.profileColorHex,
+            accountFriendMemberId: friend.memberId
+        ))
+    }
+
+    private func mergeFriendBalanceText(_ friend: AccountFriend) -> String {
+        let balance = mergeFriendBalance(friend)
+        if abs(balance) < 0.01 {
+            return "Settled"
+        }
+        return formatBalance(balance)
+    }
+
+    private var mergeCardAccessibilityLabel: String {
+        guard let selectedMergeFriend else {
+            return "Merge with existing friend"
+        }
+
+        let balance = mergeFriendBalance(selectedMergeFriend)
+        return "Merging with \(mergeFriendDisplayName(selectedMergeFriend)), \(formatBalance(balance))"
+    }
 }
