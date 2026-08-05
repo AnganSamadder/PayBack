@@ -137,6 +137,26 @@ Core steps:
 8. Reconcile `user_expenses` visibility fanout for impacted participants.
 9. Return contract v2 payload.
 
+### 2.1) Explicit merge-on-claim path
+
+Files:
+
+- `convex/inviteTokens.ts`
+- `convex/aliases.ts`
+- `apps/ios/PayBack/Sources/Features/People/InviteLinkClaimView.swift`
+- `apps/ios/PayBack/Sources/Features/People/MergeExistingFriendSheet.swift`
+
+Rules:
+
+- Invite claim may include optional `mergeLocalFriendMemberId`.
+- The backend must derive claimant ownership from auth and verify the selected `account_friends` row belongs to the claimant.
+- Only unlinked local friends are eligible merge sources.
+- The merge target for this path is the inviter's canonical account identity created/resolved by claim, not a client-chosen arbitrary member ID.
+- Store the selected source IDs in the target `account_friends.local_alias_member_ids`; do not create a global `member_aliases` row for a caller-local merge.
+- Rewrite only groups and expenses owned by the claimant. Matching UUIDs in another owner’s data are outside the claimant’s authority and must remain unchanged.
+- Reconcile every participant visibility surface after an owned expense rewrite so unrelated participants retain access.
+- Keep the claim + merge atomic in one mutation to avoid a post-claim duplicate friend window.
+
 ### 3) Link request accept delegates to claim core
 
 File:
@@ -176,6 +196,7 @@ Rules:
 - Do not perform local cloud writeback as part of accept/claim mutation response.
 - Apply returned canonical/alias IDs to local session (`linkedMemberId`, `equivalentMemberIds`).
 - Trigger fresh remote data sync + reconciliation.
+- If a merge friend was selected on `InviteLinkClaimView`, keep it visible until the atomic backend mutation succeeds, then rely on the fresh backend snapshot to replace it with canonical state.
 
 ## Friend Deduplication + Identity Resolution
 
