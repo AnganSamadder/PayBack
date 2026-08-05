@@ -1907,14 +1907,13 @@ func completeAuthentication(id: String, email: String, name: String?) {
             expense.involvedMemberIds.contains(where: { isMe($0) }) &&
             expense.involvedMemberIds.contains(where: matchesFriendIdentity) {
             if isMe(expense.paidByMemberId) {
-                if let friendSplit = expense.splits.first(where: { matchesFriendIdentity($0.memberId) }),
-                   !friendSplit.isSettled {
-                    balance += friendSplit.amount
-                }
+                balance += expense.splits
+                    .filter { matchesFriendIdentity($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             } else if matchesFriendIdentity(expense.paidByMemberId) {
-                if let userSplit = expense.splits.first(where: { isMe($0.memberId) }), !userSplit.isSettled {
-                    balance -= userSplit.amount
-                }
+                balance -= expense.splits
+                    .filter { isMe($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             }
         }
 
