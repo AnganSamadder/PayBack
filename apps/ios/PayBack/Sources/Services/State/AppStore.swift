@@ -684,13 +684,13 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     private func signOutMissingAccountDuringSessionRecovery() async throws {
+        invalidateLogicalSessionForSignOut()
         try await emailAuthService.signOut()
-        await finishSignOut(signOutIdentity: false)
+        await finishSignOut(signOutIdentity: false, logicalSessionAlreadyInvalidated: true)
     }
 
     @MainActor
-    private func finishSignOut(signOutIdentity: Bool) async {
-        print("[AuthDebug] signOut called. Current User: \(currentUser.name) (\(currentUser.id))")
+    private func invalidateLogicalSessionForSignOut() {
         // Rotate the logical session boundary before any suspension point. Irreversible
         // retries must stop even while Clerk or Convex sign-out is still in flight.
         dataEpoch = UUID()
@@ -704,6 +704,17 @@ func completeAuthentication(id: String, email: String, name: String?) {
         #if !PAYBACK_CI_NO_CONVEX
         Dependencies.syncManager?.stopSync()
         #endif
+    }
+
+    @MainActor
+    private func finishSignOut(
+        signOutIdentity: Bool,
+        logicalSessionAlreadyInvalidated: Bool = false
+    ) async {
+        print("[AuthDebug] signOut called. Current User: \(currentUser.name) (\(currentUser.id))")
+        if !logicalSessionAlreadyInvalidated {
+            invalidateLogicalSessionForSignOut()
+        }
 
         // 1. Sign out from Clerk/Backend FIRST
         // This ensures the persistent session is cleared from Keychain before we update UI

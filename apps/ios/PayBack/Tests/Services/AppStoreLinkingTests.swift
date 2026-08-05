@@ -702,6 +702,64 @@ final class AppStoreLinkingTests: XCTestCase {
         XCTAssertNil(claimedTokenId)
     }
 
+    func testClaimInviteToken_DoesNotRetryWhileMissingAccountRecoverySignOutIsSuspended() async throws {
+        let account = UserAccount(id: "missing-account", email: "missing@example.com", displayName: "Missing User")
+        let emailAuthService = SuspendedSignOutEmailAuthService()
+        let identity = AuthenticationSessionIdentity(
+            email: account.email,
+            displayName: account.displayName
+        )
+
+        sut = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: emailAuthService,
+            retryPolicy: RetryPolicy(maxAttempts: 2, baseDelay: 0, maxDelay: 0),
+            skipClerkInit: true,
+            authenticationSessionLoader: { identity }
+        )
+        sut.session = UserSession(account: account)
+
+        let tokenId = UUID()
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.suspendNextClaim(with: PayBackError.networkUnavailable)
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId)
+        }
+        await mockInviteLinkService.waitUntilClaimAttempted()
+        let recoveryTask = Task {
+            await sut.checkSession()
+        }
+        await emailAuthService.waitUntilSignOutStarted()
+        await mockInviteLinkService.resumeSuspendedClaim()
+
+        var claimError: PayBackError?
+        do {
+            try await claimTask.value
+        } catch let error as PayBackError {
+            claimError = error
+        }
+
+        await emailAuthService.resumeSignOut()
+        await recoveryTask.value
+
+        XCTAssertEqual(claimError, .authSessionMissing)
+        let claimAttempts = await mockInviteLinkService.claimAttempts()
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertEqual(claimAttempts, 1)
+        XCTAssertNil(claimedTokenId)
+    }
+
     func testClaimInviteToken_DoesNotApplyRemoteFriendsAfterAccountSwitch() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.session = UserSession(account: account)
