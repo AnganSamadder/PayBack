@@ -1155,27 +1155,24 @@ struct DirectExpenseCard: View {
         store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
-    private var friendSplit: ExpenseSplit? {
-        expense.splits.first(where: { isFriend($0.memberId) })
+    private var friendSplitSummary: IdentitySplitSummary {
+        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isFriend)
     }
 
-    private var mySplit: ExpenseSplit? {
-        expense.splits.first(where: { isMe($0.memberId) })
+    private var mySplitSummary: IdentitySplitSummary {
+        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isMe)
+    }
+
+    private var relevantSplitSummary: IdentitySplitSummary {
+        isMe(expense.paidByMemberId) ? friendSplitSummary : mySplitSummary
     }
 
     private var isRelevantSplitSettled: Bool {
-        if isMe(expense.paidByMemberId) {
-            return friendSplit?.isSettled ?? false
-        } else {
-            return mySplit?.isSettled ?? false
-        }
+        relevantSplitSummary.isFullySettled
     }
 
     private var primaryAmount: Double {
-        if isMe(expense.paidByMemberId) {
-            return friendSplit?.amount ?? 0
-        }
-        return mySplit?.amount ?? 0
+        relevantSplitSummary.relationshipAmount
     }
 
     private var relationshipText: String {
@@ -1344,20 +1341,20 @@ struct GroupExpenseRow: View {
         store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
-    private var friendSplit: ExpenseSplit? {
-        expense.splits.first(where: { isFriend($0.memberId) })
+    private var friendSplitSummary: IdentitySplitSummary {
+        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isFriend)
     }
 
-    private var mySplit: ExpenseSplit? {
-        expense.splits.first(where: { isMe($0.memberId) })
+    private var mySplitSummary: IdentitySplitSummary {
+        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isMe)
+    }
+
+    private var relevantSplitSummary: IdentitySplitSummary {
+        isMe(expense.paidByMemberId) ? friendSplitSummary : mySplitSummary
     }
 
     private var isRelevantSplitSettled: Bool {
-        if isMe(expense.paidByMemberId) {
-            return friendSplit?.isSettled ?? false
-        } else {
-            return mySplit?.isSettled ?? false
-        }
+        relevantSplitSummary.isFullySettled
     }
 
     var body: some View {
@@ -1386,10 +1383,10 @@ struct GroupExpenseRow: View {
 
                 // Show the relationship between current user and friend
                 if isMe(expense.paidByMemberId) {
-                    if let split = friendSplit {
-                        if split.isSettled {
+                    if friendSplitSummary.hasMatchingSplits {
+                        if friendSplitSummary.isFullySettled {
                             HStack(spacing: 4) {
-                                Text("\(friend.name) paid \(currency(split.amount))")
+                                Text("\(friend.name) paid \(currency(friendSplitSummary.relationshipAmount))")
                                     .font(.system(.caption, design: .rounded, weight: .medium))
                                     .foregroundStyle(.secondary)
                                 Image(systemName: "checkmark.circle.fill")
@@ -1397,16 +1394,16 @@ struct GroupExpenseRow: View {
                                     .foregroundStyle(.green)
                             }
                         } else {
-                            Text("\(friend.name) owes \(currency(split.amount))")
+                            Text("\(friend.name) owes \(currency(friendSplitSummary.relationshipAmount))")
                                 .font(.system(.caption, design: .rounded, weight: .medium))
                                 .foregroundStyle(.green)
                         }
                     }
                 } else if isFriend(expense.paidByMemberId) {
-                    if let split = mySplit {
-                        if split.isSettled {
+                    if mySplitSummary.hasMatchingSplits {
+                        if mySplitSummary.isFullySettled {
                             HStack(spacing: 4) {
-                                Text("You paid \(currencyPositive(split.amount))")
+                                Text("You paid \(currencyPositive(mySplitSummary.relationshipAmount))")
                                     .font(.system(.caption, design: .rounded, weight: .medium))
                                     .foregroundStyle(.secondary)
                                 Image(systemName: "checkmark.circle.fill")
@@ -1414,7 +1411,7 @@ struct GroupExpenseRow: View {
                                     .foregroundStyle(.green)
                             }
                         } else {
-                            Text("You owe \(currencyPositive(split.amount))")
+                            Text("You owe \(currencyPositive(mySplitSummary.relationshipAmount))")
                                 .font(.system(.caption, design: .rounded, weight: .medium))
                                 .foregroundStyle(.red)
                         }
