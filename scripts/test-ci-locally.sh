@@ -38,6 +38,7 @@ FAIL_ON_WARNINGS="${FAIL_ON_WARNINGS:-1}"
 RUN_WEB_E2E="${RUN_WEB_E2E:-1}"
 PAYBACK_PARALLEL_TESTING="${PAYBACK_PARALLEL_TESTING:-YES}"
 PAYBACK_MAX_PARALLEL_TEST_WORKERS="${PAYBACK_MAX_PARALLEL_TEST_WORKERS:-}"
+TEST_SCHEME="PayBackTests"
 
 if [ "$PAYBACK_PARALLEL_TESTING" != "YES" ] && [ "$PAYBACK_PARALLEL_TESTING" != "NO" ]; then
 	echo "PAYBACK_PARALLEL_TESTING must be YES or NO" >&2
@@ -429,7 +430,8 @@ if [ "$XCODECLOUD_MODE" = true ]; then
 
 	BUILD_CMD="xcodebuild build-for-testing \
     -project PayBack.xcodeproj \
-    -scheme PayBack \
+    -scheme $TEST_SCHEME \
+    -configuration Debug \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $SANITIZER_FLAGS \
     $DERIVED_DATA_ARG \
@@ -468,7 +470,8 @@ if [ "$XCODECLOUD_MODE" = true ]; then
 
 	TEST_CMD="xcodebuild test-without-building \
     -project PayBack.xcodeproj \
-    -scheme PayBack \
+    -scheme $TEST_SCHEME \
+    -configuration Debug \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $DERIVED_DATA_ARG \
     $PARALLEL_FLAG \
@@ -481,7 +484,8 @@ else
 
 	TEST_CMD="xcodebuild test \
     -project PayBack.xcodeproj \
-    -scheme PayBack \
+    -scheme $TEST_SCHEME \
+    -configuration Debug \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $SANITIZER_FLAGS \
     $PARALLEL_FLAG \
@@ -533,6 +537,13 @@ else
 fi
 
 echo ""
+
+if "$PROJECT_ROOT/scripts/check-sanitizer-output.sh" "$SANITIZER" test_output.log; then
+	SANITIZER_FAILED=false
+else
+	SANITIZER_FAILED=true
+	TEST_SUCCESS=false
+fi
 
 # =============================================================================
 # Warning Analysis
@@ -809,7 +820,7 @@ echo ""
 # Final summary
 # =============================================================================
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ]; then
+if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ] && [ "$SANITIZER_FAILED" != true ]; then
 	echo -e "${GREEN}  ✓ ALL TESTS PASSED${NC}"
 	if [ "$XCODECLOUD_MODE" = true ]; then
 		echo -e "${GREEN}  ✓ XcodeCloud parity mode completed successfully${NC}"
@@ -821,6 +832,9 @@ else
 	if [ "$WARNINGS_FAILED" = true ]; then
 		echo -e "${RED}  ✗ WARNINGS DETECTED (FAIL_ON_WARNINGS=1)${NC}"
 	fi
+	if [ "$SANITIZER_FAILED" = true ]; then
+		echo -e "${RED}  ✗ SANITIZER DIAGNOSTICS DETECTED${NC}"
+	fi
 fi
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo ""
@@ -828,7 +842,7 @@ echo ""
 # Cleanup
 rm -f test_output.log build_output.log 2>/dev/null || true
 
-if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ]; then
+if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ] && [ "$SANITIZER_FAILED" != true ]; then
 	exit 0
 else
 	exit 1

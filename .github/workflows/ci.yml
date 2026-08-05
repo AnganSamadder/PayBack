@@ -49,6 +49,9 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Test CI scripts
+        run: bash scripts/tests/check-sanitizer-output.test.sh
+
   # ──────────────────────────────────────────────────────────────
   # Tier 2a — Linux jobs (cheap, parallel)
   # ──────────────────────────────────────────────────────────────
@@ -630,6 +633,10 @@ jobs:
         env:
           NSUnbufferedIO: "YES"
           TSAN_OPTIONS: ${{ steps.test-flags.outputs.tsan_options }}
+
+      - name: Check Sanitizer Diagnostics
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: scripts/check-sanitizer-output.sh "${{ matrix.sanitizer }}" test-output.txt
 
       - name: Report Skipped Tests
         if: always() && (matrix.run_on_pr == true || github.event_name == 'push')
