@@ -189,6 +189,7 @@
 		6E1D5176283313915FD0F12A /* StylesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00569602A1A9FF6F43EFCB6A /* StylesTests.swift */; };
 		6E3054EEDEF33480275CB311 /* DataImportServiceParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A936D4B36CA6BC9A55F24934 /* DataImportServiceParsingTests.swift */; };
 		6FAF535689CDC10CDDEC30F8 /* SignupViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AEFBDA3414831919896FB4E /* SignupViewTests.swift */; };
+		7090A160E52921D182BA8A26 /* CancellableAsyncStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E63AD4E2274E97C87E0F4055 /* CancellableAsyncStreamTests.swift */; };
 		711576954E02DFC35AEB58E6 /* ClaimFriendRecordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC8F764ED8427824941E656B /* ClaimFriendRecordTests.swift */; };
 		7121718D6493B5B026FE7A03 /* LegacyNavigationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F976D1737A40E43A04889339 /* LegacyNavigationState.swift */; };
 		736AD63C3787238F8ABCD59D /* EmailAuthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104ABE14A97B8A00D7A3BCFD /* EmailAuthServiceTests.swift */; };
@@ -295,6 +296,7 @@
 		B033E0D7FB077955B1C36A18 /* DomainModelsExtendedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D4F9392067CF1626C5F1FA /* DomainModelsExtendedTests.swift */; };
 		B09BBE507AE99363C85F5B70 /* DeleteAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96ED2CA5C94A388ACF29A228 /* DeleteAccountView.swift */; };
 		B0E3B5CFD44D81A477945756 /* ConvexArgumentBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA91BC4B61944131044A725C /* ConvexArgumentBuilderTests.swift */; };
+		B18B187C79523444E0FC1FF4 /* CancellableAsyncStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E63AD4E2274E97C87E0F4055 /* CancellableAsyncStreamTests.swift */; };
 		B198E8E7C21C2B6C91033BC9 /* CurrencyFormatterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE9802D978566E5804C627C2 /* CurrencyFormatterTests.swift */; };
 		B2716BCFDA9469B976C0E3C1 /* TestHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8394D3CAB8B80195DB4C6A89 /* TestHelpers.swift */; };
 		B2DAE5BA38B5C7045B93D069 /* ConvexExpenseServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C76F4E25CEEAA132E3E49CD /* ConvexExpenseServiceTests.swift */; };
@@ -688,6 +690,7 @@
 		E1A20985C6A290C85118E743 /* ConvexExpenseService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexExpenseService.swift; sourceTree = "<group>"; };
 		E4FF32FE561ECFA78CA2DB06 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E603E1CEAF680AD48C26FAFD /* ConvexGroupServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexGroupServiceTests.swift; sourceTree = "<group>"; };
+		E63AD4E2274E97C87E0F4055 /* CancellableAsyncStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CancellableAsyncStreamTests.swift; sourceTree = "<group>"; };
 		E6541D3F78C0F8E50FF31005 /* MockInviteLinkServiceExtendedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockInviteLinkServiceExtendedTests.swift; sourceTree = "<group>"; };
 		E7258351A698FF9050220F38 /* ConvexDTOs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexDTOs.swift; sourceTree = "<group>"; };
 		E7DEBED879A13D7226AA9E12 /* ConvexAccountServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexAccountServiceTests.swift; sourceTree = "<group>"; };
@@ -1160,6 +1163,7 @@
 				AF1FC9D96C48BDEB7D0BA172 /* AppStoreRemoteDataTests.swift */,
 				40630637ADB9921D6CA233B3 /* AppStoreSettlementEdgeCasesTests.swift */,
 				C07F44F1F87534BB9B11564B /* AppStoreTests.swift */,
+				E63AD4E2274E97C87E0F4055 /* CancellableAsyncStreamTests.swift */,
 				CC9AEB1DC55875B618DCE397 /* ClerkAuthProviderExtendedTests.swift */,
 				5EFE8F2047EEAF11D31E4F1B /* ClerkAuthProviderTests.swift */,
 				87C4D0BB28C9E2AF379CF4FB /* ClerkEmailAuthServiceTests.swift */,
@@ -1721,6 +1725,7 @@
 				BD46708A68B17ADFF8079721 /* BulkImportDTOTests.swift in Sources */,
 				D2E92590AA66CD61417E99FA /* BulkImportEdgeCaseTests.swift in Sources */,
 				81367B490ED251DC9FBDF588 /* BusinessLogicErrorTests.swift in Sources */,
+				7090A160E52921D182BA8A26 /* CancellableAsyncStreamTests.swift in Sources */,
 				711576954E02DFC35AEB58E6 /* ClaimFriendRecordTests.swift in Sources */,
 				60840E41EBCCEDA7BCA497ED /* ClaimSubscriptionTests.swift in Sources */,
 				7A2959BCE393F89E5AD69565 /* ClerkAuthProviderExtendedTests.swift in Sources */,
@@ -1862,6 +1867,7 @@
 				BB392FD1D5BDCFF19D7A2E4A /* BulkImportDTOTests.swift in Sources */,
 				858BCF6F2F3D9E550CB24FF6 /* BulkImportEdgeCaseTests.swift in Sources */,
 				34AC378E0E4C4BF4CEE1286C /* BusinessLogicErrorTests.swift in Sources */,
+				B18B187C79523444E0FC1FF4 /* CancellableAsyncStreamTests.swift in Sources */,
 				64F485D7FD58418BC061999B /* ClaimFriendRecordTests.swift in Sources */,
 				C38B0571440DACE6DD9090C6 /* ClaimSubscriptionTests.swift in Sources */,
 				B81A9982EA24152236D69583 /* ClerkEmailAuthServiceTests.swift in Sources */,

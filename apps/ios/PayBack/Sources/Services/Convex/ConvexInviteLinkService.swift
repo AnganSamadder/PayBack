@@ -7,6 +7,21 @@
 
 import Foundation
 
+func makeCancellableAsyncThrowingStream<Element: Sendable>(
+    _ operation: @escaping @Sendable (
+        AsyncThrowingStream<Element, Error>.Continuation
+    ) async -> Void
+) -> AsyncThrowingStream<Element, Error> {
+    AsyncThrowingStream { continuation in
+        let producerTask = Task {
+            await operation(continuation)
+        }
+        continuation.onTermination = { @Sendable _ in
+            producerTask.cancel()
+        }
+    }
+}
+
 #if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
 
@@ -98,34 +113,32 @@ actor ConvexInviteLinkService: InviteLinkService {
     nonisolated func subscribeToInviteValidation(_ tokenId: UUID) -> AsyncThrowingStream<InviteTokenValidation, Error> {
         let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString]
 
-        return AsyncThrowingStream { [client] continuation in
-            Task {
-                do {
-                    for try await result in client.subscribe(to: "inviteTokens:validate", with: args, yielding: ConvexInviteTokenValidationDTO.self).values {
-                        let token = result.token?.toInviteToken()
-                        let preview = result.expense_preview.map { previewDTO in
-                            ExpensePreview(
-                                personalExpenses: [],
-                                groupExpenses: [],
-                                expenseCount: previewDTO.expense_count,
-                                totalBalance: previewDTO.total_balance,
-                                groupNames: previewDTO.group_names
-                            )
-                        }
-
-                        let validation = InviteTokenValidation(
-                            isValid: result.is_valid,
-                            token: token,
-                            expensePreview: preview,
-                            errorMessage: result.error
+        return makeCancellableAsyncThrowingStream { [client] continuation in
+            do {
+                for try await result in client.subscribe(to: "inviteTokens:validate", with: args, yielding: ConvexInviteTokenValidationDTO.self).values {
+                    let token = result.token?.toInviteToken()
+                    let preview = result.expense_preview.map { previewDTO in
+                        ExpensePreview(
+                            personalExpenses: [],
+                            groupExpenses: [],
+                            expenseCount: previewDTO.expense_count,
+                            totalBalance: previewDTO.total_balance,
+                            groupNames: previewDTO.group_names
                         )
-
-                        continuation.yield(validation)
                     }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+
+                    let validation = InviteTokenValidation(
+                        isValid: result.is_valid,
+                        token: token,
+                        expensePreview: preview,
+                        errorMessage: result.error
+                    )
+
+                    continuation.yield(validation)
                 }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
             }
         }
     }
