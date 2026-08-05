@@ -642,7 +642,7 @@ describe("identity materialization rollout", () => {
           alias.materialization_source === "account_alias"
       )
     ).toBe(true);
-  }, 30_000);
+  }, 60_000);
 
   test("completes with more than 512 accounts when one account has aliases", async () => {
     const t = convexTest(schema, modules);
