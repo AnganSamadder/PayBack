@@ -1084,6 +1084,113 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertFalse(recoveryStore.isAuthenticationSessionRecoveryBlocking)
     }
 
+    func testSessionRestoreDeletionFailureExposesRecoveryErrorToDeletionUI() async throws {
+        let identity = AuthenticationSessionIdentity(
+            email: "restored@example.com",
+            displayName: "Restored User"
+        )
+        await mockAccountService.setInProgressSelfDeletion(true)
+        await mockAccountService.setShouldFailSelfDelete(true)
+        let recoveryStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: ControlledDeletionEmailAuthService(),
+            skipClerkInit: true,
+            authenticationSessionLoader: { identity },
+            convexAuthenticator: {}
+        )
+
+        await recoveryStore.checkSession()
+
+        XCTAssertEqual(recoveryStore.accountDeletionState, .awaitingBackendDeletion)
+        XCTAssertTrue(recoveryStore.isAccountDeletionBlocking)
+        XCTAssertNotNil(recoveryStore.accountDeletionRecoveryErrorMessage)
+        XCTAssertEqual(
+            recoveryStore.accountDeletionRecoveryErrorMessage,
+            recoveryStore.authenticationSessionRecoveryMessage
+        )
+    }
+
+    func testRealtimeDeletingAccountEntersBackendDeletionRecovery() {
+        let recoveryStore = makeDeletionStore(emailAuthService: ControlledDeletionEmailAuthService())
+        let deletingAccount = UserAccount(
+            id: "owner_auth",
+            email: "owner@example.com",
+            displayName: "Owner",
+            status: "deleting"
+        )
+
+        recoveryStore.handleRealtimeAccountUpdate(deletingAccount)
+
+        XCTAssertEqual(recoveryStore.accountDeletionState, .awaitingBackendDeletion)
+        XCTAssertTrue(recoveryStore.isAccountDeletionBlocking)
+    }
+
+    func testRealtimeDeletingAccountInvalidatesInFlightRemoteLoad() async throws {
+        let recoveryStore = makeDeletionStore(emailAuthService: ControlledDeletionEmailAuthService())
+        let account = UserAccount(
+            id: "owner_auth",
+            email: "owner@example.com",
+            displayName: "Owner"
+        )
+        let staleRemoteGroup = SpendingGroup(name: "Stale remote group", members: [recoveryStore.currentUser])
+        await mockGroupCloudService.queueFetches(
+            groups: [[staleRemoteGroup]],
+            delaysNanoseconds: [500_000_000]
+        )
+        recoveryStore.handleRealtimeAccountUpdate(account)
+
+        let remoteLoad = Task { @MainActor in
+            await recoveryStore.loadRemoteData()
+        }
+        var didStartFetch = false
+        for _ in 0..<100 {
+            if await mockGroupCloudService.currentFetchInvocationCount() > 0 {
+                didStartFetch = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        guard didStartFetch else {
+            remoteLoad.cancel()
+            XCTFail("Remote load did not begin within one second")
+            return
+        }
+
+        var deletingAccount = account
+        deletingAccount.status = "deleting"
+        recoveryStore.handleRealtimeAccountUpdate(deletingAccount)
+        await remoteLoad.value
+
+        XCTAssertFalse(recoveryStore.groups.contains(where: { $0.id == staleRemoteGroup.id }))
+        XCTAssertEqual(recoveryStore.accountDeletionState, .awaitingBackendDeletion)
+    }
+
+    func testRealtimeDeletingAccountSuppressesSubsequentFriendSync() async throws {
+        let recoveryStore = makeDeletionStore(emailAuthService: ControlledDeletionEmailAuthService())
+        let account = UserAccount(
+            id: "owner_auth",
+            email: "owner@example.com",
+            displayName: "Owner"
+        )
+        recoveryStore.handleRealtimeAccountUpdate(account)
+
+        var deletingAccount = account
+        deletingAccount.status = "deleting"
+        recoveryStore.handleRealtimeAccountUpdate(deletingAccount)
+        recoveryStore.addImportedFriend(
+            AccountFriend(memberId: UUID(), name: "Alice", hasLinkedAccount: false)
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let syncedFriends = await mockAccountService.latestSyncedFriends(accountEmail: account.email)
+        XCTAssertNil(syncedFriends)
+    }
+
     func testMissingDeletionReceiptDoesNotDeleteAuthenticationIdentity() async throws {
         let authService = ControlledDeletionEmailAuthService()
         let deletionStore = makeDeletionStore(emailAuthService: authService)

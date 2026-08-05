@@ -94,6 +94,10 @@ final class AppStore: ObservableObject {
             accountDeletionState == .awaitingAuthenticationDeletion
     }
 
+    var accountDeletionRecoveryErrorMessage: String? {
+        isAccountDeletionBlocking ? authenticationSessionRecoveryMessage : nil
+    }
+
     /// When true, suppresses all cloud writes (friend sync, group upsert, expense upsert).
     /// Used during CSV import to batch local changes before syncing.
     @Published var isImporting: Bool = false
@@ -477,28 +481,45 @@ final class AppStore: ObservableObject {
         sessionMonitorTask?.cancel()
         sessionMonitorTask = Task { @MainActor in
             for await account in accountService.monitorSession() {
-                if let account {
-                    let previousSession = self.session
-                    self.session = UserSession(account: account)
-
-                    if let linkedId = account.linkedMemberId, self.currentUser.id != linkedId {
-                        self.currentUser = GroupMember(
-                            id: linkedId,
-                            name: self.currentUser.name,
-                            profileImageUrl: self.currentUser.profileImageUrl,
-                            profileColorHex: self.currentUser.profileColorHex,
-                            isCurrentUser: true
-                        )
-                    }
-
-                    // Keep persisted session identity in sync with realtime account updates.
-                    if previousSession?.account != self.session?.account {
-                        self.persistCurrentState()
-                    }
-                } else if self.session != nil, self.accountDeletionState == .idle {
-                    self.handleForcedLogout(reason: "Account deleted")
-                }
+                self.handleRealtimeAccountUpdate(account)
             }
+        }
+    }
+
+    @MainActor
+    func handleRealtimeAccountUpdate(_ account: UserAccount?) {
+        if let account {
+            let previousSession = session
+            session = UserSession(account: account)
+
+            if account.status == "deleting" {
+                invalidateRemoteLoad()
+                friendSyncTask?.cancel()
+                friendSyncTask = nil
+                hasCompletedInitialRemoteLoad = false
+                #if !PAYBACK_CI_NO_CONVEX
+                Dependencies.syncManager?.stopSync()
+                #endif
+                accountDeletionState = .awaitingBackendDeletion
+                return
+            }
+
+            if let linkedId = account.linkedMemberId, currentUser.id != linkedId {
+                currentUser = GroupMember(
+                    id: linkedId,
+                    name: currentUser.name,
+                    profileImageUrl: currentUser.profileImageUrl,
+                    profileColorHex: currentUser.profileColorHex,
+                    isCurrentUser: true
+                )
+            }
+
+            // Keep persisted session identity in sync with realtime account updates.
+            if previousSession?.account != session?.account {
+                persistCurrentState()
+            }
+        } else if session != nil, accountDeletionState == .idle {
+            handleForcedLogout(reason: "Account deleted")
         }
     }
 
@@ -1338,7 +1359,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func syncFriendsToCloud() async {
-        guard let session else { return }
+        guard let session,
+              session.account.status != "deleting",
+              accountDeletionState == .idle else { return }
         friendSyncTask?.cancel()
         do {
             try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: friends)
@@ -1936,7 +1959,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
     // MARK: - Friend Sync
 
     private func scheduleFriendSync() {
-        guard let session, !isImporting else { return }
+        guard let session,
+              session.account.status != "deleting",
+              accountDeletionState == .idle,
+              !isImporting else { return }
         processFriendsUpdate(friends)
         purgeCurrentUserFriendRecords()
         pruneSelfOnlyDirectGroups()
@@ -1961,6 +1987,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     func loadRemoteData() async {
+        guard session?.account.status != "deleting",
+              accountDeletionState == .idle else { return }
         remoteLoadGeneration &+= 1
         let generation = remoteLoadGeneration
         let previousLoad = remoteLoadTask

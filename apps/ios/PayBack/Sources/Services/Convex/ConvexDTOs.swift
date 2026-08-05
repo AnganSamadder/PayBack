@@ -48,6 +48,8 @@ struct ConvexSelfDeletionReceiptDTO: Decodable, Sendable {
 }
 
 enum SelfDeletionProgressDriver {
+    static let clientCapability = "bounded_progress_v1"
+
     static func run(
         maximumSteps: Int = 4_096,
         maximumNoProgressResponses: Int = 2,

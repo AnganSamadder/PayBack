@@ -3,6 +3,25 @@ import XCTest
 
 /// Comprehensive tests for Convex DTO mapping logic
 final class ConvexDTOsTests: XCTestCase {
+    func testDeletingViewerDTOMapsAccountStatusForRealtimeRecovery() throws {
+        let data = """
+        {
+          "id": "owner_auth",
+          "email": "owner@example.com",
+          "display_name": "Owner",
+          "status": "deleting"
+        }
+        """.data(using: .utf8)!
+
+        let dto = try JSONDecoder().decode(ConvexAccountService.UserViewerDTO.self, from: data)
+
+        XCTAssertEqual(dto.userAccount.status, "deleting")
+    }
+
+    func testSelfDeletionClientCapabilityMatchesBackendContract() {
+        XCTAssertEqual(SelfDeletionProgressDriver.clientCapability, "bounded_progress_v1")
+    }
+
     func testSelfDeletionReceiptDecodesStructuredMutationResult() throws {
         let data = """
         {

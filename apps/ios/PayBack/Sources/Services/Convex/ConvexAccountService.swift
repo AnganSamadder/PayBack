@@ -12,7 +12,7 @@ actor ConvexAccountService: AccountService {
         self.client = client
     }
 
-    private struct UserViewerDTO: Decodable {
+    struct UserViewerDTO: Decodable {
         let id: String
         let email: String
         let display_name: String
@@ -26,24 +26,30 @@ actor ConvexAccountService: AccountService {
         let alias_member_ids: [String]?
         let prefer_nicknames: Bool?
         let prefer_whole_names: Bool?
+        let status: String?
+
+        var userAccount: UserAccount {
+            UserAccount(
+                id: id,
+                email: email,
+                displayName: display_name,
+                firstName: first_name,
+                lastName: last_name,
+                linkedMemberId: (member_id ?? linked_member_id).flatMap { UUID(uuidString: $0) },
+                equivalentMemberIds: (alias_member_ids ?? equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
+                profileImageUrl: profile_image_url,
+                profileColorHex: profile_avatar_color,
+                preferNicknames: prefer_nicknames ?? false,
+                preferWholeNames: prefer_whole_names ?? false,
+                status: status
+            )
+        }
     }
 
     func lookupAccount() async throws -> UserAccount? {
         for try await value in client.subscribe(to: "users:viewer", yielding: UserViewerDTO?.self).values {
              guard let dto = value else { return nil }
-             return UserAccount(
-                 id: dto.id,
-                 email: dto.email,
-                 displayName: dto.display_name,
-                 firstName: dto.first_name,
-                 lastName: dto.last_name,
-                 linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
-                 equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
-                 profileImageUrl: dto.profile_image_url,
-                 profileColorHex: dto.profile_avatar_color,
-                 preferNicknames: dto.prefer_nicknames ?? false,
-                 preferWholeNames: dto.prefer_whole_names ?? false
-             )
+             return dto.userAccount
         }
         return nil
     }
@@ -63,19 +69,7 @@ actor ConvexAccountService: AccountService {
         for try await value in client.subscribe(to: "users:viewer", yielding: UserViewerDTO?.self).values {
              guard let dto = value else { return nil }
              guard dto.email.lowercased() == requestedEmail else { return nil }
-             return UserAccount(
-                 id: dto.id,
-                 email: dto.email,
-                 displayName: dto.display_name,
-                 firstName: dto.first_name,
-                 lastName: dto.last_name,
-                  linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
-                 equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
-                  profileImageUrl: dto.profile_image_url,
-                  profileColorHex: dto.profile_avatar_color,
-                 preferNicknames: dto.prefer_nicknames ?? false,
-                 preferWholeNames: dto.prefer_whole_names ?? false
-              )
+             return dto.userAccount
         }
         return nil
     }
@@ -328,7 +322,7 @@ actor ConvexAccountService: AccountService {
         _ = try await SelfDeletionProgressDriver.run {
             let receipt: ConvexSelfDeletionReceiptDTO = try await client.mutation(
                 "cleanup:selfDeleteAccount",
-                with: [:]
+                with: ["clientCapability": SelfDeletionProgressDriver.clientCapability]
             )
             return receipt
         }
@@ -371,20 +365,7 @@ actor ConvexAccountService: AccountService {
                             continue
                         }
 
-                        let account = UserAccount(
-                            id: dto.id,
-                            email: dto.email,
-                            displayName: dto.display_name,
-                            firstName: dto.first_name,
-                            lastName: dto.last_name,
-                            linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
-                            equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
-                            profileImageUrl: dto.profile_image_url,
-                            profileColorHex: dto.profile_avatar_color,
-                            preferNicknames: dto.prefer_nicknames ?? false,
-                            preferWholeNames: dto.prefer_whole_names ?? false
-                        )
-                        continuation.yield(account)
+                        continuation.yield(dto.userAccount)
                     }
                 } catch {
                     print("Monitor Session Error: \(error)")

@@ -171,7 +171,7 @@ struct RootViewWithStore: View {
                     Text("Finish Deleting Your Account")
                         .font(.title2.bold())
                         .multilineTextAlignment(.center)
-                    Text(accountDeletionRecoveryMessage)
+                    Text(accountDeletionRecoveryDescription)
                         .font(.body)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.white.opacity(0.82))
@@ -195,12 +195,12 @@ struct RootViewWithStore: View {
                     .foregroundStyle(Color(red: 0.25, green: 0.18, blue: 0.55))
                 }
 
-                if let accountDeletionRecoveryError {
-                    Text(accountDeletionRecoveryError)
+                if let recoveryError = accountDeletionRecoveryError ?? store.accountDeletionRecoveryErrorMessage {
+                    Text(recoveryError)
                         .font(.footnote)
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
-                        .accessibilityLabel("Account deletion error: \(accountDeletionRecoveryError)")
+                        .accessibilityLabel("Account deletion error: \(recoveryError)")
                 }
             }
             .padding(32)
@@ -208,7 +208,7 @@ struct RootViewWithStore: View {
         }
     }
 
-    private var accountDeletionRecoveryMessage: String {
+    private var accountDeletionRecoveryDescription: String {
         switch store.accountDeletionState {
         case .deletingBackendAccount, .awaitingBackendDeletion:
             "Your account deletion is in progress. Finish deleting your PayBack data and sign-in account before continuing."
