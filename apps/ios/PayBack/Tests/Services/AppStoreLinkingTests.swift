@@ -649,6 +649,59 @@ final class AppStoreLinkingTests: XCTestCase {
         XCTAssertNil(claimedTokenId)
     }
 
+    func testClaimInviteToken_DoesNotRetryWhileSignOutIsSuspended() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        let emailAuthService = SuspendedSignOutEmailAuthService()
+
+        sut = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: emailAuthService,
+            retryPolicy: RetryPolicy(maxAttempts: 2, baseDelay: 0, maxDelay: 0),
+            skipClerkInit: true
+        )
+        sut.session = UserSession(account: account)
+
+        let tokenId = UUID()
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.suspendNextClaim(with: PayBackError.networkUnavailable)
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId)
+        }
+        await mockInviteLinkService.waitUntilClaimAttempted()
+        let signOutTask = Task {
+            await sut.signOut()
+        }
+        await emailAuthService.waitUntilSignOutStarted()
+        await mockInviteLinkService.resumeSuspendedClaim()
+
+        var claimError: PayBackError?
+        do {
+            try await claimTask.value
+        } catch let error as PayBackError {
+            claimError = error
+        }
+
+        await emailAuthService.resumeSignOut()
+        await signOutTask.value
+
+        XCTAssertEqual(claimError, .authSessionMissing)
+        let claimAttempts = await mockInviteLinkService.claimAttempts()
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertEqual(claimAttempts, 1)
+        XCTAssertNil(claimedTokenId)
+    }
+
     func testClaimInviteToken_DoesNotApplyRemoteFriendsAfterAccountSwitch() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.session = UserSession(account: account)
@@ -1281,4 +1334,61 @@ final class AppStoreLinkingTests: XCTestCase {
         }
     }
 
+}
+
+private actor SuspendedSignOutEmailAuthService: EmailAuthService {
+    private var hasStartedSignOut = false
+    private var signOutStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var signOutContinuation: CheckedContinuation<Void, Never>?
+
+    func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func signUp(
+        email: String,
+        password: String,
+        firstName: String,
+        lastName: String?
+    ) async throws -> SignUpResult {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func verifyCode(code: String) async throws -> EmailAuthSignInResult {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func sendPasswordReset(email: String) async throws {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func resendConfirmationEmail(email: String) async throws {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func signOut() async throws {
+        hasStartedSignOut = true
+        let waiters = signOutStartWaiters
+        signOutStartWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        await withCheckedContinuation { continuation in
+            signOutContinuation = continuation
+        }
+    }
+
+    func deleteCurrentUser() async throws {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func waitUntilSignOutStarted() async {
+        guard !hasStartedSignOut else { return }
+        await withCheckedContinuation { continuation in
+            signOutStartWaiters.append(continuation)
+        }
+    }
+
+    func resumeSignOut() {
+        signOutContinuation?.resume()
+        signOutContinuation = nil
+    }
 }

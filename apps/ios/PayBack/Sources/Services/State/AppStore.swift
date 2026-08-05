@@ -691,6 +691,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
     @MainActor
     private func finishSignOut(signOutIdentity: Bool) async {
         print("[AuthDebug] signOut called. Current User: \(currentUser.name) (\(currentUser.id))")
+        // Rotate the logical session boundary before any suspension point. Irreversible
+        // retries must stop even while Clerk or Convex sign-out is still in flight.
+        dataEpoch = UUID()
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
         invalidateRemoteLoad()
@@ -748,7 +751,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
         pendingExpenseUpsertIds.removeAll()
         pendingExpenseSettlementIds.removeAll()
         pendingExpenseDeleteIds.removeAll()
-        dataEpoch = UUID()
 
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
         // Without this, the next user logging in could inherit this user's member ID
