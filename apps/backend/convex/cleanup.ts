@@ -1,6 +1,6 @@
 import { mutation, internalMutation, query, MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
-import { Doc } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import {
   assertIdentityMaterializationReady,
@@ -14,8 +14,6 @@ import {
   collectActiveExpenseMemberIds,
   createExpenseIdentityResolutionCache,
   ExpenseIdentityResolutionCache,
-  reconcileExpenseVisibility,
-  reconcileUserExpenses,
   resolveActiveExpenseParticipantAccounts,
   resolveConsistentExpenseParticipantAccount
 } from "./helpers";
@@ -24,6 +22,11 @@ import {
   GroupVisibilityWriteBatch,
   patchGroupWithVisibility
 } from "./groupVisibility";
+import {
+  applyExpenseWriteBatch,
+  type ExpenseWriteOperation,
+  MAX_EXPENSE_WRITE_OPERATIONS
+} from "./expenseWrites";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -39,12 +42,37 @@ async function getCurrentUser(ctx: any) {
   return { identity, user };
 }
 
-async function deleteUserExpensesForExpense(ctx: any, expenseId: string) {
+const HARD_DELETE_GROUP_LIMIT = 256;
+
+function expenseDeleteOperations(expenses: Iterable<Doc<"expenses">>): ExpenseWriteOperation[] {
+  return Array.from(expenses, (expense) => ({ kind: "delete" as const, expense }));
+}
+
+async function deleteBoundedOrphanVisibilityRows(
+  ctx: MutationCtx,
+  accountAuthId: string,
+  limit: number
+): Promise<number> {
   const rows = await ctx.db
     .query("user_expenses")
-    .withIndex("by_expense_id", (q: any) => q.eq("expense_id", expenseId))
-    .collect();
+    .withIndex("by_user_id", (query) => query.eq("user_id", accountAuthId))
+    .take(limit + 1);
+  if (rows.length > limit) {
+    throw new Error("Expense cleanup requires resumable processing");
+  }
   for (const row of rows) await ctx.db.delete(row._id);
+  return rows.length;
+}
+
+async function deleteAccountSyncState(ctx: MutationCtx, accountId: Id<"accounts">): Promise<void> {
+  const states = await ctx.db
+    .query("account_sync_state")
+    .withIndex("by_account_id", (query) => query.eq("account_id", accountId))
+    .take(2);
+  if (states.length > 1) {
+    throw new Error(`Sync maintenance required: duplicate account state ${String(accountId)}`);
+  }
+  if (states[0]) await ctx.db.delete(states[0]._id);
 }
 
 function normalizeEmail(value: string | undefined | null): string | undefined {
@@ -467,43 +495,13 @@ function visibilityWriteCount(
   return inserts + deletes;
 }
 
-async function deletePreloadedUserExpenses(
-  ctx: MutationCtx,
-  rows: readonly Doc<"user_expenses">[]
-) {
-  await Promise.all(rows.map((row) => ctx.db.delete(row._id)));
-}
-
-async function reconcilePreloadedUserExpenses(
-  ctx: MutationCtx,
-  expenseId: string,
-  targetUserIds: readonly string[],
-  existingRows: readonly Doc<"user_expenses">[]
-) {
-  const existingUserIds = new Set(existingRows.map((row) => row.user_id));
-  const targetUserIdSet = new Set(targetUserIds);
-  const userIdsToAdd = targetUserIds.filter((userId) => !existingUserIds.has(userId));
-  const rowsToDelete = existingRows.filter((row) => !targetUserIdSet.has(row.user_id));
-
-  await Promise.all([
-    ...userIdsToAdd.map((userId) =>
-      ctx.db.insert("user_expenses", {
-        user_id: userId,
-        expense_id: expenseId,
-        updated_at: Date.now()
-      })
-    ),
-    ...rowsToDelete.map((row) => ctx.db.delete(row._id))
-  ]);
-}
-
 type PreparedRemovedFriendExpense =
   | { outcome: "unchanged"; expense: Doc<"expenses"> }
   | { outcome: "deleted"; expense: Doc<"expenses"> }
   | {
       outcome: "modified";
       expense: Doc<"expenses">;
-      participantUserIds: string[];
+      participantAccounts: Doc<"accounts">[];
       patch: Pick<
         Doc<"expenses">,
         | "participant_member_ids"
@@ -588,7 +586,7 @@ async function prepareEquivalentMemberRemovalFromExpense(
   return {
     outcome: "modified",
     expense,
-    participantUserIds: activeParticipantAccounts.map((account) => account.id),
+    participantAccounts: activeParticipantAccounts,
     patch: {
       participant_member_ids: remainingParticipants,
       inactive_participant_member_ids: inactiveParticipantMemberIds,
@@ -613,24 +611,16 @@ async function accountPreparedIdentityReads(
   accountFriendCleanupRows(budget, accounts);
 }
 
-async function applyPreparedRemovedFriendExpense(
-  ctx: MutationCtx,
-  plan: Exclude<PreparedRemovedFriendExpense, { outcome: "unchanged" }>,
-  visibilityRows: readonly Doc<"user_expenses">[]
-) {
-  if (plan.outcome === "deleted") {
-    await deletePreloadedUserExpenses(ctx, visibilityRows);
-    await ctx.db.delete(plan.expense._id);
-    return;
-  }
-
-  await ctx.db.patch(plan.expense._id, plan.patch);
-  await reconcilePreloadedUserExpenses(
-    ctx,
-    plan.expense.id,
-    plan.participantUserIds,
-    visibilityRows
-  );
+function removedFriendExpenseOperation(
+  plan: Exclude<PreparedRemovedFriendExpense, { outcome: "unchanged" }>
+): ExpenseWriteOperation {
+  if (plan.outcome === "deleted") return { kind: "delete", expense: plan.expense };
+  return {
+    kind: "patch",
+    expense: plan.expense,
+    patch: plan.patch,
+    viewerAccountIds: plan.participantAccounts.map((account) => account._id)
+  };
 }
 
 type PreparedAliasPrune = {
@@ -814,21 +804,20 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     sampleIds: sampleIds(friendIds)
   });
 
-  // Delete user_expenses view for this account (user_id is Clerk id)
-  const myUserExpenses = await ctx.db
-    .query("user_expenses")
-    .withIndex("by_user_id", (q: any) => q.eq("user_id", account.id))
-    .collect();
-  for (const ue of myUserExpenses) await ctx.db.delete(ue._id);
-
   const groupsByEmail = await ctx.db
     .query("groups")
     .withIndex("by_owner_email", (q: any) => q.eq("owner_email", account.email))
-    .collect();
+    .take(HARD_DELETE_GROUP_LIMIT + 1);
   const groupsByAccountId = await ctx.db
     .query("groups")
     .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", account.id))
-    .collect();
+    .take(HARD_DELETE_GROUP_LIMIT + 1);
+  if (
+    groupsByEmail.length > HARD_DELETE_GROUP_LIMIT ||
+    groupsByAccountId.length > HARD_DELETE_GROUP_LIMIT
+  ) {
+    throw new Error("Hard delete requires resumable group processing");
+  }
   const groupsById = new Map<string, any>();
   for (const group of groupsByEmail) {
     groupsById.set(group._id, group);
@@ -836,20 +825,27 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   for (const group of groupsByAccountId) {
     groupsById.set(group._id, group);
   }
+  if (groupsById.size > HARD_DELETE_GROUP_LIMIT) {
+    throw new Error("Hard delete requires resumable group processing");
+  }
 
   const groupIds: string[] = [];
   const groupExpenseIds: string[] = [];
   const deletedExpenseIds = new Set<string>();
+  const expensesToDelete = new Map<string, Doc<"expenses">>();
   const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
   for (const group of groupsById.values()) {
+    const remainingExpenseCapacity = MAX_EXPENSE_WRITE_OPERATIONS - expensesToDelete.size;
     const groupExpenses = await ctx.db
       .query("expenses")
       .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-      .collect();
+      .take(remainingExpenseCapacity + 1);
+    if (groupExpenses.length > remainingExpenseCapacity) {
+      throw new Error("Hard delete requires resumable expense processing");
+    }
     for (const expense of groupExpenses) {
       if (deletedExpenseIds.has(expense._id)) continue;
-      deleteUserExpensesForExpense(ctx, expense.id);
-      await ctx.db.delete(expense._id);
+      expensesToDelete.set(String(expense._id), expense);
       deletedExpenseIds.add(expense._id);
       groupExpenseIds.push(expense._id);
     }
@@ -869,11 +865,17 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   const expensesByEmail = await ctx.db
     .query("expenses")
     .withIndex("by_owner_email", (q: any) => q.eq("owner_email", account.email))
-    .collect();
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
   const expensesByAccountId = await ctx.db
     .query("expenses")
     .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", account.id))
-    .collect();
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+  if (
+    expensesByEmail.length > MAX_EXPENSE_WRITE_OPERATIONS ||
+    expensesByAccountId.length > MAX_EXPENSE_WRITE_OPERATIONS
+  ) {
+    throw new Error("Hard delete requires resumable expense processing");
+  }
   const expenseById = new Map<string, any>();
   for (const expense of expensesByEmail) {
     expenseById.set(expense._id, expense);
@@ -884,11 +886,15 @@ async function performHardDelete(ctx: any, account: any, source: string) {
   const ownedExpenseIds: string[] = [];
   for (const expense of expenseById.values()) {
     if (deletedExpenseIds.has(expense._id)) continue;
-    deleteUserExpensesForExpense(ctx, expense.id);
-    await ctx.db.delete(expense._id);
+    expensesToDelete.set(String(expense._id), expense);
     deletedExpenseIds.add(expense._id);
     ownedExpenseIds.push(expense._id);
   }
+  if (expensesToDelete.size > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw new Error("Hard delete requires resumable expense processing");
+  }
+  await applyExpenseWriteBatch(ctx, expenseDeleteOperations(expensesToDelete.values()));
+  await deleteBoundedOrphanVisibilityRows(ctx, account.id, MAX_EXPENSE_WRITE_OPERATIONS);
   logHardDelete(baseLog, "delete_owned_expenses", {
     deletedCount: ownedExpenseIds.length,
     sampleIds: sampleIds(ownedExpenseIds)
@@ -1005,6 +1011,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
     sampleIds: sampleIds(aliasIds)
   });
 
+  await deleteAccountSyncState(ctx, account._id);
   await ctx.db.delete(account._id);
   logHardDelete(baseLog, "complete", {
     friendsDeleted: friendIds.length,
@@ -1271,10 +1278,7 @@ export const deleteLinkedFriend = mutation({
         chargeWrites: (count) => reserveFriendCleanupWrites(aggregateBudget, count)
       }
     });
-    for (const expense of expensesToDelete.values()) {
-      await deletePreloadedUserExpenses(ctx, visibilityRowsByExpenseId.get(expense.id) ?? []);
-      await ctx.db.delete(expense._id);
-    }
+    await applyExpenseWriteBatch(ctx, expenseDeleteOperations(expensesToDelete.values()));
     for (const group of groupsToDelete) await groupVisibilityBatch.delete(group._id);
     await groupVisibilityBatch.flush();
     directGroupDeleted = groupsToDelete.length > 0;
@@ -1458,7 +1462,10 @@ export const deleteUnlinkedFriend = mutation({
         aggregateBudget,
         plan.outcome === "deleted"
           ? visibilityRows.length
-          : visibilityWriteCount(visibilityRows, plan.participantUserIds)
+          : visibilityWriteCount(
+              visibilityRows,
+              plan.participantAccounts.map((account) => account.id)
+            )
       );
     }
     const aliasPrunePlan = await prepareAliasMemberIdPrune(
@@ -1496,21 +1503,15 @@ export const deleteUnlinkedFriend = mutation({
     await groupVisibilityBatch.flush();
     groupsModified = groupPlans.length;
 
-    for (const expense of expensesToDelete.values()) {
-      await deletePreloadedUserExpenses(ctx, visibilityRowsByExpenseId.get(expense.id) ?? []);
-      await ctx.db.delete(expense._id);
-      expensesDeleted += 1;
-    }
+    const expenseOperations = expenseDeleteOperations(expensesToDelete.values());
+    expensesDeleted += expensesToDelete.size;
     for (const plan of preparedExpenses.values()) {
       if (plan.outcome === "unchanged") continue;
-      await applyPreparedRemovedFriendExpense(
-        ctx,
-        plan,
-        visibilityRowsByExpenseId.get(plan.expense.id) ?? []
-      );
+      expenseOperations.push(removedFriendExpenseOperation(plan));
       if (plan.outcome === "deleted") expensesDeleted += 1;
       if (plan.outcome === "modified") expensesModified += 1;
     }
+    await applyExpenseWriteBatch(ctx, expenseOperations);
 
     aliasesDeleted = await applyPreparedAliasPrune(ctx, aliasPrunePlan);
 
@@ -1749,7 +1750,7 @@ async function findPreparedSelfDeletionSteward(
 type PreparedSelfDeletionExpense = {
   expense: Doc<"expenses">;
   patch: ReturnType<typeof scrubDeletedAccountFromExpense> | null;
-  participantUserIds: string[];
+  participantAccounts: Doc<"accounts">[];
   visibilityRows: Doc<"user_expenses">[];
 };
 
@@ -1782,7 +1783,7 @@ async function prepareSelfDeletionExpenseMutations(
       plans.push({
         expense,
         patch: null,
-        participantUserIds: [],
+        participantAccounts: [],
         visibilityRows: visibilityRows.get(expense.id) ?? []
       });
       continue;
@@ -1804,27 +1805,27 @@ async function prepareSelfDeletionExpenseMutations(
     );
     accountFriendCleanupRows(budget, participantAccounts);
     const existingRows = visibilityRows.get(expense.id) ?? [];
-    const participantUserIds = participantAccounts.map((participant) => participant.id);
-    reserveFriendCleanupWrites(budget, visibilityWriteCount(existingRows, participantUserIds) + 1);
-    plans.push({ expense, patch, participantUserIds, visibilityRows: existingRows });
+    reserveFriendCleanupWrites(
+      budget,
+      visibilityWriteCount(
+        existingRows,
+        participantAccounts.map((participant) => participant.id)
+      ) + 1
+    );
+    plans.push({ expense, patch, participantAccounts, visibilityRows: existingRows });
   }
   await accountPreparedIdentityReads(budget, cache);
   return plans;
 }
 
-async function applySelfDeletionExpensePlan(ctx: MutationCtx, plan: PreparedSelfDeletionExpense) {
-  if (!plan.patch) {
-    await deletePreloadedUserExpenses(ctx, plan.visibilityRows);
-    await ctx.db.delete(plan.expense._id);
-    return;
-  }
-  await ctx.db.patch(plan.expense._id, plan.patch);
-  await reconcilePreloadedUserExpenses(
-    ctx,
-    plan.expense.id,
-    plan.participantUserIds,
-    plan.visibilityRows
-  );
+function selfDeletionExpenseOperation(plan: PreparedSelfDeletionExpense): ExpenseWriteOperation {
+  if (!plan.patch) return { kind: "delete", expense: plan.expense };
+  return {
+    kind: "patch",
+    expense: plan.expense,
+    patch: plan.patch,
+    viewerAccountIds: plan.participantAccounts.map((account) => account._id)
+  };
 }
 
 async function advanceSelfDeletionPreflight(
@@ -2280,7 +2281,7 @@ async function advanceSelfDeletion(
         budget,
         identityCache
       );
-      for (const plan of plans) await applySelfDeletionExpensePlan(ctx, plan);
+      await applyExpenseWriteBatch(ctx, plans.map(selfDeletionExpenseOperation));
       return await finishOrContinueSelfDeletionBatch(
         ctx,
         progress,
@@ -2315,7 +2316,7 @@ async function advanceSelfDeletion(
         budget,
         identityCache
       );
-      for (const plan of plans) await applySelfDeletionExpensePlan(ctx, plan);
+      await applyExpenseWriteBatch(ctx, plans.map(selfDeletionExpenseOperation));
       const plannedExpenseIds = new Set(plans.map((plan) => plan.expense.id));
       for (const visibilityRow of visibilityRows) {
         if (!plannedExpenseIds.has(visibilityRow.expense_id))
@@ -2411,10 +2412,7 @@ async function advanceSelfDeletion(
       for (const expense of expenses) {
         reserveFriendCleanupWrites(budget, (visibilityRows.get(expense.id)?.length ?? 0) + 1);
       }
-      for (const expense of expenses) {
-        await deletePreloadedUserExpenses(ctx, visibilityRows.get(expense.id) ?? []);
-        await ctx.db.delete(expense._id);
-      }
+      await applyExpenseWriteBatch(ctx, expenseDeleteOperations(expenses));
       return await finishOrContinueSelfDeletionBatch(
         ctx,
         progress,

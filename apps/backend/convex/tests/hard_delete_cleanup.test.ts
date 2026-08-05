@@ -18,6 +18,163 @@ function adminIdentity() {
 }
 
 describe("Hard Delete Cleanup", () => {
+  test("internal hard delete awaits centralized expense cleanup and bumps surviving viewers once", async () => {
+    const t = convexTest(schema, modules);
+    const fixture = await t.run(async (ctx) => {
+      const survivorId = await ctx.db.insert("accounts", {
+        id: "survivor_auth",
+        email: "survivor@test.com",
+        display_name: "Survivor",
+        created_at: 1,
+        member_id: "survivor_member"
+      });
+      const deletedId = await ctx.db.insert("accounts", {
+        id: "deleted_auth",
+        email: "deleted@test.com",
+        display_name: "Deleted",
+        created_at: 1,
+        member_id: "deleted_member"
+      });
+      const expenseId = await ctx.db.insert("expenses", {
+        id: "hard_delete_expense",
+        group_id: "hard_delete_group",
+        description: "Dinner",
+        date: 1,
+        total_amount: 20,
+        paid_by_member_id: "deleted_member",
+        involved_member_ids: ["deleted_member", "survivor_member"],
+        splits: [
+          { id: "deleted_split", member_id: "deleted_member", amount: 10, is_settled: false },
+          { id: "survivor_split", member_id: "survivor_member", amount: 10, is_settled: false }
+        ],
+        is_settled: false,
+        owner_email: "deleted@test.com",
+        owner_account_id: "deleted_auth",
+        owner_id: deletedId,
+        participant_member_ids: ["deleted_member", "survivor_member"],
+        participant_emails: ["deleted@test.com", "survivor@test.com"],
+        participants: [
+          { member_id: "deleted_member", name: "Deleted" },
+          { member_id: "survivor_member", name: "Survivor" }
+        ],
+        created_at: 1,
+        updated_at: 1
+      });
+      for (const account of [
+        { id: deletedId, auth: "deleted_auth" },
+        { id: survivorId, auth: "survivor_auth" }
+      ]) {
+        await ctx.db.insert("user_expenses", {
+          user_id: account.auth,
+          expense_id: "hard_delete_expense",
+          account_ref: account.id,
+          expense_ref: expenseId,
+          updated_at: 1
+        });
+      }
+      return { survivorId, deletedId };
+    });
+
+    await t.mutation(internal.cleanup.hardDeleteAccount, { accountId: fixture.deletedId });
+
+    const state = await t.run(async (ctx) => ({
+      expenses: await ctx.db.query("expenses").collect(),
+      visibility: await ctx.db.query("user_expenses").collect(),
+      survivorRevision: await ctx.db
+        .query("account_sync_state")
+        .withIndex("by_account_id", (query) => query.eq("account_id", fixture.survivorId))
+        .unique(),
+      deletedRevision: await ctx.db
+        .query("account_sync_state")
+        .withIndex("by_account_id", (query) => query.eq("account_id", fixture.deletedId))
+        .unique()
+    }));
+    expect(state.expenses).toEqual([]);
+    expect(state.visibility).toEqual([]);
+    expect(state.survivorRevision?.expenses_revision).toBe(1);
+    expect(state.deletedRevision).toBeNull();
+  });
+
+  test("admin orphan cleanup routes expense deletion through surviving viewer revisions", async () => {
+    const t = convexTest(schema, modules);
+    const fixture = await t.run(async (ctx) => {
+      const survivorId = await ctx.db.insert("accounts", {
+        id: "janitor_survivor_auth",
+        email: "janitor-survivor@test.com",
+        display_name: "Survivor",
+        created_at: 1,
+        member_id: "janitor_survivor_member"
+      });
+      const deletedId = await ctx.db.insert("accounts", {
+        id: "janitor_deleted_auth",
+        email: "janitor-deleted@test.com",
+        display_name: "Deleted",
+        created_at: 1,
+        member_id: "janitor_deleted_member"
+      });
+      const expenseId = await ctx.db.insert("expenses", {
+        id: "janitor_delete_expense",
+        group_id: "janitor_delete_group",
+        description: "Dinner",
+        date: 1,
+        total_amount: 20,
+        paid_by_member_id: "janitor_deleted_member",
+        involved_member_ids: ["janitor_deleted_member", "janitor_survivor_member"],
+        splits: [
+          {
+            id: "janitor_deleted_split",
+            member_id: "janitor_deleted_member",
+            amount: 10,
+            is_settled: false
+          },
+          {
+            id: "janitor_survivor_split",
+            member_id: "janitor_survivor_member",
+            amount: 10,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "janitor-deleted@test.com",
+        owner_account_id: "janitor_deleted_auth",
+        owner_id: deletedId,
+        participant_member_ids: ["janitor_deleted_member", "janitor_survivor_member"],
+        participant_emails: ["janitor-deleted@test.com", "janitor-survivor@test.com"],
+        participants: [
+          { member_id: "janitor_deleted_member", name: "Deleted" },
+          { member_id: "janitor_survivor_member", name: "Survivor" }
+        ],
+        created_at: 1,
+        updated_at: 1
+      });
+      await ctx.db.insert("user_expenses", {
+        user_id: "janitor_survivor_auth",
+        expense_id: "janitor_delete_expense",
+        account_ref: survivorId,
+        expense_ref: expenseId,
+        updated_at: 1
+      });
+      return { survivorId };
+    });
+
+    process.env.ADMIN_EMAILS = "admin@test.com";
+    await t
+      .withIdentity(adminIdentity())
+      .mutation(api.admin.hardDeleteUser, { email: "janitor-deleted@test.com" });
+
+    const state = await t.run(async (ctx) => ({
+      expenses: await ctx.db.query("expenses").collect(),
+      visibility: await ctx.db.query("user_expenses").collect(),
+      survivorRevision: await ctx.db
+        .query("account_sync_state")
+        .withIndex("by_account_id", (query) => query.eq("account_id", fixture.survivorId))
+        .unique()
+    }));
+    expect(state.expenses).toEqual([]);
+    expect(state.visibility).toEqual([]);
+    expect(state.survivorRevision?.expenses_revision).toBe(1);
+  });
+
   test("friends.list returns unlinked state when linked account is manually deleted", async () => {
     const t = convexTest(schema, modules);
 

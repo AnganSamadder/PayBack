@@ -1,5 +1,6 @@
-import { mutation, query, action } from "./_generated/server";
+import { mutation, query, action, MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
+import { Doc } from "./_generated/dataModel";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { checkRateLimit } from "./rateLimit";
@@ -12,11 +13,59 @@ import {
 } from "./identity";
 import { assertAccountCanAcceptChanges } from "./helpers";
 import { GroupVisibilityWriteBatch } from "./groupVisibility";
+import { applyExpenseWriteBatch, MAX_EXPENSE_WRITE_OPERATIONS } from "./expenseWrites";
 
 const MAX_SAMPLE_IDS = 10;
 const MAX_EQUIVALENT_MEMBER_IDS = 50;
+const MAX_ORPHAN_CLEANUP_GROUPS = 256;
 
 const sampleIds = (ids: string[]) => ids.slice(0, MAX_SAMPLE_IDS);
+
+function orphanCleanupLimitError(resource: "groups" | "expenses" | "visibility") {
+  return new Error(`Orphan cleanup requires resumable ${resource} processing`);
+}
+
+async function deleteOrphanCleanupExpenses(
+  ctx: MutationCtx,
+  expenses: ReadonlyMap<string, Doc<"expenses">>
+): Promise<void> {
+  if (expenses.size > MAX_EXPENSE_WRITE_OPERATIONS) throw orphanCleanupLimitError("expenses");
+  await applyExpenseWriteBatch(
+    ctx,
+    Array.from(expenses.values(), (expense) => ({ kind: "delete" as const, expense }))
+  );
+}
+
+async function deleteBoundedOrphanVisibility(
+  ctx: MutationCtx,
+  accountAuthId: string
+): Promise<void> {
+  const rows = await ctx.db
+    .query("user_expenses")
+    .withIndex("by_user_id", (query) => query.eq("user_id", accountAuthId))
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+  if (rows.length > MAX_EXPENSE_WRITE_OPERATIONS) throw orphanCleanupLimitError("visibility");
+  for (const row of rows) await ctx.db.delete(row._id);
+}
+
+async function deleteOrphanAccountSyncState(ctx: MutationCtx, email: string): Promise<void> {
+  const accounts = await ctx.db
+    .query("accounts")
+    .withIndex("by_email", (query) => query.eq("email", email))
+    .take(2);
+  if (accounts.length > 1) throw new Error(`Account email ${email} is not unique`);
+  const account = accounts[0];
+  if (!account) return;
+  await deleteBoundedOrphanVisibility(ctx, account.id);
+  const states = await ctx.db
+    .query("account_sync_state")
+    .withIndex("by_account_id", (query) => query.eq("account_id", account._id))
+    .take(2);
+  if (states.length > 1) {
+    throw new Error(`Sync maintenance required: duplicate account state ${String(account._id)}`);
+  }
+  if (states[0]) await ctx.db.delete(states[0]._id);
+}
 
 export interface CreateAccountInput {
   id: string;
@@ -89,11 +138,17 @@ export async function cleanupOrphanedDataForEmail(
   const groupsByEmail = await ctx.db
     .query("groups")
     .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
-    .collect();
+    .take(MAX_ORPHAN_CLEANUP_GROUPS + 1);
   const groupsByAccountId = await ctx.db
     .query("groups")
     .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", subject))
-    .collect();
+    .take(MAX_ORPHAN_CLEANUP_GROUPS + 1);
+  if (
+    groupsByEmail.length > MAX_ORPHAN_CLEANUP_GROUPS ||
+    groupsByAccountId.length > MAX_ORPHAN_CLEANUP_GROUPS
+  ) {
+    throw orphanCleanupLimitError("groups");
+  }
   const groupsById = new Map<string, any>();
   for (const group of groupsByEmail) {
     groupsById.set(group._id, group);
@@ -101,20 +156,26 @@ export async function cleanupOrphanedDataForEmail(
   for (const group of groupsByAccountId) {
     groupsById.set(group._id, group);
   }
+  if (groupsById.size > MAX_ORPHAN_CLEANUP_GROUPS) throw orphanCleanupLimitError("groups");
 
   const groupIds: string[] = [];
   const groupExpenseIds: string[] = [];
   const deletedExpenseIds = new Set<string>();
+  const expensesToDelete = new Map<string, Doc<"expenses">>();
   const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
   for (const group of groupsById.values()) {
+    const remainingExpenseCapacity = MAX_EXPENSE_WRITE_OPERATIONS - expensesToDelete.size;
     const groupExpenses = await ctx.db
       .query("expenses")
       .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-      .collect();
+      .take(remainingExpenseCapacity + 1);
+    if (groupExpenses.length > remainingExpenseCapacity) {
+      throw orphanCleanupLimitError("expenses");
+    }
 
     for (const expense of groupExpenses) {
       if (deletedExpenseIds.has(expense._id)) continue;
-      await ctx.db.delete(expense._id);
+      expensesToDelete.set(String(expense._id), expense);
       deletedExpenseIds.add(expense._id);
       groupExpenseIds.push(expense._id);
     }
@@ -135,11 +196,17 @@ export async function cleanupOrphanedDataForEmail(
   const expensesByEmail = await ctx.db
     .query("expenses")
     .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
-    .collect();
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
   const expensesByAccountId = await ctx.db
     .query("expenses")
     .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", subject))
-    .collect();
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+  if (
+    expensesByEmail.length > MAX_EXPENSE_WRITE_OPERATIONS ||
+    expensesByAccountId.length > MAX_EXPENSE_WRITE_OPERATIONS
+  ) {
+    throw orphanCleanupLimitError("expenses");
+  }
   const expenseById = new Map<string, any>();
   for (const expense of expensesByEmail) {
     expenseById.set(expense._id, expense);
@@ -151,10 +218,12 @@ export async function cleanupOrphanedDataForEmail(
   const ownedExpenseIds: string[] = [];
   for (const expense of expenseById.values()) {
     if (deletedExpenseIds.has(expense._id)) continue;
-    await ctx.db.delete(expense._id);
+    expensesToDelete.set(String(expense._id), expense);
     deletedExpenseIds.add(expense._id);
     ownedExpenseIds.push(expense._id);
   }
+  await deleteOrphanCleanupExpenses(ctx, expensesToDelete);
+  await deleteBoundedOrphanVisibility(ctx, subject);
   logSelfHeal(baseLog, "delete_owned_expenses", {
     deletedCount: ownedExpenseIds.length,
     sampleIds: sampleIds(ownedExpenseIds)
@@ -293,20 +362,26 @@ export async function hardCleanupOrphanedAccount(ctx: any, { email }: { email: s
   const groupsByEmail = await ctx.db
     .query("groups")
     .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
-    .collect();
+    .take(MAX_ORPHAN_CLEANUP_GROUPS + 1);
+  if (groupsByEmail.length > MAX_ORPHAN_CLEANUP_GROUPS) {
+    throw orphanCleanupLimitError("groups");
+  }
 
   let groupsDeleted = 0;
-  let expensesDeleted = 0;
+  const expensesToDelete = new Map<string, Doc<"expenses">>();
   const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
   for (const group of groupsByEmail) {
+    const remainingExpenseCapacity = MAX_EXPENSE_WRITE_OPERATIONS - expensesToDelete.size;
     const expenses = await ctx.db
       .query("expenses")
       .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-      .collect();
+      .take(remainingExpenseCapacity + 1);
+    if (expenses.length > remainingExpenseCapacity) {
+      throw orphanCleanupLimitError("expenses");
+    }
 
     for (const expense of expenses) {
-      await ctx.db.delete(expense._id);
-      expensesDeleted++;
+      expensesToDelete.set(String(expense._id), expense);
     }
 
     await groupVisibilityBatch.delete(group._id);
@@ -317,12 +392,17 @@ export async function hardCleanupOrphanedAccount(ctx: any, { email }: { email: s
   const expensesByEmail = await ctx.db
     .query("expenses")
     .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
-    .collect();
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+  if (expensesByEmail.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw orphanCleanupLimitError("expenses");
+  }
 
   for (const expense of expensesByEmail) {
-    await ctx.db.delete(expense._id);
-    expensesDeleted++;
+    expensesToDelete.set(String(expense._id), expense);
   }
+  await deleteOrphanCleanupExpenses(ctx, expensesToDelete);
+  const expensesDeleted = expensesToDelete.size;
+  await deleteOrphanAccountSyncState(ctx, email);
 
   const linkRequests = await ctx.db
     .query("link_requests")
