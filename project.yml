@@ -89,7 +89,7 @@ packages:
     from: 0.1.0
   Clerk:
     url: https://github.com/clerk/clerk-ios
-    from: 0.1.0
+    exactVersion: 1.3.6
 
 # ----------------------------------------------------------------------------
 # Build Configurations
@@ -259,7 +259,7 @@ targets:
       - package: Convex
         product: ConvexMobile
       - package: Clerk
-        product: Clerk
+        product: ClerkKit
 
       # Other dependency types:
 
@@ -532,7 +532,7 @@ targets:
 
     dependencies:
       - package: Clerk
-        product: Clerk
+        product: ClerkKit
 
     settings:
       base:

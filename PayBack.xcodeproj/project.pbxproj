@@ -30,6 +30,7 @@
 		0B57CC3EB909D6421980D7A6 /* ConvexClientWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF3768EB10020576D4376F8A /* ConvexClientWrapper.swift */; };
 		0BB3650567840EC81AD94E05 /* breaking_change_test.json in Resources */ = {isa = PBXBuildFile; fileRef = AE3FFC8F26C063DF2AC7C226 /* breaking_change_test.json */; };
 		0C572FFFDFAEC2051C6D8882 /* Styles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A54E8765BB61BF8AE75C2E7F /* Styles.swift */; };
+		0CCEB9277D857B7B36A72658 /* ClerkEmailAuthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87C4D0BB28C9E2AF379CF4FB /* ClerkEmailAuthServiceTests.swift */; };
 		0EADA4F6E570BB10E9994A28 /* PayBackError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69443F11A93F66BEE9237A98 /* PayBackError.swift */; };
 		0F899FF83B7A062112B328C5 /* MockClockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F862170756D13FB945F76F /* MockClockTests.swift */; };
 		0FEBD0065AAD1C187E9A9854 /* TabNavigationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7DE9458EE0CC3F8CB19D862 /* TabNavigationState.swift */; };
@@ -137,7 +138,7 @@
 		5356AE7A4AD222499DC5A7C2 /* ExpenseModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4873A17CDB9081DD848BD44 /* ExpenseModelTests.swift */; };
 		53FCB148D862A0E631590159 /* ConvexClientWrapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 569D149828BA1FCE98EC6FC7 /* ConvexClientWrapperTests.swift */; };
 		5458FA1F70E4D2EF90DFF205 /* GroupsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB7059704035A15DCD73A3A6 /* GroupsListView.swift */; };
-		548BBF301D04B442E50CD8FB /* Clerk in Frameworks */ = {isa = PBXBuildFile; productRef = 1723AF2F0527D04BCD586CC4 /* Clerk */; };
+		548BBF301D04B442E50CD8FB /* ClerkKit in Frameworks */ = {isa = PBXBuildFile; productRef = F384EBFF0BB9E07070F8B10B /* ClerkKit */; };
 		54C8975AE0EB3C7E9955D447 /* ClerkAuthModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5612BC413F0B414514420FC /* ClerkAuthModels.swift */; };
 		55FF23B001429E36808D4C9D /* AppStoreDataNormalizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C0166AE6D51E4712BBA9180 /* AppStoreDataNormalizationTests.swift */; };
 		560F46E426CF667CEBF58B45 /* CurrencyServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9F8AA8A820D9FB721FAA22 /* CurrencyServiceTests.swift */; };
@@ -223,7 +224,7 @@
 		86BA96DBECDC66236FAB1DA8 /* ClerkEmailAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 387C17F0C12AF8DFD35B7123 /* ClerkEmailAuthService.swift */; };
 		86D8A3232F38E55734FCDC35 /* AccountServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A8B642930616D624DFF4D8 /* AccountServiceTests.swift */; };
 		87191B9DDC967D64CEBCACB6 /* NavigationHeaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F49C78DD426C127AEC3C0BBB /* NavigationHeaderTests.swift */; };
-		894C2CB2EDC833182194193C /* Clerk in Frameworks */ = {isa = PBXBuildFile; productRef = 4211737ABED16C9E3B3FCF7B /* Clerk */; };
+		894C2CB2EDC833182194193C /* ClerkKit in Frameworks */ = {isa = PBXBuildFile; productRef = C62232C1DFCCAFE280B13283 /* ClerkKit */; };
 		8991A1E3BFC240BC856258EE /* ConvexAccountServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7DEBED879A13D7226AA9E12 /* ConvexAccountServiceTests.swift */; };
 		8991FEB68B56E39AB23015CF /* XCTest+Async.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B716DF6C753362E081C4E53 /* XCTest+Async.swift */; };
 		89FE755374B3DE091972AE6B /* EmailValidatorExtendedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 969ADA34691DAABA5441C015 /* EmailValidatorExtendedTests.swift */; };
@@ -310,6 +311,7 @@
 		B693B939B9B36B0C384775B8 /* PhoneNumberFormatterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD16B0297CB11195D0BFCEE1 /* PhoneNumberFormatterTests.swift */; };
 		B7234C6E10B3F504700692DB /* GroupMemberTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DC75D835D8DFD1138E7BF41 /* GroupMemberTests.swift */; };
 		B809F8CCFE17FCCE9B228E2A /* ClerkAuthProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113851BAEAD1EADFEE916193 /* ClerkAuthProvider.swift */; };
+		B81A9982EA24152236D69583 /* ClerkEmailAuthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87C4D0BB28C9E2AF379CF4FB /* ClerkEmailAuthServiceTests.swift */; };
 		B868F711CCF845709966F329 /* ConvexAccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC6DB99D36309203AAC73876 /* ConvexAccountService.swift */; };
 		B8DA3C3F76FA55F61C4229F8 /* DataImportServiceBackCompatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4F5526709AA35B6EF1DEC12 /* DataImportServiceBackCompatTests.swift */; };
 		BA6A74175F6C0D25AEC8689A /* ConvexDTOsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB7DD7E0948CFF99E83B5087 /* ConvexDTOsTests.swift */; };
@@ -592,6 +594,7 @@
 		85516C61396B85FE8F675EB9 /* LinkingModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkingModels.swift; sourceTree = "<group>"; };
 		85B78598B0EB26D57FD34A9D /* CodableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodableTests.swift; sourceTree = "<group>"; };
 		862238F952FBEC309CB1E16C /* LinkRequestServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkRequestServiceTests.swift; sourceTree = "<group>"; };
+		87C4D0BB28C9E2AF379CF4FB /* ClerkEmailAuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClerkEmailAuthServiceTests.swift; sourceTree = "<group>"; };
 		88B9F6BE8F42C59E591DBD6F /* TransitiveLinkingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransitiveLinkingTests.swift; sourceTree = "<group>"; };
 		89ECF25EDEBE04BAF990F308 /* SignupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignupView.swift; sourceTree = "<group>"; };
 		8AE837AA216916E0F55FC490 /* DataImportServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataImportServiceTests.swift; sourceTree = "<group>"; };
@@ -716,7 +719,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				64689DAF2BC3B129F8DB5BFD /* ConvexMobile in Frameworks */,
-				548BBF301D04B442E50CD8FB /* Clerk in Frameworks */,
+				548BBF301D04B442E50CD8FB /* ClerkKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -724,7 +727,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				894C2CB2EDC833182194193C /* Clerk in Frameworks */,
+				894C2CB2EDC833182194193C /* ClerkKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1159,6 +1162,7 @@
 				C07F44F1F87534BB9B11564B /* AppStoreTests.swift */,
 				CC9AEB1DC55875B618DCE397 /* ClerkAuthProviderExtendedTests.swift */,
 				5EFE8F2047EEAF11D31E4F1B /* ClerkAuthProviderTests.swift */,
+				87C4D0BB28C9E2AF379CF4FB /* ClerkEmailAuthServiceTests.swift */,
 				E7DEBED879A13D7226AA9E12 /* ConvexAccountServiceTests.swift */,
 				DA91BC4B61944131044A725C /* ConvexArgumentBuilderTests.swift */,
 				569D149828BA1FCE98EC6FC7 /* ConvexClientWrapperTests.swift */,
@@ -1437,7 +1441,7 @@
 			name = PayBack;
 			packageProductDependencies = (
 				AB093BE470D7E915758A7F0E /* ConvexMobile */,
-				1723AF2F0527D04BCD586CC4 /* Clerk */,
+				F384EBFF0BB9E07070F8B10B /* ClerkKit */,
 			);
 			productName = PayBack;
 			productReference = 44DC8C435AB86C92B1C7D259 /* PayBack.app */;
@@ -1457,7 +1461,7 @@
 			);
 			name = PayBackCI;
 			packageProductDependencies = (
-				4211737ABED16C9E3B3FCF7B /* Clerk */,
+				C62232C1DFCCAFE280B13283 /* ClerkKit */,
 			);
 			productName = PayBackCI;
 			productReference = D5D3B3B9AA766F4831311664 /* PayBackCI.app */;
@@ -1721,6 +1725,7 @@
 				60840E41EBCCEDA7BCA497ED /* ClaimSubscriptionTests.swift in Sources */,
 				7A2959BCE393F89E5AD69565 /* ClerkAuthProviderExtendedTests.swift in Sources */,
 				06504D6552D9996303DFB7DE /* ClerkAuthProviderTests.swift in Sources */,
+				0CCEB9277D857B7B36A72658 /* ClerkEmailAuthServiceTests.swift in Sources */,
 				3640F819553618E9B914C75F /* CodableTests.swift in Sources */,
 				8991A1E3BFC240BC856258EE /* ConvexAccountServiceTests.swift in Sources */,
 				B0E3B5CFD44D81A477945756 /* ConvexArgumentBuilderTests.swift in Sources */,
@@ -1859,6 +1864,7 @@
 				34AC378E0E4C4BF4CEE1286C /* BusinessLogicErrorTests.swift in Sources */,
 				64F485D7FD58418BC061999B /* ClaimFriendRecordTests.swift in Sources */,
 				C38B0571440DACE6DD9090C6 /* ClaimSubscriptionTests.swift in Sources */,
+				B81A9982EA24152236D69583 /* ClerkEmailAuthServiceTests.swift in Sources */,
 				BD952EED8910115E56D3AEAE /* CodableTests.swift in Sources */,
 				C1D08F8336C4AADAEE764A82 /* ConvexConfigTests.swift in Sources */,
 				A56F3B4CDD9C71E8716BF900 /* ConvexDTOExtendedTests.swift in Sources */,
@@ -2554,8 +2560,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/clerk/clerk-ios";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.1.0;
+				kind = exactVersion;
+				version = 1.3.6;
 			};
 		};
 		628B76C702015F4F77FFE89E /* XCRemoteSwiftPackageReference "convex-swift" */ = {
@@ -2569,20 +2575,20 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		1723AF2F0527D04BCD586CC4 /* Clerk */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 36B8968AD81BAC2108B2ABBF /* XCRemoteSwiftPackageReference "clerk-ios" */;
-			productName = Clerk;
-		};
-		4211737ABED16C9E3B3FCF7B /* Clerk */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 36B8968AD81BAC2108B2ABBF /* XCRemoteSwiftPackageReference "clerk-ios" */;
-			productName = Clerk;
-		};
 		AB093BE470D7E915758A7F0E /* ConvexMobile */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 628B76C702015F4F77FFE89E /* XCRemoteSwiftPackageReference "convex-swift" */;
 			productName = ConvexMobile;
+		};
+		C62232C1DFCCAFE280B13283 /* ClerkKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 36B8968AD81BAC2108B2ABBF /* XCRemoteSwiftPackageReference "clerk-ios" */;
+			productName = ClerkKit;
+		};
+		F384EBFF0BB9E07070F8B10B /* ClerkKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 36B8968AD81BAC2108B2ABBF /* XCRemoteSwiftPackageReference "clerk-ios" */;
+			productName = ClerkKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

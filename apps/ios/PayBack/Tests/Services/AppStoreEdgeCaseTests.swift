@@ -1097,6 +1097,84 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertTrue(recoveryStore.canPresentAuthenticationFlow)
     }
 
+    func testConvexAuthenticationFailureBlocksSessionRestoreUntilRetrySucceeds() async {
+        let identity = AuthenticationSessionIdentity(
+            email: "restored@example.com",
+            displayName: "Restored User"
+        )
+        let account = UserAccount(
+            id: "restored-account",
+            email: identity.email,
+            displayName: "Restored User"
+        )
+        await mockAccountService.addAccount(account)
+        let authenticator = SequencedConvexAuthenticator(
+            outcomes: [.failure(PayBackError.networkUnavailable), .success]
+        )
+        let recoveryStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true,
+            authenticationSessionLoader: { identity },
+            convexAuthenticator: { try await authenticator.authenticate() }
+        )
+
+        await recoveryStore.checkSession()
+
+        XCTAssertNil(recoveryStore.session)
+        XCTAssertTrue(recoveryStore.isAuthenticationSessionRecoveryBlocking)
+
+        await recoveryStore.checkSession()
+
+        XCTAssertEqual(recoveryStore.session?.account.id, account.id)
+        XCTAssertFalse(recoveryStore.isAuthenticationSessionRecoveryBlocking)
+        let calls = await authenticator.callCount()
+        XCTAssertEqual(calls, 2)
+    }
+
+    func testExplicitLoginDoesNotCreateAccountWhenConvexAuthenticationFails() async throws {
+        let email = "login@example.com"
+        let authService = ControlledDeletionEmailAuthService(
+            signInResult: EmailAuthSignInResult(
+                uid: "auth-user",
+                email: email,
+                firstName: "Login",
+                lastName: "User"
+            )
+        )
+        let authenticator = SequencedConvexAuthenticator(
+            outcomes: [.failure(PayBackError.networkUnavailable), .success]
+        )
+        let loginStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: authService,
+            skipClerkInit: true,
+            convexAuthenticator: { try await authenticator.authenticate() }
+        )
+
+        await XCTAssertThrowsError(try await loginStore.login(email: email, password: "password"))
+
+        XCTAssertNil(loginStore.session)
+        let accountAfterFailure = try await mockAccountService.lookupAccount(byEmail: email)
+        XCTAssertNil(accountAfterFailure)
+
+        let account = try await loginStore.login(email: email, password: "password")
+
+        XCTAssertEqual(loginStore.session?.account.id, account.id)
+        let accountAfterRetry = try await mockAccountService.lookupAccount(byEmail: email)
+        XCTAssertEqual(accountAfterRetry?.id, account.id)
+    }
+
     func testMissingAccountSignOutFailureRemainsBlockedUntilRetrySucceeds() async {
         let identity = AuthenticationSessionIdentity(
             email: "missing@example.com",
@@ -1198,13 +1276,20 @@ private actor ControlledDeletionEmailAuthService: EmailAuthService {
     private var signOutFailuresRemaining: Int
     private var deleteCallCount = 0
     private var signOutCallCount = 0
+    private let signInResult: EmailAuthSignInResult?
 
-    init(deleteFailuresRemaining: Int = 0, signOutFailuresRemaining: Int = 0) {
+    init(
+        deleteFailuresRemaining: Int = 0,
+        signOutFailuresRemaining: Int = 0,
+        signInResult: EmailAuthSignInResult? = nil
+    ) {
         self.deleteFailuresRemaining = deleteFailuresRemaining
         self.signOutFailuresRemaining = signOutFailuresRemaining
+        self.signInResult = signInResult
     }
 
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
+        if let signInResult { return signInResult }
         throw PayBackError.authInvalidCredentials(message: "Not implemented")
     }
 
@@ -1356,5 +1441,34 @@ private actor SequencedAuthenticationSessionLoader {
 
     func loadCalls() -> Int {
         callCount
+    }
+}
+
+private actor SequencedConvexAuthenticator {
+    enum Outcome {
+        case success
+        case failure(Error)
+    }
+
+    private var outcomes: [Outcome]
+    private var calls = 0
+
+    init(outcomes: [Outcome]) {
+        self.outcomes = outcomes
+    }
+
+    func authenticate() throws {
+        calls += 1
+        guard outcomes.isEmpty == false else { return }
+        switch outcomes.removeFirst() {
+        case .success:
+            return
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    func callCount() -> Int {
+        calls
     }
 }

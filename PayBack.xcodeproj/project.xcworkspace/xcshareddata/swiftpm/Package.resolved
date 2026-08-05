@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/clerk/clerk-ios",
       "state" : {
-        "revision" : "8d16727fbe58609e18759e3020488b840201c83d",
-        "version" : "0.71.4"
+        "revision" : "1a75c1e29b22f746a3816ae95b5434c6109b91a7",
+        "version" : "1.3.6"
       }
     },
     {
@@ -20,48 +20,21 @@
       }
     },
     {
-      "identity" : "factory",
+      "identity" : "nuke",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/hmlongco/Factory",
+      "location" : "https://github.com/kean/Nuke.git",
       "state" : {
-        "revision" : "ccc898f21992ebc130bc04cc197460a5ae230bcf",
-        "version" : "2.5.3"
-      }
-    },
-    {
-      "identity" : "get",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/kean/Get",
-      "state" : {
-        "revision" : "31249885da1052872e0ac91a2943f62567c0d96d",
-        "version" : "2.2.1"
-      }
-    },
-    {
-      "identity" : "kingfisher",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/onevcat/Kingfisher.git",
-      "state" : {
-        "revision" : "d30a5fad881137e2267f96a8e3fc35c58999bb94",
-        "version" : "8.6.2"
+        "revision" : "63a8fcbd6621340a2410bc3e9575ac97058615f4",
+        "version" : "13.0.6"
       }
     },
     {
       "identity" : "phonenumberkit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/marmelroy/PhoneNumberKit",
+      "location" : "https://github.com/PhoneNumberKit/PhoneNumberKit",
       "state" : {
-        "revision" : "16bb5d46b82540280c5aab8976a94d8a9cda8135",
-        "version" : "4.2.2"
-      }
-    },
-    {
-      "identity" : "simplekeychain",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/auth0/SimpleKeychain",
-      "state" : {
-        "revision" : "776c4a6db74d5c6c143974be91c383680d468630",
-        "version" : "1.3.0"
+        "revision" : "e18a029dbada1d8eb32e3f81a4eb72eba539ff75",
+        "version" : "5.0.6"
       }
     }
   ],

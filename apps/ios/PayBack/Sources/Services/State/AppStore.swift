@@ -1,7 +1,7 @@
 // swiftlint:disable file_length type_body_length line_length large_tuple cyclomatic_complexity function_body_length identifier_name inclusive_language blanket_disable_command
 import Foundation
 import Combine
-import Clerk
+import ClerkKit
 
 enum LogoutAlert: Identifiable { case accountDeleted; var id: Int { hashValue } }
 
@@ -53,6 +53,7 @@ final class AppStore: ObservableObject {
     private let emailAuthService: EmailAuthService
     private let skipClerkInit: Bool
     private let authenticationSessionLoader: @Sendable () async throws -> AuthenticationSessionIdentity?
+    private let convexAuthenticator: @Sendable () async throws -> Void
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
@@ -105,7 +106,8 @@ final class AppStore: ObservableObject {
         inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService,
         emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
         skipClerkInit: Bool = false,
-        authenticationSessionLoader: (@Sendable () async throws -> AuthenticationSessionIdentity?)? = nil
+        authenticationSessionLoader: (@Sendable () async throws -> AuthenticationSessionIdentity?)? = nil,
+        convexAuthenticator: (@Sendable () async throws -> Void)? = nil
     ) {
         AppConfig.markTiming("AppStore init started")
 
@@ -118,19 +120,23 @@ final class AppStore: ObservableObject {
         self.emailAuthService = emailAuthService
         self.skipClerkInit = skipClerkInit
         self.authenticationSessionLoader = authenticationSessionLoader ?? {
-            let clerk = Clerk.shared
-            await MainActor.run {
-                clerk.configure(publishableKey: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA")
-            }
-            try await clerk.load()
+            let clerk = await Clerk.shared
+            try await clerk.refreshClient()
             return await MainActor.run {
-                guard let user = clerk.user else { return nil }
+                guard let session = clerk.session,
+                      session.status == .active,
+                      let user = session.user else { return nil }
                 let email = user.primaryEmailAddress?.emailAddress ?? ""
                 let displayName = [user.firstName, user.lastName]
                     .compactMap { $0 }
                     .joined(separator: " ")
                 return AuthenticationSessionIdentity(email: email, displayName: displayName)
             }
+        }
+        self.convexAuthenticator = convexAuthenticator ?? {
+            #if !PAYBACK_CI_NO_CONVEX
+            try await Dependencies.authenticateConvex()
+            #endif
         }
 
         // Load local data
@@ -161,10 +167,10 @@ final class AppStore: ObservableObject {
             subscribeToSyncManager()
         }
 
-        // 2. Kick off Auth Check (Concurrent, OFF-MAIN-THREAD to bypass UI blocking)
+        // 2. Kick off Auth Check (Concurrent)
         // Skip for tests to avoid Clerk API rate limiting
         if !skipClerkInit {
-            Task.detached(priority: .userInitiated) { [weak self] in
+            Task { @MainActor [weak self] in
                 await self?.checkSession()
             }
         }
@@ -240,11 +246,7 @@ final class AppStore: ObservableObject {
             }
 
             let email = identity.email
-            print("[AuthDebug] Authentication user found: \(email)")
-
-            #if !PAYBACK_CI_NO_CONVEX
-            await Dependencies.authenticateConvex()
-            #endif
+            try await convexAuthenticator()
 
             let accountService = self.accountService
             let account: UserAccount? = try await RetryPolicy.startup.execute {
@@ -548,10 +550,8 @@ final class AppStore: ObservableObject {
 
     /// Shared helper to authenticate Convex, wait for server, and setup session
     private func performConvexAuthAndSetup(email: String, name: String?, allowCreation: Bool) async throws -> UserAccount {
-        #if !PAYBACK_CI_NO_CONVEX
         // 1. Authenticate Convex
-        await Dependencies.authenticateConvex()
-        #endif
+        try await convexAuthenticator()
 
         // 2. Robust Wait
         try await waitForServerAuthentication()
@@ -713,7 +713,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             #if DEBUG
                 // Verify sign out (skip in tests when Clerk isn't configured).
                 if !skipClerkInit {
-                    try? await Clerk.shared.load()
+                    _ = try? await Clerk.shared.refreshClient()
                     if let user = Clerk.shared.user {
                         print("[AuthDebug] CRITICAL: Clerk still has user after signOut: \(user.id)")
                     } else {

@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import Foundation
 import Network
-import Clerk
+import ClerkKit
 
 #if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
@@ -17,7 +17,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
 struct RootViewWithStore: View {
     @StateObject private var store = AppStore()
-    @Environment(\.clerk) private var clerk
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var networkMonitor = NetworkMonitor()
     @State private var pendingInviteToken: UUID?
@@ -344,7 +343,7 @@ extension NWInterface.InterfaceType {
 @main
 struct PayBackApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @State private var clerk = Clerk.shared
+    @State private var clerk: Clerk
 
     #if !PAYBACK_CI_NO_CONVEX
     let convexClient: ConvexClientWithAuth<ClerkAuthResult>
@@ -353,6 +352,11 @@ struct PayBackApp: App {
     init() {
         // Start performance tracking
         AppConfig.markAppStart()
+
+        let clerk = Clerk.configure(
+            publishableKey: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA"
+        )
+        _clerk = State(initialValue: clerk)
 
         // Log startup configuration
         AppConfig.logStartupInfo()
@@ -383,7 +387,7 @@ struct PayBackApp: App {
     var body: some Scene {
         WindowGroup {
             RootViewWithStore()
-                .environment(\.clerk, clerk)
+                .environment(clerk)
                 .tint(AppTheme.brand)
         }
     }
