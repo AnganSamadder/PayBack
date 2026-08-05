@@ -143,8 +143,14 @@ actor ConvexInviteLinkService: InviteLinkService {
         }
     }
 
-    func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
-        let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString]
+    func claimInviteToken(
+        _ tokenId: UUID,
+        mergeLocalFriendMemberId: UUID?
+    ) async throws -> LinkAcceptResult {
+        let args: [String: ConvexEncodable?] = [
+            "id": tokenId.uuidString,
+            "mergeLocalFriendMemberId": mergeLocalFriendMemberId?.uuidString
+        ]
 
         // Mutation returns the result directly
         let result: ConvexLinkAcceptResultDTO = try await client.mutation("inviteTokens:claim", with: args)

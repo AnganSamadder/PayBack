@@ -475,6 +475,26 @@ final class ConvexDTOsTests: XCTestCase {
         XCTAssertNil(friend?.linkedAccountEmail)
     }
 
+    func testConvexAccountFriendDTO_toAccountFriend_PreservesStatusAndMapsGhostLinkState() throws {
+        let data = Data(
+            """
+            {
+              "member_id": "550e8400-e29b-41d4-a716-446655440001",
+              "name": "Deleted Friend",
+              "status": "friend",
+              "link_state": "ghost",
+              "has_linked_account": false
+            }
+            """.utf8
+        )
+
+        let dto = try JSONDecoder().decode(ConvexAccountFriendDTO.self, from: data)
+
+        let friend = dto.toAccountFriend()
+        XCTAssertEqual(friend?.status, "friend")
+        XCTAssertEqual(friend?.linkState, "ghost")
+    }
+
     // MARK: - ConvexUserAccountDTO Tests
 
     func testConvexUserAccountDTO_toUserAccount_FullyPopulated() {

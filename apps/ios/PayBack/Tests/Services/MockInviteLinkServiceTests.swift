@@ -87,7 +87,8 @@ final class MockInviteLinkServiceTests: XCTestCase {
         let inviteLink = try await service.generateInviteLink(targetMemberId: memberId, targetMemberName: "Test")
         let result = try await service.claimInviteToken(inviteLink.token.id)
 
-        XCTAssertEqual(result.linkedMemberId, memberId)
+        XCTAssertEqual(result.targetMemberId, memberId)
+        XCTAssertTrue(result.aliasMemberIds.contains(memberId))
         XCTAssertFalse(result.linkedAccountId.isEmpty)
         XCTAssertFalse(result.linkedAccountEmail.isEmpty)
     }

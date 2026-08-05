@@ -3,10 +3,13 @@ import XCTest
 
 final class InviteLinkServiceTests: XCTestCase {
     var service: MockInviteLinkServiceForTests!
+    private let claimerCanonicalMemberId = UUID(uuidString: "75FFBE0E-1F33-42DC-B9A9-83B5DCBB67ED")!
 
     override func setUp() async throws {
         try await super.setUp()
-        service = MockInviteLinkServiceForTests()
+        service = MockInviteLinkServiceForTests(
+            claimerCanonicalMemberId: claimerCanonicalMemberId
+        )
     }
 
     override func tearDown() async throws {
@@ -127,7 +130,11 @@ final class InviteLinkServiceTests: XCTestCase {
 
         let result = try await service.claimInviteToken(inviteLink.token.id)
 
-        XCTAssertEqual(result.linkedMemberId, targetMemberId)
+        XCTAssertEqual(result.targetMemberId, targetMemberId)
+        XCTAssertEqual(result.canonicalMemberId, claimerCanonicalMemberId)
+        XCTAssertEqual(result.aliasMemberIds, [targetMemberId])
+        XCTAssertEqual(result.contractVersion, 2)
+        XCTAssertEqual(result.linkedMemberId, result.canonicalMemberId)
         XCTAssertEqual(result.linkedAccountId, "test-claimer-456")
         XCTAssertEqual(result.linkedAccountEmail, "claimer@example.com")
     }
@@ -397,7 +404,8 @@ final class InviteLinkServiceTests: XCTestCase {
 
         let result = try await service.claimInviteToken(invite.token.id)
 
-        XCTAssertEqual(result.linkedMemberId, memberId)
+        XCTAssertEqual(result.targetMemberId, memberId)
+        XCTAssertTrue(result.aliasMemberIds.contains(memberId))
     }
 
     func testMockServiceShared_claimInviteToken_invalid() async throws {
@@ -792,7 +800,11 @@ final class InviteLinkServiceTests: XCTestCase {
 
         let result = try await service.claimInviteToken(invite.token.id)
 
-        XCTAssertEqual(result.linkedMemberId, targetMemberId)
+        XCTAssertEqual(result.targetMemberId, targetMemberId)
+        XCTAssertEqual(result.canonicalMemberId, claimerCanonicalMemberId)
+        XCTAssertEqual(result.aliasMemberIds, [targetMemberId])
+        XCTAssertEqual(result.contractVersion, 2)
+        XCTAssertEqual(result.linkedMemberId, result.canonicalMemberId)
     }
 
     func testClaimResultHasLinkedAccountInfo() async throws {

@@ -127,7 +127,8 @@ final class MockInviteLinkServiceExtendedTests: XCTestCase {
         let tokenId = link.token.id
         let result = try await service.claimInviteToken(tokenId)
 
-        XCTAssertEqual(result.linkedMemberId, memberId)
+        XCTAssertEqual(result.targetMemberId, memberId)
+        XCTAssertTrue(result.aliasMemberIds.contains(memberId))
     }
 
     func testClaimInviteToken_invalidToken_throws() async {
