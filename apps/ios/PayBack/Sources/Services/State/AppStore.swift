@@ -3518,6 +3518,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
 
         let claimingAccountId = claimingSession.account.id
+        let claimingDataEpoch = dataEpoch
         let mergeMemberId = friend?.memberId
 
         // The mutation can commit before its acknowledgement reaches the app. Keep the
@@ -3526,7 +3527,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         let operation = Task { @MainActor [weak self] in
             guard let self else { throw PayBackError.authSessionMissing }
             let result = try await retryPolicy.execute {
-                guard self.session?.account.id == claimingAccountId else {
+                guard self.session?.account.id == claimingAccountId,
+                      self.dataEpoch == claimingDataEpoch
+                else {
                     throw PayBackError.authSessionMissing
                 }
                 return try await self.inviteLinkService.claimInviteToken(
@@ -3535,19 +3538,25 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 )
             }
 
-            guard self.session?.account.id == claimingAccountId else {
+            guard self.session?.account.id == claimingAccountId,
+                  self.dataEpoch == claimingDataEpoch
+            else {
                 throw PayBackError.authSessionMissing
             }
             self.applyLinkAcceptResult(result)
             await self.stateReconciliation.invalidate()
-            guard self.session?.account.id == claimingAccountId else {
+            guard self.session?.account.id == claimingAccountId,
+                  self.dataEpoch == claimingDataEpoch
+            else {
                 throw PayBackError.authSessionMissing
             }
 
             // Fetch the canonical friend, group, and expense state only after the
             // atomic backend claim/merge succeeds. This avoids optimistic UI loss.
             await self.loadRemoteData()
-            guard self.session?.account.id == claimingAccountId else {
+            guard self.session?.account.id == claimingAccountId,
+                  self.dataEpoch == claimingDataEpoch
+            else {
                 throw PayBackError.authSessionMissing
             }
         }

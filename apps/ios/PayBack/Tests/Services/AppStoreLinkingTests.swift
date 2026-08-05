@@ -603,6 +603,52 @@ final class AppStoreLinkingTests: XCTestCase {
         XCTAssertNil(claimedTokenId)
     }
 
+    func testClaimInviteToken_DoesNotRetryAfterSameAccountRelogin() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+
+        sut = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
+            retryPolicy: RetryPolicy(maxAttempts: 2, baseDelay: 0, maxDelay: 0),
+            skipClerkInit: true
+        )
+        sut.session = UserSession(account: account)
+
+        let tokenId = UUID()
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.suspendNextClaim(with: PayBackError.networkUnavailable)
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId)
+        }
+        await mockInviteLinkService.waitUntilClaimAttempted()
+        await sut.signOut()
+        sut.session = UserSession(account: account)
+        await mockInviteLinkService.resumeSuspendedClaim()
+
+        do {
+            try await claimTask.value
+            XCTFail("Expected the claim to stop at the old logical session boundary")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        let claimAttempts = await mockInviteLinkService.claimAttempts()
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertEqual(claimAttempts, 1)
+        XCTAssertNil(claimedTokenId)
+    }
+
     func testClaimInviteToken_DoesNotApplyRemoteFriendsAfterAccountSwitch() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.session = UserSession(account: account)
