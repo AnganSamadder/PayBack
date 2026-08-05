@@ -779,6 +779,21 @@ async function performHardDelete(ctx: any, account: any, source: string) {
 
   logHardDelete(baseLog, "start", { message: "Starting hard delete" });
 
+  const deletionProgressRows = new Map<string, Doc<"account_deletion_progress">>();
+  for (const progress of await ctx.db
+    .query("account_deletion_progress")
+    .withIndex("by_auth_subject", (q: any) => q.eq("auth_subject", account.id))
+    .collect()) {
+    deletionProgressRows.set(String(progress._id), progress);
+  }
+  for (const progress of await ctx.db
+    .query("account_deletion_progress")
+    .withIndex("by_account_id", (q: any) => q.eq("account_id", account._id))
+    .collect()) {
+    deletionProgressRows.set(String(progress._id), progress);
+  }
+  for (const progress of deletionProgressRows.values()) await ctx.db.delete(progress._id);
+
   const friends = await ctx.db
     .query("account_friends")
     .withIndex("by_account_email", (q: any) => q.eq("account_email", account.email))
@@ -1506,7 +1521,12 @@ export const hardDeleteAccount = internalMutation({
 
 export const selfDeletionStatus = query({
   args: {},
-  returns: v.object({ completed: v.boolean() }),
+  returns: v.object({
+    completed: v.boolean(),
+    inProgress: v.boolean(),
+    phase: v.union(v.string(), v.null()),
+    progressToken: v.union(v.string(), v.null())
+  }),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
@@ -1517,154 +1537,772 @@ export const selfDeletionStatus = query({
       .query("account_deletion_receipts")
       .withIndex("by_auth_subject", (q) => q.eq("auth_subject", identity.subject))
       .unique();
-    return { completed: receipt !== null };
+    if (receipt) {
+      return {
+        completed: true,
+        inProgress: false,
+        phase: "complete",
+        progressToken: `complete:${receipt.request_id}:${receipt.deleted_at}`
+      };
+    }
+    const progress = await ctx.db
+      .query("account_deletion_progress")
+      .withIndex("by_auth_subject", (q) => q.eq("auth_subject", identity.subject))
+      .unique();
+    if (progress && progress.account_auth_id !== identity.subject) {
+      throw new Error("Account deletion progress does not match the authenticated account");
+    }
+    return {
+      completed: false,
+      inProgress: progress !== null,
+      phase: progress?.phase ?? null,
+      progressToken: progress ? selfDeletionProgressToken(progress) : null
+    };
   }
 });
 
-export const selfDeleteAccount = mutation({
-  args: { accountEmail: v.optional(v.string()) },
-  returns: v.object({
-    success: v.boolean(),
-    state: v.union(v.literal("deleted"), v.literal("already_deleted")),
-    requestId: v.string(),
-    deletedAt: v.number(),
-    friendshipsUnlinked: v.number(),
-    expensesPreserved: v.boolean()
-  }),
-  handler: async (ctx, args) => {
-    const { identity, user } = await getCurrentUser(ctx);
-    const priorReceipt = await ctx.db
-      .query("account_deletion_receipts")
-      .withIndex("by_auth_subject", (q: any) => q.eq("auth_subject", identity.subject))
-      .unique();
-    if (priorReceipt) {
-      return {
-        success: true,
-        state: "already_deleted" as const,
-        requestId: priorReceipt.request_id,
-        deletedAt: priorReceipt.deleted_at,
-        friendshipsUnlinked: priorReceipt.friendships_unlinked,
-        expensesPreserved: priorReceipt.expenses_preserved
-      };
-    }
-    if (!user) {
-      throw new Error("User not found");
-    }
+const SELF_DELETE_BATCH_SIZE = 4;
+const SELF_DELETE_MAX_MEMBER_IDS_PER_RECORD = 64;
+const SELF_DELETE_MAX_VISIBILITY_ROWS_PER_EXPENSE = 128;
 
-    const accountEmail = user.email.toLowerCase().trim();
-    if (args.accountEmail && args.accountEmail.toLowerCase().trim() !== accountEmail) {
-      throw new Error("Can only delete your own account");
-    }
+type SelfDeletionProgress = Doc<"account_deletion_progress">;
+type SelfDeletionPhase = SelfDeletionProgress["phase"];
 
-    const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id ?? user.id);
-    const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalId);
-    const linkedRows = new Map<string, any>();
-    const rowsByAccountId = await ctx.db
-      .query("account_friends")
-      .withIndex("by_linked_account_id", (q: any) => q.eq("linked_account_id", user.id))
-      .collect();
-    const rowsByEmail = await ctx.db
-      .query("account_friends")
-      .withIndex("by_linked_account_email", (q: any) => q.eq("linked_account_email", accountEmail))
-      .collect();
-    for (const row of [...rowsByAccountId, ...rowsByEmail]) {
-      linkedRows.set(row._id, row);
-    }
-    for (const memberId of new Set([
-      canonicalId,
-      ...equivalentIds,
-      ...(user.alias_member_ids ?? [])
-    ])) {
-      const rows = await ctx.db
-        .query("account_friends")
-        .withIndex("by_linked_member_id", (q: any) =>
-          q.eq("linked_member_id", normalizeMemberId(memberId))
-        )
-        .collect();
-      for (const row of rows) linkedRows.set(row._id, row);
-    }
+const selfDeletionResponseValidator = v.object({
+  success: v.boolean(),
+  inProgress: v.boolean(),
+  state: v.union(v.literal("deleting"), v.literal("deleted"), v.literal("already_deleted")),
+  requestId: v.string(),
+  deletedAt: v.number(),
+  friendshipsUnlinked: v.number(),
+  expensesPreserved: v.boolean(),
+  phase: v.string(),
+  progressToken: v.string(),
+  processedCount: v.number(),
+  message: v.string()
+});
 
-    let friendshipsUnlinked = 0;
-    const deletedAt = Date.now();
-    for (const friendRecord of linkedRows.values()) {
-      if (friendRecord.account_email === accountEmail) continue;
-      await ctx.db.patch(friendRecord._id, {
-        has_linked_account: false,
-        linked_account_id: undefined,
-        linked_account_email: undefined,
-        link_state: "ghost",
-        status: "ghost",
-        updated_at: deletedAt
-      });
-      friendshipsUnlinked++;
-    }
+function selfDeletionProgressToken(progress: SelfDeletionProgress) {
+  return `${progress.request_id}:${progress.phase}:${progress.processed_count}:${progress.updated_at}`;
+}
 
-    const deletedMemberIds = new Set(
-      [canonicalId, ...equivalentIds, ...(user.alias_member_ids ?? [])].map(normalizeMemberId)
-    );
-    const excludedAccountIds = new Set([user.id]);
-    const handledExpenseIds = new Set<string>();
+function selfDeletionPendingResponse(progress: SelfDeletionProgress) {
+  return {
+    success: false,
+    inProgress: true,
+    state: "deleting" as const,
+    requestId: progress.request_id,
+    deletedAt: 0,
+    friendshipsUnlinked: progress.friendships_unlinked,
+    expensesPreserved: false,
+    phase: progress.phase,
+    progressToken: selfDeletionProgressToken(progress),
+    processedCount: progress.processed_count,
+    message: "Account deletion is still in progress"
+  };
+}
 
-    const myUserExpenses = await ctx.db
-      .query("user_expenses")
-      .withIndex("by_user_id", (q: any) => q.eq("user_id", user.id))
-      .collect();
+async function updateSelfDeletionProgress(
+  ctx: MutationCtx,
+  progress: SelfDeletionProgress,
+  patch: Partial<
+    Pick<
+      SelfDeletionProgress,
+      | "phase"
+      | "cursor"
+      | "next_cursor"
+      | "member_index"
+      | "friendships_unlinked"
+      | "current_group_id"
+      | "current_group_client_id"
+      | "current_group_is_last"
+    >
+  >,
+  processedUnits: number
+): Promise<SelfDeletionProgress> {
+  const updatedAt = Date.now();
+  const next = {
+    ...progress,
+    ...patch,
+    processed_count: progress.processed_count + processedUnits,
+    updated_at: updatedAt
+  };
+  await ctx.db.patch(progress._id, {
+    ...patch,
+    processed_count: next.processed_count,
+    updated_at: updatedAt
+  });
+  return next;
+}
 
-    const ownedGroups = new Map<string, Doc<"groups">>();
-    for (const group of await ctx.db
-      .query("groups")
-      .withIndex("by_owner_id", (q: any) => q.eq("owner_id", user._id))
-      .collect()) {
-      ownedGroups.set(group._id, group);
-    }
-    for (const group of await ctx.db
-      .query("groups")
-      .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", user.id))
-      .collect()) {
-      ownedGroups.set(group._id, group);
-    }
-    for (const group of await ctx.db
-      .query("groups")
-      .withIndex("by_owner_email", (q: any) => q.eq("owner_email", accountEmail))
-      .collect()) {
-      ownedGroups.set(group._id, group);
-    }
+function assertSelfDeleteMemberBound(memberIds: Iterable<string>) {
+  const uniqueIds = new Set(Array.from(memberIds, normalizeMemberId).filter(Boolean));
+  if (uniqueIds.size > SELF_DELETE_MAX_MEMBER_IDS_PER_RECORD) {
+    throw new Error("Account deletion record has too many member identities to process safely");
+  }
+}
 
-    for (const group of ownedGroups.values()) {
-      const steward = await findDeterministicSteward(
-        ctx,
-        group.members
-          .map((member) => member.id)
-          .filter((memberId) => !deletedMemberIds.has(normalizeMemberId(memberId))),
-        user.id
-      );
-      const groupExpensesByClientId = await ctx.db
-        .query("expenses")
-        .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-        .collect();
-      const groupExpensesByReference = await ctx.db
-        .query("expenses")
-        .withIndex("by_group_ref", (q: any) => q.eq("group_ref", group._id))
-        .collect();
-      const groupExpenses = Array.from(
-        new Map(
-          [...groupExpensesByClientId, ...groupExpensesByReference].map((expense) => [
-            expense._id,
-            expense
-          ])
-        ).values()
-      );
+function expenseStewardMemberIds(expense: Doc<"expenses">, deletedMemberIds: ReadonlySet<string>) {
+  const memberIds = [
+    ...expense.participant_member_ids,
+    ...expense.involved_member_ids,
+    ...expense.participants.map((participant) => participant.member_id)
+  ].filter((memberId) => !deletedMemberIds.has(normalizeMemberId(memberId)));
+  assertSelfDeleteMemberBound(memberIds);
+  return memberIds;
+}
 
-      if (!steward) {
-        for (const expense of groupExpenses) {
-          await reconcileUserExpenses(ctx, expense.id, []);
-          await ctx.db.delete(expense._id);
-          handledExpenseIds.add(expense.id);
-        }
-        await ctx.db.delete(group._id);
-        continue;
+async function prepareSelfDeletionMemberAccounts(
+  ctx: MutationCtx,
+  memberIds: Iterable<string>,
+  budget: FriendCleanupAggregateBudget,
+  cache: ExpenseIdentityResolutionCache
+) {
+  for (const memberId of new Set(Array.from(memberIds, normalizeMemberId).filter(Boolean))) {
+    const key = `member:${memberId}`;
+    if (!budget.identityResolutionKeys.has(key)) {
+      budget.identityResolutionKeys.add(key);
+      if (budget.identityResolutionKeys.size > FRIEND_CLEANUP_LIMITS.participantIdentityKeys) {
+        throw friendCleanupLimitError();
       }
+    }
+    if (!cache.memberAccounts.has(memberId)) {
+      const pendingAccount = resolveBudgetedFriendCleanupMemberAccount(ctx, memberId, budget);
+      cache.memberAccounts.set(memberId, pendingAccount);
+      await pendingAccount;
+    }
+  }
+}
 
+async function prepareSelfDeletionExpenseReads(
+  ctx: MutationCtx,
+  expenses: readonly Doc<"expenses">[],
+  budget: FriendCleanupAggregateBudget,
+  cache: ExpenseIdentityResolutionCache
+) {
+  accountFriendCleanupRows(budget, expenses);
+  const expenseIds = new Set<string>();
+  for (const expense of expenses) {
+    expenseIds.add(expense.id);
+    await prepareFriendCleanupIdentityReads(ctx, budget, expense, cache);
+    const accounts = await resolveActiveExpenseParticipantAccounts(ctx, expense, new Set(), cache);
+    accountFriendCleanupRows(budget, accounts);
+  }
+  await accountPreparedIdentityReads(budget, cache);
+  const visibilityRows = await collectFriendCleanupVisibilityRows(ctx, expenseIds, budget);
+  for (const expense of expenses) {
+    const rows = visibilityRows.get(expense.id) ?? [];
+    if (rows.length > SELF_DELETE_MAX_VISIBILITY_ROWS_PER_EXPENSE) {
+      throw friendCleanupLimitError();
+    }
+    reserveFriendCleanupWrites(budget, rows.length + 1);
+  }
+  return visibilityRows;
+}
+
+async function findPreparedSelfDeletionSteward(
+  memberIds: Iterable<string>,
+  excludedAccountId: string,
+  cache: ExpenseIdentityResolutionCache
+) {
+  const candidates = new Map<string, Doc<"accounts">>();
+  for (const memberId of new Set(Array.from(memberIds, normalizeMemberId).filter(Boolean))) {
+    const pendingAccount = cache.memberAccounts.get(memberId);
+    if (!pendingAccount) throw new Error("Account deletion identity preflight is incomplete");
+    const account = await pendingAccount;
+    if (account && account.id !== excludedAccountId && account.status !== "deleted") {
+      candidates.set(account.id, account);
+    }
+  }
+  return (
+    Array.from(candidates.values()).sort((left, right) => left.id.localeCompare(right.id))[0] ??
+    null
+  );
+}
+
+type PreparedSelfDeletionExpense = {
+  expense: Doc<"expenses">;
+  patch: ReturnType<typeof scrubDeletedAccountFromExpense> | null;
+  participantUserIds: string[];
+  visibilityRows: Doc<"user_expenses">[];
+};
+
+async function prepareSelfDeletionExpenseMutations(
+  ctx: MutationCtx,
+  expenses: readonly Doc<"expenses">[],
+  account: Doc<"accounts">,
+  progress: SelfDeletionProgress,
+  deletedMemberIds: ReadonlySet<string>,
+  excludedAccountIds: ReadonlySet<string>,
+  budget: FriendCleanupAggregateBudget,
+  cache: ExpenseIdentityResolutionCache
+) {
+  const visibilityRows = await prepareSelfDeletionExpenseReads(ctx, expenses, budget, cache);
+  const plans: PreparedSelfDeletionExpense[] = [];
+  for (const expense of expenses) {
+    const ownerMatches =
+      expense.owner_id === account._id ||
+      expense.owner_account_id === account.id ||
+      normalizeEmail(expense.owner_email) === progress.account_email;
+    if (ownerMatches && !hasConsistentExpenseOwner(expense, account)) {
+      throw new Error("Cannot delete records with a conflicting owner identity");
+    }
+    const stewardMemberIds = expenseStewardMemberIds(expense, deletedMemberIds);
+    await prepareSelfDeletionMemberAccounts(ctx, stewardMemberIds, budget, cache);
+    const steward = ownerMatches
+      ? await findPreparedSelfDeletionSteward(stewardMemberIds, account.id, cache)
+      : null;
+    if (ownerMatches && !steward) {
+      plans.push({
+        expense,
+        patch: null,
+        participantUserIds: [],
+        visibilityRows: visibilityRows.get(expense.id) ?? []
+      });
+      continue;
+    }
+    const patch = scrubDeletedAccountFromExpense(
+      expense,
+      deletedMemberIds,
+      account.id,
+      progress.account_email,
+      steward
+    );
+    const patchedExpense = { ...expense, ...patch };
+    await prepareFriendCleanupIdentityReads(ctx, budget, patchedExpense, cache);
+    const participantAccounts = await resolveActiveExpenseParticipantAccounts(
+      ctx,
+      patchedExpense,
+      excludedAccountIds,
+      cache
+    );
+    accountFriendCleanupRows(budget, participantAccounts);
+    const existingRows = visibilityRows.get(expense.id) ?? [];
+    const participantUserIds = participantAccounts.map((participant) => participant.id);
+    reserveFriendCleanupWrites(budget, visibilityWriteCount(existingRows, participantUserIds) + 1);
+    plans.push({ expense, patch, participantUserIds, visibilityRows: existingRows });
+  }
+  await accountPreparedIdentityReads(budget, cache);
+  return plans;
+}
+
+async function applySelfDeletionExpensePlan(ctx: MutationCtx, plan: PreparedSelfDeletionExpense) {
+  if (!plan.patch) {
+    await deletePreloadedUserExpenses(ctx, plan.visibilityRows);
+    await ctx.db.delete(plan.expense._id);
+    return;
+  }
+  await ctx.db.patch(plan.expense._id, plan.patch);
+  await reconcilePreloadedUserExpenses(
+    ctx,
+    plan.expense.id,
+    plan.participantUserIds,
+    plan.visibilityRows
+  );
+}
+
+async function advanceSelfDeletionPreflight(
+  ctx: MutationCtx,
+  progress: SelfDeletionProgress,
+  rows: readonly (Doc<"groups"> | Doc<"expenses">)[],
+  continueCursor: string,
+  isDone: boolean,
+  nextPhase: SelfDeletionPhase,
+  budget: FriendCleanupAggregateBudget,
+  cache: ExpenseIdentityResolutionCache
+) {
+  const account = await ctx.db.get(progress.account_id);
+  if (!account) throw new Error("Account deletion account no longer exists");
+  chargeFriendCleanupQueries(budget, 1);
+  const expenses: Doc<"expenses">[] = [];
+  const groups: Doc<"groups">[] = [];
+  for (const row of rows) {
+    if ("description" in row) {
+      if (!hasConsistentExpenseOwner(row, account)) {
+        throw new Error("Cannot delete records with a conflicting owner identity");
+      }
+      assertSelfDeleteMemberBound([
+        ...row.participant_member_ids,
+        ...row.involved_member_ids,
+        ...row.participants.map((participant) => participant.member_id)
+      ]);
+      expenses.push(row);
+    } else {
+      if (!hasConsistentGroupOwner(row, account)) {
+        throw new Error("Cannot delete records with a conflicting owner identity");
+      }
+      assertSelfDeleteMemberBound(row.members.map((member) => member.id));
+      groups.push(row);
+    }
+  }
+  if (expenses.length > 0) {
+    await prepareSelfDeletionExpenseReads(ctx, expenses, budget, cache);
+  }
+  if (groups.length > 0) {
+    accountFriendCleanupRows(budget, groups);
+    await prepareSelfDeletionMemberAccounts(
+      ctx,
+      groups.flatMap((group) => group.members.map((member) => member.id)),
+      budget,
+      cache
+    );
+  }
+  return await updateSelfDeletionProgress(
+    ctx,
+    progress,
+    isDone ? { phase: nextPhase, cursor: undefined } : { cursor: continueCursor },
+    rows.length + (isDone ? 1 : 0)
+  );
+}
+
+async function finishOrContinueSelfDeletionBatch(
+  ctx: MutationCtx,
+  progress: SelfDeletionProgress,
+  processedRows: number,
+  nextPhase: SelfDeletionPhase,
+  patch: Partial<Pick<SelfDeletionProgress, "friendships_unlinked" | "member_index">> = {}
+) {
+  return await updateSelfDeletionProgress(
+    ctx,
+    progress,
+    processedRows === 0 ? { ...patch, phase: nextPhase, cursor: undefined } : patch,
+    processedRows + (processedRows === 0 ? 1 : 0)
+  );
+}
+
+async function advanceSelfDeletion(
+  ctx: MutationCtx,
+  progress: SelfDeletionProgress,
+  account: Doc<"accounts">
+): Promise<SelfDeletionProgress | null> {
+  const deletedMemberIds = new Set(progress.member_ids.map(normalizeMemberId));
+  const excludedAccountIds = new Set([progress.account_auth_id]);
+  const deletedAt = Date.now();
+  const cursor = progress.cursor ?? null;
+  const budget = createFriendCleanupAggregateBudget();
+  const identityCache = createExpenseIdentityResolutionCache();
+
+  switch (progress.phase) {
+    case "preflight_groups_owner_id": {
+      const result = await ctx.db
+        .query("groups")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
+        .order("asc")
+        .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE });
+      return await advanceSelfDeletionPreflight(
+        ctx,
+        progress,
+        result.page,
+        result.continueCursor,
+        result.isDone,
+        "preflight_groups_account_id",
+        budget,
+        identityCache
+      );
+    }
+    case "preflight_groups_account_id": {
+      const result = await ctx.db
+        .query("groups")
+        .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", account.id))
+        .order("asc")
+        .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE });
+      return await advanceSelfDeletionPreflight(
+        ctx,
+        progress,
+        result.page,
+        result.continueCursor,
+        result.isDone,
+        "preflight_groups_email",
+        budget,
+        identityCache
+      );
+    }
+    case "preflight_groups_email": {
+      const result = await ctx.db
+        .query("groups")
+        .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
+        .order("asc")
+        .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE });
+      return await advanceSelfDeletionPreflight(
+        ctx,
+        progress,
+        result.page,
+        result.continueCursor,
+        result.isDone,
+        "preflight_expenses_owner_id",
+        budget,
+        identityCache
+      );
+    }
+    case "preflight_expenses_owner_id": {
+      const result = await ctx.db
+        .query("expenses")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
+        .order("asc")
+        .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE });
+      return await advanceSelfDeletionPreflight(
+        ctx,
+        progress,
+        result.page,
+        result.continueCursor,
+        result.isDone,
+        "preflight_expenses_account_id",
+        budget,
+        identityCache
+      );
+    }
+    case "preflight_expenses_account_id": {
+      const result = await ctx.db
+        .query("expenses")
+        .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", account.id))
+        .order("asc")
+        .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE });
+      return await advanceSelfDeletionPreflight(
+        ctx,
+        progress,
+        result.page,
+        result.continueCursor,
+        result.isDone,
+        "preflight_expenses_email",
+        budget,
+        identityCache
+      );
+    }
+    case "preflight_expenses_email": {
+      const result = await ctx.db
+        .query("expenses")
+        .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
+        .order("asc")
+        .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE });
+      return await advanceSelfDeletionPreflight(
+        ctx,
+        progress,
+        result.page,
+        result.continueCursor,
+        result.isDone,
+        "preflight_visible_expenses",
+        budget,
+        identityCache
+      );
+    }
+    case "preflight_visible_expenses": {
+      chargeFriendCleanupQueries(budget, 1);
+      const result = await ctx.db
+        .query("user_expenses")
+        .withIndex("by_user_id", (q) => q.eq("user_id", account.id))
+        .order("asc")
+        .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE });
+      accountFriendCleanupRows(budget, result.page);
+      const expenses = new Map<string, Doc<"expenses">>();
+      for (const row of result.page) {
+        chargeFriendCleanupQueries(budget, 1);
+        const expense = await ctx.db
+          .query("expenses")
+          .withIndex("by_client_id", (q) => q.eq("id", row.expense_id))
+          .unique();
+        if (expense) expenses.set(String(expense._id), expense);
+      }
+      if (expenses.size > 0) {
+        await prepareSelfDeletionExpenseReads(
+          ctx,
+          Array.from(expenses.values()),
+          budget,
+          identityCache
+        );
+      }
+      return await updateSelfDeletionProgress(
+        ctx,
+        progress,
+        result.isDone
+          ? { phase: "preflight_owned_group_select", cursor: undefined }
+          : { cursor: result.continueCursor },
+        result.page.length + (result.isDone ? 1 : 0)
+      );
+    }
+    case "preflight_owned_group_select": {
+      chargeFriendCleanupQueries(budget, 1);
+      const result = await ctx.db
+        .query("groups")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
+        .order("asc")
+        .paginate({ cursor, numItems: 1 });
+      accountFriendCleanupRows(budget, result.page);
+      const group = result.page[0];
+      if (!group) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "unlink_friends_account_id", cursor: undefined },
+          1
+        );
+      }
+      if (!hasConsistentGroupOwner(group, account)) {
+        throw new Error("Cannot delete records with a conflicting owner identity");
+      }
+      await prepareSelfDeletionMemberAccounts(
+        ctx,
+        group.members.map((member) => member.id),
+        budget,
+        identityCache
+      );
+      return await updateSelfDeletionProgress(
+        ctx,
+        progress,
+        {
+          phase: "preflight_owned_group_expenses_by_client_id",
+          cursor: undefined,
+          next_cursor: result.continueCursor,
+          current_group_id: group._id,
+          current_group_client_id: group.id,
+          current_group_is_last: result.isDone
+        },
+        1
+      );
+    }
+    case "preflight_owned_group_expenses_by_client_id":
+    case "preflight_owned_group_expenses_by_reference": {
+      if (!progress.current_group_id || !progress.current_group_client_id) {
+        throw new Error("Account deletion group preflight state is incomplete");
+      }
+      chargeFriendCleanupQueries(budget, 1);
+      const result =
+        progress.phase === "preflight_owned_group_expenses_by_client_id"
+          ? await ctx.db
+              .query("expenses")
+              .withIndex("by_group_id", (q) =>
+                q.eq("group_id", progress.current_group_client_id as string)
+              )
+              .order("asc")
+              .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE })
+          : await ctx.db
+              .query("expenses")
+              .withIndex("by_group_ref", (q) =>
+                q.eq("group_ref", progress.current_group_id as Doc<"groups">["_id"])
+              )
+              .order("asc")
+              .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE });
+      if (result.page.length > 0) {
+        await prepareSelfDeletionExpenseReads(ctx, result.page, budget, identityCache);
+      }
+      if (!result.isDone) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { cursor: result.continueCursor },
+          result.page.length
+        );
+      }
+      if (progress.phase === "preflight_owned_group_expenses_by_client_id") {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "preflight_owned_group_expenses_by_reference", cursor: undefined },
+          result.page.length + 1
+        );
+      }
+      return await updateSelfDeletionProgress(
+        ctx,
+        progress,
+        progress.current_group_is_last
+          ? {
+              phase: "unlink_friends_account_id",
+              cursor: undefined,
+              next_cursor: undefined,
+              current_group_id: undefined,
+              current_group_client_id: undefined,
+              current_group_is_last: undefined
+            }
+          : {
+              phase: "preflight_owned_group_select",
+              cursor: progress.next_cursor,
+              next_cursor: undefined,
+              current_group_id: undefined,
+              current_group_client_id: undefined,
+              current_group_is_last: undefined
+            },
+        result.page.length + 1
+      );
+    }
+    case "unlink_friends_account_id":
+    case "unlink_friends_email":
+    case "unlink_friends_member_id": {
+      const memberIndex = progress.member_index ?? 0;
+      const rows =
+        progress.phase === "unlink_friends_account_id"
+          ? await ctx.db
+              .query("account_friends")
+              .withIndex("by_linked_account_id", (q) =>
+                q.eq("linked_account_id", progress.account_auth_id)
+              )
+              .take(SELF_DELETE_BATCH_SIZE)
+          : progress.phase === "unlink_friends_email"
+            ? await ctx.db
+                .query("account_friends")
+                .withIndex("by_linked_account_email", (q) =>
+                  q.eq("linked_account_email", progress.account_email)
+                )
+                .take(SELF_DELETE_BATCH_SIZE)
+            : memberIndex < progress.member_ids.length
+              ? await ctx.db
+                  .query("account_friends")
+                  .withIndex("by_linked_member_id", (q) =>
+                    q.eq("linked_member_id", progress.member_ids[memberIndex])
+                  )
+                  .take(SELF_DELETE_BATCH_SIZE)
+              : [];
+      let newlyUnlinked = 0;
+      for (const friend of rows) {
+        if (normalizeEmail(friend.account_email) !== progress.account_email) newlyUnlinked += 1;
+        await ctx.db.patch(friend._id, {
+          has_linked_account: false,
+          linked_account_id: undefined,
+          linked_account_email: undefined,
+          linked_member_id: undefined,
+          link_state: "ghost",
+          status: "ghost",
+          updated_at: deletedAt
+        });
+      }
+      if (rows.length > 0) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { friendships_unlinked: progress.friendships_unlinked + newlyUnlinked },
+          rows.length
+        );
+      }
+      if (progress.phase === "unlink_friends_account_id") {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "unlink_friends_email" },
+          1
+        );
+      }
+      if (progress.phase === "unlink_friends_email") {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "unlink_friends_member_id", member_index: 0 },
+          1
+        );
+      }
+      if (memberIndex + 1 < progress.member_ids.length) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { member_index: memberIndex + 1 },
+          1
+        );
+      }
+      return await updateSelfDeletionProgress(
+        ctx,
+        progress,
+        { phase: "owned_expenses", member_index: undefined },
+        1
+      );
+    }
+    case "owned_expenses": {
+      chargeFriendCleanupQueries(budget, 1);
+      const expenses = await ctx.db
+        .query("expenses")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
+        .take(SELF_DELETE_BATCH_SIZE);
+      const plans = await prepareSelfDeletionExpenseMutations(
+        ctx,
+        expenses,
+        account,
+        progress,
+        deletedMemberIds,
+        excludedAccountIds,
+        budget,
+        identityCache
+      );
+      for (const plan of plans) await applySelfDeletionExpensePlan(ctx, plan);
+      return await finishOrContinueSelfDeletionBatch(
+        ctx,
+        progress,
+        expenses.length,
+        "visible_expenses"
+      );
+    }
+    case "visible_expenses": {
+      chargeFriendCleanupQueries(budget, 1);
+      const visibilityRows = await ctx.db
+        .query("user_expenses")
+        .withIndex("by_user_id", (q) => q.eq("user_id", account.id))
+        .take(SELF_DELETE_BATCH_SIZE);
+      accountFriendCleanupRows(budget, visibilityRows);
+      const expenseIds = new Set(visibilityRows.map((row) => row.expense_id));
+      const expenses: Doc<"expenses">[] = [];
+      for (const expenseId of expenseIds) {
+        chargeFriendCleanupQueries(budget, 1);
+        const expense = await ctx.db
+          .query("expenses")
+          .withIndex("by_client_id", (q) => q.eq("id", expenseId))
+          .unique();
+        if (expense) expenses.push(expense);
+      }
+      const plans = await prepareSelfDeletionExpenseMutations(
+        ctx,
+        expenses,
+        account,
+        progress,
+        deletedMemberIds,
+        excludedAccountIds,
+        budget,
+        identityCache
+      );
+      for (const plan of plans) await applySelfDeletionExpensePlan(ctx, plan);
+      const plannedExpenseIds = new Set(plans.map((plan) => plan.expense.id));
+      for (const visibilityRow of visibilityRows) {
+        if (!plannedExpenseIds.has(visibilityRow.expense_id))
+          await ctx.db.delete(visibilityRow._id);
+      }
+      return await finishOrContinueSelfDeletionBatch(
+        ctx,
+        progress,
+        visibilityRows.length,
+        "owned_groups"
+      );
+    }
+    case "owned_groups": {
+      const groups = await ctx.db
+        .query("groups")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
+        .take(1);
+      const group = groups[0];
+      if (!group) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "link_requests_requester_id" },
+          1
+        );
+      }
+      if (!hasConsistentGroupOwner(group, account)) {
+        throw new Error("Cannot delete records with a conflicting owner identity");
+      }
+      const memberIds = group.members
+        .map((member) => member.id)
+        .filter((memberId) => !deletedMemberIds.has(normalizeMemberId(memberId)));
+      assertSelfDeleteMemberBound(memberIds);
+      chargeFriendCleanupQueries(budget, 1);
+      accountFriendCleanupRows(budget, groups);
+      await prepareSelfDeletionMemberAccounts(ctx, memberIds, budget, identityCache);
+      const steward = await findPreparedSelfDeletionSteward(memberIds, account.id, identityCache);
+      if (!steward) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          {
+            phase: "owned_group_expenses_by_client_id",
+            current_group_id: group._id,
+            current_group_client_id: group.id
+          },
+          1
+        );
+      }
       await ctx.db.patch(group._id, {
         owner_id: steward._id,
         owner_account_id: steward.id,
@@ -1682,149 +2320,513 @@ export const selfDeleteAccount = mutation({
         ),
         updated_at: deletedAt
       });
-
-      for (const expense of groupExpenses) {
-        const patch = scrubDeletedAccountFromExpense(
-          expense,
-          deletedMemberIds,
-          user.id,
-          accountEmail,
-          steward
-        );
-        await ctx.db.patch(expense._id, patch);
-        await reconcileExpenseVisibility(ctx, { ...expense, ...patch }, excludedAccountIds);
-        handledExpenseIds.add(expense.id);
-      }
+      return await updateSelfDeletionProgress(ctx, progress, {}, 1);
     }
-
-    for (const visibilityRow of myUserExpenses) {
-      if (handledExpenseIds.has(visibilityRow.expense_id)) continue;
-      const expense = await ctx.db
-        .query("expenses")
-        .withIndex("by_client_id", (q: any) => q.eq("id", visibilityRow.expense_id))
-        .unique();
-      if (!expense) continue;
-
-      const ownedByDeletedAccount =
-        expense.owner_id === user._id ||
-        expense.owner_account_id === user.id ||
-        expense.owner_email.toLowerCase().trim() === accountEmail;
-      const steward = ownedByDeletedAccount
-        ? await findDeterministicSteward(
-            ctx,
-            [
-              ...expense.participant_member_ids,
-              ...expense.involved_member_ids,
-              ...expense.participants.map((participant) => participant.member_id)
-            ].filter((memberId) => !deletedMemberIds.has(normalizeMemberId(memberId))),
-            user.id
-          )
-        : null;
-
-      if (ownedByDeletedAccount && !steward) {
-        await reconcileUserExpenses(ctx, expense.id, []);
-        await ctx.db.delete(expense._id);
-        continue;
+    case "owned_group_expenses_by_client_id":
+    case "owned_group_expenses_by_reference": {
+      if (!progress.current_group_id || !progress.current_group_client_id) {
+        throw new Error("Account deletion group cascade state is incomplete");
       }
-
-      const patch = scrubDeletedAccountFromExpense(
-        expense,
-        deletedMemberIds,
-        user.id,
-        accountEmail,
-        steward
+      const groupId = progress.current_group_id;
+      const groupClientId = progress.current_group_client_id;
+      chargeFriendCleanupQueries(budget, 1);
+      const expenses =
+        progress.phase === "owned_group_expenses_by_client_id"
+          ? await ctx.db
+              .query("expenses")
+              .withIndex("by_group_id", (q) => q.eq("group_id", groupClientId))
+              .take(SELF_DELETE_BATCH_SIZE)
+          : await ctx.db
+              .query("expenses")
+              .withIndex("by_group_ref", (q) => q.eq("group_ref", groupId))
+              .take(SELF_DELETE_BATCH_SIZE);
+      accountFriendCleanupRows(budget, expenses);
+      const visibilityRows = await collectFriendCleanupVisibilityRows(
+        ctx,
+        new Set(expenses.map((expense) => expense.id)),
+        budget
       );
-      await ctx.db.patch(expense._id, patch);
-      await reconcileExpenseVisibility(ctx, { ...expense, ...patch }, excludedAccountIds);
+      for (const expense of expenses) {
+        reserveFriendCleanupWrites(budget, (visibilityRows.get(expense.id)?.length ?? 0) + 1);
+      }
+      for (const expense of expenses) {
+        await deletePreloadedUserExpenses(ctx, visibilityRows.get(expense.id) ?? []);
+        await ctx.db.delete(expense._id);
+      }
+      return await finishOrContinueSelfDeletionBatch(
+        ctx,
+        progress,
+        expenses.length,
+        progress.phase === "owned_group_expenses_by_client_id"
+          ? "owned_group_expenses_by_reference"
+          : "finalize_owned_group"
+      );
+    }
+    case "finalize_owned_group": {
+      if (!progress.current_group_id || !progress.current_group_client_id) {
+        throw new Error("Account deletion group cascade state is incomplete");
+      }
+      const groupId = progress.current_group_id;
+      const groupClientId = progress.current_group_client_id;
+      const group = await ctx.db.get(groupId);
+      if (!group) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          {
+            phase: "owned_groups",
+            current_group_id: undefined,
+            current_group_client_id: undefined
+          },
+          1
+        );
+      }
+      if (!hasConsistentGroupOwner(group, account)) {
+        throw new Error("Cannot delete records with a conflicting owner identity");
+      }
+      const remainingByClientId = await ctx.db
+        .query("expenses")
+        .withIndex("by_group_id", (q) => q.eq("group_id", groupClientId))
+        .first();
+      if (remainingByClientId) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "owned_group_expenses_by_client_id" },
+          1
+        );
+      }
+      const remainingByReference = await ctx.db
+        .query("expenses")
+        .withIndex("by_group_ref", (q) => q.eq("group_ref", groupId))
+        .first();
+      if (remainingByReference) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "owned_group_expenses_by_reference" },
+          1
+        );
+      }
+      await ctx.db.delete(group._id);
+      return await updateSelfDeletionProgress(
+        ctx,
+        progress,
+        {
+          phase: "owned_groups",
+          current_group_id: undefined,
+          current_group_client_id: undefined
+        },
+        1
+      );
+    }
+    case "link_requests_requester_id":
+    case "link_requests_recipient_email":
+    case "link_requests_requester_email":
+    case "invite_tokens_creator_id":
+    case "invite_tokens_creator_email":
+    case "friend_requests_sender_id":
+    case "friend_requests_recipient_email": {
+      const rows =
+        progress.phase === "link_requests_requester_id"
+          ? await ctx.db
+              .query("link_requests")
+              .withIndex("by_requester_id", (q) => q.eq("requester_id", account.id))
+              .take(SELF_DELETE_BATCH_SIZE)
+          : progress.phase === "link_requests_recipient_email"
+            ? await ctx.db
+                .query("link_requests")
+                .withIndex("by_recipient_email", (q) =>
+                  q.eq("recipient_email", progress.account_email)
+                )
+                .take(SELF_DELETE_BATCH_SIZE)
+            : progress.phase === "link_requests_requester_email"
+              ? await ctx.db
+                  .query("link_requests")
+                  .withIndex("by_requester_email", (q) =>
+                    q.eq("requester_email", progress.account_email)
+                  )
+                  .take(SELF_DELETE_BATCH_SIZE)
+              : progress.phase === "invite_tokens_creator_id"
+                ? await ctx.db
+                    .query("invite_tokens")
+                    .withIndex("by_creator_id", (q) => q.eq("creator_id", account.id))
+                    .take(SELF_DELETE_BATCH_SIZE)
+                : progress.phase === "invite_tokens_creator_email"
+                  ? await ctx.db
+                      .query("invite_tokens")
+                      .withIndex("by_creator_email", (q) =>
+                        q.eq("creator_email", progress.account_email)
+                      )
+                      .take(SELF_DELETE_BATCH_SIZE)
+                  : progress.phase === "friend_requests_sender_id"
+                    ? await ctx.db
+                        .query("friend_requests")
+                        .withIndex("by_sender_id", (q) => q.eq("sender_id", account._id))
+                        .take(SELF_DELETE_BATCH_SIZE)
+                    : await ctx.db
+                        .query("friend_requests")
+                        .withIndex("by_recipient_email", (q) =>
+                          q.eq("recipient_email", progress.account_email)
+                        )
+                        .take(SELF_DELETE_BATCH_SIZE);
+      for (const row of rows) await ctx.db.delete(row._id);
+      const nextPhaseByPhase: Record<typeof progress.phase, SelfDeletionPhase> = {
+        link_requests_requester_id: "link_requests_recipient_email",
+        link_requests_recipient_email: "link_requests_requester_email",
+        link_requests_requester_email: "invite_tokens_creator_id",
+        invite_tokens_creator_id: "invite_tokens_creator_email",
+        invite_tokens_creator_email: "friend_requests_sender_id",
+        friend_requests_sender_id: "friend_requests_recipient_email",
+        friend_requests_recipient_email: "tombstone_aliases"
+      };
+      return await finishOrContinueSelfDeletionBatch(
+        ctx,
+        progress,
+        rows.length,
+        nextPhaseByPhase[progress.phase]
+      );
+    }
+    case "tombstone_aliases": {
+      const aliases = await ctx.db
+        .query("member_aliases")
+        .withIndex("by_account_email", (q) => q.eq("account_email", progress.account_email))
+        .take(SELF_DELETE_BATCH_SIZE);
+      for (const alias of aliases) {
+        await ctx.db.patch(alias._id, { account_email: progress.tombstone_email });
+      }
+      return await finishOrContinueSelfDeletionBatch(
+        ctx,
+        progress,
+        aliases.length,
+        "delete_owned_friends"
+      );
+    }
+    case "delete_owned_friends": {
+      const friends = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", progress.account_email))
+        .take(SELF_DELETE_BATCH_SIZE);
+      for (const friend of friends) await ctx.db.delete(friend._id);
+      return await finishOrContinueSelfDeletionBatch(
+        ctx,
+        progress,
+        friends.length,
+        "delete_visibility"
+      );
+    }
+    case "delete_visibility": {
+      const rows = await ctx.db
+        .query("user_expenses")
+        .withIndex("by_user_id", (q) => q.eq("user_id", account.id))
+        .take(SELF_DELETE_BATCH_SIZE);
+      for (const row of rows) await ctx.db.delete(row._id);
+      return await finishOrContinueSelfDeletionBatch(ctx, progress, rows.length, "finalize");
+    }
+    case "finalize": {
+      const remainingGroups = [
+        await ctx.db
+          .query("groups")
+          .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
+          .first(),
+        await ctx.db
+          .query("groups")
+          .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", account.id))
+          .first(),
+        await ctx.db
+          .query("groups")
+          .withIndex("by_owner_email", (q) => q.eq("owner_email", progress.account_email))
+          .first()
+      ].filter((group): group is Doc<"groups"> => group !== null);
+      for (const group of remainingGroups) {
+        if (!hasConsistentGroupOwner(group, account)) {
+          throw new Error("Cannot delete records with a conflicting owner identity");
+        }
+      }
+      if (remainingGroups.length > 0) {
+        return await updateSelfDeletionProgress(ctx, progress, { phase: "owned_groups" }, 1);
+      }
+
+      const remainingExpenses = [
+        await ctx.db
+          .query("expenses")
+          .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
+          .first(),
+        await ctx.db
+          .query("expenses")
+          .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", account.id))
+          .first(),
+        await ctx.db
+          .query("expenses")
+          .withIndex("by_owner_email", (q) => q.eq("owner_email", progress.account_email))
+          .first()
+      ].filter((expense): expense is Doc<"expenses"> => expense !== null);
+      for (const expense of remainingExpenses) {
+        if (!hasConsistentExpenseOwner(expense, account)) {
+          throw new Error("Cannot delete records with a conflicting owner identity");
+        }
+      }
+      if (remainingExpenses.length > 0) {
+        return await updateSelfDeletionProgress(ctx, progress, { phase: "owned_expenses" }, 1);
+      }
+
+      const remainingLinkedFriend =
+        (await ctx.db
+          .query("account_friends")
+          .withIndex("by_linked_account_id", (q) => q.eq("linked_account_id", account.id))
+          .first()) ??
+        (await ctx.db
+          .query("account_friends")
+          .withIndex("by_linked_account_email", (q) =>
+            q.eq("linked_account_email", progress.account_email)
+          )
+          .first());
+      if (remainingLinkedFriend) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "unlink_friends_account_id", member_index: undefined },
+          1
+        );
+      }
+      for (let memberIndex = 0; memberIndex < progress.member_ids.length; memberIndex += 1) {
+        const linkedByMember = await ctx.db
+          .query("account_friends")
+          .withIndex("by_linked_member_id", (q) =>
+            q.eq("linked_member_id", progress.member_ids[memberIndex])
+          )
+          .first();
+        if (linkedByMember) {
+          return await updateSelfDeletionProgress(
+            ctx,
+            progress,
+            { phase: "unlink_friends_member_id", member_index: memberIndex },
+            1
+          );
+        }
+      }
+
+      const remainingVisibility = await ctx.db
+        .query("user_expenses")
+        .withIndex("by_user_id", (q) => q.eq("user_id", account.id))
+        .first();
+      if (remainingVisibility) {
+        return await updateSelfDeletionProgress(ctx, progress, { phase: "visible_expenses" }, 1);
+      }
+
+      const remainingLinkRequest =
+        (await ctx.db
+          .query("link_requests")
+          .withIndex("by_requester_id", (q) => q.eq("requester_id", account.id))
+          .first()) ??
+        (await ctx.db
+          .query("link_requests")
+          .withIndex("by_recipient_email", (q) => q.eq("recipient_email", progress.account_email))
+          .first()) ??
+        (await ctx.db
+          .query("link_requests")
+          .withIndex("by_requester_email", (q) => q.eq("requester_email", progress.account_email))
+          .first());
+      if (remainingLinkRequest) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "link_requests_requester_id" },
+          1
+        );
+      }
+      const remainingInvite =
+        (await ctx.db
+          .query("invite_tokens")
+          .withIndex("by_creator_id", (q) => q.eq("creator_id", account.id))
+          .first()) ??
+        (await ctx.db
+          .query("invite_tokens")
+          .withIndex("by_creator_email", (q) => q.eq("creator_email", progress.account_email))
+          .first());
+      if (remainingInvite) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "invite_tokens_creator_id" },
+          1
+        );
+      }
+      const remainingFriendRequest =
+        (await ctx.db
+          .query("friend_requests")
+          .withIndex("by_sender_id", (q) => q.eq("sender_id", account._id))
+          .first()) ??
+        (await ctx.db
+          .query("friend_requests")
+          .withIndex("by_recipient_email", (q) => q.eq("recipient_email", progress.account_email))
+          .first());
+      if (remainingFriendRequest) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "friend_requests_sender_id" },
+          1
+        );
+      }
+      const remainingAlias = await ctx.db
+        .query("member_aliases")
+        .withIndex("by_account_email", (q) => q.eq("account_email", progress.account_email))
+        .first();
+      if (remainingAlias) {
+        return await updateSelfDeletionProgress(ctx, progress, { phase: "tombstone_aliases" }, 1);
+      }
+      const remainingOwnedFriend = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", progress.account_email))
+        .first();
+      if (remainingOwnedFriend) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "delete_owned_friends" },
+          1
+        );
+      }
+
+      await ctx.db.insert("account_deletion_receipts", {
+        auth_subject: progress.auth_subject,
+        request_id: progress.request_id,
+        deleted_at: deletedAt,
+        friendships_unlinked: progress.friendships_unlinked,
+        expenses_preserved: true
+      });
+      await ctx.db.patch(account._id, {
+        email: progress.tombstone_email,
+        display_name: "Deleted User",
+        first_name: undefined,
+        last_name: undefined,
+        profile_image_url: undefined,
+        status: "deleted",
+        deleted_at: deletedAt,
+        updated_at: deletedAt
+      });
+      await ctx.db.delete(progress._id);
+      return null;
+    }
+  }
+}
+
+export const selfDeleteAccount = mutation({
+  args: { accountEmail: v.optional(v.string()) },
+  returns: selfDeletionResponseValidator,
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Unauthenticated");
+    const priorReceipt = await ctx.db
+      .query("account_deletion_receipts")
+      .withIndex("by_auth_subject", (q) => q.eq("auth_subject", identity.subject))
+      .unique();
+    if (priorReceipt) {
+      return {
+        success: true,
+        inProgress: false,
+        state: "already_deleted" as const,
+        requestId: priorReceipt.request_id,
+        deletedAt: priorReceipt.deleted_at,
+        friendshipsUnlinked: priorReceipt.friendships_unlinked,
+        expensesPreserved: priorReceipt.expenses_preserved,
+        phase: "complete",
+        progressToken: `complete:${priorReceipt.request_id}:${priorReceipt.deleted_at}`,
+        processedCount: 0,
+        message: "Account was already deleted"
+      };
     }
 
-    const ephemeralRows = new Map<string, { _id: any }>();
-    for (const request of await ctx.db
-      .query("link_requests")
-      .withIndex("by_requester_id", (q: any) => q.eq("requester_id", user.id))
-      .collect()) {
-      ephemeralRows.set(request._id, request);
+    let progress = await ctx.db
+      .query("account_deletion_progress")
+      .withIndex("by_auth_subject", (q) => q.eq("auth_subject", identity.subject))
+      .unique();
+    let user: Doc<"accounts"> | null;
+    if (progress) {
+      user = await ctx.db.get(progress.account_id);
+    } else {
+      const identityEmail = normalizeEmail(identity.email);
+      if (!identityEmail) throw new Error("Authenticated identity email is invalid");
+      user = await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) => q.eq("email", identityEmail))
+        .unique();
     }
-    for (const request of await ctx.db
-      .query("link_requests")
-      .withIndex("by_recipient_email", (q: any) => q.eq("recipient_email", accountEmail))
-      .collect()) {
-      ephemeralRows.set(request._id, request);
-    }
-    for (const request of await ctx.db
-      .query("link_requests")
-      .withIndex("by_requester_email", (q: any) => q.eq("requester_email", accountEmail))
-      .collect()) {
-      ephemeralRows.set(request._id, request);
-    }
-    for (const invite of await ctx.db
-      .query("invite_tokens")
-      .withIndex("by_creator_id", (q: any) => q.eq("creator_id", user.id))
-      .collect()) {
-      ephemeralRows.set(invite._id, invite);
-    }
-    for (const invite of await ctx.db
-      .query("invite_tokens")
-      .withIndex("by_creator_email", (q: any) => q.eq("creator_email", accountEmail))
-      .collect()) {
-      ephemeralRows.set(invite._id, invite);
-    }
-    for (const request of await ctx.db
-      .query("friend_requests")
-      .withIndex("by_sender_id", (q: any) => q.eq("sender_id", user._id))
-      .collect()) {
-      ephemeralRows.set(request._id, request);
-    }
-    for (const request of await ctx.db
-      .query("friend_requests")
-      .withIndex("by_recipient_email", (q: any) => q.eq("recipient_email", accountEmail))
-      .collect()) {
-      ephemeralRows.set(request._id, request);
-    }
-    for (const row of ephemeralRows.values()) await ctx.db.delete(row._id);
-
-    const tombstoneEmail = `deleted+${user._id}@payback.invalid`;
-    const ownedAliases = await ctx.db
-      .query("member_aliases")
-      .withIndex("by_account_email", (q: any) => q.eq("account_email", accountEmail))
-      .collect();
-    for (const alias of ownedAliases) {
-      await ctx.db.patch(alias._id, { account_email: tombstoneEmail });
+    if (!user || user.status === "deleted") throw new Error("User not found");
+    if (user.id !== identity.subject) {
+      throw new Error("Authenticated identity does not own this account");
     }
 
-    const myFriends = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
-      .collect();
-    for (const friend of myFriends) await ctx.db.delete(friend._id);
+    const accountEmail = normalizeEmail(user.email);
+    if (!accountEmail) throw new Error("User email is invalid");
+    if (args.accountEmail && normalizeEmail(args.accountEmail) !== accountEmail) {
+      throw new Error("Can only delete your own account");
+    }
 
-    for (const ue of myUserExpenses) await ctx.db.delete(ue._id);
+    if (progress) {
+      if (
+        progress.account_id !== user._id ||
+        progress.account_auth_id !== user.id ||
+        progress.account_email !== accountEmail
+      ) {
+        throw new Error("Account deletion progress does not match the authenticated account");
+      }
+    } else {
+      const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id ?? user.id);
+      const memberIds = Array.from(
+        new Set(
+          [
+            canonicalId,
+            ...(await getAllEquivalentMemberIds(ctx.db, canonicalId)),
+            ...(user.alias_member_ids ?? [])
+          ]
+            .map(normalizeMemberId)
+            .filter(Boolean)
+        )
+      );
+      if (memberIds.length > MAX_LIVE_ACCOUNT_ALIASES + 1) {
+        throw new Error("Identity maintenance required: too many aliases for account deletion");
+      }
+      const now = Date.now();
+      const progressId = await ctx.db.insert("account_deletion_progress", {
+        auth_subject: identity.subject,
+        account_id: user._id,
+        account_auth_id: user.id,
+        account_email: accountEmail,
+        member_ids: memberIds,
+        request_id: user.id,
+        tombstone_email: `deleted+${user._id}@payback.invalid`,
+        phase: "preflight_groups_owner_id",
+        friendships_unlinked: 0,
+        processed_count: 0,
+        started_at: now,
+        updated_at: now
+      });
+      progress = await ctx.db.get(progressId);
+      if (!progress) throw new Error("Unable to initialize account deletion");
+    }
 
-    await ctx.db.insert("account_deletion_receipts", {
-      auth_subject: identity.subject,
-      request_id: user.id,
-      deleted_at: deletedAt,
-      friendships_unlinked: friendshipsUnlinked,
-      expenses_preserved: true
-    });
-    await ctx.db.patch(user._id, {
-      email: tombstoneEmail,
-      display_name: "Deleted User",
-      first_name: undefined,
-      last_name: undefined,
-      profile_image_url: undefined,
-      status: "deleted",
-      deleted_at: deletedAt,
-      updated_at: deletedAt
-    });
+    const next = await advanceSelfDeletion(ctx, progress, user);
+    if (next) return selfDeletionPendingResponse(next);
 
+    const receipt = await ctx.db
+      .query("account_deletion_receipts")
+      .withIndex("by_auth_subject", (q) => q.eq("auth_subject", identity.subject))
+      .unique();
+    if (!receipt) throw new Error("Account deletion did not produce a final receipt");
     return {
       success: true,
+      inProgress: false,
       state: "deleted" as const,
-      requestId: user.id,
-      deletedAt,
-      friendshipsUnlinked,
-      expensesPreserved: true
+      requestId: receipt.request_id,
+      deletedAt: receipt.deleted_at,
+      friendshipsUnlinked: receipt.friendships_unlinked,
+      expensesPreserved: receipt.expenses_preserved,
+      phase: "complete",
+      progressToken: `complete:${receipt.request_id}:${receipt.deleted_at}`,
+      processedCount: progress.processed_count + 1,
+      message: "Account deletion completed"
     };
   }
 });

@@ -3254,15 +3254,24 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
   });
 
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
-  await expect(ownerCtx.query(api.cleanup.selfDeletionStatus, {})).resolves.toEqual({
-    completed: false
+  await expect(ownerCtx.query(api.cleanup.selfDeletionStatus, {})).resolves.toMatchObject({
+    completed: false,
+    inProgress: false
   });
-  const result = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {});
+  let result = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {});
+  const progressTokens = new Set<string>();
+  for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {
+    expect(result.inProgress).toBe(true);
+    expect(progressTokens.has(result.progressToken)).toBe(false);
+    progressTokens.add(result.progressToken);
+    result = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {});
+  }
   expect(result.success).toBe(true);
   expect(result.state).toBe("deleted");
   expect(result.expensesPreserved).toBe(true);
-  await expect(ownerCtx.query(api.cleanup.selfDeletionStatus, {})).resolves.toEqual({
-    completed: true
+  await expect(ownerCtx.query(api.cleanup.selfDeletionStatus, {})).resolves.toMatchObject({
+    completed: true,
+    inProgress: false
   });
 
   const ownerAfter = await t.run(async (ctx) =>

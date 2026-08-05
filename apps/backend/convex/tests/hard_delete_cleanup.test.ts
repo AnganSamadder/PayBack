@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { expect, test, describe } from "vitest";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
@@ -219,6 +219,44 @@ describe("Hard Delete Cleanup", () => {
         .unique();
     });
     expect(accountB).toBeNull();
+  });
+
+  test("performHardDelete removes an interrupted self-deletion progress record", async () => {
+    const t = convexTest(schema, modules);
+    const accountId = await t.run(async (ctx) => {
+      const insertedAccountId = await ctx.db.insert("accounts", {
+        id: "user_b",
+        email: "user_b@test.com",
+        display_name: "User B",
+        created_at: Date.now(),
+        member_id: "member_b"
+      });
+      await ctx.db.insert("account_deletion_progress", {
+        auth_subject: "user_b",
+        account_id: insertedAccountId,
+        account_auth_id: "user_b",
+        account_email: "user_b@test.com",
+        member_ids: ["member_b"],
+        request_id: "user_b",
+        tombstone_email: `deleted+${insertedAccountId}@payback.invalid`,
+        phase: "owned_expenses",
+        friendships_unlinked: 1,
+        processed_count: 12,
+        started_at: Date.now(),
+        updated_at: Date.now()
+      });
+      return insertedAccountId;
+    });
+
+    await t.mutation(internal.cleanup.hardDeleteAccount, { accountId });
+
+    const progress = await t.run(async (ctx) =>
+      ctx.db
+        .query("account_deletion_progress")
+        .withIndex("by_auth_subject", (q) => q.eq("auth_subject", "user_b"))
+        .collect()
+    );
+    expect(progress).toEqual([]);
   });
 
   test("cleanup finds orphans via by_linked_member_id index", async () => {
