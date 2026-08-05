@@ -93,7 +93,7 @@ async function seedGroupedIndividualFixture() {
 function buildGroupedIndividualArgs(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: "grouped_expense_1",
-    context_kind: "grouped_individual",
+    context_kind: "grouped_individual" as const,
     group_id: "11111111-1111-4111-8111-111111111111",
     description: "Team dinner",
     notes: "Vegetarian option requested",

@@ -683,11 +683,12 @@ describe("identity materialization rollout", () => {
       });
     });
 
-    let result: Awaited<ReturnType<typeof runMigrationToCompletion>> | undefined;
+    let result: { status: "pending" | "ready"; lastError?: string } | undefined;
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      result = await t.mutation(internal.migrations.runIdentityMaterializationMigration, {
+      const step = await t.mutation(internal.migrations.runIdentityMaterializationMigration, {
         batchSize: 10
       });
+      result = { status: step.status, lastError: step.lastError };
       if (result.lastError || result.status === "ready") break;
     }
 
