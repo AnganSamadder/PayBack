@@ -1724,7 +1724,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
             }
 
             for friend in friends {
-                let friendIds = [friend.memberId] + (friend.aliasMemberIds ?? [])
+                let friendIds = [friend.memberId] +
+                    (friend.linkedMemberId.map { [$0] } ?? []) +
+                    (friend.aliasMemberIds ?? [])
                 guard friendIds.contains(where: isKnownIdentity) else { continue }
                 for friendId in friendIds where identityIds.insert(friendId).inserted {
                     didExpand = true
@@ -1893,19 +1895,23 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     func netBalance(forFriend friend: GroupMember) -> Double {
         var balance: Double = 0
+        let friendIdentityMemberIds = accountFriendIdentityMemberIds(
+            for: [friend.id] + (friend.accountFriendMemberId.map { [$0] } ?? [])
+        )
 
-        for expense in expenses where expenseInvolves(friend: friend, in: expense) {
+        func matchesFriendIdentity(_ memberId: UUID) -> Bool {
+            friendIdentityMemberIds.contains { areSamePerson(memberId, $0) }
+        }
+
+        for expense in expenses where
+            expense.involvedMemberIds.contains(where: { isMe($0) }) &&
+            expense.involvedMemberIds.contains(where: matchesFriendIdentity) {
             if isMe(expense.paidByMemberId) {
-                if let friendSplit = expense.splits.first(where: {
-                    isFriendMember($0.memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
-                }), !friendSplit.isSettled {
+                if let friendSplit = expense.splits.first(where: { matchesFriendIdentity($0.memberId) }),
+                   !friendSplit.isSettled {
                     balance += friendSplit.amount
                 }
-            } else if isFriendMember(
-                expense.paidByMemberId,
-                friendId: friend.id,
-                accountFriendMemberId: friend.accountFriendMemberId
-            ) {
+            } else if matchesFriendIdentity(expense.paidByMemberId) {
                 if let userSplit = expense.splits.first(where: { isMe($0.memberId) }), !userSplit.isSettled {
                     balance -= userSplit.amount
                 }
