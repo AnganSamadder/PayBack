@@ -10,7 +10,7 @@
     "lint": "eslint \"convex/**/*.ts\" \"tests/**/*.ts\"",
     "lint:fix": "eslint \"convex/**/*.ts\" \"tests/**/*.ts\" --fix",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=2",
     "build": "echo \"Backend build handled by Convex CLI\"",
     "clean": "rm -rf node_modules .turbo"
   },
