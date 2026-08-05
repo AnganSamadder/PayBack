@@ -125,6 +125,7 @@ export default defineSchema({
     updated_at: v.number()
   })
     .index("by_account_email", ["account_email"])
+    .index("by_account_email_and_updated_at", ["account_email", "updated_at"])
     .index("by_account_email_and_member_id", ["account_email", "member_id"])
     .index("by_account_email_and_linked_member_id", ["account_email", "linked_member_id"])
     .index("by_linked_account_id", ["linked_account_id"])
@@ -281,7 +282,11 @@ export default defineSchema({
     rejected_at: v.optional(v.number())
   })
     .index("by_recipient_email", ["recipient_email"])
+    .index("by_recipient_email_and_created_at", ["recipient_email", "created_at"])
+    .index("by_recipient_email_status_and_expiry", ["recipient_email", "status", "expires_at"])
     .index("by_requester_id", ["requester_id"])
+    .index("by_requester_id_and_created_at", ["requester_id", "created_at"])
+    .index("by_requester_id_status_and_expiry", ["requester_id", "status", "expires_at"])
     .index("by_requester_id_and_recipient_email", ["requester_id", "recipient_email"])
     .index("by_requester_recipient_status_and_expiry", [
       "requester_id",

@@ -1,8 +1,14 @@
 import { query, mutation, type MutationCtx } from "./_generated/server";
-import { v } from "convex/values";
-import { internal } from "./_generated/api";
-import { assertIdentityMaterializationReady, normalizeMemberId } from "./identity";
+import { getConvexSize, type Value, v } from "convex/values";
+import { accountLinkingRows, chargeLinkingQueries, createLinkingReadBudget } from "./aliases";
+import { normalizeMemberId } from "./identity";
 import { isGhostFriendIdentity } from "./friendLinkProvenance";
+import { assertAccountIsNotDeleting } from "./helpers";
+import {
+  applyClaimForUser,
+  assertBudgetedIdentityMaterializationReady,
+  prepareClaimForUser
+} from "./inviteTokens";
 
 function isUnlinkedFriend(friend: {
   has_linked_account: boolean;
@@ -36,6 +42,92 @@ type CreateLinkRequestArgs = {
 };
 
 const MAX_ACTIVE_DUPLICATE_CANDIDATES = 1;
+const LINK_REQUEST_LIST_LIMITS = {
+  compatibilityRows: 50,
+  pageRows: 5,
+  estimatedReadBytes: 8 * 1024 * 1024,
+  hardReadSafetyBytes: 10 * 1024 * 1024,
+  maximumDocumentReservationBytes: 2 * 1024 * 1024
+} as const;
+
+type LinkRequestPage<T> = {
+  page: T[];
+  continueCursor: string;
+  isDone: boolean;
+};
+
+function convexRowsSize(rows: readonly unknown[]) {
+  return rows.reduce<number>((total, row) => total + getConvexSize(row as Value), 0);
+}
+
+function clampedLinkRequestPageSize(requested: number) {
+  if (!Number.isFinite(requested)) return 1;
+  return Math.max(1, Math.min(LINK_REQUEST_LIST_LIMITS.pageRows, Math.trunc(requested)));
+}
+
+function compatibilityPageSize(readBytes: number, rowLimit: number) {
+  const remainingHardBytes = LINK_REQUEST_LIST_LIMITS.hardReadSafetyBytes - readBytes;
+  const byteReservedRows = Math.floor(
+    remainingHardBytes / LINK_REQUEST_LIST_LIMITS.maximumDocumentReservationBytes
+  );
+  return Math.min(LINK_REQUEST_LIST_LIMITS.pageRows, rowLimit, byteReservedRows);
+}
+
+async function collectCompatibilityLinkRequests<T extends { _id: unknown; created_at: number }>(
+  readActivePage: (cursor: string | null, limit: number) => Promise<LinkRequestPage<T>>,
+  readHistoryPage: (cursor: string | null, limit: number) => Promise<LinkRequestPage<T>>
+): Promise<T[]> {
+  const activeRows: T[] = [];
+  let cursor: string | null = null;
+  let readBytes = 0;
+
+  while (activeRows.length <= LINK_REQUEST_LIST_LIMITS.compatibilityRows) {
+    const pageSize = compatibilityPageSize(
+      readBytes,
+      LINK_REQUEST_LIST_LIMITS.compatibilityRows + 1 - activeRows.length
+    );
+    if (pageSize <= 0) {
+      throw new Error("Active link request list exceeds the safe read budget");
+    }
+
+    const result = await readActivePage(cursor, pageSize);
+    const pageBytes = convexRowsSize(result.page);
+    if (readBytes + pageBytes > LINK_REQUEST_LIST_LIMITS.estimatedReadBytes) {
+      throw new Error("Active link request list exceeds the safe read budget");
+    }
+    readBytes += pageBytes;
+    activeRows.push(...result.page);
+    if (activeRows.length > LINK_REQUEST_LIST_LIMITS.compatibilityRows) {
+      throw new Error("Too many active link requests to list safely");
+    }
+    if (result.isDone) break;
+    if (result.continueCursor === cursor) {
+      throw new Error("Active link request pagination did not advance");
+    }
+    cursor = result.continueCursor;
+  }
+
+  activeRows.sort((left, right) => right.created_at - left.created_at);
+  const rows = [...activeRows];
+  const activeIds = new Set(activeRows.map((row) => String(row._id)));
+  cursor = null;
+  while (rows.length < LINK_REQUEST_LIST_LIMITS.compatibilityRows) {
+    const pageSize = compatibilityPageSize(readBytes, LINK_REQUEST_LIST_LIMITS.pageRows);
+    if (pageSize <= 0) return rows;
+
+    const result = await readHistoryPage(cursor, pageSize);
+    const pageBytes = convexRowsSize(result.page);
+    if (readBytes + pageBytes > LINK_REQUEST_LIST_LIMITS.estimatedReadBytes) return rows;
+    readBytes += pageBytes;
+    for (const row of result.page) {
+      if (!activeIds.has(String(row._id))) rows.push(row);
+      if (rows.length === LINK_REQUEST_LIST_LIMITS.compatibilityRows) return rows;
+    }
+    if (result.isDone || result.continueCursor === cursor) return rows;
+    cursor = result.continueCursor;
+  }
+  return rows;
+}
 
 async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequestArgs) {
   const identity = await ctx.auth.getUserIdentity();
@@ -47,6 +139,7 @@ async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequ
     .unique();
 
   if (!user) throw new Error("User not found");
+  assertAccountIsNotDeleting(user);
 
   const recipientEmail = args.recipient_email.trim().toLowerCase();
   const targetMemberId = normalizeMemberId(args.target_member_id);
@@ -141,10 +234,45 @@ export const listIncoming = query({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
 
+    const recipientEmail = identity.email!.trim().toLowerCase();
+    const now = Date.now();
+    return await collectCompatibilityLinkRequests(
+      (cursor, limit) =>
+        ctx.db
+          .query("link_requests")
+          .withIndex("by_recipient_email_status_and_expiry", (q) =>
+            q.eq("recipient_email", recipientEmail).eq("status", "pending").gt("expires_at", now)
+          )
+          .paginate({ cursor, numItems: limit }),
+      (cursor, limit) =>
+        ctx.db
+          .query("link_requests")
+          .withIndex("by_recipient_email_and_created_at", (q) =>
+            q.eq("recipient_email", recipientEmail)
+          )
+          .order("desc")
+          .paginate({ cursor, numItems: limit })
+    );
+  }
+});
+
+export const listIncomingPage = query({
+  args: {
+    cursor: v.union(v.string(), v.null()),
+    numItems: v.number()
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return { page: [], continueCursor: "", isDone: true };
+
+    const recipientEmail = identity.email!.trim().toLowerCase();
     return await ctx.db
       .query("link_requests")
-      .withIndex("by_recipient_email", (q) => q.eq("recipient_email", identity.email!))
-      .collect();
+      .withIndex("by_recipient_email_and_created_at", (q) =>
+        q.eq("recipient_email", recipientEmail)
+      )
+      .order("desc")
+      .paginate({ cursor: args.cursor, numItems: clampedLinkRequestPageSize(args.numItems) });
   }
 });
 
@@ -164,10 +292,45 @@ export const listOutgoing = query({
 
     if (!user) return [];
 
+    const now = Date.now();
+    return await collectCompatibilityLinkRequests(
+      (cursor, limit) =>
+        ctx.db
+          .query("link_requests")
+          .withIndex("by_requester_id_status_and_expiry", (q) =>
+            q.eq("requester_id", user.id).eq("status", "pending").gt("expires_at", now)
+          )
+          .paginate({ cursor, numItems: limit }),
+      (cursor, limit) =>
+        ctx.db
+          .query("link_requests")
+          .withIndex("by_requester_id_and_created_at", (q) => q.eq("requester_id", user.id))
+          .order("desc")
+          .paginate({ cursor, numItems: limit })
+    );
+  }
+});
+
+export const listOutgoingPage = query({
+  args: {
+    cursor: v.union(v.string(), v.null()),
+    numItems: v.number()
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return { page: [], continueCursor: "", isDone: true };
+
+    const user = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", identity.email!.trim().toLowerCase()))
+      .unique();
+    if (!user) return { page: [], continueCursor: "", isDone: true };
+
     return await ctx.db
       .query("link_requests")
-      .withIndex("by_requester_id", (q) => q.eq("requester_id", user.id))
-      .collect();
+      .withIndex("by_requester_id_and_created_at", (q) => q.eq("requester_id", user.id))
+      .order("desc")
+      .paginate({ cursor: args.cursor, numItems: clampedLinkRequestPageSize(args.numItems) });
   }
 });
 
@@ -197,20 +360,26 @@ export const createV2 = mutation({
 export const accept = mutation({
   args: { id: v.string() },
   handler: async (ctx, args) => {
+    const budget = createLinkingReadBudget();
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Unauthenticated");
 
+    chargeLinkingQueries(budget, 1);
     const user = await ctx.db
       .query("accounts")
       .withIndex("by_email", (q) => q.eq("email", identity.email!))
       .unique();
+    accountLinkingRows(budget, user ? [user] : []);
 
     if (!user) throw new Error("User not found");
+    assertAccountIsNotDeleting(user);
 
+    chargeLinkingQueries(budget, 1);
     const request = await ctx.db
       .query("link_requests")
       .withIndex("by_client_id", (q) => q.eq("id", args.id))
       .unique();
+    accountLinkingRows(budget, request ? [request] : []);
 
     if (!request) throw new Error("Request not found");
 
@@ -229,47 +398,42 @@ export const accept = mutation({
       throw new Error("Request has expired");
     }
 
-    const requester = await ctx.db
-      .query("accounts")
-      .withIndex("by_auth_id", (q) => q.eq("id", request.requester_id))
-      .unique();
-    if (!requester || requester.status === "deleted") {
-      throw new Error("Requester account is no longer active");
+    await assertBudgetedIdentityMaterializationReady(ctx, budget);
+
+    let targetFriendId = request.target_friend_id;
+    if (!targetFriendId) {
+      chargeLinkingQueries(budget, 1);
+      const targetFriends = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q
+            .eq("account_email", request.requester_email.toLowerCase().trim())
+            .eq("member_id", normalizeMemberId(request.target_member_id))
+        )
+        .take(2);
+      accountLinkingRows(budget, targetFriends, true);
+      if (targetFriends.length !== 1) {
+        throw new Error("Target member is no longer an unlinked friend owned by the requester");
+      }
+      targetFriendId = targetFriends[0]._id;
     }
 
-    await assertIdentityMaterializationReady(ctx.db);
-    const targetFriend = request.target_friend_id
-      ? await ctx.db.get(request.target_friend_id)
-      : await ctx.db
-          .query("account_friends")
-          .withIndex("by_account_email_and_member_id", (q) =>
-            q
-              .eq("account_email", requester.email.toLowerCase().trim())
-              .eq("member_id", normalizeMemberId(request.target_member_id))
-          )
-          .unique();
-    if (
-      !targetFriend ||
-      targetFriend.account_email !== requester.email.toLowerCase().trim() ||
-      normalizeMemberId(targetFriend.member_id) !== normalizeMemberId(request.target_member_id) ||
-      !isUnlinkedFriend(targetFriend)
-    ) {
-      throw new Error("Target member is no longer an unlinked friend owned by the requester");
-    }
+    const claimPlan = await prepareClaimForUser(
+      ctx,
+      user,
+      {
+        targetMemberId: request.target_member_id,
+        targetFriendId,
+        creatorEmail: request.requester_email,
+        creatorId: request.requester_id
+      },
+      budget
+    );
 
-    // Update request status first to preserve idempotency semantics.
     await ctx.db.patch(request._id, {
       status: "accepted"
     });
-
-    // Delegate to the shared invite claim core.
-    return await ctx.runMutation(internal.inviteTokens._internalClaimTargetMemberForAccount, {
-      userAccountId: user._id,
-      targetMemberId: request.target_member_id,
-      targetFriendId: targetFriend._id,
-      creatorEmail: request.requester_email,
-      creatorId: request.requester_id
-    });
+    return await applyClaimForUser(ctx, claimPlan);
   }
 });
 

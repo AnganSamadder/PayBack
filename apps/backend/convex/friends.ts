@@ -1,5 +1,7 @@
-import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { query, mutation, internalMutation, type MutationCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { Doc } from "./_generated/dataModel";
+import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { findAccountByAuthIdOrDocId, normalizeMemberId, normalizeMemberIds } from "./identity";
 import {
@@ -18,6 +20,15 @@ const FRIEND_LIST_LIMITS = {
   maximumDocumentReservationBytes: 2 * 1024 * 1024,
   maximumPageRows: 5
 } as const;
+
+const LEGACY_FRIEND_LOOKUP_LIMITS = {
+  rows: 256,
+  estimatedReadBytes: 8 * 1024 * 1024,
+  hardReadSafetyBytes: 10 * 1024 * 1024,
+  maximumDocumentReservationBytes: 2 * 1024 * 1024,
+  maximumPageRows: 5
+} as const;
+const FRIEND_CLEAR_BATCH_SIZE = 5;
 
 type FriendListBudget = {
   friendRows: number;
@@ -43,7 +54,7 @@ function accountFriendListRows(
   budget.readRows += rows.length;
   if (areFriendRows) budget.friendRows += rows.length;
   budget.estimatedReadBytes += rows.reduce<number>(
-    (total, row) => total + new TextEncoder().encode(JSON.stringify(row) ?? "").length,
+    (total, row) => total + getConvexSize(row as Value),
     0
   );
   if (
@@ -87,6 +98,75 @@ async function collectFriendListRows<T>(
     if (result.isDone) return rows;
     if (result.continueCursor === cursor) throw friendListLimitError();
     cursor = result.continueCursor;
+  }
+}
+
+async function findBoundedLegacyFriend(
+  ctx: MutationCtx,
+  accountEmail: string,
+  normalizedMemberId: string
+) {
+  const rows: Doc<"account_friends">[] = [];
+  let cursor: string | null = null;
+  let readBytes = 0;
+
+  while (true) {
+    const remainingRows = LEGACY_FRIEND_LOOKUP_LIMITS.rows - rows.length + 1;
+    const remainingHardBytes = LEGACY_FRIEND_LOOKUP_LIMITS.hardReadSafetyBytes - readBytes;
+    const byteReservedRows = Math.floor(
+      remainingHardBytes / LEGACY_FRIEND_LOOKUP_LIMITS.maximumDocumentReservationBytes
+    );
+    const pageSize = Math.min(
+      LEGACY_FRIEND_LOOKUP_LIMITS.maximumPageRows,
+      remainingRows,
+      byteReservedRows
+    );
+    if (pageSize <= 0) throw new Error("Friend lookup is too large to complete safely");
+
+    const result = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
+      .order("asc")
+      .paginate({ cursor, numItems: pageSize });
+    readBytes += result.page.reduce((total, row) => total + getConvexSize(row as Value), 0);
+    rows.push(...result.page);
+    if (
+      rows.length > LEGACY_FRIEND_LOOKUP_LIMITS.rows ||
+      readBytes > LEGACY_FRIEND_LOOKUP_LIMITS.estimatedReadBytes
+    ) {
+      throw new Error("Friend lookup is too large to complete safely");
+    }
+    if (result.isDone) {
+      const matches = rows.filter(
+        (friend) => normalizeMemberId(friend.member_id) === normalizedMemberId
+      );
+      if (matches.length > 1) {
+        throw new Error("Identity maintenance required: duplicate friend identities");
+      }
+      return matches[0] ?? null;
+    }
+    if (result.continueCursor === cursor) {
+      throw new Error("Friend lookup is too large to complete safely");
+    }
+    cursor = result.continueCursor;
+  }
+}
+
+async function deleteFriendBatch(ctx: MutationCtx, accountEmail: string, cutoff: number) {
+  const friends = await ctx.db
+    .query("account_friends")
+    .withIndex("by_account_email_and_updated_at", (q) =>
+      q.eq("account_email", accountEmail).lte("updated_at", cutoff)
+    )
+    .order("asc")
+    .take(FRIEND_CLEAR_BATCH_SIZE);
+
+  await Promise.all(friends.map((friend) => ctx.db.delete(friend._id)));
+  if (friends.length === FRIEND_CLEAR_BATCH_SIZE) {
+    await ctx.scheduler.runAfter(0, internal.friends.clearAllForUserBatch, {
+      accountEmail,
+      cutoff
+    });
   }
 }
 
@@ -375,14 +455,17 @@ export const upsert = mutation({
         q.eq("account_email", identity.email!).eq("member_id", normalizedMemberId)
       )
       .unique();
-    const existingLegacy =
-      existing ??
-      (
-        await ctx.db
-          .query("account_friends")
-          .withIndex("by_account_email", (q) => q.eq("account_email", identity.email!))
-          .collect()
-      ).find((friend) => normalizeMemberId(friend.member_id) === normalizedMemberId);
+    let existingLegacy = existing;
+    const rawMemberId = args.member_id.trim();
+    if (!existingLegacy && rawMemberId !== normalizedMemberId) {
+      existingLegacy = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", identity.email!).eq("member_id", rawMemberId)
+        )
+        .unique();
+    }
+    existingLegacy ??= await findBoundedLegacyFriend(ctx, identity.email!, normalizedMemberId);
 
     if (existingLegacy) {
       const provenLink = await resolveProvenFriendLink(ctx, existingLegacy);
@@ -443,14 +526,15 @@ export const clearAllForUser = mutation({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Unauthenticated");
 
-    const friends = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email", (q) => q.eq("account_email", identity.email!))
-      .collect();
+    await deleteFriendBatch(ctx, identity.email!.trim().toLowerCase(), Date.now());
+    return null;
+  }
+});
 
-    for (const friend of friends) {
-      await ctx.db.delete(friend._id);
-    }
+export const clearAllForUserBatch = internalMutation({
+  args: { accountEmail: v.string(), cutoff: v.number() },
+  handler: async (ctx, args) => {
+    await deleteFriendBatch(ctx, args.accountEmail.trim().toLowerCase(), args.cutoff);
     return null;
   }
 });
