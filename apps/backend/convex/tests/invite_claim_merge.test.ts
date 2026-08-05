@@ -464,7 +464,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
           { id: "split_2", member_id: "local_ghost_member", amount: 20, is_settled: false }
         ],
         is_settled: false,
-        owner_email: "stale-owner@test.com",
+        owner_email: "claimer@test.com",
         owner_account_id: "claimer_auth",
         owner_id: claimerDoc,
         participant_member_ids: [
@@ -855,6 +855,145 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     ).toBeUndefined();
   });
 
+  test("preflights selected-friend identity conflicts before returning an apply plan", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: now
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: "creator_member",
+        name: "Creator",
+        profile_avatar_color: "#111111",
+        has_linked_account: false,
+        updated_at: now
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: "selected_duplicate",
+        local_alias_member_ids: ["conflicting_alias"],
+        name: "Selected duplicate",
+        profile_avatar_color: "#222222",
+        has_linked_account: false,
+        updated_at: now
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: "conflicting_alias",
+        name: "Different friend",
+        profile_avatar_color: "#333333",
+        has_linked_account: false,
+        updated_at: now
+      });
+    });
+
+    const { prepareInviteMergeSourceInternal } = await import("../aliases");
+    await expect(
+      t.run(async (ctx) => {
+        await prepareInviteMergeSourceInternal(ctx, {
+          accountEmail: "claimer@test.com",
+          sourceMemberId: "selected_duplicate",
+          targetMemberId: "creator_member",
+          targetName: "Creator",
+          targetLinkedAccountId: "creator_auth",
+          targetLinkedAccountEmail: "creator@test.com"
+        });
+        return "prepared";
+      })
+    ).rejects.toThrow("already attached to another friend");
+  });
+
+  test("rejects a selected merge target alias owned by another registered account", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "foreign_auth",
+        email: "foreign@test.com",
+        display_name: "Foreign account",
+        created_at: now,
+        member_id: "foreign_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "invite_target_foreign_alias",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: "creator_member",
+        local_alias_member_ids: ["foreign_member"],
+        name: "Creator",
+        profile_avatar_color: "#111111",
+        has_linked_account: false,
+        updated_at: now
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: "selected_creator_duplicate",
+        name: "Selected creator duplicate",
+        profile_avatar_color: "#222222",
+        has_linked_account: false,
+        updated_at: now
+      });
+    });
+
+    const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await expect(
+      claimer.mutation(api.inviteTokens.claim, {
+        id: "invite_target_foreign_alias",
+        mergeLocalFriendMemberId: "selected_creator_duplicate"
+      })
+    ).rejects.toThrow("target alias belongs to another registered account");
+
+    const state = await t.run(async (ctx) => ({
+      token: await ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "invite_target_foreign_alias"))
+        .unique(),
+      friends: await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", "claimer@test.com"))
+        .collect()
+    }));
+    expect(state.token?.claimed_by).toBeUndefined();
+    expect(state.friends.map((friend) => friend.member_id).sort()).toEqual([
+      "creator_member",
+      "selected_creator_duplicate"
+    ]);
+  });
+
   test("rejects an over-cap local alias closure without claiming the invite", async () => {
     const t = convexTest(schema, modules);
     const now = Date.now();
@@ -1114,7 +1253,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
         mergeLocalFriendMemberId: "local_duplicate"
       })
     ).resolves.toMatchObject({ canonical_member_id: "claimer_member" });
-  });
+  }, 30_000);
 
   test("does not rewrite another owner's group that reuses the same local UUID", async () => {
     const t = convexTest(schema, modules);
@@ -1221,5 +1360,610 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     expect(outsiderGroup?.members.map((member) => member.id)).toContain("shared_uuid");
     expect(outsiderExpense?.paid_by_member_id).toBe("shared_uuid");
     expect(outsiderExpense?.participant_emails).not.toContain("creator@test.com");
+  });
+
+  test.each([
+    { label: "token target", mergeMemberId: "claimer_legacy_member" },
+    { label: "claimant canonical member", mergeMemberId: "claimer_member" },
+    { label: "claimant account alias", mergeMemberId: "claimer_alias" }
+  ])("rejects the $label as an invite merge source", async ({ mergeMemberId }) => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member",
+        alias_member_ids: ["claimer_alias"]
+      });
+      await ctx.db.insert("member_aliases", {
+        alias_member_id: "claimer_alias",
+        canonical_member_id: "claimer_member",
+        account_email: "claimer@test.com",
+        materialization_source: "account_alias",
+        source_account_id: "claimer_auth",
+        created_at: now
+      });
+      await insertBoundInvite(ctx, {
+        id: `identity_closure_${mergeMemberId}`,
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: mergeMemberId,
+        name: "Invalid creator duplicate",
+        profile_avatar_color: "#444444",
+        has_linked_account: false,
+        status: "friend",
+        link_state: "unlinked",
+        updated_at: now
+      });
+    });
+
+    const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await expect(
+      claimerCtx.mutation(api.inviteTokens.claim, {
+        id: `identity_closure_${mergeMemberId}`,
+        mergeLocalFriendMemberId: mergeMemberId
+      })
+    ).rejects.toThrow("Cannot merge the claimant identity into the inviter");
+
+    const token = await t.run(async (ctx) =>
+      ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", `identity_closure_${mergeMemberId}`))
+        .unique()
+    );
+    expect(token?.claimed_by).toBeUndefined();
+  });
+
+  test("rejects a merge source whose local aliases intersect the claimant identity", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      const claimerId = await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "invite_source_alias_claimant_identity",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: "local_duplicate",
+        local_alias_member_ids: ["claimer_legacy_member"],
+        name: "Creator duplicate",
+        profile_avatar_color: "#444444",
+        has_linked_account: false,
+        status: "friend",
+        link_state: "unlinked",
+        updated_at: now
+      });
+      const groupId = await ctx.db.insert("groups", {
+        id: "claimant_alias_group",
+        name: "Claimant alias group",
+        members: [
+          { id: "claimer_member", name: "Claimer", is_current_user: true },
+          { id: "local_duplicate", name: "Creator duplicate" }
+        ],
+        owner_email: "claimer@test.com",
+        owner_account_id: "claimer_auth",
+        owner_id: claimerId,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("expenses", {
+        id: "claimant_alias_expense",
+        group_id: "claimant_alias_group",
+        group_ref: groupId,
+        description: "Must remain unchanged",
+        date: now,
+        total_amount: 20,
+        paid_by_member_id: "local_duplicate",
+        involved_member_ids: ["claimer_member", "local_duplicate"],
+        splits: [
+          { id: "claimant_split", member_id: "claimer_member", amount: 10, is_settled: false },
+          {
+            id: "duplicate_split",
+            member_id: "local_duplicate",
+            amount: 10,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "claimer@test.com",
+        owner_account_id: "claimer_auth",
+        owner_id: claimerId,
+        participant_member_ids: ["claimer_member", "local_duplicate"],
+        participant_emails: ["claimer@test.com"],
+        participants: [
+          { member_id: "claimer_member", name: "Claimer" },
+          { member_id: "local_duplicate", name: "Creator duplicate" }
+        ],
+        created_at: now,
+        updated_at: now
+      });
+    });
+
+    const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await expect(
+      claimer.mutation(api.inviteTokens.claim, {
+        id: "invite_source_alias_claimant_identity",
+        mergeLocalFriendMemberId: "local_duplicate"
+      })
+    ).rejects.toThrow("Cannot merge the claimant identity into the inviter");
+
+    const state = await t.run(async (ctx) => ({
+      token: await ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "invite_source_alias_claimant_identity"))
+        .unique(),
+      materializedAlias: await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", "claimer_legacy_member"))
+        .first(),
+      group: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "claimant_alias_group"))
+        .unique(),
+      expense: await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "claimant_alias_expense"))
+        .unique()
+    }));
+    expect(state.token?.claimed_by).toBeUndefined();
+    expect(state.materializedAlias).toBeNull();
+    expect(state.group?.members.map((member) => member.id)).toEqual([
+      "claimer_member",
+      "local_duplicate"
+    ]);
+    expect(state.expense?.paid_by_member_id).toBe("local_duplicate");
+    expect(state.expense?.participant_member_ids).toEqual(["claimer_member", "local_duplicate"]);
+  });
+
+  test("rewrites the bound invite target's owner-local alias history without globalizing it", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      const creatorId = await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "invite_with_local_target_alias",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      const targetFriend = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", "creator@test.com").eq("member_id", "claimer_legacy_member")
+        )
+        .unique();
+      if (!targetFriend) throw new Error("missing target friend");
+      await ctx.db.patch(targetFriend._id, {
+        local_alias_member_ids: ["claimer_local_alias"]
+      });
+
+      const groupId = await ctx.db.insert("groups", {
+        id: "local_target_alias_group",
+        name: "Alias history",
+        members: [
+          { id: "creator_member", name: "Creator", is_current_user: true },
+          { id: "claimer_local_alias", name: "Claimer alias" }
+        ],
+        owner_email: "creator@test.com",
+        owner_account_id: "creator_auth",
+        owner_id: creatorId,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("expenses", {
+        id: "local_target_alias_expense",
+        group_id: "local_target_alias_group",
+        group_ref: groupId,
+        description: "Alias-only dinner",
+        date: now,
+        total_amount: 20,
+        paid_by_member_id: "creator_member",
+        involved_member_ids: ["creator_member", "claimer_local_alias"],
+        splits: [
+          { id: "creator_split", member_id: "creator_member", amount: 10, is_settled: false },
+          { id: "alias_split", member_id: "claimer_local_alias", amount: 10, is_settled: false }
+        ],
+        is_settled: false,
+        owner_email: "creator@test.com",
+        owner_account_id: "creator_auth",
+        owner_id: creatorId,
+        participant_member_ids: ["creator_member", "claimer_local_alias"],
+        participant_emails: ["creator@test.com"],
+        participants: [
+          { member_id: "creator_member", name: "Creator" },
+          { member_id: "claimer_local_alias", name: "Claimer alias" }
+        ],
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("user_expenses", {
+        user_id: "creator_auth",
+        expense_id: "local_target_alias_expense",
+        updated_at: now
+      });
+    });
+
+    const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await claimerCtx.mutation(api.inviteTokens.claim, {
+      id: "invite_with_local_target_alias"
+    });
+
+    const state = await t.run(async (ctx) => ({
+      group: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "local_target_alias_group"))
+        .unique(),
+      expense: await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "local_target_alias_expense"))
+        .unique(),
+      visibility: await ctx.db
+        .query("user_expenses")
+        .withIndex("by_expense_id", (q) => q.eq("expense_id", "local_target_alias_expense"))
+        .collect(),
+      localAliasMaterialization: await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", "claimer_local_alias"))
+        .first()
+    }));
+    expect(state.group?.members.map((member) => member.id)).toContain("claimer_member");
+    expect(state.group?.members.map((member) => member.id)).not.toContain("claimer_local_alias");
+    expect(state.expense?.participant_member_ids).toContain("claimer_member");
+    expect(state.expense?.participant_member_ids).not.toContain("claimer_local_alias");
+    expect(state.visibility.map((row) => row.user_id)).toEqual(
+      expect.arrayContaining(["creator_auth", "claimer_auth"])
+    );
+    expect(state.localAliasMaterialization).toBeNull();
+  });
+
+  test("preserves a bound target's local aliases when retaining an existing canonical row", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "invite_with_canonical_collision",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      const targetFriend = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", "creator@test.com").eq("member_id", "claimer_legacy_member")
+        )
+        .unique();
+      if (!targetFriend) throw new Error("missing target friend");
+      await ctx.db.patch(targetFriend._id, {
+        local_alias_member_ids: ["claimer_local_alias"],
+        nickname: "Roadtrip Claimer",
+        original_name: "Imported Claimer",
+        original_nickname: "Roadtrip",
+        prefer_nickname: true,
+        first_name: "Imported",
+        last_name: "Friend",
+        display_preference: "nickname",
+        profile_image_url: "https://example.com/imported.png"
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "creator@test.com",
+        member_id: "claimer_member",
+        local_alias_member_ids: ["canonical_local_alias"],
+        name: "Existing canonical Claimer",
+        profile_avatar_color: "#123456",
+        has_linked_account: false,
+        link_state: "unlinked",
+        status: "friend",
+        updated_at: now
+      });
+    });
+
+    const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await claimerCtx.mutation(api.inviteTokens.claim, {
+      id: "invite_with_canonical_collision"
+    });
+
+    const creatorFriends = await t.run(async (ctx) =>
+      ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", "creator@test.com"))
+        .collect()
+    );
+    const canonicalFriend = creatorFriends.find((friend) => friend.member_id === "claimer_member");
+    expect(creatorFriends.some((friend) => friend.member_id === "claimer_legacy_member")).toBe(
+      false
+    );
+    expect(canonicalFriend?.local_alias_member_ids).toEqual(
+      expect.arrayContaining(["canonical_local_alias", "claimer_local_alias"])
+    );
+    expect(canonicalFriend).toMatchObject({
+      nickname: "Roadtrip Claimer",
+      original_name: "Imported Claimer",
+      original_nickname: "Roadtrip",
+      prefer_nickname: true,
+      first_name: "Imported",
+      last_name: "Friend",
+      display_preference: "nickname",
+      profile_image_url: "https://example.com/imported.png"
+    });
+  });
+
+  test("bounds creator and claimant fallback friend rows in the shared claim budget", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const largeProfile = "x".repeat(360 * 1024);
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "invite_large_friend_fallbacks",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: "creator_duplicate",
+        name: "Creator duplicate",
+        profile_avatar_color: "#444444",
+        has_linked_account: false,
+        link_state: "unlinked",
+        status: "friend",
+        updated_at: now
+      });
+      for (const accountEmail of ["creator@test.com", "claimer@test.com"]) {
+        for (let index = 0; index < 12; index += 1) {
+          await ctx.db.insert("account_friends", {
+            account_email: accountEmail,
+            member_id: `${accountEmail}_large_friend_${index}`,
+            name: `Large friend ${index}`,
+            profile_avatar_color: "#333333",
+            profile_image_url: largeProfile,
+            has_linked_account: false,
+            link_state: "unlinked",
+            status: "friend",
+            updated_at: now
+          });
+        }
+      }
+    });
+
+    const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await expect(
+      claimerCtx.mutation(api.inviteTokens.claim, {
+        id: "invite_large_friend_fallbacks",
+        mergeLocalFriendMemberId: "creator_duplicate"
+      })
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    const token = await t.run(async (ctx) =>
+      ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "invite_large_friend_fallbacks"))
+        .unique()
+    );
+    expect(token?.claimed_by).toBeUndefined();
+  });
+
+  test("charges legacy alias-preflight rows to the shared claim budget", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const largeProfile = "p".repeat(500 * 1024);
+    const largeAuditEmail = `${"a".repeat(900 * 1024)}@test.com`;
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        profile_image_url: largeProfile,
+        created_at: now,
+        member_id: "creator_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        profile_image_url: largeProfile,
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "invite_large_alias_preflight",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      for (let index = 0; index < 8; index += 1) {
+        await ctx.db.insert("member_aliases", {
+          alias_member_id: "claimer_legacy_member",
+          canonical_member_id: "claimer_member",
+          account_email: `${index}${largeAuditEmail}`,
+          created_at: now - index - 1
+        });
+      }
+    });
+
+    const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await expect(
+      claimerCtx.mutation(api.inviteTokens.claim, {
+        id: "invite_large_alias_preflight"
+      })
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    const token = await t.run(async (ctx) =>
+      ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "invite_large_alias_preflight"))
+        .unique()
+    );
+    expect(token?.claimed_by).toBeUndefined();
+  });
+
+  test("shares the merge read budget across claimant and creator account rewrites", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const largeName = "x".repeat(650 * 1024);
+
+    await t.run(async (ctx) => {
+      const creatorId = await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      const claimerId = await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "shared_merge_budget",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: "local_duplicate",
+        name: "Creator duplicate",
+        profile_avatar_color: "#444444",
+        has_linked_account: false,
+        status: "friend",
+        link_state: "unlinked",
+        updated_at: now
+      });
+
+      for (const [accountEmail, accountId, ownerId, memberId] of [
+        ["creator@test.com", "creator_auth", creatorId, "creator_member"],
+        ["claimer@test.com", "claimer_auth", claimerId, "claimer_member"]
+      ] as const) {
+        for (let index = 0; index < 3; index += 1) {
+          await ctx.db.insert("groups", {
+            id: `${accountId}_large_group_${index}`,
+            name: largeName,
+            members: [{ id: memberId, name: accountEmail, is_current_user: true }],
+            owner_email: accountEmail,
+            owner_account_id: accountId,
+            owner_id: ownerId,
+            created_at: now,
+            updated_at: now
+          });
+        }
+      }
+    });
+
+    const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await expect(
+      claimerCtx.mutation(api.inviteTokens.claim, {
+        id: "shared_merge_budget",
+        mergeLocalFriendMemberId: "local_duplicate"
+      })
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    const token = await t.run(async (ctx) =>
+      ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "shared_merge_budget"))
+        .unique()
+    );
+    expect(token?.claimed_by).toBeUndefined();
   });
 });

@@ -1567,7 +1567,7 @@ test("invite claim fails atomically when legacy friend lookup exceeds its bound"
   });
   await expect(
     claimer.mutation(api.inviteTokens.claim, { id: "bounded_lookup_invite" })
-  ).rejects.toThrow("too many friend identities");
+  ).rejects.toThrow("Friend merge is too large to complete safely");
 
   const state = await t.run(async (ctx) => ({
     token: await ctx.db
