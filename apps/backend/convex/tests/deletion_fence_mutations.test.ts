@@ -497,6 +497,69 @@ test("expense create rejects a newly referenced deleted participant", async () =
   expect(await t.run(async (ctx) => ctx.db.query("expenses").collect())).toEqual([]);
 });
 
+test("expenses.create rejects deprecated linked participant payloads before writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    const ownerId = await seedAccount(ctx, {
+      id: "owner_auth",
+      email: "owner@test.com",
+      memberId: "owner_member"
+    });
+    await seedAccount(ctx, {
+      id: "deleting_auth",
+      email: "deleting@test.com",
+      memberId: "deleting_member",
+      status: "deleting"
+    });
+    await ctx.db.insert("groups", {
+      id: "active_group",
+      name: "Active Group",
+      members: [{ id: "owner_member", name: "Owner", is_current_user: true }],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await expect(
+    owner.mutation(api.expenses.create, {
+      id: "hostile_legacy_payload",
+      context_kind: "group",
+      group_id: "active_group",
+      description: "Hostile payload",
+      date: now,
+      total_amount: 10,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member"],
+      splits: [{ id: "owner_split", member_id: "owner_member", amount: 10, is_settled: false }],
+      is_settled: false,
+      participant_member_ids: ["owner_member"],
+      participants: [{ member_id: "owner_member", name: "Owner" }],
+      linked_participants: [
+        {
+          member_id: "deleting_member",
+          name: "Deleting PII",
+          linked_account_id: "deleting_auth",
+          linked_account_email: "deleting@test.com"
+        }
+      ]
+    } as any)
+  ).rejects.toThrow();
+
+  expect(
+    await t.run(async (ctx) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "hostile_legacy_payload"))
+        .unique()
+    )
+  ).toBeNull();
+});
+
 test("expense update cannot restore an inactive participant's PII or link metadata", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
@@ -580,8 +643,7 @@ test("expense update cannot restore an inactive participant's PII or link metada
         linked_account_id: "deleted_auth",
         linked_account_email: "deleted@test.com"
       }
-    ],
-    linked_participants: [{ member_id: "deleted_member", name: "Restored PII" }]
+    ]
   });
 
   const expense = await t.run(async (ctx) => ctx.db.query("expenses").unique());

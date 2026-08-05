@@ -362,7 +362,6 @@ export const create = mutation({
         linked_account_email: v.optional(v.string())
       })
     ),
-    linked_participants: v.optional(v.any()),
     subexpenses: v.optional(
       v.array(
         v.object({
@@ -417,8 +416,6 @@ export const create = mutation({
     });
     const normalizedParticipants = preparedParticipants.participants;
     const inactiveParticipantMemberIds = preparedParticipants.inactiveMemberIds;
-    const deletionSafeLinkedParticipants =
-      inactiveParticipantMemberIds.size > 0 ? undefined : args.linked_participants;
     const requestedContextKind = args.context_kind;
     const existingGroup = existing?.group_ref ? await ctx.db.get(existing.group_ref) : null;
     const inferredExistingContextKind = existing
@@ -828,8 +825,6 @@ export const create = mutation({
           canonicalizeParticipants(existing.participants) ||
         canonicalizeSubexpenses(args.subexpenses) !==
           canonicalizeSubexpenses(existing.subexpenses) ||
-        JSON.stringify(deletionSafeLinkedParticipants ?? null) !==
-          JSON.stringify(existing.linked_participants ?? null) ||
         (args.is_payback_generated_mock_data ?? false) !==
           (existing.is_payback_generated_mock_data ?? false);
 
@@ -904,9 +899,6 @@ export const create = mutation({
           ? args.subexpenses
           : undefined
         : existing.subexpenses;
-      const nextLinkedParticipants = callerOwnsExpense
-        ? deletionSafeLinkedParticipants
-        : existing.linked_participants;
       const nextMockData = callerOwnsExpense
         ? (args.is_payback_generated_mock_data ?? existing.is_payback_generated_mock_data)
         : existing.is_payback_generated_mock_data;
@@ -930,7 +922,7 @@ export const create = mutation({
         participants: nextParticipants,
         participant_member_ids: nextParticipantMemberIds,
         participant_emails: participantEmails,
-        linked_participants: nextLinkedParticipants,
+        linked_participants: undefined,
         subexpenses: nextSubexpenses,
         is_payback_generated_mock_data: nextMockData,
         updated_at: Date.now()
@@ -965,7 +957,6 @@ export const create = mutation({
       participant_member_ids: normalizedParticipantMemberIds,
       participants: normalizedParticipants,
       participant_emails: participantEmails,
-      linked_participants: deletionSafeLinkedParticipants,
       subexpenses: args.subexpenses && args.subexpenses.length >= 2 ? args.subexpenses : undefined,
       is_payback_generated_mock_data: args.is_payback_generated_mock_data ?? false,
       created_at: Date.now(),

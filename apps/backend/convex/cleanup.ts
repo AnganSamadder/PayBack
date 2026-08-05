@@ -738,6 +738,7 @@ function scrubDeletedAccountFromExpense(
         linked_account_email: undefined
       };
     }),
+    linked_participants: undefined,
     updated_at: Date.now()
   };
 }
@@ -2826,6 +2827,24 @@ export const selfDeleteAccount = mutation({
       ) {
         throw new Error("Account deletion fence does not match the authenticated account");
       }
+      if (progress.fence_activated === undefined) {
+        progress = await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          {
+            phase: "preflight_groups_owner_id",
+            cursor: undefined,
+            next_cursor: undefined,
+            member_index: undefined,
+            current_group_id: undefined,
+            current_group_client_id: undefined,
+            current_group_is_last: undefined,
+            fence_activated: false
+          },
+          1
+        );
+        return selfDeletionPendingResponse(progress);
+      }
     } else {
       if (user.status === "deleting") {
         throw new Error("Account deletion progress is missing for a fenced account");
@@ -2855,6 +2874,7 @@ export const selfDeleteAccount = mutation({
         request_id: user.id,
         tombstone_email: `deleted+${user._id}@payback.invalid`,
         phase: "preflight_groups_owner_id",
+        fence_activated: false,
         friendships_unlinked: 0,
         processed_count: 0,
         started_at: now,

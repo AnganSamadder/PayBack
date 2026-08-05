@@ -406,9 +406,7 @@ export const store = mutation({
       .unique();
 
     if (user !== null) {
-      if (user.status === "deleted") {
-        throw new Error("This authenticated account has been deleted");
-      }
+      assertAccountCanAcceptChanges(user);
       // Update existing user if needed (e.g. name changed)
       if (user.display_name !== identity.name && identity.name) {
         await ctx.db.patch(user._id, {
@@ -591,6 +589,7 @@ export const updateProfile = mutation({
       .unique();
 
     if (!user) throw new Error("User not found");
+    assertAccountCanAcceptChanges(user);
 
     const patches: any = { updated_at: Date.now() };
     if (args.profile_avatar_color !== undefined)
@@ -648,6 +647,7 @@ export const updateSettings = mutation({
       .unique();
 
     if (!user) throw new Error("User not found");
+    assertAccountCanAcceptChanges(user);
 
     const patches: any = { updated_at: Date.now() };
     if (args.prefer_nicknames !== undefined) patches.prefer_nicknames = args.prefer_nicknames;

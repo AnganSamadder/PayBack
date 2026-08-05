@@ -183,6 +183,100 @@ test("deleting legacy account cannot bootstrap a new canonical member identity",
   expect(state.aliases).toEqual([]);
 });
 
+test("users.store rejects a deleting account without refreshing identity fields", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Original Name",
+      first_name: "Original",
+      status: "deleting",
+      created_at: Date.now()
+    });
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await expect(owner.mutation(api.users.store, {})).rejects.toThrow("being deleted");
+
+  const account = await t.run(async (ctx) => ctx.db.query("accounts").unique());
+  expect(account).toMatchObject({
+    display_name: "Original Name",
+    first_name: "Original",
+    status: "deleting"
+  });
+});
+
+test("users.updateProfile rejects a deleting account without propagating profile PII", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await seedAccount(ctx, {
+      id: "owner_auth",
+      email: "owner@test.com",
+      memberId: "owner_member",
+      status: "deleting"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "friend@test.com",
+      member_id: "owner_member",
+      name: "Owner",
+      profile_avatar_color: "#111111",
+      has_linked_account: true,
+      linked_account_id: "owner_auth",
+      linked_account_email: "owner@test.com",
+      linked_member_id: "owner_member",
+      updated_at: Date.now()
+    });
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await expect(
+    owner.mutation(api.users.updateProfile, {
+      profile_avatar_color: "#ffffff",
+      profile_image_url: "https://example.com/new-profile.png"
+    })
+  ).rejects.toThrow("being deleted");
+
+  const state = await t.run(async (ctx) => ({
+    account: await ctx.db.query("accounts").unique(),
+    friend: await ctx.db.query("account_friends").unique()
+  }));
+  expect(state.account?.profile_avatar_color).toBeUndefined();
+  expect(state.account?.profile_image_url).toBeUndefined();
+  expect(state.friend).toMatchObject({ profile_avatar_color: "#111111" });
+  expect(state.friend?.profile_image_url).toBeUndefined();
+});
+
+test("users.updateSettings rejects a deleting account without changing preferences", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      prefer_nicknames: false,
+      prefer_whole_names: false,
+      status: "deleting",
+      created_at: Date.now()
+    });
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await expect(
+    owner.mutation(api.users.updateSettings, {
+      prefer_nicknames: true,
+      prefer_whole_names: true
+    })
+  ).rejects.toThrow("being deleted");
+
+  const account = await t.run(async (ctx) => ctx.db.query("accounts").unique());
+  expect(account).toMatchObject({
+    prefer_nicknames: false,
+    prefer_whole_names: false,
+    status: "deleting"
+  });
+});
+
 test("session status exposes a deleting account distinctly from an active account", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {

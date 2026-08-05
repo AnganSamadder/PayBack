@@ -50,6 +50,86 @@ test("legacy self deletion callers fail before creating durable progress", async
   expect(state.progress).toBeNull();
 });
 
+test("legacy post-preflight deletion progress restarts preflight before destructive work", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    const accountId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: Date.now()
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "friend@test.com",
+      member_id: "owner_member",
+      name: "Owner",
+      profile_avatar_color: "#123456",
+      has_linked_account: true,
+      linked_account_id: "owner_auth",
+      linked_account_email: "owner@test.com",
+      linked_member_id: "owner_member",
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("account_deletion_progress", {
+      auth_subject: "owner_auth",
+      account_id: accountId,
+      account_auth_id: "owner_auth",
+      account_email: "owner@test.com",
+      member_ids: ["owner_member"],
+      request_id: "owner_auth",
+      tombstone_email: `deleted+${accountId}@payback.invalid`,
+      phase: "unlink_friends_account_id",
+      cursor: "legacy-cursor",
+      next_cursor: "legacy-next-cursor",
+      member_index: 3,
+      current_group_client_id: "legacy-group",
+      current_group_is_last: true,
+      friendships_unlinked: 0,
+      processed_count: 17,
+      started_at: Date.now(),
+      updated_at: Date.now()
+    });
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  const result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+
+  expect(result.phase).toBe("preflight_groups_owner_id");
+  const state = await t.run(async (ctx) => ({
+    account: await ctx.db
+      .query("accounts")
+      .withIndex("by_auth_id", (q) => q.eq("id", "owner_auth"))
+      .unique(),
+    progress: await ctx.db
+      .query("account_deletion_progress")
+      .withIndex("by_auth_subject", (q) => q.eq("auth_subject", "owner_auth"))
+      .unique(),
+    friend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_linked_account_id", (q) => q.eq("linked_account_id", "owner_auth"))
+      .unique()
+  }));
+  expect(state.account?.status).toBeUndefined();
+  expect(state.progress).toMatchObject({
+    phase: "preflight_groups_owner_id",
+    friendships_unlinked: 0
+  });
+  expect(state.progress?.cursor).toBeUndefined();
+  expect(state.progress?.next_cursor).toBeUndefined();
+  expect(state.progress?.member_index).toBeUndefined();
+  expect(state.progress?.current_group_client_id).toBeUndefined();
+  expect(state.progress?.current_group_is_last).toBeUndefined();
+  expect(state.friend).toMatchObject({ has_linked_account: true });
+  expect(state.friend?.link_state).toBeUndefined();
+});
+
 test("fenced deletion retries reject progress that no longer belongs to the account", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
@@ -302,6 +382,101 @@ test("counterparties cannot create expenses that reference a fenced account", as
       .collect()
   }));
   expect(blocked).toEqual({ expense: null, visibility: [] });
+});
+
+test("self deletion clears deprecated linked participant payloads from preserved expenses", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: Date.now()
+    });
+    const stewardId = await ctx.db.insert("accounts", {
+      id: "steward_auth",
+      email: "steward@test.com",
+      display_name: "Steward",
+      member_id: "steward_member",
+      created_at: Date.now()
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("expenses", {
+      id: "preserved_legacy_payload",
+      group_id: "standalone",
+      description: "Shared history",
+      date: Date.now(),
+      total_amount: 10,
+      paid_by_member_id: "steward_member",
+      involved_member_ids: ["steward_member", "owner_member"],
+      splits: [
+        { id: "steward_split", member_id: "steward_member", amount: 5, is_settled: false },
+        { id: "owner_split", member_id: "owner_member", amount: 5, is_settled: false }
+      ],
+      is_settled: false,
+      owner_id: stewardId,
+      owner_account_id: "steward_auth",
+      owner_email: "steward@test.com",
+      participant_member_ids: ["steward_member", "owner_member"],
+      participant_emails: ["steward@test.com", "owner@test.com"],
+      participants: [
+        { member_id: "steward_member", name: "Steward" },
+        {
+          member_id: "owner_member",
+          name: "Owner PII",
+          linked_account_id: "owner_auth",
+          linked_account_email: "owner@test.com"
+        }
+      ],
+      linked_participants: [
+        {
+          member_id: "owner_member",
+          name: "Legacy Owner PII",
+          linked_account_id: "owner_auth",
+          linked_account_email: "owner@test.com"
+        }
+      ],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("user_expenses", {
+      user_id: "owner_auth",
+      expense_id: "preserved_legacy_payload",
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("user_expenses", {
+      user_id: "steward_auth",
+      expense_id: "preserved_legacy_payload",
+      updated_at: Date.now()
+    });
+    expect(ownerId).toBeDefined();
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {
+    result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  }
+  expect(result.success).toBe(true);
+
+  const expense = await t.run(async (ctx) =>
+    ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "preserved_legacy_payload"))
+      .unique()
+  );
+  expect(expense).not.toBeNull();
+  expect(expense?.linked_participants).toBeUndefined();
+  expect(expense?.participants).toContainEqual({
+    member_id: "owner_member",
+    name: "Deleted User"
+  });
 });
 
 test("a fenced account cannot claim a new member alias", async () => {
