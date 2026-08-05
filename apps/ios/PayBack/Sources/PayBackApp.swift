@@ -346,7 +346,7 @@ struct PayBackApp: App {
     @State private var clerk: Clerk
 
     #if !PAYBACK_CI_NO_CONVEX
-    let convexClient: ConvexClientWithAuth<ClerkAuthResult>
+    let convexClient: ConvexClientWithAuth<ClerkAuthResult>?
     #endif
 
     init() {
@@ -363,17 +363,23 @@ struct PayBackApp: App {
         AppConfig.markTiming("Configuration logged")
 
         #if !PAYBACK_CI_NO_CONVEX
-        let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
-        AppConfig.markTiming("ClerkAuthProvider created")
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
+            AppConfig.markTiming("ClerkAuthProvider created")
 
-        convexClient = ConvexClientWithAuth(
-            deploymentUrl: ConvexConfig.deploymentUrl,
-            authProvider: authProvider
-        )
-        AppConfig.markTiming("ConvexClient created")
+            let client = ConvexClientWithAuth(
+                deploymentUrl: ConvexConfig.deploymentUrl,
+                authProvider: authProvider
+            )
+            convexClient = client
+            AppConfig.markTiming("ConvexClient created")
 
-        Dependencies.configure(client: convexClient)
-        AppConfig.markTiming("Dependencies configured")
+            Dependencies.configure(client: client)
+            AppConfig.markTiming("Dependencies configured")
+        } else {
+            convexClient = nil
+            AppConfig.markTiming("Convex bootstrap skipped for unit tests")
+        }
         #else
         AppConfig.markTiming("Convex disabled for CI")
         #endif
