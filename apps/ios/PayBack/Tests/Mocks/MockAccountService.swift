@@ -11,6 +11,7 @@ actor MockAccountServiceForAppStore: AccountService {
     private var shouldFailNextFriendFetch = false
     private var selfDeleteCallCount = 0
     private var completedSelfDeletion = false
+    private var inProgressSelfDeletion = false
     private var mergeMemberIdCalls: [(source: UUID, target: UUID)] = []
     private var mergeUnlinkedFriendCalls: [(target: String, source: String)] = []
 
@@ -107,6 +108,7 @@ actor MockAccountServiceForAppStore: AccountService {
         shouldFailNextFriendFetch = false
         selfDeleteCallCount = 0
         completedSelfDeletion = false
+        inProgressSelfDeletion = false
         mergeMemberIdCalls.removeAll()
         mergeUnlinkedFriendCalls.removeAll()
     }
@@ -171,6 +173,8 @@ actor MockAccountServiceForAppStore: AccountService {
     func selfDeleteAccount() async throws {
         selfDeleteCallCount += 1
         if shouldFail { throw PayBackError.networkUnavailable }
+        inProgressSelfDeletion = false
+        completedSelfDeletion = true
     }
 
     func selfDeleteCalls() -> Int {
@@ -182,8 +186,20 @@ actor MockAccountServiceForAppStore: AccountService {
         return completedSelfDeletion
     }
 
+    func selfDeletionStatus() async throws -> AccountSelfDeletionStatus {
+        if shouldFail { throw PayBackError.networkUnavailable }
+        return AccountSelfDeletionStatus(
+            completed: completedSelfDeletion,
+            inProgress: inProgressSelfDeletion
+        )
+    }
+
     func setCompletedSelfDeletion(_ completed: Bool) {
         completedSelfDeletion = completed
+    }
+
+    func setInProgressSelfDeletion(_ inProgress: Bool) {
+        inProgressSelfDeletion = inProgress
     }
 
     nonisolated func monitorSession() -> AsyncStream<UserAccount?> {

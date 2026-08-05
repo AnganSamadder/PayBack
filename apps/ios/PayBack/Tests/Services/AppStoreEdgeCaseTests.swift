@@ -930,7 +930,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
     // MARK: - Account Deletion
 
-    func testSelfDeleteAccount_BackendFailureRestoresIdleState() async throws {
+    func testSelfDeleteAccount_BackendFailureBlocksAppUntilRetry() async throws {
         let authService = ControlledDeletionEmailAuthService()
         let deletionStore = makeDeletionStore(emailAuthService: authService)
         deletionStore.session = UserSession(
@@ -944,7 +944,8 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
         await XCTAssertThrowsError(try await deletionStore.selfDeleteAccount())
 
-        XCTAssertEqual(deletionStore.accountDeletionState, .idle)
+        XCTAssertEqual(deletionStore.accountDeletionState, .awaitingBackendDeletion)
+        XCTAssertTrue(deletionStore.isAccountDeletionBlocking)
         let deleteCalls = await authService.deleteCalls()
         XCTAssertEqual(deleteCalls, 0)
     }
@@ -1027,6 +1028,60 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertEqual(authCalls, 1)
         XCTAssertNil(deletionStore.session)
         XCTAssertEqual(deletionStore.accountDeletionState, .idle)
+    }
+
+    func testInterruptedBackendDeletionAfterRelaunchResumesBeforeDeletingAuthenticationIdentity() async throws {
+        let authService = ControlledDeletionEmailAuthService()
+        let deletionStore = makeDeletionStore(emailAuthService: authService)
+        await mockAccountService.setInProgressSelfDeletion(true)
+
+        let completed = try await deletionStore.completePendingAccountDeletionIfNeeded()
+
+        XCTAssertTrue(completed)
+        let backendCalls = await mockAccountService.selfDeleteCalls()
+        let authCalls = await authService.deleteCalls()
+        XCTAssertEqual(backendCalls, 1)
+        XCTAssertEqual(authCalls, 1)
+        XCTAssertNil(deletionStore.session)
+        XCTAssertEqual(deletionStore.accountDeletionState, .idle)
+    }
+
+    func testSessionRestoreResumesInterruptedBackendDeletionBeforeLoadingExistingAccount() async throws {
+        let identity = AuthenticationSessionIdentity(
+            email: "restored@example.com",
+            displayName: "Restored User"
+        )
+        await mockAccountService.addAccount(
+            UserAccount(
+                id: "restored-account",
+                email: identity.email,
+                displayName: identity.displayName
+            )
+        )
+        await mockAccountService.setInProgressSelfDeletion(true)
+        let authService = ControlledDeletionEmailAuthService()
+        let recoveryStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: authService,
+            skipClerkInit: true,
+            authenticationSessionLoader: { identity },
+            convexAuthenticator: {}
+        )
+
+        await recoveryStore.checkSession()
+
+        let backendCalls = await mockAccountService.selfDeleteCalls()
+        let authCalls = await authService.deleteCalls()
+        XCTAssertEqual(backendCalls, 1)
+        XCTAssertEqual(authCalls, 1)
+        XCTAssertNil(recoveryStore.session)
+        XCTAssertEqual(recoveryStore.accountDeletionState, .idle)
+        XCTAssertFalse(recoveryStore.isAuthenticationSessionRecoveryBlocking)
     }
 
     func testMissingDeletionReceiptDoesNotDeleteAuthenticationIdentity() async throws {

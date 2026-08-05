@@ -171,14 +171,15 @@ struct RootViewWithStore: View {
                     Text("Finish Deleting Your Account")
                         .font(.title2.bold())
                         .multilineTextAlignment(.center)
-                    Text("Your PayBack data is deleted. Finish removing your sign-in account before continuing.")
+                    Text(accountDeletionRecoveryMessage)
                         .font(.body)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.white.opacity(0.82))
                 }
                 .foregroundStyle(.white)
 
-                if store.accountDeletionState == .deletingAuthenticationAccount {
+                if store.accountDeletionState == .deletingBackendAccount ||
+                    store.accountDeletionState == .deletingAuthenticationAccount {
                     ProgressView("Finishing account deletion…")
                         .tint(.white)
                         .foregroundStyle(.white)
@@ -204,6 +205,17 @@ struct RootViewWithStore: View {
             }
             .padding(32)
             .frame(maxWidth: 520)
+        }
+    }
+
+    private var accountDeletionRecoveryMessage: String {
+        switch store.accountDeletionState {
+        case .deletingBackendAccount, .awaitingBackendDeletion:
+            "Your account deletion is in progress. Finish deleting your PayBack data and sign-in account before continuing."
+        case .deletingAuthenticationAccount, .awaitingAuthenticationDeletion:
+            "Your PayBack data is deleted. Finish removing your sign-in account before continuing."
+        case .idle:
+            "Finish deleting your PayBack account before continuing."
         }
     }
 

@@ -8,6 +8,7 @@ enum LogoutAlert: Identifiable { case accountDeleted; var id: Int { hashValue } 
 enum AccountDeletionState: Equatable {
     case idle
     case deletingBackendAccount
+    case awaitingBackendDeletion
     case deletingAuthenticationAccount
     case awaitingAuthenticationDeletion
 }
@@ -87,7 +88,9 @@ final class AppStore: ObservableObject {
     }
 
     var isAccountDeletionBlocking: Bool {
-        accountDeletionState == .deletingAuthenticationAccount ||
+        accountDeletionState == .deletingBackendAccount ||
+            accountDeletionState == .awaitingBackendDeletion ||
+            accountDeletionState == .deletingAuthenticationAccount ||
             accountDeletionState == .awaitingAuthenticationDeletion
     }
 
@@ -248,9 +251,14 @@ final class AppStore: ObservableObject {
             let email = identity.email
             try await convexAuthenticator()
 
+            try await waitForServerAuthentication()
+            if try await completePendingAccountDeletionIfNeeded() {
+                await finishAuthenticationSessionCheck(recoveryError: nil)
+                return
+            }
+
             let accountService = self.accountService
             let account: UserAccount? = try await RetryPolicy.startup.execute {
-                try await self.waitForServerAuthentication()
                 return try await accountService.lookupAccount(byEmail: email)
             }
 
@@ -262,9 +270,7 @@ final class AppStore: ObservableObject {
                 }
             } else {
                 AppConfig.markTiming("Account lookup complete (not found)")
-                if try await completePendingAccountDeletionIfNeeded() == false {
-                    try await signOutMissingAccountDuringSessionRecovery()
-                }
+                try await signOutMissingAccountDuringSessionRecovery()
             }
 
             await finishAuthenticationSessionCheck(recoveryError: nil)
@@ -1243,19 +1249,19 @@ func completeAuthentication(id: String, email: String, name: String?) {
             throw PayBackError.underlying(message: "Account deletion is already in progress.")
         }
 
-        if accountDeletionState == .idle {
+        let shouldDeleteBackend = accountDeletionState != .awaitingAuthenticationDeletion
+        if shouldDeleteBackend {
             accountDeletionState = .deletingBackendAccount
         }
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
 
-        if accountDeletionState != .awaitingAuthenticationDeletion {
+        if shouldDeleteBackend {
             do {
                 try await accountService.selfDeleteAccount()
                 print("✅ Backend selfDeleteAccount success")
             } catch {
-                accountDeletionState = .idle
-                startSessionMonitoring()
+                accountDeletionState = .awaitingBackendDeletion
                 throw error
             }
         }
@@ -1276,12 +1282,24 @@ func completeAuthentication(id: String, email: String, name: String?) {
     @MainActor
     @discardableResult
     func completePendingAccountDeletionIfNeeded() async throws -> Bool {
-        guard try await accountService.hasCompletedSelfDeletion() else {
+        let status = try await accountService.selfDeletionStatus()
+        guard status.completed || status.inProgress else {
             return false
         }
 
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
+
+        if status.inProgress {
+            accountDeletionState = .deletingBackendAccount
+            do {
+                try await accountService.selfDeleteAccount()
+            } catch {
+                accountDeletionState = .awaitingBackendDeletion
+                throw error
+            }
+        }
+
         accountDeletionState = .deletingAuthenticationAccount
         do {
             try await emailAuthService.deleteCurrentUser()
