@@ -32,6 +32,7 @@
 		0C572FFFDFAEC2051C6D8882 /* Styles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A54E8765BB61BF8AE75C2E7F /* Styles.swift */; };
 		0CCEB9277D857B7B36A72658 /* ClerkEmailAuthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87C4D0BB28C9E2AF379CF4FB /* ClerkEmailAuthServiceTests.swift */; };
 		0EADA4F6E570BB10E9994A28 /* PayBackError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69443F11A93F66BEE9237A98 /* PayBackError.swift */; };
+		0EB4D0ED1BE3D5E4969D685E /* AppConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6C4E9EB0D4793A707721D8B /* AppConfigTests.swift */; };
 		0F899FF83B7A062112B328C5 /* MockClockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F862170756D13FB945F76F /* MockClockTests.swift */; };
 		0FEBD0065AAD1C187E9A9854 /* TabNavigationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7DE9458EE0CC3F8CB19D862 /* TabNavigationState.swift */; };
 		10CB6E4E3F30D28BA82E7B2C /* NameRetentionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A837C5B7F1F7BF3B6A923E53 /* NameRetentionTests.swift */; };
@@ -381,6 +382,7 @@
 		D4F8779C7806F56BDA84A374 /* InviteLinkClaimView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 659E0CE6F984DA94965FD32A /* InviteLinkClaimView.swift */; };
 		D6D535092F0743AFB1CEF520 /* UIViewsMinimalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36C05FF334774CA8BD616DCB /* UIViewsMinimalTests.swift */; };
 		D71CD07F46570064ADC20F11 /* Styles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A54E8765BB61BF8AE75C2E7F /* Styles.swift */; };
+		D829481D36BB18DCD335574A /* AppConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6C4E9EB0D4793A707721D8B /* AppConfigTests.swift */; };
 		D899C0826368A120E1A0CCC7 /* SwipeBackModifierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67AC8D6CED64719B2EDA9C42 /* SwipeBackModifierTests.swift */; };
 		D9165BA5F6573647A77959D4 /* LinkRequestService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0143659E678920CB7777834 /* LinkRequestService.swift */; };
 		D9277829989507A1BA9B8CDE /* SignupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89ECF25EDEBE04BAF990F308 /* SignupView.swift */; };
@@ -649,6 +651,7 @@
 		B5612BC413F0B414514420FC /* ClerkAuthModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClerkAuthModels.swift; sourceTree = "<group>"; };
 		B5717A22E4AAD8CD7A14ED7D /* UserAccount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserAccount.swift; sourceTree = "<group>"; };
 		B5B4AADFDE2AA517AC12FC87 /* DomainModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainModels.swift; sourceTree = "<group>"; };
+		B6C4E9EB0D4793A707721D8B /* AppConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfigTests.swift; sourceTree = "<group>"; };
 		B7AD0B752439EFEECE865501 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		BD7F24953C25F1A82303FC1F /* RoundingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoundingTests.swift; sourceTree = "<group>"; };
 		C07F44F1F87534BB9B11564B /* AppStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreTests.swift; sourceTree = "<group>"; };
@@ -1149,6 +1152,7 @@
 		99FC46771988FE062186C976 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				B6C4E9EB0D4793A707721D8B /* AppConfigTests.swift */,
 				98F427750E9430EC0BF9920E /* AppStoreBalanceExtendedTests.swift */,
 				27B995267D99C697CE9BA59E /* AppStoreBalanceTests.swift */,
 				0C0166AE6D51E4712BBA9180 /* AppStoreDataNormalizationTests.swift */,
@@ -1705,6 +1709,7 @@
 				1C99453F0969B1B0665B4D1A /* AdvancedExpenseSplittingTests.swift in Sources */,
 				3B60AA9B6E1FA05B49D3E5C7 /* AnimationsTests.swift in Sources */,
 				F4DA8330964CAD2CFC98162E /* AppAppearanceTests.swift in Sources */,
+				0EB4D0ED1BE3D5E4969D685E /* AppConfigTests.swift in Sources */,
 				8B9C49091E017D53713586DE /* AppStoreBalanceExtendedTests.swift in Sources */,
 				74B3882BF2417D1DB6ECCEEC /* AppStoreBalanceTests.swift in Sources */,
 				55FF23B001429E36808D4C9D /* AppStoreDataNormalizationTests.swift in Sources */,
@@ -1846,6 +1851,7 @@
 				30A254A1D6A98FFC96761802 /* AdvancedExpenseSplittingTests.swift in Sources */,
 				CB979E98AE940BC7AB6A6658 /* AnimationsTests.swift in Sources */,
 				83D27AE5A9A45E5AEEAEFD53 /* AppAppearanceTests.swift in Sources */,
+				D829481D36BB18DCD335574A /* AppConfigTests.swift in Sources */,
 				2B383BF5341455865EA5A43C /* AppStoreBalanceExtendedTests.swift in Sources */,
 				1BE5C140A822716AC72284A6 /* AppStoreBalanceTests.swift in Sources */,
 				47383A58654762DA21F69FCB /* AppStoreDataNormalizationTests.swift in Sources */,

@@ -354,7 +354,7 @@ struct PayBackApp: App {
         AppConfig.markAppStart()
 
         let clerk = Clerk.configure(
-            publishableKey: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA"
+            publishableKey: AppConfig.clerkPublishableKey
         )
         _clerk = State(initialValue: clerk)
 
