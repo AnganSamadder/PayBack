@@ -1,4 +1,5 @@
 import { internalMutation } from "../_generated/server";
+import { patchGroupWithVisibility } from "../groupVisibility";
 
 export const backfillIds = internalMutation({
   args: {},
@@ -16,7 +17,7 @@ export const backfillIds = internalMutation({
           .unique();
 
         if (account) {
-          await ctx.db.patch(group._id, {
+          await patchGroupWithVisibility(ctx, group._id, {
             owner_id: account._id
           });
           groupsUpdated++;

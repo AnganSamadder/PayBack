@@ -20,6 +20,7 @@ import {
   normalizeMemberIds,
   preflightNormalizedAccountAliasMaterialization
 } from "./identity";
+import { patchGroupWithVisibility } from "./groupVisibility";
 
 function normalizeEmail(value: string | undefined | null): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -331,7 +332,7 @@ export const backfillProfileColors = internalMutation({
       });
 
       if (groupChanged) {
-        await ctx.db.patch(group._id, { members: newMembers });
+        await patchGroupWithVisibility(ctx, group._id, { members: newMembers });
         groupsUpdated++;
       }
     }
@@ -548,7 +549,10 @@ export const fixAllExpenseMemberIds = internalMutation({
                 ? normalizeMemberId(new_member_id)
                 : member.id
           }));
-          await ctx.db.patch(group._id, { members: newMembers, updated_at: Date.now() });
+          await patchGroupWithVisibility(ctx, group._id, {
+            members: newMembers,
+            updated_at: Date.now()
+          });
           groupsFixed++;
         }
       }

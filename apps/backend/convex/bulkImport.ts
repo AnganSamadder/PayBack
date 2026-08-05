@@ -14,6 +14,7 @@ import {
   provenFriendLinkQueryWork,
   resolveProvenFriendLink
 } from "./friendLinkProvenance";
+import { insertGroupWithVisibility } from "./groupVisibility";
 
 const friendValidator = v.object({
   member_id: v.string(),
@@ -761,7 +762,7 @@ export const bulkImport = mutation({
         id: normalizeMemberId(memberIdMap.get(normalizeMemberId(m.id)) || m.id)
       }));
 
-      const groupDocId = await ctx.db.insert("groups", {
+      const groupDocId = await insertGroupWithVisibility(ctx, {
         id: group.id,
         name: group.name,
         members: remappedMembers,

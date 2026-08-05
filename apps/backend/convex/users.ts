@@ -11,6 +11,7 @@ import {
   syncAccountAliasMaterialization
 } from "./identity";
 import { assertAccountCanAcceptChanges } from "./helpers";
+import { deleteGroupWithVisibility } from "./groupVisibility";
 
 const MAX_SAMPLE_IDS = 10;
 const MAX_EQUIVALENT_MEMBER_IDS = 50;
@@ -117,7 +118,7 @@ export async function cleanupOrphanedDataForEmail(
       groupExpenseIds.push(expense._id);
     }
 
-    await ctx.db.delete(group._id);
+    await deleteGroupWithVisibility(ctx, group._id);
     groupIds.push(group._id);
   }
   logSelfHeal(baseLog, "delete_groups", {
@@ -305,7 +306,7 @@ export async function hardCleanupOrphanedAccount(ctx: any, { email }: { email: s
       expensesDeleted++;
     }
 
-    await ctx.db.delete(group._id);
+    await deleteGroupWithVisibility(ctx, group._id);
     groupsDeleted++;
   }
 

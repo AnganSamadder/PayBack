@@ -131,6 +131,9 @@ async function resolveActiveAccountIds(
   return uniqueAccountIds(accountIds);
 }
 
+type GroupInsert = Omit<Doc<"groups">, "_id" | "_creationTime">;
+type GroupPatch = Partial<GroupInsert>;
+
 async function getBoundedGroupVisibilityRows(ctx: MutationCtx, groupId: Id<"groups">) {
   const rows = await ctx.db
     .query("group_visibility")
@@ -189,7 +192,11 @@ async function upsertVisibilityRows(
 
 export async function reconcileGroupVisibility(
   ctx: MutationCtx,
-  group: Doc<"groups">
+  group: Doc<"groups">,
+  options: {
+    additionalRevisionAccountIds?: readonly Id<"accounts">[];
+    forceRevision?: boolean;
+  } = {}
 ): Promise<VisibilityWriteResult & { changed: boolean; visibleAccountIds: Id<"accounts">[] }> {
   if (group.members.length > MAX_GROUP_VISIBILITY_MEMBERS) {
     throw new Error(`Group visibility supports at most ${MAX_GROUP_VISIBILITY_MEMBERS} members`);
@@ -213,10 +220,11 @@ export async function reconcileGroupVisibility(
   }
 
   const changed = writes.inserted + writes.updated + deleted > 0;
-  if (changed) {
+  if (changed || options.forceRevision) {
     await bumpGroupRevisions(ctx, [
       ...visibleAccountIds,
-      ...existingRows.map((row) => row.account_id)
+      ...existingRows.map((row) => row.account_id),
+      ...(options.additionalRevisionAccountIds ?? [])
     ]);
   }
 
@@ -225,17 +233,67 @@ export async function reconcileGroupVisibility(
 
 export async function deleteGroupVisibility(
   ctx: MutationCtx,
-  groupId: Id<"groups">
+  groupId: Id<"groups">,
+  additionalRevisionAccountIds: readonly Id<"accounts">[] = []
 ): Promise<{ deleted: number; changed: boolean }> {
   const rows = await getBoundedGroupVisibilityRows(ctx, groupId);
   for (const row of rows) await ctx.db.delete(row._id);
-  if (rows.length > 0) {
-    await bumpGroupRevisions(
-      ctx,
-      rows.map((row) => row.account_id)
-    );
+  const revisionAccountIds = uniqueAccountIds([
+    ...rows.map((row) => row.account_id),
+    ...additionalRevisionAccountIds
+  ]);
+  if (revisionAccountIds.length > 0) {
+    await bumpGroupRevisions(ctx, revisionAccountIds);
   }
-  return { deleted: rows.length, changed: rows.length > 0 };
+  return { deleted: rows.length, changed: revisionAccountIds.length > 0 };
+}
+
+export async function insertGroupWithVisibility(
+  ctx: MutationCtx,
+  value: GroupInsert
+): Promise<Id<"groups">> {
+  const groupId = await ctx.db.insert("groups", value);
+  const group = await ctx.db.get(groupId);
+  if (!group) throw new Error("Inserted group disappeared before visibility reconciliation");
+  await reconcileGroupVisibility(ctx, group);
+  return groupId;
+}
+
+export async function patchGroupWithVisibility(
+  ctx: MutationCtx,
+  groupId: Id<"groups">,
+  value: GroupPatch
+): Promise<void> {
+  const previousGroup = await ctx.db.get(groupId);
+  if (!previousGroup) throw new Error(`Group ${String(groupId)} not found`);
+  const previousVisibleAccountIds = await resolveActiveAccountIds(
+    ctx,
+    previousGroup.members.map((member) => member.id),
+    previousGroup.owner_id
+  );
+
+  await ctx.db.patch(groupId, value);
+  const group = await ctx.db.get(groupId);
+  if (!group) throw new Error("Patched group disappeared before visibility reconciliation");
+  await reconcileGroupVisibility(ctx, group, {
+    additionalRevisionAccountIds: previousVisibleAccountIds,
+    forceRevision: true
+  });
+}
+
+export async function deleteGroupWithVisibility(
+  ctx: MutationCtx,
+  groupId: Id<"groups">
+): Promise<void> {
+  const group = await ctx.db.get(groupId);
+  if (!group) return;
+  const previousVisibleAccountIds = await resolveActiveAccountIds(
+    ctx,
+    group.members.map((member) => member.id),
+    group.owner_id
+  );
+  await deleteGroupVisibility(ctx, groupId, previousVisibleAccountIds);
+  await ctx.db.delete(groupId);
 }
 
 export async function materializeGroupVisibilitySlice(

@@ -1,5 +1,6 @@
 import { internalMutation } from "./_generated/server";
 import { assertIdentityMaterializationReady } from "./identity";
+import { patchGroupWithVisibility } from "./groupVisibility";
 
 export const repairAlias = internalMutation({
   args: {},
@@ -73,7 +74,7 @@ export const repairAlias = internalMutation({
           return m;
         });
         if (changed) {
-          await ctx.db.patch(group._id, { members: newMembers });
+          await patchGroupWithVisibility(ctx, group._id, { members: newMembers });
           updatedCount++;
         }
       }

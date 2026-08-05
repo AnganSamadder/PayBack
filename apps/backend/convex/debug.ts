@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
 import { query, internalQuery, internalMutation, QueryCtx } from "./_generated/server";
+import { patchGroupWithVisibility } from "./groupVisibility";
 
 export const fixMissingDirectFlags = internalMutation({
   args: {},
@@ -9,7 +10,7 @@ export const fixMissingDirectFlags = internalMutation({
     let updated = 0;
     for (const group of groups) {
       if (group.members.length === 2 && !group.is_direct) {
-        await ctx.db.patch(group._id, {
+        await patchGroupWithVisibility(ctx, group._id, {
           is_direct: true,
           updated_at: Date.now()
         });

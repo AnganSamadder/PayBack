@@ -19,6 +19,7 @@ import {
   resolveActiveExpenseParticipantAccounts,
   resolveConsistentExpenseParticipantAccount
 } from "./helpers";
+import { deleteGroupWithVisibility, patchGroupWithVisibility } from "./groupVisibility";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -847,7 +848,7 @@ async function performHardDelete(ctx: any, account: any, source: string) {
       deletedExpenseIds.add(expense._id);
       groupExpenseIds.push(expense._id);
     }
-    await ctx.db.delete(group._id);
+    await deleteGroupWithVisibility(ctx, group._id);
     groupIds.push(group._id);
   }
   logHardDelete(baseLog, "delete_groups", {
@@ -1263,7 +1264,7 @@ export const deleteLinkedFriend = mutation({
       await deletePreloadedUserExpenses(ctx, visibilityRowsByExpenseId.get(expense.id) ?? []);
       await ctx.db.delete(expense._id);
     }
-    for (const group of groupsToDelete) await ctx.db.delete(group._id);
+    for (const group of groupsToDelete) await deleteGroupWithVisibility(ctx, group._id);
     directGroupDeleted = groupsToDelete.length > 0;
     expensesDeleted = expensesToDelete.size;
 
@@ -1464,9 +1465,9 @@ export const deleteUnlinkedFriend = mutation({
 
     for (const groupPlan of groupPlans) {
       if (groupPlan.shouldDelete) {
-        await ctx.db.delete(groupPlan.group._id);
+        await deleteGroupWithVisibility(ctx, groupPlan.group._id);
       } else {
-        await ctx.db.patch(groupPlan.group._id, {
+        await patchGroupWithVisibility(ctx, groupPlan.group._id, {
           owner_id: user._id,
           owner_account_id: user.id,
           owner_email: user.email,
@@ -2346,7 +2347,7 @@ async function advanceSelfDeletion(
           1
         );
       }
-      await ctx.db.patch(group._id, {
+      await patchGroupWithVisibility(ctx, group._id, {
         owner_id: steward._id,
         owner_account_id: steward.id,
         owner_email: steward.email,
@@ -2451,7 +2452,7 @@ async function advanceSelfDeletion(
           1
         );
       }
-      await ctx.db.delete(group._id);
+      await deleteGroupWithVisibility(ctx, group._id);
       return await updateSelfDeletionProgress(
         ctx,
         progress,

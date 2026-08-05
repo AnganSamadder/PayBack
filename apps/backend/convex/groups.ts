@@ -8,6 +8,11 @@ import {
   isAccountDeletionFenced,
   reconcileUserExpenses
 } from "./helpers";
+import {
+  deleteGroupWithVisibility,
+  insertGroupWithVisibility,
+  patchGroupWithVisibility
+} from "./groupVisibility";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -52,7 +57,7 @@ async function deleteGroupWithExpenses(ctx: any, group: any) {
     await ctx.db.delete(expense._id);
   }
 
-  await ctx.db.delete(group._id);
+  await deleteGroupWithVisibility(ctx, group._id);
 }
 
 const MAX_GROUP_MEMBERS = 64;
@@ -216,7 +221,7 @@ export const create = mutation({
         }
 
         const members = await prepareGroupMembers(ctx, args.members, existing.members);
-        await ctx.db.patch(existing._id, {
+        await patchGroupWithVisibility(ctx, existing._id, {
           name: args.name,
           members,
           is_direct: args.is_direct ?? existing.is_direct,
@@ -230,7 +235,7 @@ export const create = mutation({
     }
 
     const members = await prepareGroupMembers(ctx, args.members);
-    const groupId = await ctx.db.insert("groups", {
+    const groupId = await insertGroupWithVisibility(ctx, {
       id: args.id || crypto.randomUUID(),
       name: args.name,
       members,
@@ -458,7 +463,7 @@ export const clearAllForUser = mutation({
         continue;
       }
 
-      await ctx.db.patch(group._id, {
+      await patchGroupWithVisibility(ctx, group._id, {
         members: remainingMembers,
         updated_at: Date.now()
       });
@@ -532,7 +537,7 @@ export const leaveGroup = mutation({
     if (normalizedNewMembers.length === 0) {
       await deleteGroupWithExpenses(ctx, group);
     } else {
-      await ctx.db.patch(group._id, {
+      await patchGroupWithVisibility(ctx, group._id, {
         members: normalizedNewMembers,
         updated_at: Date.now()
       });
