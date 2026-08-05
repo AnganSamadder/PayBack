@@ -308,6 +308,7 @@ export default defineSchema({
     .index("by_user_id_and_updated_at", ["user_id", "updated_at"])
     .index("by_user_id_and_expense_id", ["user_id", "expense_id"])
     .index("by_account_ref_and_updated_at", ["account_ref", "updated_at"])
+    .index("by_account_ref_and_expense_ref", ["account_ref", "expense_ref"])
     .index("by_expense_ref", ["expense_ref"]),
 
   link_requests: defineTable({
