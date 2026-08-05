@@ -61,14 +61,47 @@ export type ExpenseVisibilitySource = Pick<
   | "owner_id"
   | "owner_account_id"
   | "owner_email"
-  | "participant_emails"
   | "paid_by_member_id"
+  | "participant_emails"
   | "participant_member_ids"
   | "inactive_participant_member_ids"
   | "involved_member_ids"
   | "participants"
   | "splits"
 >;
+
+type ExpenseParticipant = Doc<"expenses">["participants"][number];
+
+export type ExpenseIdentityResolutionCache = {
+  memberAccounts: Map<string, Promise<Doc<"accounts"> | null>>;
+  linkedIdAccounts: Map<string, Promise<Doc<"accounts"> | null>>;
+  emailAccounts: Map<string, Promise<Doc<"accounts"> | null>>;
+};
+
+export function createExpenseIdentityResolutionCache(): ExpenseIdentityResolutionCache {
+  return {
+    memberAccounts: new Map(),
+    linkedIdAccounts: new Map(),
+    emailAccounts: new Map()
+  };
+}
+
+function cachedAccountResolution(
+  cache: Map<string, Promise<Doc<"accounts"> | null>> | undefined,
+  key: string,
+  resolve: () => Promise<Doc<"accounts"> | null>
+) {
+  if (!cache) return resolve();
+  const existing = cache.get(key);
+  if (existing) return existing;
+  const pending = resolve();
+  cache.set(key, pending);
+  return pending;
+}
+
+function isActiveAccount(account: Doc<"accounts"> | null): account is Doc<"accounts"> {
+  return account !== null && account.status !== "deleted";
+}
 
 type ExpenseOwnerSource = Pick<Doc<"expenses">, "owner_id" | "owner_account_id" | "owner_email">;
 
@@ -80,7 +113,8 @@ const ownerIdentityMaintenanceError = () =>
 
 export async function resolveAuthoritativeExpenseOwnerAccount(
   ctx: MutationCtx,
-  expense: ExpenseOwnerSource
+  expense: ExpenseOwnerSource,
+  cache?: ExpenseIdentityResolutionCache
 ): Promise<Doc<"accounts"> | null> {
   const resolvedAccounts = new Map<string, Doc<"accounts">>();
   const addResolvedAccount = (account: Doc<"accounts"> | null) => {
@@ -89,14 +123,22 @@ export async function resolveAuthoritativeExpenseOwnerAccount(
 
   if (expense.owner_id) addResolvedAccount(await ctx.db.get(expense.owner_id));
   if (expense.owner_account_id?.trim()) {
-    addResolvedAccount(await findAccountByAuthIdOrDocId(ctx.db, expense.owner_account_id.trim()));
+    const ownerAccountId = expense.owner_account_id.trim();
+    addResolvedAccount(
+      await cachedAccountResolution(cache?.linkedIdAccounts, ownerAccountId, () =>
+        findAccountByAuthIdOrDocId(ctx.db, ownerAccountId)
+      )
+    );
   }
   if (expense.owner_email?.trim()) {
+    const ownerEmail = expense.owner_email.trim().toLowerCase();
     addResolvedAccount(
-      await ctx.db
-        .query("accounts")
-        .withIndex("by_email", (q) => q.eq("email", expense.owner_email.trim().toLowerCase()))
-        .unique()
+      await cachedAccountResolution(cache?.emailAccounts, ownerEmail, () =>
+        ctx.db
+          .query("accounts")
+          .withIndex("by_email", (q) => q.eq("email", ownerEmail))
+          .unique()
+      )
     );
   }
 
@@ -144,10 +186,81 @@ export function collectActiveExpenseMemberIds(
   );
 }
 
+export async function resolveConsistentExpenseParticipantAccount(
+  ctx: MutationCtx,
+  participant: ExpenseParticipant,
+  cache?: ExpenseIdentityResolutionCache
+): Promise<Doc<"accounts"> | null> {
+  const normalizedMemberId = normalizeMemberId(participant.member_id);
+  const linkedAccountId = participant.linked_account_id?.trim();
+  const linkedAccountEmail = participant.linked_account_email?.trim().toLowerCase();
+  const [memberAccount, linkedIdAccount, linkedEmailAccount] = await Promise.all([
+    cachedAccountResolution(cache?.memberAccounts, normalizedMemberId, () =>
+      findAccountByMemberId(ctx.db, normalizedMemberId)
+    ),
+    linkedAccountId
+      ? cachedAccountResolution(cache?.linkedIdAccounts, linkedAccountId, () =>
+          findAccountByAuthIdOrDocId(ctx.db, linkedAccountId)
+        )
+      : null,
+    linkedAccountEmail
+      ? cachedAccountResolution(cache?.emailAccounts, linkedAccountEmail, () =>
+          ctx.db
+            .query("accounts")
+            .withIndex("by_email", (q) => q.eq("email", linkedAccountEmail))
+            .unique()
+        )
+      : null
+  ]);
+
+  if (memberAccount !== null) {
+    return isActiveAccount(memberAccount) ? memberAccount : null;
+  }
+
+  if (linkedAccountId && !isActiveAccount(linkedIdAccount)) {
+    return null;
+  }
+  if (linkedAccountEmail && !isActiveAccount(linkedEmailAccount)) {
+    return null;
+  }
+
+  const linkedAccounts = [linkedIdAccount, linkedEmailAccount].filter(isActiveAccount);
+  if (linkedAccounts.length === 0) {
+    return null;
+  }
+  const provenAccount = linkedAccounts[0];
+  return linkedAccounts.every((account) => account.id === provenAccount.id) ? provenAccount : null;
+}
+
+export async function canonicalizeExpenseParticipantLinks(
+  ctx: MutationCtx,
+  participants: ExpenseParticipant[],
+  cache?: ExpenseIdentityResolutionCache
+): Promise<ExpenseParticipant[]> {
+  return await Promise.all(
+    participants.map(async (participant) => {
+      const account = await resolveConsistentExpenseParticipantAccount(ctx, participant, cache);
+      const canonicalParticipant: ExpenseParticipant = {
+        member_id: participant.member_id,
+        name: participant.name
+      };
+      if (!account) {
+        return canonicalParticipant;
+      }
+      return {
+        ...canonicalParticipant,
+        linked_account_id: account.id,
+        linked_account_email: account.email.trim().toLowerCase()
+      };
+    })
+  );
+}
+
 export async function resolveActiveExpenseParticipantAccounts(
   ctx: MutationCtx,
   expense: ExpenseVisibilitySource,
-  excludedAccountIds: ReadonlySet<string> = new Set()
+  excludedAccountIds: ReadonlySet<string> = new Set(),
+  cache?: ExpenseIdentityResolutionCache
 ): Promise<Doc<"accounts">[]> {
   const accounts = new Map<string, Doc<"accounts">>();
   const inactiveMemberIds = new Set(
@@ -155,22 +268,29 @@ export async function resolveActiveExpenseParticipantAccounts(
   );
   const inactiveAccountIds = new Set<string>();
   for (const memberId of inactiveMemberIds) {
-    const account = await findAccountByMemberId(ctx.db, memberId);
+    const account = await cachedAccountResolution(cache?.memberAccounts, memberId, () =>
+      findAccountByMemberId(ctx.db, memberId)
+    );
     if (account) inactiveAccountIds.add(account.id);
   }
   for (const participant of expense.participants) {
     if (!inactiveMemberIds.has(normalizeMemberId(participant.member_id))) continue;
 
     if (participant.linked_account_id?.trim()) {
-      const account = await findAccountByAuthIdOrDocId(ctx.db, participant.linked_account_id);
+      const linkedAccountId = participant.linked_account_id.trim();
+      const account = await cachedAccountResolution(cache?.linkedIdAccounts, linkedAccountId, () =>
+        findAccountByAuthIdOrDocId(ctx.db, linkedAccountId)
+      );
       if (account) inactiveAccountIds.add(account.id);
     }
     if (participant.linked_account_email?.trim()) {
       const email = participant.linked_account_email.trim().toLowerCase();
-      const account = await ctx.db
-        .query("accounts")
-        .withIndex("by_email", (q) => q.eq("email", email))
-        .unique();
+      const account = await cachedAccountResolution(cache?.emailAccounts, email, () =>
+        ctx.db
+          .query("accounts")
+          .withIndex("by_email", (q) => q.eq("email", email))
+          .unique()
+      );
       if (account) inactiveAccountIds.add(account.id);
     }
   }
@@ -184,35 +304,28 @@ export async function resolveActiveExpenseParticipantAccounts(
   };
 
   const ownerAccountIds = new Set<string>();
-  const ownerAccount = addAccount(await resolveAuthoritativeExpenseOwnerAccount(ctx, expense));
+  const ownerAccount = addAccount(
+    await resolveAuthoritativeExpenseOwnerAccount(ctx, expense, cache)
+  );
   if (ownerAccount) ownerAccountIds.add(ownerAccount.id);
 
   const activeMemberAccountIds = new Set<string>();
   const memberIds = collectActiveExpenseMemberIds(expense);
   for (const memberId of memberIds) {
-    const account = addAccount(await findAccountByMemberId(ctx.db, memberId));
+    const account = addAccount(
+      await cachedAccountResolution(cache?.memberAccounts, memberId, () =>
+        findAccountByMemberId(ctx.db, memberId)
+      )
+    );
     if (account) activeMemberAccountIds.add(account.id);
   }
 
   for (const participant of expense.participants) {
     if (inactiveMemberIds.has(normalizeMemberId(participant.member_id))) continue;
-
-    if (participant.linked_account_id?.trim()) {
-      const account = addAccount(
-        await findAccountByAuthIdOrDocId(ctx.db, participant.linked_account_id)
-      );
-      if (account) activeMemberAccountIds.add(account.id);
-    }
-    if (participant.linked_account_email?.trim()) {
-      const email = participant.linked_account_email.trim().toLowerCase();
-      const account = addAccount(
-        await ctx.db
-          .query("accounts")
-          .withIndex("by_email", (q) => q.eq("email", email))
-          .unique()
-      );
-      if (account) activeMemberAccountIds.add(account.id);
-    }
+    const account = addAccount(
+      await resolveConsistentExpenseParticipantAccount(ctx, participant, cache)
+    );
+    if (account) activeMemberAccountIds.add(account.id);
   }
 
   const participantEmails = new Set(
@@ -221,10 +334,12 @@ export async function resolveActiveExpenseParticipantAccounts(
       .map((email) => email.trim().toLowerCase())
   );
   for (const email of participantEmails) {
-    const account = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", email))
-      .unique();
+    const account = await cachedAccountResolution(cache?.emailAccounts, email, () =>
+      ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) => q.eq("email", email))
+        .unique()
+    );
     if (
       account &&
       inactiveAccountIds.has(account.id) &&
@@ -238,7 +353,6 @@ export async function resolveActiveExpenseParticipantAccounts(
 
   return Array.from(accounts.values());
 }
-
 export async function resolveActiveExpenseParticipantUserIds(
   ctx: MutationCtx,
   expense: ExpenseVisibilitySource,
