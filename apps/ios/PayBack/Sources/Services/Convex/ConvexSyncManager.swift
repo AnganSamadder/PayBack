@@ -91,49 +91,12 @@ final class ConvexSyncManager: ObservableObject {
         print("[ConvexSyncManager] Starting real-time sync...")
         #endif
 
-        // Subscribe to groups
         groupsTask = Task { [weak self] in
-            guard let self = self else { return }
-
-            do {
-                for try await groupDTOs in self.client.subscribe(to: "groups:list", yielding: [ConvexGroupDTO].self).values {
-                    #if DEBUG
-                    print("[ConvexSyncManager] Received \(groupDTOs.count) groups from Convex")
-                    #endif
-                    await MainActor.run {
-                        self.groups = groupDTOs.compactMap { $0.toSpendingGroup() }
-                        // Build UUID -> DocId mapping for paginated expense queries
-                        var docIdMap: [UUID: String] = [:]
-                        for dto in groupDTOs {
-                            if let convexDocId = dto._id,
-                               let uuid = UUID(uuidString: dto.id) {
-                                docIdMap[uuid] = convexDocId
-                            }
-                        }
-                        self.groupDocIds = docIdMap
-                    }
-                }
-            } catch {
-                await MainActor.run { self.syncError = error }
-            }
+            await self?.runGroupsSyncLoop()
         }
 
-        // Subscribe to expenses
         expensesTask = Task { [weak self] in
-            guard let self = self else { return }
-
-            do {
-                for try await expenseDTOs in self.client.subscribe(to: "expenses:list", yielding: [ConvexExpenseDTO].self).values {
-                    #if DEBUG
-                    print("[ConvexSyncManager] Received \(expenseDTOs.count) expenses from Convex")
-                    #endif
-                    await MainActor.run {
-                        self.expenses = expenseDTOs.compactMap { $0.toExpense() }
-                    }
-                }
-            } catch {
-                await MainActor.run { self.syncError = error }
-            }
+            await self?.runExpensesSyncLoop()
         }
 
         // Subscribe to friends
@@ -232,6 +195,158 @@ final class ConvexSyncManager: ObservableObject {
     func restartSync() {
         stopSync()
         startSync()
+    }
+
+    private func runGroupsSyncLoop() async {
+        var failureCount = 0
+        while !Task.isCancelled {
+            do {
+                try await consumeRevisionedGroups {
+                    failureCount = 0
+                }
+            } catch is CancellationError {
+                return
+            } catch where ConvexSyncErrorClassifier.isV2Unavailable(error) {
+                do {
+                    try await consumeLegacyGroups {
+                        failureCount = 0
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    syncError = error
+                }
+            } catch {
+                syncError = error
+            }
+
+            failureCount += 1
+            do {
+                try await Task.sleep(
+                    nanoseconds: ConvexSyncRetryPolicy.delayNanoseconds(
+                        afterFailureCount: failureCount
+                    )
+                )
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func runExpensesSyncLoop() async {
+        var failureCount = 0
+        while !Task.isCancelled {
+            do {
+                try await consumeRevisionedExpenses {
+                    failureCount = 0
+                }
+            } catch is CancellationError {
+                return
+            } catch where ConvexSyncErrorClassifier.isV2Unavailable(error) {
+                do {
+                    try await consumeLegacyExpenses {
+                        failureCount = 0
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    syncError = error
+                }
+            } catch {
+                syncError = error
+            }
+
+            failureCount += 1
+            do {
+                try await Task.sleep(
+                    nanoseconds: ConvexSyncRetryPolicy.delayNanoseconds(
+                        afterFailureCount: failureCount
+                    )
+                )
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func consumeRevisionedGroups(onPublish: () -> Void) async throws {
+        let args = ConvexRevisionedSync.groupArguments(cursor: nil, expectedRevision: nil)
+        for try await _ in client.subscribe(
+            to: "groups:listV2",
+            with: args,
+            yielding: ConvexRevisionedGroupsPageDTO.self
+        ).values {
+            try Task.checkCancellation()
+            let groupDTOs = try await ConvexRevisionedSync.fetchGroupDTOs(client: client)
+            let snapshot = try groupDTOs.map { try $0.validatedSpendingGroup() }
+            publishGroups(snapshot, from: groupDTOs)
+            onPublish()
+        }
+        throw ConvexRevisionedSyncError.streamEndedWithoutValue
+    }
+
+    private func consumeLegacyGroups(onPublish: () -> Void) async throws {
+        for try await groupDTOs in client.subscribe(
+            to: "groups:list",
+            yielding: [ConvexGroupDTO].self
+        ).values {
+            try Task.checkCancellation()
+            let snapshot = try groupDTOs.map { try $0.validatedSpendingGroup() }
+            publishGroups(snapshot, from: groupDTOs)
+            onPublish()
+        }
+        throw ConvexRevisionedSyncError.streamEndedWithoutValue
+    }
+
+    private func publishGroups(_ snapshot: [SpendingGroup], from dtos: [ConvexGroupDTO]) {
+        groups = snapshot
+        groupDocIds = Dictionary(
+            uniqueKeysWithValues: dtos.compactMap { dto in
+                guard let documentID = dto._id, let groupID = UUID(uuidString: dto.id) else {
+                    return nil
+                }
+                return (groupID, documentID)
+            }
+        )
+        nextGroupsCursor = nil
+        hasMoreGroups = false
+        syncError = nil
+        #if DEBUG
+        print("[ConvexSyncManager] Published \(snapshot.count) revisioned groups")
+        #endif
+    }
+
+    private func consumeRevisionedExpenses(onPublish: () -> Void) async throws {
+        let args = ConvexRevisionedSync.expenseArguments(cursor: nil, expectedRevision: nil)
+        for try await _ in client.subscribe(
+            to: "expenses:listV2",
+            with: args,
+            yielding: ConvexRevisionedExpensesPageDTO.self
+        ).values {
+            try Task.checkCancellation()
+            let expenseDTOs = try await ConvexRevisionedSync.fetchExpenseDTOs(client: client)
+            let snapshot = try expenseDTOs.map { try $0.validatedExpense() }
+            expenses = snapshot
+            syncError = nil
+            onPublish()
+            #if DEBUG
+            print("[ConvexSyncManager] Published \(snapshot.count) revisioned expenses")
+            #endif
+        }
+        throw ConvexRevisionedSyncError.streamEndedWithoutValue
+    }
+
+    private func consumeLegacyExpenses(onPublish: () -> Void) async throws {
+        for try await expenseDTOs in client.subscribe(
+            to: "expenses:list",
+            yielding: [ConvexExpenseDTO].self
+        ).values {
+            try Task.checkCancellation()
+            expenses = try expenseDTOs.map { try $0.validatedExpense() }
+            syncError = nil
+            onPublish()
+        }
+        throw ConvexRevisionedSyncError.streamEndedWithoutValue
     }
 
     /// Fetch the next page of groups

@@ -11,11 +11,22 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
     }
 
     func fetchExpenses() async throws -> [Expense] {
-        // Subscribe to the expenses:list query and get the first value
-        for try await expenses in client.subscribe(to: "expenses:list", yielding: [ConvexExpenseDTO].self).values {
-            return expenses.map { $0.toExpense() }
+        do {
+            return try await ConvexRevisionedSync.fetchExpenseDTOs(client: client)
+                .map { try $0.validatedExpense() }
+        } catch where ConvexSyncErrorClassifier.isV2Unavailable(error) {
+            return try await fetchLegacyExpenses()
         }
-        return []
+    }
+
+    private func fetchLegacyExpenses() async throws -> [Expense] {
+        for try await expenses in client.subscribe(
+            to: "expenses:list",
+            yielding: [ConvexExpenseDTO].self
+        ).values {
+            return try expenses.map { try $0.validatedExpense() }
+        }
+        throw ConvexRevisionedSyncError.streamEndedWithoutValue
     }
 
     func fetchExpensesPage(groupDocId: String, cursor: String? = nil, limit: Int = 50) async throws -> (items: [Expense], nextCursor: String?) {
@@ -29,7 +40,10 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
         }
 
         for try await result in client.subscribe(to: "expenses:listByGroupPaginated", with: args, yielding: ConvexPaginatedExpensesDTO.self).values {
-            return (items: result.items.map { $0.toExpense() }, nextCursor: result.nextCursor)
+            return (
+                items: try result.items.map { try $0.validatedExpense() },
+                nextCursor: result.nextCursor
+            )
         }
         return (items: [], nextCursor: nil)
     }
@@ -60,7 +74,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
             "settled": settled
         ]
         let expenseDTO: ConvexExpenseDTO = try await client.mutation("expenses:setSettlementState", with: args)
-        return expenseDTO.toExpense()
+        return try expenseDTO.validatedExpense()
     }
 
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
