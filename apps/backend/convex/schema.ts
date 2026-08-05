@@ -171,6 +171,23 @@ export default defineSchema({
     updated_at: v.number()
   }).index("by_key", ["key"]),
 
+  sync_materialization_state: defineTable({
+    key: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("backfilling"),
+      v.literal("ready"),
+      v.literal("failed")
+    ),
+    cursor: v.optional(v.string()),
+    current_group_id: v.optional(v.id("groups")),
+    next_group_cursor: v.optional(v.string()),
+    member_offset: v.optional(v.number()),
+    processed: v.number(),
+    last_error: v.optional(v.string()),
+    updated_at: v.number()
+  }).index("by_key", ["key"]),
+
   groups: defineTable({
     id: v.string(), // UUID string from client
     name: v.string(),
@@ -197,6 +214,24 @@ export default defineSchema({
     .index("by_owner_id", ["owner_id"])
     .index("by_client_id", ["id"])
     .index("by_is_payback_generated_mock_data", ["is_payback_generated_mock_data"]),
+
+  group_visibility: defineTable({
+    account_id: v.id("accounts"),
+    group_id: v.id("groups"),
+    group_updated_at: v.number(),
+    created_at: v.number(),
+    updated_at: v.number()
+  })
+    .index("by_account_id_and_group_updated_at", ["account_id", "group_updated_at"])
+    .index("by_group_id", ["group_id"])
+    .index("by_group_id_and_account_id", ["group_id", "account_id"]),
+
+  account_sync_state: defineTable({
+    account_id: v.id("accounts"),
+    groups_revision: v.number(),
+    expenses_revision: v.number(),
+    updated_at: v.number()
+  }).index("by_account_id", ["account_id"]),
 
   expenses: defineTable({
     id: v.string(), // UUID string from client
@@ -236,6 +271,7 @@ export default defineSchema({
         linked_account_email: v.optional(v.string())
       })
     ),
+    /** @deprecated Read-only compatibility for legacy seeded documents; public writes remove it. */
     linked_participants: v.optional(v.any()),
     subexpenses: v.optional(
       v.array(
@@ -263,11 +299,16 @@ export default defineSchema({
   user_expenses: defineTable({
     user_id: v.string(), // The user who "sees" this expense
     expense_id: v.string(), // Reference to expenses.id (UUID)
+    account_ref: v.optional(v.id("accounts")),
+    expense_ref: v.optional(v.id("expenses")),
     updated_at: v.number() // For sorting
   })
     .index("by_user_id", ["user_id"])
     .index("by_expense_id", ["expense_id"])
-    .index("by_user_id_and_updated_at", ["user_id", "updated_at"]),
+    .index("by_user_id_and_updated_at", ["user_id", "updated_at"])
+    .index("by_user_id_and_expense_id", ["user_id", "expense_id"])
+    .index("by_account_ref_and_updated_at", ["account_ref", "updated_at"])
+    .index("by_expense_ref", ["expense_ref"]),
 
   link_requests: defineTable({
     id: v.string(),
