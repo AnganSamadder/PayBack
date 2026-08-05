@@ -6,6 +6,18 @@ const MAX_LEGACY_LINK_EVIDENCE_ROWS = 16;
 const MAX_LEGACY_FRIEND_IDENTITIES = 16;
 
 type FriendLinkContext = Pick<QueryCtx, "db">;
+type FriendLinkReadObserver = (rows: readonly unknown[]) => void;
+
+export function provenFriendLinkQueryWork(friend: Doc<"account_friends">): number {
+  if (!friend.linked_account_id?.trim() || isGhostFriendIdentity(friend)) return 0;
+  const identityQueryWork = Math.min(
+    friendIdentityIds(friend).length,
+    MAX_LEGACY_FRIEND_IDENTITIES
+  );
+  const historicalQueryWork =
+    friend.link_state === "linked" ? 0 : 1 + 4 * (MAX_LEGACY_LINK_EVIDENCE_ROWS + 1);
+  return 2 + identityQueryWork + historicalQueryWork;
+}
 
 export function isGhostFriendIdentity(
   friend: Pick<Doc<"account_friends">, "link_state" | "status">
@@ -31,7 +43,8 @@ function friendIdentityIds(friend: Doc<"account_friends">): string[] {
 async function hasAccountAliasEvidence(
   ctx: FriendLinkContext,
   linkedAccount: Doc<"accounts">,
-  identities: readonly string[]
+  identities: readonly string[],
+  onRowsRead?: FriendLinkReadObserver
 ): Promise<boolean> {
   if (identities.length > MAX_LEGACY_FRIEND_IDENTITIES) return false;
   const canonicalMemberId = normalizeMemberId(linkedAccount.member_id!);
@@ -44,6 +57,7 @@ async function hasAccountAliasEvidence(
         q.eq("source_account_id", linkedAccount.id).eq("alias_member_id", memberId)
       )
       .take(2);
+    onRowsRead?.(rows);
     if (
       rows.length === 1 &&
       rows[0].materialization_source === "account_alias" &&
@@ -55,9 +69,24 @@ async function hasAccountAliasEvidence(
   return false;
 }
 
-async function boundedPairEvidence<T>(rows: Promise<T[]>): Promise<T[]> {
-  const resolved = await rows;
-  return resolved.length > MAX_LEGACY_LINK_EVIDENCE_ROWS ? [] : resolved;
+async function collectBoundedPairEvidence<T>(
+  readPage: (
+    cursor: string | null
+  ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>,
+  onRowsRead?: FriendLinkReadObserver
+): Promise<T[]> {
+  const rows: T[] = [];
+  let cursor: string | null = null;
+
+  while (true) {
+    const result = await readPage(cursor);
+    onRowsRead?.(result.page);
+    rows.push(...result.page);
+    if (rows.length > MAX_LEGACY_LINK_EVIDENCE_ROWS) return [];
+    if (result.isDone) return rows;
+    if (result.continueCursor === cursor) return [];
+    cursor = result.continueCursor;
+  }
 }
 
 async function hasHistoricalClaimEvidence(
@@ -65,42 +94,53 @@ async function hasHistoricalClaimEvidence(
   owner: Doc<"accounts">,
   linkedAccount: Doc<"accounts">,
   identities: readonly string[],
-  mapsToLinkedAccount: boolean
+  mapsToLinkedAccount: boolean,
+  onRowsRead?: FriendLinkReadObserver
 ): Promise<boolean> {
-  const [outgoingInvites, reverseInvites, outgoingRequests, reverseRequests] = await Promise.all([
-    boundedPairEvidence(
-      ctx.db
+  const outgoingInvites = await collectBoundedPairEvidence(
+    async (cursor) =>
+      await ctx.db
         .query("invite_tokens")
         .withIndex("by_creator_id_and_claimed_by", (q) =>
           q.eq("creator_id", owner.id).eq("claimed_by", linkedAccount.id)
         )
-        .take(MAX_LEGACY_LINK_EVIDENCE_ROWS + 1)
-    ),
-    boundedPairEvidence(
-      ctx.db
+        .order("asc")
+        .paginate({ cursor, numItems: 1 }),
+    onRowsRead
+  );
+  const reverseInvites = await collectBoundedPairEvidence(
+    async (cursor) =>
+      await ctx.db
         .query("invite_tokens")
         .withIndex("by_creator_id_and_claimed_by", (q) =>
           q.eq("creator_id", linkedAccount.id).eq("claimed_by", owner.id)
         )
-        .take(MAX_LEGACY_LINK_EVIDENCE_ROWS + 1)
-    ),
-    boundedPairEvidence(
-      ctx.db
+        .order("asc")
+        .paginate({ cursor, numItems: 1 }),
+    onRowsRead
+  );
+  const outgoingRequests = await collectBoundedPairEvidence(
+    async (cursor) =>
+      await ctx.db
         .query("link_requests")
         .withIndex("by_requester_id_and_recipient_email", (q) =>
           q.eq("requester_id", owner.id).eq("recipient_email", linkedAccount.email)
         )
-        .take(MAX_LEGACY_LINK_EVIDENCE_ROWS + 1)
-    ),
-    boundedPairEvidence(
-      ctx.db
+        .order("asc")
+        .paginate({ cursor, numItems: 1 }),
+    onRowsRead
+  );
+  const reverseRequests = await collectBoundedPairEvidence(
+    async (cursor) =>
+      await ctx.db
         .query("link_requests")
         .withIndex("by_requester_id_and_recipient_email", (q) =>
           q.eq("requester_id", linkedAccount.id).eq("recipient_email", owner.email)
         )
-        .take(MAX_LEGACY_LINK_EVIDENCE_ROWS + 1)
-    )
-  ]);
+        .order("asc")
+        .paginate({ cursor, numItems: 1 }),
+    onRowsRead
+  );
 
   const identitySet = new Set(identities);
   const hasOutgoingInvite = outgoingInvites.some(
@@ -126,12 +166,14 @@ async function hasHistoricalClaimEvidence(
  */
 export async function resolveProvenFriendLink(
   ctx: FriendLinkContext,
-  friend: Doc<"account_friends">
+  friend: Doc<"account_friends">,
+  onRowsRead?: FriendLinkReadObserver
 ): Promise<ProvenFriendLink | null> {
   const linkedAccountId = friend.linked_account_id?.trim();
   if (!linkedAccountId || isGhostFriendIdentity(friend)) return null;
 
   const linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, linkedAccountId);
+  onRowsRead?.(linkedAccount ? [linkedAccount] : []);
   if (!linkedAccount || linkedAccount.status === "deleted" || !linkedAccount.member_id) return null;
 
   const canonicalMemberId = normalizeMemberId(linkedAccount.member_id);
@@ -139,7 +181,7 @@ export async function resolveProvenFriendLink(
   const hasCanonicalIdentity = identities.includes(canonicalMemberId);
   const hasAliasEvidence = hasCanonicalIdentity
     ? false
-    : await hasAccountAliasEvidence(ctx, linkedAccount, identities);
+    : await hasAccountAliasEvidence(ctx, linkedAccount, identities, onRowsRead);
   const mapsToLinkedAccount = hasCanonicalIdentity || hasAliasEvidence;
 
   if (friend.link_state === "linked" && !mapsToLinkedAccount) return null;
@@ -150,6 +192,7 @@ export async function resolveProvenFriendLink(
       .query("accounts")
       .withIndex("by_email", (q) => q.eq("email", friend.account_email.trim().toLowerCase()))
       .unique();
+    onRowsRead?.(owner ? [owner] : []);
     if (!owner || owner.status === "deleted") return null;
 
     const hasHistoricalEvidence = await hasHistoricalClaimEvidence(
@@ -157,7 +200,8 @@ export async function resolveProvenFriendLink(
       owner,
       linkedAccount,
       identities,
-      mapsToLinkedAccount
+      mapsToLinkedAccount,
+      onRowsRead
     );
     if (!mapsToLinkedAccount && !hasHistoricalEvidence) return null;
     if (!hasHistoricalEvidence && !hasAliasEvidence) return null;
