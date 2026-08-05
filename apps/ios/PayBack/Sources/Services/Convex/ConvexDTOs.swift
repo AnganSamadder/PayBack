@@ -252,6 +252,7 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
     let last_name: String?
     let display_preference: String?
     let status: String?
+    let link_state: String?
     let has_linked_account: Bool?
     let linked_account_id: String?
     let linked_account_email: String?
@@ -269,6 +270,7 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
         last_name: String? = nil,
         display_preference: String? = nil,
         status: String? = nil,
+        link_state: String? = nil,
         has_linked_account: Bool?,
         linked_account_id: String?,
         linked_account_email: String?,
@@ -285,6 +287,7 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
         self.last_name = last_name
         self.display_preference = display_preference
         self.status = status
+        self.link_state = link_state
         self.has_linked_account = has_linked_account
         self.linked_account_id = linked_account_id
         self.linked_account_email = linked_account_email
@@ -300,6 +303,7 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
         nickname: String?,
         original_name: String?,
         status: String? = nil,
+        link_state: String? = nil,
         has_linked_account: Bool?,
         linked_account_id: String?,
         linked_account_email: String?,
@@ -312,6 +316,7 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
             nickname: nickname,
             original_name: original_name,
             status: status,
+            link_state: link_state,
             has_linked_account: has_linked_account,
             linked_account_id: linked_account_id,
             linked_account_email: linked_account_email,
@@ -328,17 +333,22 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
         let safeName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown" : name
         let safeNickname = nickname?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         let safeStatus = status?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let safeLinkState = link_state?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .nilIfEmpty
         let safeLinkedAccountId = linked_account_id?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         let safeLinkedAccountEmail = linked_account_email?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .nilIfEmpty
+        let safeLinkedMemberId = linked_member_id.flatMap { UUID(uuidString: $0) }
         let safeFirstName = first_name?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         let safeLastName = last_name?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         let safeDisplayPreference = display_preference?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         var identityAliases = alias_member_ids?.compactMap { UUID(uuidString: $0) } ?? []
-        if let linkedMemberId = linked_member_id.flatMap({ UUID(uuidString: $0) }) {
-            identityAliases.append(linkedMemberId)
+        if let safeLinkedMemberId {
+            identityAliases.append(safeLinkedMemberId)
         }
         let dedupedAliases = Array(Set(identityAliases))
         return AccountFriend(
@@ -352,9 +362,11 @@ struct ConvexAccountFriendDTO: Decodable, Sendable {
             hasLinkedAccount: has_linked_account ?? false,
             linkedAccountId: safeLinkedAccountId,
             linkedAccountEmail: safeLinkedAccountEmail,
+            linkedMemberId: safeLinkedMemberId,
             profileImageUrl: profile_image_url,
             profileColorHex: profile_avatar_color,
             status: safeStatus,
+            linkState: safeLinkState,
             aliasMemberIds: dedupedAliases.isEmpty ? nil : dedupedAliases
         )
     }

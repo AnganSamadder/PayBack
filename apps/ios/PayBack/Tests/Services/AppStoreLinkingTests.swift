@@ -467,6 +467,200 @@ final class AppStoreLinkingTests: XCTestCase {
         )
     }
 
+    func testClaimInviteToken_WithMergeFriend_RefreshesCanonicalStateAfterAcknowledgement() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let tokenId = UUID()
+        let targetMemberId = UUID()
+        let creatorMemberId = UUID()
+        let claimerCanonicalMemberId = await mockInviteLinkService.claimerCanonicalMemberId()
+        let mergeFriend = AccountFriend(memberId: UUID(), name: "Chuck", hasLinkedAccount: false)
+        let canonicalFriend = AccountFriend(
+            memberId: creatorMemberId,
+            name: "Creator",
+            hasLinkedAccount: true,
+            linkedAccountId: "creator-account",
+            linkedAccountEmail: "creator@example.com"
+        )
+
+        sut.friends = [mergeFriend]
+        try await mockAccountService.syncFriends(
+            accountEmail: account.email,
+            friends: [canonicalFriend]
+        )
+
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: targetMemberId,
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+
+        try await sut.claimInviteToken(tokenId, mergingLocalFriend: mergeFriend)
+
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        let claimedMergeMemberId = await mockInviteLinkService.claimedMergeLocalFriendMemberId()
+
+        XCTAssertEqual(claimedTokenId, tokenId)
+        XCTAssertEqual(claimedMergeMemberId, mergeFriend.memberId)
+        XCTAssertNotEqual(targetMemberId, claimerCanonicalMemberId)
+        XCTAssertEqual(sut.session?.account.linkedMemberId, claimerCanonicalMemberId)
+        XCTAssertTrue(sut.session?.account.equivalentMemberIds.contains(targetMemberId) == true)
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == mergeFriend.memberId }))
+        XCTAssertTrue(sut.friends.contains(where: { $0.memberId == canonicalFriend.memberId }))
+    }
+
+    func testClaimInviteToken_WithMergeFriend_KeepsFriendWhenClaimFails() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let tokenId = UUID()
+        let targetMemberId = UUID()
+        let mergeFriend = AccountFriend(memberId: UUID(), name: "Chuck", hasLinkedAccount: false)
+
+        sut.friends = [mergeFriend]
+
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: targetMemberId,
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.setClaimError(PayBackError.networkUnavailable)
+
+        await XCTAssertThrowsError(
+            try await sut.claimInviteToken(tokenId, mergingLocalFriend: mergeFriend)
+        )
+
+        XCTAssertTrue(sut.friends.contains(where: { $0.memberId == mergeFriend.memberId }))
+    }
+
+    func testClaimInviteToken_RejectsMergeFriendThatBecameLinkedBeforeSubmission() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let tokenId = UUID()
+        let mergeFriend = AccountFriend(
+            memberId: UUID(),
+            name: "Chuck",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account"
+        )
+        sut.friends = [mergeFriend]
+
+        await XCTAssertThrowsError(
+            try await sut.claimInviteToken(tokenId, mergingLocalFriend: mergeFriend)
+        )
+
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertNil(claimedTokenId)
+    }
+
+    func testClaimInviteToken_RejectsNonConfirmedMergeFriendStatusesBeforeSubmission() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let unavailableFriends: [(label: String, status: String, linkState: String?)] = [
+            ("ghost", "friend", "ghost"),
+            ("pending", "pending", nil),
+            ("rejected", "rejected", nil),
+            ("request_sent", "request_sent", nil)
+        ]
+
+        for unavailableFriend in unavailableFriends {
+            let tokenId = UUID()
+            let mergeFriend = AccountFriend(
+                memberId: UUID(),
+                name: "Unavailable \(unavailableFriend.label)",
+                hasLinkedAccount: false,
+                status: unavailableFriend.status,
+                linkState: unavailableFriend.linkState
+            )
+            sut.friends = [mergeFriend]
+            await mockInviteLinkService.addValidToken(
+                tokenId: tokenId,
+                targetMemberId: UUID(),
+                targetMemberName: "Alice",
+                creatorEmail: "creator@example.com"
+            )
+
+            await XCTAssertThrowsError(
+                try await sut.claimInviteToken(tokenId, mergingLocalFriend: mergeFriend),
+                "State \(unavailableFriend.label) should not be mergeable"
+            )
+        }
+
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertNil(claimedTokenId)
+    }
+
+    func testMergeEligibility_AllowsManualFriends() {
+        let friend = AccountFriend(
+            memberId: UUID(),
+            name: "Imported Friend",
+            hasLinkedAccount: false,
+            status: "manual",
+            linkState: "unlinked"
+        )
+
+        XCTAssertTrue(sut.isMergeableUnlinkedFriend(friend))
+    }
+
+    func testMergeEligibility_RejectsLinkedMemberProvenance() throws {
+        let friendMemberId = UUID()
+        let linkedMemberId = UUID()
+        let dto = ConvexAccountFriendDTO(
+            member_id: friendMemberId.uuidString,
+            name: "Partially Linked Friend",
+            nickname: nil,
+            original_name: nil,
+            status: "friend",
+            link_state: "unlinked",
+            has_linked_account: false,
+            linked_account_id: nil,
+            linked_account_email: nil,
+            linked_member_id: linkedMemberId.uuidString,
+            profile_image_url: nil,
+            profile_avatar_color: nil
+        )
+
+        let friend = try XCTUnwrap(dto.toAccountFriend())
+        XCTAssertFalse(sut.isMergeableUnlinkedFriend(friend))
+    }
+
+    func testClaimInviteToken_RejectsStatuslessGroupOnlyMergeFriendBeforeSubmission() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let tokenId = UUID()
+        let mergeFriend = AccountFriend(memberId: UUID(), name: "Group Only", hasLinkedAccount: false)
+        sut.friends = [mergeFriend]
+        sut.groups = [
+            SpendingGroup(
+                name: "Shared Group",
+                members: [
+                    GroupMember(id: sut.currentUser.id, name: sut.currentUser.name, isCurrentUser: true),
+                    GroupMember(id: mergeFriend.memberId, name: mergeFriend.name)
+                ],
+                isDirect: false
+            )
+        ]
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+
+        await XCTAssertThrowsError(
+            try await sut.claimInviteToken(tokenId, mergingLocalFriend: mergeFriend)
+        )
+
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertNil(claimedTokenId)
+    }
+
     // MARK: - Manual Friend Merge Tests
 
     func testMergeableUnlinkedFriendsExcludesPendingAndLinkedRows() {

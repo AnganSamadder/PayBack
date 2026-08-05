@@ -3487,21 +3487,39 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Claims an invite token and links the account with retry logic
     func claimInviteToken(_ tokenId: UUID) async throws {
+        try await claimInviteToken(tokenId, mergingLocalFriend: nil)
+    }
+
+    /// Claims an invite token and optionally merges an existing unlinked friend atomically.
+    func claimInviteToken(_ tokenId: UUID, mergingLocalFriend friend: AccountFriend?) async throws {
         guard session != nil else {
             throw PayBackError.authSessionMissing
         }
 
-        // Claim token via service with retry
+        if let friend {
+            let isEligible = await MainActor.run {
+                guard let currentFriend = friends.first(where: { $0.memberId == friend.memberId }) else {
+                    return false
+                }
+                return isMergeableUnlinkedFriend(currentFriend)
+            }
+            guard isEligible else {
+                throw PayBackError.linkMemberAlreadyLinked
+            }
+        }
+
         let result = try await retryPolicy.execute {
-            try await self.inviteLinkService.claimInviteToken(tokenId)
+            try await self.inviteLinkService.claimInviteToken(
+                tokenId,
+                mergeLocalFriendMemberId: friend?.memberId
+            )
         }
 
         await applyLinkAcceptResult(result)
         await reconcileAfterNetworkRecovery()
 
-        // 🚀 CRITICAL FIX: Fetch new data (groups/expenses) that we now have access to!
-        // The cloud services have been updated to rely on RLS, so fetching now will return
-        // the shared groups/expenses associated with this new link.
+        // Fetch the canonical friend, group, and expense state only after the
+        // atomic backend claim/merge succeeds. This avoids optimistic UI loss.
         await loadRemoteData()
     }
 
@@ -4145,7 +4163,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// Whether a friend row should be selectable as a direct-expense counterparty.
     ///
     /// Rules:
-    /// - confirmed/accepted friendships are selectable
+    /// - confirmed/accepted/manual friendships are selectable
     /// - linked-account friendships are selectable unless explicitly pending/rejected
     /// - legacy unlinked rows with no status are selectable only when they are not
     ///   group-only members (or already have an established direct group)
@@ -4175,10 +4193,15 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return !appearsInAnyNonDirectGroup(memberId: friend.memberId)
     }
 
+    /// Whether a confirmed friend can be used as the source of an invite-time merge.
     func isMergeableUnlinkedFriend(_ friend: AccountFriend) -> Bool {
-        guard !friend.hasLinkedAccount,
+        let linkState = normalizedFriendStatus(friend.linkState)
+        guard friend.hasLinkedAccount == false,
               friend.linkedAccountId == nil,
-              friend.linkedAccountEmail == nil else {
+              friend.linkedAccountEmail == nil,
+              friend.linkedMemberId == nil,
+              linkState == nil || linkState == "unlinked"
+        else {
             return false
         }
         return isSelectableDirectExpenseFriend(friend)

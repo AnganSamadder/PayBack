@@ -20,14 +20,25 @@ protocol InviteLinkService: Sendable {
     /// Subscribe to live updates for invite validation - updates whenever expenses change
     func subscribeToInviteValidation(_ tokenId: UUID) -> AsyncThrowingStream<InviteTokenValidation, Error>
 
-    /// Claims an invite token and links the account to the member
-    func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult
+    /// Claims an invite token and links the account to the member.
+    /// When provided, `mergeLocalFriendMemberId` asks the backend to atomically
+    /// merge an existing unlinked friend into the linked inviter identity.
+    func claimInviteToken(
+        _ tokenId: UUID,
+        mergeLocalFriendMemberId: UUID?
+    ) async throws -> LinkAcceptResult
 
     /// Fetches all active invite tokens created by the current user
     func fetchActiveInvites() async throws -> [InviteToken]
 
     /// Revokes an invite token, preventing it from being claimed
     func revokeInvite(_ tokenId: UUID) async throws
+}
+
+extension InviteLinkService {
+    func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
+        try await claimInviteToken(tokenId, mergeLocalFriendMemberId: nil)
+    }
 }
 
 /// Mock implementation for testing
@@ -38,8 +49,13 @@ actor MockInviteLinkService: InviteLinkService {
     private var claimedTokenIds: Set<UUID> = []
     private let mockAccountId = "mock-account-id"
     private let mockAccountEmail = "mock@example.com"
+    private let mockAccountMemberId: UUID
     private let mockCreatorId = "mock-user-id"
     private let mockCreatorEmail = "mock@example.com"
+
+    init(mockAccountMemberId: UUID = UUID()) {
+        self.mockAccountMemberId = mockAccountMemberId
+    }
 
     func generateInviteLink(
         targetMemberId: UUID,
@@ -120,7 +136,10 @@ actor MockInviteLinkService: InviteLinkService {
         )
     }
 
-    func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
+    func claimInviteToken(
+        _ tokenId: UUID,
+        mergeLocalFriendMemberId _: UUID?
+    ) async throws -> LinkAcceptResult {
         guard var token = tokens[tokenId] else {
             throw PayBackError.linkInvalid
         }
@@ -140,7 +159,10 @@ actor MockInviteLinkService: InviteLinkService {
         claimedTokenIds.insert(tokenId)
 
         return LinkAcceptResult(
-            linkedMemberId: token.targetMemberId,
+            targetMemberId: token.targetMemberId,
+            canonicalMemberId: mockAccountMemberId,
+            aliasMemberIds: [token.targetMemberId],
+            contractVersion: 2,
             linkedAccountId: mockAccountId,
             linkedAccountEmail: mockAccountEmail
         )
@@ -179,4 +201,3 @@ enum InviteLinkServiceProvider {
         return MockInviteLinkService.shared
     }
 }
-
