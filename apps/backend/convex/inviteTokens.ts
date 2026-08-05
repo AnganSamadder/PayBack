@@ -2,7 +2,12 @@ import { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, internalMutation, MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { resolveCanonicalMemberIdInternal, rewriteClaimedFriendReferences } from "./aliases";
+import {
+  mergeAccountFriendIntoCanonicalInternal,
+  prepareInviteMergeSourceInternal,
+  resolveCanonicalMemberIdInternal,
+  rewriteClaimedFriendReferences
+} from "./aliases";
 import {
   assertIdentityMaterializationReady,
   deterministicLinkingError,
@@ -527,6 +532,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
       await ctx.db.patch(canonicalRow._id, {
         has_linked_account: true,
         link_state: "linked",
+        status: "friend",
         linked_account_id: user.id,
         linked_account_email: user.email,
         linked_member_id: userCanonicalMemberId,
@@ -548,6 +554,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         member_id: normalizeMemberId(friendRecord.member_id),
         has_linked_account: true,
         link_state: "linked",
+        status: "friend",
         linked_account_id: user.id,
         linked_account_email: user.email,
         linked_member_id: userCanonicalMemberId,
@@ -562,6 +569,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         member_id: normalizeMemberId(friendRecord.member_id),
         has_linked_account: true,
         link_state: "linked",
+        status: "friend",
         linked_account_id: user.id,
         linked_account_email: user.email,
         linked_member_id: userCanonicalMemberId,
@@ -600,6 +608,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
           member_id: normalizeMemberId(claimantFriendRecord.member_id),
           has_linked_account: true,
           link_state: "linked",
+          status: "friend",
           linked_account_id: creatorAccount.id,
           linked_account_email: creatorAccount.email,
           linked_member_id: creatorMemberId,
@@ -613,6 +622,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
           member_id: normalizeMemberId(claimantFriendRecord.member_id),
           has_linked_account: true,
           link_state: "linked",
+          status: "friend",
           linked_account_id: creatorAccount.id,
           linked_account_email: creatorAccount.email,
           linked_member_id: creatorMemberId,
@@ -632,6 +642,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         last_name: creatorLastName,
         has_linked_account: true,
         link_state: "linked",
+        status: "friend",
         linked_account_id: creatorAccount.id,
         linked_account_email: creatorAccount.email,
         linked_member_id: creatorMemberId,
@@ -660,7 +671,10 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
  * their friend records are also updated.
  */
 export const claim = mutation({
-  args: { id: v.string() },
+  args: {
+    id: v.string(),
+    mergeLocalFriendMemberId: v.optional(v.string())
+  },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
@@ -675,29 +689,117 @@ export const claim = mutation({
     }
 
     const now = Date.now();
+    const requestedMergeMemberId = args.mergeLocalFriendMemberId
+      ? normalizeMemberId(args.mergeLocalFriendMemberId)
+      : undefined;
+    await assertIdentityMaterializationReady(ctx.db);
+    if (token.claimed_by) {
+      if (token.claimed_by !== user.id) {
+        throw new Error("Token has already been claimed");
+      }
+      if (token.claim_merge_local_friend_member_id !== requestedMergeMemberId) {
+        throw new Error("Token was already claimed with a different merge selection");
+      }
+
+      const canonicalMemberId = user.member_id ? normalizeMemberId(user.member_id) : undefined;
+      if (!canonicalMemberId) {
+        throw new Error("User account does not have a member_id assigned");
+      }
+      return {
+        contract_version: LINKING_CONTRACT_VERSION,
+        target_member_id: normalizeMemberId(token.target_member_id),
+        canonical_member_id: canonicalMemberId,
+        alias_member_ids: normalizeMemberIds(user.alias_member_ids || []).filter(
+          (memberId) => memberId !== canonicalMemberId
+        ),
+        linked_member_id: canonicalMemberId,
+        linked_account_id: user.id,
+        linked_account_email: user.email
+      };
+    }
+
     if (token.expires_at < now) {
       throw new Error("Token has expired");
     }
-
-    if (token.claimed_by) {
-      throw new Error("Token has already been claimed");
-    }
-
     if (!token.target_friend_id) {
       throw new Error("Invite must be recreated before it can be claimed");
     }
 
-    await ctx.db.patch(token._id, {
-      claimed_by: user.id,
-      claimed_at: now
-    });
+    const creatorAccount = await ctx.db
+      .query("accounts")
+      .withIndex("by_auth_id", (q) => q.eq("id", token.creator_id))
+      .unique();
+    if (
+      !creatorAccount ||
+      creatorAccount.status === "deleted" ||
+      creatorAccount.email.trim().toLowerCase() !== token.creator_email.trim().toLowerCase()
+    ) {
+      throw new Error("Invite creator account is no longer active");
+    }
 
-    return await claimForUser(ctx, user, {
+    const linkContext = normalizeLinkClaimContext({
       targetMemberId: token.target_member_id,
       targetFriendId: token.target_friend_id,
       creatorEmail: token.creator_email,
       creatorId: token.creator_id
     });
+    await validateBoundInviteTarget(ctx, creatorAccount, linkContext);
+
+    const creatorMemberId = creatorAccount.member_id
+      ? normalizeMemberId(creatorAccount.member_id)
+      : undefined;
+    if (requestedMergeMemberId && !creatorMemberId) {
+      throw new Error("Creator account is missing a canonical member_id");
+    }
+
+    const preparedCanonicalRewrite =
+      requestedMergeMemberId &&
+      creatorMemberId &&
+      (!token.claimed_by || requestedMergeMemberId !== creatorMemberId)
+        ? await prepareInviteMergeSourceInternal(ctx, {
+            accountEmail: user.email,
+            sourceMemberId: requestedMergeMemberId,
+            targetMemberId: creatorMemberId,
+            targetName: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
+            targetLinkedAccountId: creatorAccount.id,
+            targetLinkedAccountEmail: creatorAccount.email,
+            allowMissingSource: Boolean(token.claimed_by)
+          })
+        : undefined;
+    if (preparedCanonicalRewrite) {
+      await preparedCanonicalRewrite();
+    }
+
+    await ctx.db.patch(token._id, {
+      claimed_by: user.id,
+      claimed_at: now,
+      claim_merge_local_friend_member_id: requestedMergeMemberId
+    });
+
+    const claimResult = await claimForUser(ctx, user, {
+      targetMemberId: token.target_member_id,
+      targetFriendId: token.target_friend_id,
+      creatorEmail: token.creator_email,
+      creatorId: token.creator_id
+    });
+
+    if (requestedMergeMemberId && creatorMemberId && requestedMergeMemberId !== creatorMemberId) {
+      await mergeAccountFriendIntoCanonicalInternal(ctx, {
+        accountEmail: user.email,
+        sourceMemberId: requestedMergeMemberId,
+        targetMemberId: creatorMemberId,
+        trustedInviteTarget: {
+          accountId: creatorAccount.id,
+          email: creatorAccount.email
+        },
+        targetName: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
+        targetLinkedAccountId: creatorAccount.id,
+        targetLinkedAccountEmail: creatorAccount.email,
+        preparedCanonicalRewrite: preparedCanonicalRewrite ? async () => {} : undefined
+      });
+    }
+
+    return claimResult;
   }
 });
 
