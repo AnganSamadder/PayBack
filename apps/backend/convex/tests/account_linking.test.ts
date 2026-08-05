@@ -1739,6 +1739,63 @@ test("invite validation excludes expenses and groups with conflicting owner tupl
   expect(JSON.stringify(result)).not.toContain("Foreign Secret Group");
 });
 
+test("invite validation omits preview when the target alias closure exceeds the claim cap", async () => {
+  const t = convexTest(schema, modules);
+  await setupInvitePreviewFixture(
+    t,
+    "oversized_alias_preview",
+    Array.from({ length: 257 }, (_, index) => `preview_alias_${index}`)
+  );
+
+  const result = await t.query(api.inviteTokens.validate, { id: "oversized_alias_preview" });
+  expect(result).toMatchObject({ is_valid: true, expense_preview: null });
+});
+
+test("invite validation omits preview before numeric-heavy documents exceed its byte budget", async () => {
+  const t = convexTest(schema, modules);
+  const { creatorId, now } = await setupInvitePreviewFixture(t, "byte_bounded_preview");
+  const numericSubexpenses = Array.from({ length: 4_000 }, (_, index) => ({
+    id: `numeric_component_${index}`,
+    amount: 9_007_199_254_000 - index
+  }));
+
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 11; index += 1) {
+      await ctx.db.insert("expenses", {
+        id: `numeric_heavy_expense_${index}`,
+        group_id: "numeric_heavy_group",
+        description: `Numeric-heavy expense ${index}`,
+        notes: "x".repeat(600_000),
+        date: now,
+        total_amount: 1,
+        paid_by_member_id: "preview_target",
+        involved_member_ids: ["preview_target"],
+        splits: [
+          {
+            id: `numeric_heavy_split_${index}`,
+            member_id: "preview_target",
+            amount: 1,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "creator@example.com",
+        owner_account_id: "creator_auth",
+        owner_id: creatorId,
+        participant_member_ids: ["preview_target"],
+        participants: [{ member_id: "preview_target", name: "Target" }],
+        participant_emails: ["creator@example.com"],
+        subexpenses: numericSubexpenses,
+        created_at: now,
+        updated_at: now
+      });
+    }
+  });
+
+  const result = await t.query(api.inviteTokens.validate, { id: "byte_bounded_preview" });
+  expect(result).toMatchObject({ is_valid: true, expense_preview: null });
+}, 30_000);
+
 test("unauthenticated invite validation omits preview when creator expense scope exceeds its cap", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();

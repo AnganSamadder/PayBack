@@ -1,6 +1,6 @@
 import { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, internalMutation, MutationCtx, QueryCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import {
   accountMergeQueriesForLimit,
@@ -283,6 +283,102 @@ export const create = mutation({
 
 const MAX_PUBLIC_INVITE_PREVIEW_EXPENSES = 128;
 
+const publicInvitePreviewLimits = {
+  aliases: MAX_LIVE_ACCOUNT_ALIASES,
+  queryWork: 512,
+  readRows: 768,
+  encodedReadBytes: 8 * 1024 * 1024,
+  // Convex documents are capped at 1 MiB. Reserving twice that amount before every
+  // sequential read leaves six MiB below the platform's 16 MiB transaction limit.
+  maximumDocumentReservationBytes: 2 * 1024 * 1024,
+  hardReadSafetyBytes: 10 * 1024 * 1024,
+  maximumPageRows: 5
+} as const;
+
+type PublicInvitePreviewBudget = {
+  queryWork: number;
+  readRows: number;
+  encodedReadBytes: number;
+};
+
+function createPublicInvitePreviewBudget(): PublicInvitePreviewBudget {
+  return { queryWork: 0, readRows: 0, encodedReadBytes: 0 };
+}
+
+function reservePublicInvitePreviewRead(budget: PublicInvitePreviewBudget, maximumRows: number) {
+  const remainingRows = publicInvitePreviewLimits.readRows - budget.readRows;
+  const remainingHardReadBytes =
+    publicInvitePreviewLimits.hardReadSafetyBytes - budget.encodedReadBytes;
+  const byteReservedRows = Math.floor(
+    remainingHardReadBytes / publicInvitePreviewLimits.maximumDocumentReservationBytes
+  );
+  const reservedRows = Math.min(
+    publicInvitePreviewLimits.maximumPageRows,
+    maximumRows,
+    remainingRows,
+    byteReservedRows
+  );
+  if (reservedRows <= 0 || budget.queryWork + 1 > publicInvitePreviewLimits.queryWork) {
+    return 0;
+  }
+  budget.queryWork += 1;
+  return reservedRows;
+}
+
+function accountPublicInvitePreviewRows(
+  budget: PublicInvitePreviewBudget,
+  rows: readonly unknown[]
+) {
+  budget.readRows += rows.length;
+  budget.encodedReadBytes += rows.reduce<number>(
+    (total, row) => total + getConvexSize(row as Value),
+    0
+  );
+  return (
+    budget.readRows <= publicInvitePreviewLimits.readRows &&
+    budget.encodedReadBytes <= publicInvitePreviewLimits.encodedReadBytes
+  );
+}
+
+async function collectSequentialPublicInvitePreviewRows<T>(
+  budget: PublicInvitePreviewBudget,
+  readPage: (
+    cursor: string | null,
+    limit: number
+  ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>,
+  stopAfterRows: number
+): Promise<T[] | null> {
+  const rows: T[] = [];
+  let cursor: string | null = null;
+
+  while (true) {
+    const pageSize = reservePublicInvitePreviewRead(budget, stopAfterRows - rows.length);
+    if (pageSize === 0) return null;
+
+    const result = await readPage(cursor, pageSize);
+    if (!accountPublicInvitePreviewRows(budget, result.page)) return null;
+    rows.push(...result.page);
+    if (rows.length >= stopAfterRows) return rows.slice(0, stopAfterRows);
+    if (result.isDone) return rows;
+    if (result.continueCursor === cursor) return null;
+    cursor = result.continueCursor;
+  }
+}
+
+async function readPublicInvitePreviewDocument<T>(
+  budget: PublicInvitePreviewBudget,
+  read: () => Promise<T | null>
+): Promise<{ completed: boolean; document: T | null }> {
+  if (reservePublicInvitePreviewRead(budget, 1) === 0) {
+    return { completed: false, document: null };
+  }
+  const document = await read();
+  if (!accountPublicInvitePreviewRows(budget, document ? [document] : [])) {
+    return { completed: false, document: null };
+  }
+  return { completed: true, document };
+}
+
 type PreviewOwnerIdentity = {
   owner_id?: Doc<"accounts">["_id"];
   owner_account_id?: string;
@@ -309,31 +405,44 @@ function isPreviewRowOwnedByAccount(
 
 async function collectCreatorExpensesForPreview(
   ctx: Pick<QueryCtx, "db">,
-  creator: Doc<"accounts">
+  creator: Doc<"accounts">,
+  budget: PublicInvitePreviewBudget
 ) {
-  const indexedRows = [
-    await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_id", (q) => q.eq("owner_id", creator._id))
-      .take(MAX_PUBLIC_INVITE_PREVIEW_EXPENSES + 1),
-    await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", creator.id))
-      .take(MAX_PUBLIC_INVITE_PREVIEW_EXPENSES + 1),
-    await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", creator.email))
-      .take(MAX_PUBLIC_INVITE_PREVIEW_EXPENSES + 1)
+  const creatorExpenses = new Map<string, Doc<"expenses">>();
+  const indexedReads = [
+    (cursor: string | null, limit: number) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", creator._id))
+        .order("asc")
+        .paginate({ cursor, numItems: limit }),
+    (cursor: string | null, limit: number) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", creator.id))
+        .order("asc")
+        .paginate({ cursor, numItems: limit }),
+    (cursor: string | null, limit: number) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_owner_email", (q) => q.eq("owner_email", creator.email))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
   ];
 
-  if (indexedRows.some((rows) => rows.length > MAX_PUBLIC_INVITE_PREVIEW_EXPENSES)) {
-    return null;
-  }
-
-  const creatorExpenses = new Map<string, Doc<"expenses">>();
-  for (const expense of indexedRows.flat()) {
-    if (isPreviewRowOwnedByAccount(expense, creator)) {
-      creatorExpenses.set(String(expense._id), expense);
+  for (const readPage of indexedReads) {
+    const indexedRows = await collectSequentialPublicInvitePreviewRows(
+      budget,
+      readPage,
+      MAX_PUBLIC_INVITE_PREVIEW_EXPENSES + 1
+    );
+    if (!indexedRows || indexedRows.length > MAX_PUBLIC_INVITE_PREVIEW_EXPENSES) {
+      return null;
+    }
+    for (const expense of indexedRows) {
+      if (isPreviewRowOwnedByAccount(expense, creator)) {
+        creatorExpenses.set(String(expense._id), expense);
+      }
     }
   }
 
@@ -344,22 +453,37 @@ async function collectCreatorExpensesForPreview(
 async function resolveCreatorGroupNameForPreview(
   ctx: Pick<QueryCtx, "db">,
   expense: Doc<"expenses">,
-  creator: Doc<"accounts">
-) {
+  creator: Doc<"accounts">,
+  budget: PublicInvitePreviewBudget
+): Promise<{ completed: boolean; groupName: string | null }> {
   if (expense.group_ref) {
-    const group = await ctx.db.get(expense.group_ref);
+    const result = await readPublicInvitePreviewDocument(budget, () =>
+      ctx.db.get(expense.group_ref!)
+    );
+    if (!result.completed) return { completed: false, groupName: null };
+    const group = result.document;
     if (group && group.id === expense.group_id && isPreviewRowOwnedByAccount(group, creator)) {
-      return group.name;
+      return { completed: true, groupName: group.name };
     }
-    return null;
+    return { completed: true, groupName: null };
   }
 
-  const candidates = await ctx.db
-    .query("groups")
-    .withIndex("by_client_id", (q) => q.eq("id", expense.group_id))
-    .take(2);
+  const candidates = await collectSequentialPublicInvitePreviewRows(
+    budget,
+    (cursor, limit) =>
+      ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", expense.group_id))
+        .order("asc")
+        .paginate({ cursor, numItems: limit }),
+    2
+  );
+  if (!candidates) return { completed: false, groupName: null };
   const ownedGroups = candidates.filter((group) => isPreviewRowOwnedByAccount(group, creator));
-  return ownedGroups.length === 1 ? ownedGroups[0].name : null;
+  return {
+    completed: true,
+    groupName: ownedGroups.length === 1 ? ownedGroups[0].name : null
+  };
 }
 
 const publicInviteTokenValidator = v.object({
@@ -492,15 +616,29 @@ export const validate = query({
       };
     }
 
-    const creatorExpenses = await collectCreatorExpensesForPreview(ctx, creatorAccount);
     let expensePreview: {
       expense_count: number;
       group_names: string[];
       total_balance: number;
     } | null = null;
-    if (creatorExpenses) {
+    const targetAliases = normalizeMemberIds(targetFriend.local_alias_member_ids);
+    if (targetAliases.length <= publicInvitePreviewLimits.aliases) {
+      const previewBudget = createPublicInvitePreviewBudget();
+      const creatorExpenses = await collectCreatorExpensesForPreview(
+        ctx,
+        creatorAccount,
+        previewBudget
+      );
+      if (!creatorExpenses) {
+        return {
+          is_valid: true,
+          error: null,
+          token: { ...publicToken },
+          expense_preview: null
+        };
+      }
       const targetIdentityMemberIds = new Set(
-        normalizeMemberIds([token.target_member_id, ...(targetFriend.local_alias_member_ids ?? [])])
+        normalizeMemberIds([token.target_member_id, ...targetAliases])
       );
       const matchesTargetIdentity = (memberId: string) =>
         targetIdentityMemberIds.has(normalizeMemberId(memberId));
@@ -515,9 +653,22 @@ export const validate = query({
       const groupNames = new Set<string>();
       let totalBalance = 0;
       for (const expense of memberExpenses) {
-        const groupName = await resolveCreatorGroupNameForPreview(ctx, expense, creatorAccount);
-        if (groupName) {
-          groupNames.add(groupName);
+        const groupResult = await resolveCreatorGroupNameForPreview(
+          ctx,
+          expense,
+          creatorAccount,
+          previewBudget
+        );
+        if (!groupResult.completed) {
+          return {
+            is_valid: true,
+            error: null,
+            token: { ...publicToken },
+            expense_preview: null
+          };
+        }
+        if (groupResult.groupName) {
+          groupNames.add(groupResult.groupName);
         }
         if (matchesTargetIdentity(expense.paid_by_member_id)) {
           totalBalance += expense.splits
