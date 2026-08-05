@@ -242,7 +242,8 @@ export default defineSchema({
     created_at: v.number(),
     expires_at: v.number(),
     claimed_by: v.optional(v.string()),
-    claimed_at: v.optional(v.number())
+    claimed_at: v.optional(v.number()),
+    claim_merge_local_friend_member_id: v.optional(v.string())
   })
     .index("by_creator_id", ["creator_id"])
     .index("by_creator_email", ["creator_email"])
