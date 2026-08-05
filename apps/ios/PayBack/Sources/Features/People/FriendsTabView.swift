@@ -348,32 +348,7 @@ private struct FriendsList: View {
     }
 
     private func calculateBalanceForSorting(for friend: GroupMember) -> Double {
-        // Use the same calculation as BalanceView for consistency and performance
-        var totalBalance: Double = 0
-
-        for group in store.groups {
-            if group.members.contains(where: { isFriend($0.id, for: friend) }) {
-                let groupExpenses = store.expenses(in: group.id)
-
-                for exp in groupExpenses {
-                    if isMe(exp.paidByMemberId) {
-                        // Current user paid, check if friend owes anything
-                        if let friendSplit = exp.splits.first(where: { isFriend($0.memberId, for: friend) }),
-                           !friendSplit.isSettled {
-                            totalBalance += friendSplit.amount
-                        }
-                    } else if isFriend(exp.paidByMemberId, for: friend) {
-                        // Friend paid, check if current user owes anything
-                        if let userSplit = exp.splits.first(where: { isMe($0.memberId) }),
-                           !userSplit.isSettled {
-                            totalBalance -= userSplit.amount
-                        }
-                    }
-                }
-            }
-        }
-
-        return totalBalance
+        store.netBalance(forFriend: friend)
     }
 
     private func friendDisplayName(_ friend: GroupMember) -> String {

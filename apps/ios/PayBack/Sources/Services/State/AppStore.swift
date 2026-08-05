@@ -1783,8 +1783,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 for split in expense.splits where !isMe(split.memberId) && !split.isSettled {
                     paidByUser += split.amount
                 }
-            } else if let split = expense.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
-                owes += split.amount
+            } else {
+                owes += expense.splits
+                    .filter { isMe($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             }
         }
 
@@ -1886,9 +1888,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 }
             } else {
                 // Someone else paid, check if user owes (using ANY of their member IDs)
-                if let split = expense.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
-                    owes += split.amount
-                }
+                owes += expense.splits
+                    .filter { isMe($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             }
         }
 
