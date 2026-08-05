@@ -1,5 +1,5 @@
 import { query, internalQuery, mutation, DatabaseReader, MutationCtx } from "./_generated/server";
-import { Doc } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import { getConvexSize, type Value, v } from "convex/values";
 import {
   assertIdentityMaterializationReady,
@@ -12,6 +12,12 @@ import {
 import { getCurrentUserOrThrow } from "./helpers";
 import { isGhostFriendIdentity } from "./friendLinkProvenance";
 import { GroupVisibilityWriteBatch } from "./groupVisibility";
+import {
+  applyExpenseWriteBatch,
+  type ExpenseWriteOperation,
+  MAX_EXPENSE_VISIBILITY_ROWS,
+  MAX_EXPENSE_VIEWERS
+} from "./expenseWrites";
 
 /**
  * Internal helper for transitive alias resolution.
@@ -255,9 +261,12 @@ const mergeCanonicalizationLimits = {
   estimatedReadBytes: 8 * 1024 * 1024,
   hardReadSafetyBytes: 10 * 1024 * 1024,
   maximumDocumentReservationBytes: 2 * 1024 * 1024,
-  maximumPageRows: 5,
-  visibilityRows: 512
+  maximumPageRows: 5
 } as const;
+
+const MERGE_GROUP_VISIBILITY_READ_BYTES = 2 * 1024 * 1024;
+const MERGE_EXPENSE_REPLAY_READ_BYTES = 4 * 1024 * 1024;
+const MERGE_GROUP_WRITE_BYTES = 3 * 1024 * 1024;
 
 type MergeReadBudget = {
   accountFriendRows: number;
@@ -481,7 +490,7 @@ async function resolveBudgetedMergeEmailAccount(
 }
 
 function activeMergeAccount(account: Doc<"accounts"> | null) {
-  return account?.status === "deleted" ? null : account;
+  return account?.status === "deleted" || account?.status === "deleting" ? null : account;
 }
 
 async function resolveBudgetedMergeParticipantAccount(
@@ -542,7 +551,7 @@ async function prepareBudgetedMergeVisibility(
   cache: MergeIdentityCache,
   expense: Doc<"expenses">,
   ownerAccount: Doc<"accounts">
-): Promise<string[]> {
+): Promise<{ viewerAccountIds: Id<"accounts">[]; replayReadBytes: number }> {
   const accounts = new Map<string, Doc<"accounts">>();
   const inactiveMemberIds = new Set(
     (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
@@ -613,31 +622,16 @@ async function prepareBudgetedMergeVisibility(
     }
     addAccount(account);
   }
-  return Array.from(accounts.keys());
-}
-
-async function reconcilePreloadedMergeVisibility(
-  ctx: MutationCtx,
-  expenseId: string,
-  participantUserIds: readonly string[],
-  existingRows: readonly Doc<"user_expenses">[]
-) {
-  const existingUserIds = new Set(existingRows.map((row) => row.user_id));
-  const targetUserIds = new Set(participantUserIds);
-  await Promise.all([
-    ...participantUserIds
-      .filter((userId) => !existingUserIds.has(userId))
-      .map((userId) =>
-        ctx.db.insert("user_expenses", {
-          user_id: userId,
-          expense_id: expenseId,
-          updated_at: Date.now()
-        })
-      ),
-    ...existingRows
-      .filter((row) => !targetUserIds.has(row.user_id))
-      .map((row) => ctx.db.delete(row._id))
-  ]);
+  if (accounts.size > MAX_EXPENSE_VIEWERS) {
+    throw new Error(`Expense visibility supports at most ${MAX_EXPENSE_VIEWERS} viewers`);
+  }
+  return {
+    viewerAccountIds: Array.from(accounts.values(), (account) => account._id),
+    replayReadBytes: Array.from(accounts.values()).reduce(
+      (total, account) => total + getConvexSize(account as Value),
+      0
+    )
+  };
 }
 
 function normalizeOwnerEmail(email: string | undefined) {
@@ -683,8 +677,8 @@ export type CanonicalReferenceRewritePlan = {
       | "participant_emails"
       | "updated_at"
     >;
+    viewerAccountIds: Id<"accounts">[];
   }>;
-  visibilityPlans: Map<string, { participantUserIds: string[]; rows: Doc<"user_expenses">[] }>;
 };
 
 async function prepareCanonicalReferenceRewrite(
@@ -699,7 +693,6 @@ async function prepareCanonicalReferenceRewrite(
 ) {
   const normalizedTarget = normalizeMemberId(targetMemberId);
   const normalizedTargetEmail = targetLinkedAccountEmail?.toLowerCase().trim();
-  const shouldReconcileVisibility = Boolean(targetLinkedAccountId?.trim() || normalizedTargetEmail);
 
   const ownedGroupRows = [
     await collectSequentialMergeRows(budget, async (cursor, limit) =>
@@ -928,7 +921,10 @@ async function prepareCanonicalReferenceRewrite(
       | "participant_emails"
       | "updated_at"
     >;
+    viewerAccountIds: Id<"accounts">[];
   }> = [];
+  const identityCache = createMergeIdentityCache();
+  let expenseReplayReadBytes = 0;
   for (const expense of plannedExpenses) {
     const rewritableSourceMemberIds = rewritableSourceMemberIdsForExpense(expense, sourceMemberIds);
 
@@ -1017,44 +1013,55 @@ async function prepareCanonicalReferenceRewrite(
       participant_emails: participantEmails,
       updated_at: Date.now()
     };
-    plannedExpenseUpdates.push({ expense, patch: expensePatch });
-  }
-
-  const visibilityPlans = new Map<
-    string,
-    { participantUserIds: string[]; rows: Doc<"user_expenses">[] }
-  >();
-  let visibilityRows = 0;
-  if (shouldReconcileVisibility) {
-    const identityCache = createMergeIdentityCache();
-    for (const { expense, patch } of plannedExpenseUpdates) {
-      const visibilityExpense = { ...expense, ...patch };
-      const participantUserIds = await prepareBudgetedMergeVisibility(
-        ctx,
-        budget,
-        identityCache,
-        visibilityExpense,
-        account
-      );
+    const visibility = await prepareBudgetedMergeVisibility(
+      ctx,
+      budget,
+      identityCache,
+      { ...expense, ...expensePatch },
+      account
+    );
+    const visibilityRows = new Map<string, Doc<"user_expenses">>();
+    for (const byReference of [false, true]) {
       const rows = await collectSequentialMergeRows(budget, async (cursor, limit) =>
-        ctx.db
-          .query("user_expenses")
-          .withIndex("by_expense_id", (q) => q.eq("expense_id", expense.id))
+        (byReference
+          ? ctx.db
+              .query("user_expenses")
+              .withIndex("by_expense_ref", (query) => query.eq("expense_ref", expense._id))
+          : ctx.db
+              .query("user_expenses")
+              .withIndex("by_expense_id", (query) => query.eq("expense_id", expense.id))
+        )
           .order("asc")
           .paginate({ cursor, numItems: limit })
       );
-      visibilityRows += rows.length;
-      if (visibilityRows > mergeCanonicalizationLimits.visibilityRows) {
-        throw mergeWorkLimitError();
-      }
-      visibilityPlans.set(String(expense._id), { participantUserIds, rows });
+      for (const row of rows) visibilityRows.set(String(row._id), row);
     }
+    if (visibilityRows.size > MAX_EXPENSE_VISIBILITY_ROWS) throw mergeWorkLimitError();
+    expenseReplayReadBytes +=
+      getConvexSize(expense as Value) +
+      visibility.replayReadBytes +
+      Array.from(visibilityRows.values()).reduce(
+        (total, row) => total + getConvexSize(row as Value),
+        0
+      );
+    if (expenseReplayReadBytes > MERGE_EXPENSE_REPLAY_READ_BYTES) throw mergeWorkLimitError();
+    plannedExpenseUpdates.push({
+      expense,
+      patch: expensePatch,
+      viewerAccountIds: visibility.viewerAccountIds
+    });
   }
+
+  const groupWriteBytes = plannedGroupUpdates.reduce(
+    (total, { group, members }) =>
+      total + getConvexSize({ ...group, members, updated_at: Date.now() } as Value),
+    0
+  );
+  if (groupWriteBytes > MERGE_GROUP_WRITE_BYTES) throw mergeWorkLimitError();
 
   return {
     groupUpdates: plannedGroupUpdates,
-    expenseUpdates: plannedExpenseUpdates,
-    visibilityPlans
+    expenseUpdates: plannedExpenseUpdates
   } satisfies CanonicalReferenceRewritePlan;
 }
 
@@ -1062,7 +1069,9 @@ export async function applyCanonicalReferenceRewrite(
   ctx: MutationCtx,
   plan: CanonicalReferenceRewritePlan
 ) {
-  const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
+  const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx, {
+    limits: { bytes: MERGE_GROUP_VISIBILITY_READ_BYTES }
+  });
   for (const { group, members } of plan.groupUpdates) {
     await groupVisibilityBatch.patch(group._id, {
       members,
@@ -1071,18 +1080,15 @@ export async function applyCanonicalReferenceRewrite(
   }
   await groupVisibilityBatch.flush();
 
-  for (const { expense, patch } of plan.expenseUpdates) {
-    await ctx.db.patch(expense._id, patch);
-    const visibilityPlan = plan.visibilityPlans.get(String(expense._id));
-    if (visibilityPlan) {
-      await reconcilePreloadedMergeVisibility(
-        ctx,
-        expense.id,
-        visibilityPlan.participantUserIds,
-        visibilityPlan.rows
-      );
-    }
-  }
+  const expenseOperations: ExpenseWriteOperation[] = plan.expenseUpdates.map(
+    ({ expense, patch, viewerAccountIds }) => ({
+      kind: "patch",
+      expense,
+      patch,
+      viewerAccountIds
+    })
+  );
+  await applyExpenseWriteBatch(ctx, expenseOperations);
 }
 
 export async function prepareClaimedFriendReferenceRewrite(
