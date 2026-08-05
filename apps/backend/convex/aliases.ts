@@ -135,7 +135,8 @@ export async function findMergeFriendRecordByMemberId(
   ctx: MutationCtx,
   accountEmail: string,
   memberId: string,
-  readBudget: MergeReadBudget
+  readBudget: MergeReadBudget,
+  options: { includeLinkedLocalAliases?: boolean } = {}
 ) {
   const normalizedMemberId = normalizeMemberId(memberId);
   accountMergeQueriesForLimit(readBudget, 1);
@@ -177,7 +178,24 @@ export async function findMergeFriendRecordByMemberId(
     throw mergeWorkLimitError();
   }
 
-  return allFriends.find((friend) => normalizeMemberId(friend.member_id) === normalizedMemberId);
+  const primaryMatch = allFriends.find(
+    (friend) => normalizeMemberId(friend.member_id) === normalizedMemberId
+  );
+  if (primaryMatch || options.includeLinkedLocalAliases !== true) return primaryMatch;
+
+  const localAliasMatches = allFriends.filter(
+    (friend) =>
+      (friend.has_linked_account ||
+        friend.link_state === "linked" ||
+        Boolean(friend.linked_account_id) ||
+        Boolean(friend.linked_account_email) ||
+        Boolean(friend.linked_member_id)) &&
+      normalizeMemberIds(friend.local_alias_member_ids).includes(normalizedMemberId)
+  );
+  if (localAliasMatches.length > 1) {
+    throw new Error("Identity maintenance required: duplicate local friend aliases");
+  }
+  return localAliasMatches[0];
 }
 
 export async function findMergeMaterializedAliasByMemberId(
@@ -1279,7 +1297,8 @@ export async function mergeAccountFriendIntoCanonicalInternal(
     ctx,
     accountEmail,
     targetMemberId,
-    readBudget
+    readBudget,
+    { includeLinkedLocalAliases: options.allowLinkedTarget === true }
   );
   if (!targetFriend) {
     throw new Error(`Friend with member_id ${targetMemberId} not found`);
