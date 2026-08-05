@@ -338,6 +338,42 @@ describe("mergeUnlinkedFriends eligibility", () => {
     expect(snapshot.group?.members.map((member) => member.id)).not.toContain("canonical_friend");
   });
 
+  test("stops the owner conflict scan at the friend-record boundary", async () => {
+    const { t } = await createEligibilityScenario();
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let index = 0; index < 300; index += 1) {
+        await ctx.db.insert("account_friends", {
+          account_email: "owner@test.com",
+          member_id: `unrelated_boundary_${index}`,
+          name: `Unrelated ${index}`,
+          profile_avatar_color: "#333333",
+          has_linked_account: false,
+          updated_at: now
+        });
+      }
+    });
+
+    const { createMergeReadBudget, mergeAccountFriendIntoCanonicalInternal } =
+      await import("../aliases");
+    const budget = await t.run(async (ctx) => {
+      const readBudget = createMergeReadBudget();
+      try {
+        await mergeAccountFriendIntoCanonicalInternal(ctx, {
+          accountEmail: "owner@test.com",
+          sourceMemberId: "local_alias",
+          targetMemberId: "canonical_friend",
+          readBudget
+        });
+      } catch {
+        return readBudget;
+      }
+      throw new Error("expected merge to exceed the friend-record boundary");
+    });
+
+    expect(budget.scannedRows).toBeLessThanOrEqual(265);
+  });
+
   test.each(["pending", " ReJeCtEd ", "request_sent", "request_received", "ghost"])(
     "rejects blocked source status %s",
     async (status) => {
@@ -1043,7 +1079,7 @@ test("mergeUnlinkedFriends rejects over-cap work before any writes", async () =>
   expect(state.friends.some((friend) => friend.member_id === "local_alias")).toBe(true);
 });
 
-test("mergeUnlinkedFriends persists the canonical owner tuple and blocks stale-owner deletion", async () => {
+test("mergeUnlinkedFriends rejects a conflicting owner email without rewriting the expense", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
   let ownerId: any;
@@ -1110,10 +1146,12 @@ test("mergeUnlinkedFriends persists the canonical owner tuple and blocks stale-o
   });
 
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
-  await ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
-    friendId1: "canonical_friend",
-    friendId2: "local_alias"
-  });
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("conflicting owner identity");
 
   const rewritten = await t.run(async (ctx) =>
     ctx.db
@@ -1124,21 +1162,9 @@ test("mergeUnlinkedFriends persists the canonical owner tuple and blocks stale-o
   expect(rewritten).toMatchObject({
     owner_id: ownerId,
     owner_account_id: "owner_auth",
-    owner_email: "owner@test.com"
+    owner_email: "stale@test.com"
   });
-
-  const staleCtx = t.withIdentity(identity("stale@test.com", "stale_auth"));
-  await expect(
-    staleCtx.mutation(api.expenses.deleteExpense, { id: "stale_owner_expense" })
-  ).rejects.toThrow("Not authorized to delete this expense");
-  expect(
-    await t.run(async (ctx) =>
-      ctx.db
-        .query("expenses")
-        .withIndex("by_client_id", (q) => q.eq("id", "stale_owner_expense"))
-        .unique()
-    )
-  ).not.toBeNull();
+  expect(rewritten?.participant_member_ids).toContain("local_alias");
 });
 
 test("mergeMemberIds canonicalizes retained participant links to one proven account", async () => {
@@ -1476,7 +1502,7 @@ test("mergeUnlinkedFriends removes stale expense visibility for an unlinked targ
   expect(state.visibility.map((row) => row.user_id)).toEqual(["owner_auth"]);
 });
 
-test("mergeUnlinkedFriends persists the canonical group owner tuple and blocks stale deletion", async () => {
+test("mergeUnlinkedFriends rejects a conflicting group owner email without rewriting the group", async () => {
   const { t, ownerCtx } = await createEligibilityScenario();
   const now = Date.now();
   let canonicalOwnerId: any;
@@ -1510,10 +1536,12 @@ test("mergeUnlinkedFriends persists the canonical group owner tuple and blocks s
     });
   });
 
-  await ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
-    friendId1: "canonical_friend",
-    friendId2: "local_alias"
-  });
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("conflicting owner identity");
 
   const rewritten = await t.run(async (ctx) =>
     ctx.db
@@ -1524,21 +1552,76 @@ test("mergeUnlinkedFriends persists the canonical group owner tuple and blocks s
   expect(rewritten).toMatchObject({
     owner_id: canonicalOwnerId,
     owner_account_id: "owner_auth",
-    owner_email: "owner@test.com"
+    owner_email: "stale@test.com"
+  });
+  expect(rewritten?.members.map((member) => member.id)).toContain("local_alias");
+});
+
+test("mergeUnlinkedFriends rejects rewriting an active source into an inactive target", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    const owner = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!owner) throw new Error("missing owner");
+    await ctx.db.insert("expenses", {
+      id: "inactive_target_collision",
+      group_id: "missing_group",
+      description: "Historical target and active duplicate",
+      date: now,
+      total_amount: 20,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "local_alias", "canonical_friend"],
+      splits: [
+        { id: "owner_split", member_id: "owner_member", amount: 10, is_settled: false },
+        { id: "active_split", member_id: "local_alias", amount: 5, is_settled: false },
+        { id: "historical_split", member_id: "canonical_friend", amount: 5, is_settled: false }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: owner._id,
+      participant_member_ids: ["owner_member", "local_alias", "canonical_friend"],
+      inactive_participant_member_ids: ["canonical_friend"],
+      participant_emails: ["owner@test.com"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "local_alias", name: "Active duplicate" },
+        { member_id: "canonical_friend", name: "Historical canonical" }
+      ],
+      created_at: now,
+      updated_at: now
+    });
   });
 
-  const staleCtx = t.withIdentity(identity("stale@test.com", "stale_auth"));
   await expect(
-    staleCtx.mutation(api.groups.deleteGroup, { id: "stale_owner_group" })
-  ).rejects.toThrow("Not authorized to delete this group");
-  expect(
-    await t.run(async (ctx) =>
-      ctx.db
-        .query("groups")
-        .withIndex("by_client_id", (q) => q.eq("id", "stale_owner_group"))
-        .unique()
-    )
-  ).not.toBeNull();
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("inactive participant history");
+
+  const state = await t.run(async (ctx) => ({
+    source: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "local_alias")
+      )
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "inactive_target_collision"))
+      .unique()
+  }));
+  expect(state.source).not.toBeNull();
+  expect(state.expense?.splits.map((split) => split.member_id)).toEqual([
+    "owner_member",
+    "local_alias",
+    "canonical_friend"
+  ]);
 });
 
 test("mergeUnlinkedFriends rejects an unlinked rewrite above the participant work boundary", async () => {
@@ -1599,7 +1682,7 @@ test("mergeUnlinkedFriends rejects an unlinked rewrite above the participant wor
   expect(state.expense?.participant_member_ids).toContain("local_alias");
 });
 
-test("friend merge honors canonical owner precedence before repairing stale tuples", async () => {
+test("friend merge rejects conflicting strong owner identifiers without rewriting stale tuples", async () => {
   const { t, ownerCtx } = await createEligibilityScenario();
   const now = Date.now();
 
@@ -1845,6 +1928,46 @@ test("mergeMemberIds rewrites a proven linked target from live account identity"
   });
   expect(target?.local_alias_member_ids).toEqual(
     expect.arrayContaining(["legacy_target_member", "local_alias"])
+  );
+});
+
+test("mergeMemberIds charges historical provenance rows to the merge byte budget", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario({}, { linked: true, status: "friend" });
+  const now = Date.now();
+  const largeEvidenceName = "e".repeat(550 * 1024);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "target_linked_auth",
+      email: "target-linked@test.com",
+      display_name: "Linked target",
+      created_at: now,
+      member_id: "target_linked_member"
+    });
+    for (let index = 0; index < 16; index += 1) {
+      await ctx.db.insert("invite_tokens", {
+        id: `large_provenance_${index}`,
+        creator_id: "owner_auth",
+        creator_email: "owner@test.com",
+        target_member_id: "canonical_friend",
+        target_member_name: largeEvidenceName,
+        created_at: now,
+        expires_at: now + 60_000,
+        claimed_by: "target_linked_auth",
+        claimed_at: now
+      });
+    }
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      sourceId: "local_alias",
+      targetCanonicalId: "canonical_friend"
+    })
+  ).rejects.toThrow("Friend merge is too large to complete safely");
+
+  const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
+  expect(friends.map((friend) => friend.member_id)).toEqual(
+    expect.arrayContaining(["canonical_friend", "local_alias"])
   );
 });
 

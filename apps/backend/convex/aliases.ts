@@ -6,6 +6,7 @@ import {
   findAccountByMemberId,
   findAliasByAliasMemberId,
   getEquivalentAliasMemberIds,
+  IDENTITY_MATERIALIZATION_KEY,
   normalizeMemberId,
   normalizeMemberIds
 } from "./identity";
@@ -16,7 +17,11 @@ import {
   reconcileUserExpenses,
   resolveActiveExpenseParticipantAccounts
 } from "./helpers";
-import { isGhostFriendIdentity, resolveProvenFriendLink } from "./friendLinkProvenance";
+import {
+  isGhostFriendIdentity,
+  provenFriendLinkQueryWork,
+  resolveProvenFriendLink
+} from "./friendLinkProvenance";
 
 /**
  * Internal helper for transitive alias resolution.
@@ -126,13 +131,14 @@ export async function getAllEquivalentMemberIds(
   return Array.from(allIds);
 }
 
-async function findFriendRecordByMemberId(
+export async function findMergeFriendRecordByMemberId(
   ctx: MutationCtx,
   accountEmail: string,
   memberId: string,
   readBudget: MergeReadBudget
 ) {
   const normalizedMemberId = normalizeMemberId(memberId);
+  accountMergeQueriesForLimit(readBudget, 1);
   let record = await ctx.db
     .query("account_friends")
     .withIndex("by_account_email_and_member_id", (q) =>
@@ -144,6 +150,7 @@ async function findFriendRecordByMemberId(
   if (record) return record;
 
   if (memberId !== normalizedMemberId) {
+    accountMergeQueriesForLimit(readBudget, 1);
     record = await ctx.db
       .query("account_friends")
       .withIndex("by_account_email_and_member_id", (q) =>
@@ -162,7 +169,8 @@ async function findFriendRecordByMemberId(
         .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
         .order("asc")
         .paginate({ cursor, numItems: limit }),
-    () => {}
+    () => accountMergeQueriesForLimit(readBudget, 1),
+    mergeCanonicalizationLimits.friendRecords + 1
   );
 
   if (allFriends.length > mergeCanonicalizationLimits.friendRecords) {
@@ -172,19 +180,86 @@ async function findFriendRecordByMemberId(
   return allFriends.find((friend) => normalizeMemberId(friend.member_id) === normalizedMemberId);
 }
 
-async function findCanonicalAccountByMemberId(ctx: MutationCtx, memberId: string) {
+export async function findMergeMaterializedAliasByMemberId(
+  ctx: MutationCtx,
+  memberId: string,
+  readBudget: MergeReadBudget
+) {
   const normalizedMemberId = normalizeMemberId(memberId);
-  const normalizedAccount = await ctx.db
-    .query("accounts")
-    .withIndex("by_member_id", (q) => q.eq("member_id", normalizedMemberId))
+  accountMergeQueriesForLimit(readBudget, 1);
+  const alias = await ctx.db
+    .query("member_aliases")
+    .withIndex("by_alias_member_id_and_source", (q) =>
+      q.eq("alias_member_id", normalizedMemberId).eq("materialization_source", "account_alias")
+    )
     .first();
-  if (normalizedAccount || normalizedMemberId === memberId) {
-    return normalizedAccount;
+  accountMergeRowsForLimit(readBudget, alias ? [alias] : []);
+  return alias;
+}
+
+export async function resolveMergeAccountByMemberId(
+  ctx: MutationCtx,
+  memberId: string,
+  readBudget: MergeReadBudget
+) {
+  let currentMemberId = normalizeMemberId(memberId);
+  const visited = new Set<string>();
+  let hasMaterializedAlias = false;
+
+  for (let depth = 0; depth < 20; depth += 1) {
+    if (!currentMemberId || visited.has(currentMemberId)) {
+      return { account: null, canonicalMemberId: currentMemberId, hasMaterializedAlias };
+    }
+    visited.add(currentMemberId);
+
+    accountMergeQueriesForLimit(readBudget, 1);
+    const account = await ctx.db
+      .query("accounts")
+      .withIndex("by_member_id", (q) => q.eq("member_id", currentMemberId))
+      .first();
+    accountMergeRowsForLimit(readBudget, account ? [account] : []);
+    if (account) {
+      return {
+        account,
+        canonicalMemberId: account.member_id
+          ? normalizeMemberId(account.member_id)
+          : currentMemberId,
+        hasMaterializedAlias
+      };
+    }
+
+    const alias = await findMergeMaterializedAliasByMemberId(ctx, currentMemberId, readBudget);
+    if (!alias) {
+      return { account: null, canonicalMemberId: currentMemberId, hasMaterializedAlias };
+    }
+    hasMaterializedAlias = true;
+    currentMemberId = normalizeMemberId(alias.canonical_member_id);
   }
-  return await ctx.db
+
+  return { account: null, canonicalMemberId: currentMemberId, hasMaterializedAlias };
+}
+
+export async function findMergeAccountByAuthIdOrDocId(
+  ctx: MutationCtx,
+  accountId: string,
+  readBudget: MergeReadBudget
+) {
+  const trimmedAccountId = accountId.trim();
+  if (!trimmedAccountId) return null;
+  accountMergeQueriesForLimit(readBudget, 1);
+  const account = await ctx.db
     .query("accounts")
-    .withIndex("by_member_id", (q) => q.eq("member_id", memberId))
-    .first();
+    .withIndex("by_auth_id", (q) => q.eq("id", trimmedAccountId))
+    .unique();
+  accountMergeRowsForLimit(readBudget, account ? [account] : []);
+  if (account) return account;
+
+  const documentId = ctx.db.normalizeId("accounts", trimmedAccountId);
+  if (!documentId) return null;
+  accountMergeQueriesForLimit(readBudget, 1);
+  const legacyAccount = await ctx.db.get(documentId);
+  accountMergeRowsForLimit(readBudget, legacyAccount ? [legacyAccount] : []);
+  return legacyAccount;
 }
 
 function mergeSplitsByMember(
@@ -251,10 +326,10 @@ const mergeCanonicalizationLimits = {
   expenses: 64,
   participantRows: 256,
   identityLookups: 1024,
+  queries: 4096,
   directScannedRows: 4096,
   worstCaseScannedRows: 16000,
   estimatedReadBytes: 8 * 1024 * 1024,
-  estimatedIndexedDocumentBytes: 8 * 1024,
   visibilityRows: 512
 } as const;
 
@@ -266,16 +341,48 @@ const mergeReadSafetyLimits = {
   maximumPageRows: 5
 } as const;
 
-type MergeReadBudget = {
+export type MergeReadBudget = {
   scannedRows: number;
   estimatedReadBytes: number;
+  lookupWork?: number;
+  queryWork?: number;
+  reservedReadRows?: number;
+  reservedReadBytes?: number;
 };
+
+export function createMergeReadBudget(): MergeReadBudget {
+  return {
+    scannedRows: 0,
+    estimatedReadBytes: 0,
+    lookupWork: 0,
+    queryWork: 0,
+    reservedReadRows: 0,
+    reservedReadBytes: 0
+  };
+}
+
+export async function assertMergeIdentityMaterializationReady(
+  ctx: MutationCtx,
+  readBudget: MergeReadBudget
+) {
+  accountMergeQueriesForLimit(readBudget, 1);
+  const state = await ctx.db
+    .query("identity_materialization_state")
+    .withIndex("by_key", (q) => q.eq("key", IDENTITY_MATERIALIZATION_KEY))
+    .unique();
+  accountMergeRowsForLimit(readBudget, state ? [state] : []);
+  if (state?.status !== "ready") {
+    throw new Error(
+      "Identity maintenance required: indexed identity migration is not complete; try again later"
+    );
+  }
+}
 
 function mergeWorkLimitError() {
   return new Error("Friend merge is too large to complete safely");
 }
 
-function accountMergeRowsForLimit(budget: MergeReadBudget, rows: readonly unknown[]) {
+export function accountMergeRowsForLimit(budget: MergeReadBudget, rows: readonly unknown[]) {
   budget.scannedRows += rows.length;
   budget.estimatedReadBytes += rows.reduce<number>(
     (total, row) => total + new TextEncoder().encode(JSON.stringify(row) ?? "").length,
@@ -289,13 +396,48 @@ function accountMergeRowsForLimit(budget: MergeReadBudget, rows: readonly unknow
   }
 }
 
+export function accountMergeQueriesForLimit(budget: MergeReadBudget, count: number) {
+  budget.queryWork = (budget.queryWork ?? 0) + count;
+  if (budget.queryWork > mergeCanonicalizationLimits.queries) {
+    throw mergeWorkLimitError();
+  }
+}
+
+function accountMergeLookupWorkForLimit(budget: MergeReadBudget, count: number) {
+  budget.lookupWork = (budget.lookupWork ?? 0) + count;
+  accountMergeQueriesForLimit(budget, count);
+  if (budget.lookupWork > mergeCanonicalizationLimits.identityLookups) {
+    throw mergeWorkLimitError();
+  }
+}
+
+function accountMergeIdentityWorkForLimit(budget: MergeReadBudget, count: number) {
+  budget.lookupWork = (budget.lookupWork ?? 0) + count;
+  if (budget.lookupWork > mergeCanonicalizationLimits.identityLookups) {
+    throw mergeWorkLimitError();
+  }
+}
+
+export function assertMergeWorstCaseReadWithinLimit(budget: MergeReadBudget) {
+  const lookupWork = budget.lookupWork ?? 0;
+  if (
+    budget.scannedRows + (budget.reservedReadRows ?? 0) + lookupWork * 2 >
+      mergeCanonicalizationLimits.worstCaseScannedRows ||
+    budget.estimatedReadBytes + (budget.reservedReadBytes ?? 0) >
+      mergeCanonicalizationLimits.estimatedReadBytes
+  ) {
+    throw mergeWorkLimitError();
+  }
+}
+
 export async function collectSequentialMergeIndexRows<T>(
   budget: MergeReadBudget,
   readPage: (
     cursor: string | null,
     limit: number
   ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>,
-  reserveLookup: () => void
+  reserveLookup: () => void,
+  stopAfterRows?: number
 ): Promise<T[]> {
   const rows: T[] = [];
   let cursor: string | null = null;
@@ -319,6 +461,9 @@ export async function collectSequentialMergeIndexRows<T>(
     const result = await readPage(cursor, pageSize);
     accountMergeRowsForLimit(budget, result.page);
     rows.push(...result.page);
+    if (stopAfterRows !== undefined && rows.length >= stopAfterRows) {
+      return rows.slice(0, stopAfterRows);
+    }
     if (result.isDone) return rows;
     if (result.continueCursor === cursor) {
       throw mergeWorkLimitError();
@@ -338,25 +483,27 @@ function localFriendIdentityClosure(friend: Doc<"account_friends">, primaryMembe
 function isGroupOwnedByAccount(group: Doc<"groups">, account: Doc<"accounts">) {
   const hasOwnerAccountId = Boolean(group.owner_account_id?.trim());
   const hasOwnerDocumentId = Boolean(group.owner_id);
-  if (hasOwnerAccountId || hasOwnerDocumentId) {
-    return (
-      (!hasOwnerAccountId || group.owner_account_id === account.id) &&
-      (!hasOwnerDocumentId || group.owner_id === account._id)
-    );
-  }
-  return group.owner_email?.trim().toLowerCase() === account.email.trim().toLowerCase();
+  const ownerEmail = group.owner_email?.trim().toLowerCase();
+  const hasOwnerEmail = Boolean(ownerEmail);
+  return (
+    (!hasOwnerAccountId || group.owner_account_id === account.id) &&
+    (!hasOwnerDocumentId || group.owner_id === account._id) &&
+    (!hasOwnerEmail || ownerEmail === account.email.trim().toLowerCase()) &&
+    (hasOwnerAccountId || hasOwnerDocumentId || hasOwnerEmail)
+  );
 }
 
 function isExpenseOwnedByAccount(expense: Doc<"expenses">, account: Doc<"accounts">) {
   const hasOwnerAccountId = Boolean(expense.owner_account_id?.trim());
   const hasOwnerDocumentId = Boolean(expense.owner_id);
-  if (hasOwnerAccountId || hasOwnerDocumentId) {
-    return (
-      (!hasOwnerAccountId || expense.owner_account_id === account.id) &&
-      (!hasOwnerDocumentId || expense.owner_id === account._id)
-    );
-  }
-  return expense.owner_email?.trim().toLowerCase() === account.email.trim().toLowerCase();
+  const ownerEmail = expense.owner_email?.trim().toLowerCase();
+  const hasOwnerEmail = Boolean(ownerEmail);
+  return (
+    (!hasOwnerAccountId || expense.owner_account_id === account.id) &&
+    (!hasOwnerDocumentId || expense.owner_id === account._id) &&
+    (!hasOwnerEmail || ownerEmail === account.email.trim().toLowerCase()) &&
+    (hasOwnerAccountId || hasOwnerDocumentId || hasOwnerEmail)
+  );
 }
 
 function assertNoConflictingOwnerIdentity(
@@ -385,20 +532,15 @@ async function prepareCanonicalReferenceRewrite(
   targetName: string,
   targetLinkedAccountId?: string,
   targetLinkedAccountEmail?: string,
-  readBudget: MergeReadBudget = { scannedRows: 0, estimatedReadBytes: 0 }
+  readBudget: MergeReadBudget = createMergeReadBudget()
 ) {
   const normalizedTarget = normalizeMemberId(targetMemberId);
   const normalizedTargetEmail = targetLinkedAccountEmail?.toLowerCase().trim();
-  let lookupWork = 0;
-
   const accountForLimit = (rows: readonly unknown[]) => {
     accountMergeRowsForLimit(readBudget, rows);
   };
   const lookupForLimit = (count: number) => {
-    lookupWork += count;
-    if (lookupWork > mergeCanonicalizationLimits.identityLookups) {
-      throw mergeWorkLimitError();
-    }
+    accountMergeLookupWorkForLimit(readBudget, count);
   };
 
   const ownedGroupRows = [
@@ -633,11 +775,16 @@ async function prepareCanonicalReferenceRewrite(
         groupAlreadyContainsTarget;
       if (!canRewriteWithGroup) continue;
     }
+    const inactiveMemberIds = new Set(
+      (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
+    );
+    if (inactiveMemberIds.has(normalizedTarget)) {
+      throw new Error("Cannot merge into inactive participant history");
+    }
     plannedExpenses.push(expense);
   }
 
   let visibilityRows = 0;
-  let visibilityBytes = 0;
   const pricedMemberIds = new Set<string>();
   const pricedLinkedAccountIds = new Set<string>();
   const pricedEmails = new Set<string>();
@@ -645,16 +792,24 @@ async function prepareCanonicalReferenceRewrite(
     if (expense.participants.length > mergeCanonicalizationLimits.participantRows) {
       throw mergeWorkLimitError();
     }
-    const visibility = await ctx.db
-      .query("user_expenses")
-      .withIndex("by_expense_id", (q) => q.eq("expense_id", expense.id))
-      .take(mergeCanonicalizationLimits.visibilityRows + 1);
-    // One indexed visibility read now, and one during reconciliation.
-    lookupForLimit(2);
-    visibilityRows += visibility.length;
     const currentReadBytes = readBudget.estimatedReadBytes;
-    accountForLimit(visibility);
-    visibilityBytes += readBudget.estimatedReadBytes - currentReadBytes;
+    const visibility = await collectSequentialMergeIndexRows(
+      readBudget,
+      async (cursor, limit) =>
+        await ctx.db
+          .query("user_expenses")
+          .withIndex("by_expense_id", (q) => q.eq("expense_id", expense.id))
+          .order("asc")
+          .paginate({ cursor, numItems: limit }),
+      () => lookupForLimit(1),
+      mergeCanonicalizationLimits.visibilityRows + 1
+    );
+    // Reserve the second indexed visibility read performed during reconciliation.
+    lookupForLimit(1);
+    visibilityRows += visibility.length;
+    const currentVisibilityBytes = readBudget.estimatedReadBytes - currentReadBytes;
+    readBudget.reservedReadRows = (readBudget.reservedReadRows ?? 0) + visibility.length;
+    readBudget.reservedReadBytes = (readBudget.reservedReadBytes ?? 0) + currentVisibilityBytes;
     if (visibilityRows > mergeCanonicalizationLimits.visibilityRows) {
       throw mergeWorkLimitError();
     }
@@ -667,6 +822,7 @@ async function prepareCanonicalReferenceRewrite(
     const memberIds = new Set([
       expense.paid_by_member_id,
       ...expense.participant_member_ids,
+      ...(expense.inactive_participant_member_ids ?? []),
       ...expense.involved_member_ids,
       ...expense.splits.map((split) => split.member_id)
     ]);
@@ -694,29 +850,135 @@ async function prepareCanonicalReferenceRewrite(
     if (normalizedTargetEmail) pricedEmails.add(normalizedTargetEmail);
   }
 
-  // findAccountByMemberId can traverse twenty materialized alias hops. Each hop performs
-  // an indexed account read, two readiness/evidence reads, and an alias read. The apply
-  // phase shares this cache across both participant passes and every planned expense.
-  lookupForLimit(pricedMemberIds.size * 80 + pricedLinkedAccountIds.size * 2 + pricedEmails.size);
+  const identityResolutionCache = createExpenseIdentityResolutionCache();
+  // Member resolution can follow up to twenty materialized-alias hops. Preserve the bounded
+  // identity-cardinality guard independently of the exact rows and bytes charged below.
+  accountMergeIdentityWorkForLimit(
+    readBudget,
+    pricedMemberIds.size * 80 + pricedLinkedAccountIds.size * 2 + pricedEmails.size
+  );
+  for (const memberId of pricedMemberIds) {
+    const resolution = await resolveMergeAccountByMemberId(ctx, memberId, readBudget);
+    identityResolutionCache.memberAccounts.set(memberId, Promise.resolve(resolution.account));
+  }
+  for (const linkedAccountId of pricedLinkedAccountIds) {
+    const linkedAccount = await findMergeAccountByAuthIdOrDocId(ctx, linkedAccountId, readBudget);
+    identityResolutionCache.linkedIdAccounts.set(linkedAccountId, Promise.resolve(linkedAccount));
+  }
+  for (const email of pricedEmails) {
+    accountMergeQueriesForLimit(readBudget, 1);
+    const emailAccount = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", email))
+      .unique();
+    accountMergeRowsForLimit(readBudget, emailAccount ? [emailAccount] : []);
+    identityResolutionCache.emailAccounts.set(email, Promise.resolve(emailAccount));
+  }
+  // resolveAuthoritativeExpenseOwnerAccount reads owner_id directly even when the indexed owner
+  // cache is warm. Charge that exact account document once per planned expense up front.
+  accountForLimit(plannedExpenses.map(() => account));
 
-  if (plannedExpenses.length > 0) {
-    // Visibility reconciliation resolves only identities referenced by planned expenses.
-    // Price those bounded index lookups conservatively without reading unrelated accounts.
-    const worstCaseScannedRows = readBudget.scannedRows + visibilityRows + lookupWork * 2;
-    const worstCaseReadBytes =
-      readBudget.estimatedReadBytes +
-      visibilityBytes +
-      mergeCanonicalizationLimits.estimatedIndexedDocumentBytes * lookupWork;
-    if (
-      worstCaseScannedRows > mergeCanonicalizationLimits.worstCaseScannedRows ||
-      worstCaseReadBytes > mergeCanonicalizationLimits.estimatedReadBytes
-    ) {
-      throw mergeWorkLimitError();
+  const plannedExpenseUpdates: Array<{
+    expense: Doc<"expenses">;
+    patch: Partial<Doc<"expenses">>;
+    participantAccountIds: string[];
+  }> = [];
+  for (const expense of plannedExpenses) {
+    const rewritableSourceMemberIds = rewritableSourceMemberIdsForExpense(expense, sourceMemberIds);
+    const canonicalize = (memberId: string) => {
+      const normalized = normalizeMemberId(memberId);
+      return rewritableSourceMemberIds.has(normalized) ? normalizedTarget : normalized;
+    };
+    const paidByMemberId = canonicalize(expense.paid_by_member_id);
+    const involvedMemberIds = normalizeMemberIds(expense.involved_member_ids.map(canonicalize));
+    const participantMemberIds = normalizeMemberIds(
+      expense.participant_member_ids.map(canonicalize)
+    );
+    const splits = mergeSplitsByMember(expense.splits, rewritableSourceMemberIds, normalizedTarget);
+    const participantsByMember = new Map<string, Doc<"expenses">["participants"][number]>();
+    for (const participant of expense.participants) {
+      const canonicalParticipantId = canonicalize(participant.member_id);
+      const nextParticipant = {
+        ...participant,
+        member_id: canonicalParticipantId,
+        name: canonicalParticipantId === normalizedTarget ? targetName : participant.name,
+        linked_account_id:
+          canonicalParticipantId === normalizedTarget
+            ? targetLinkedAccountId
+            : participant.linked_account_id,
+        linked_account_email:
+          canonicalParticipantId === normalizedTarget
+            ? normalizedTargetEmail
+            : participant.linked_account_email
+      };
+      const existing = participantsByMember.get(canonicalParticipantId);
+
+      if (!existing) {
+        participantsByMember.set(canonicalParticipantId, nextParticipant);
+        continue;
+      }
+
+      participantsByMember.set(canonicalParticipantId, {
+        ...existing,
+        name: nextParticipant.name || existing.name,
+        linked_account_id: nextParticipant.linked_account_id || existing.linked_account_id,
+        linked_account_email: nextParticipant.linked_account_email || existing.linked_account_email
+      });
     }
+
+    const participants = await canonicalizeExpenseParticipantLinks(
+      ctx,
+      Array.from(participantsByMember.values()),
+      identityResolutionCache
+    );
+    const canonicalIdentityPatch = {
+      paid_by_member_id: paidByMemberId,
+      involved_member_ids: involvedMemberIds,
+      participant_member_ids: participantMemberIds,
+      splits,
+      participants,
+      updated_at: Date.now()
+    };
+    const participantAccounts = await resolveActiveExpenseParticipantAccounts(
+      ctx,
+      {
+        ...expense,
+        ...canonicalIdentityPatch,
+        owner_id: account._id,
+        owner_account_id: account.id,
+        owner_email: account.email,
+        participant_emails: []
+      },
+      new Set(),
+      identityResolutionCache
+    );
+    const participantEmails = Array.from(
+      new Set(
+        participantAccounts.map((participantAccount) =>
+          participantAccount.email.trim().toLowerCase()
+        )
+      )
+    );
+    const expensePatch = {
+      ...canonicalIdentityPatch,
+      owner_id: account._id,
+      owner_account_id: account.id,
+      owner_email: account.email,
+      participant_emails: participantEmails
+    };
+    plannedExpenseUpdates.push({
+      expense,
+      patch: expensePatch,
+      participantAccountIds: participantAccounts.map((participantAccount) => participantAccount.id)
+    });
   }
 
+  // All identity and variable-size friend/account reads are complete before the returned apply
+  // closure can perform its first write. Reconciliation's second visibility read is reserved from
+  // the exact preflight rows above.
+  assertMergeWorstCaseReadWithinLimit(readBudget);
+
   return async () => {
-    const identityResolutionCache = createExpenseIdentityResolutionCache();
     for (const { group, members } of plannedGroupUpdates) {
       await ctx.db.patch(group._id, {
         members,
@@ -727,125 +989,54 @@ async function prepareCanonicalReferenceRewrite(
       });
     }
 
-    for (const expense of plannedExpenses) {
-      const rewritableSourceMemberIds = rewritableSourceMemberIdsForExpense(
-        expense,
-        sourceMemberIds
-      );
-      const canonicalize = (memberId: string) => {
-        const normalized = normalizeMemberId(memberId);
-        return rewritableSourceMemberIds.has(normalized) ? normalizedTarget : normalized;
-      };
-      const paidByMemberId = canonicalize(expense.paid_by_member_id);
-      const involvedMemberIds = normalizeMemberIds(expense.involved_member_ids.map(canonicalize));
-      const participantMemberIds = normalizeMemberIds(
-        expense.participant_member_ids.map(canonicalize)
-      );
-      const splits = mergeSplitsByMember(
-        expense.splits,
-        rewritableSourceMemberIds,
-        normalizedTarget
-      );
-      const participantsByMember = new Map<string, Doc<"expenses">["participants"][number]>();
-      for (const participant of expense.participants) {
-        const canonicalParticipantId = canonicalize(participant.member_id);
-        const nextParticipant = {
-          ...participant,
-          member_id: canonicalParticipantId,
-          name: canonicalParticipantId === normalizedTarget ? targetName : participant.name,
-          linked_account_id:
-            canonicalParticipantId === normalizedTarget
-              ? targetLinkedAccountId
-              : participant.linked_account_id,
-          linked_account_email:
-            canonicalParticipantId === normalizedTarget
-              ? normalizedTargetEmail
-              : participant.linked_account_email
-        };
-        const existing = participantsByMember.get(canonicalParticipantId);
+    for (const update of plannedExpenseUpdates) {
+      await ctx.db.patch(update.expense._id, update.patch);
 
-        if (!existing) {
-          participantsByMember.set(canonicalParticipantId, nextParticipant);
-          continue;
-        }
-
-        participantsByMember.set(canonicalParticipantId, {
-          ...existing,
-          name: nextParticipant.name || existing.name,
-          linked_account_id: nextParticipant.linked_account_id || existing.linked_account_id,
-          linked_account_email:
-            nextParticipant.linked_account_email || existing.linked_account_email
-        });
-      }
-
-      const participants = await canonicalizeExpenseParticipantLinks(
-        ctx,
-        Array.from(participantsByMember.values()),
-        identityResolutionCache
-      );
-      const canonicalIdentityPatch = {
-        paid_by_member_id: paidByMemberId,
-        involved_member_ids: involvedMemberIds,
-        participant_member_ids: participantMemberIds,
-        splits,
-        participants,
-        updated_at: Date.now()
-      };
-      const participantAccounts = await resolveActiveExpenseParticipantAccounts(
-        ctx,
-        {
-          ...expense,
-          ...canonicalIdentityPatch,
-          owner_id: account._id,
-          owner_account_id: account.id,
-          owner_email: account.email,
-          participant_emails: []
-        },
-        new Set(),
-        identityResolutionCache
-      );
-      const participantEmails = Array.from(
-        new Set(
-          participantAccounts.map((participantAccount) =>
-            participantAccount.email.trim().toLowerCase()
-          )
-        )
-      );
-      const expensePatch = {
-        ...canonicalIdentityPatch,
-        owner_id: account._id,
-        owner_account_id: account.id,
-        owner_email: account.email,
-        participant_emails: participantEmails
-      };
-      await ctx.db.patch(expense._id, expensePatch);
-
-      await reconcileUserExpenses(
-        ctx,
-        expense.id,
-        participantAccounts.map((participantAccount) => participantAccount.id)
-      );
+      await reconcileUserExpenses(ctx, update.expense.id, update.participantAccountIds);
     }
   };
+}
+
+export async function prepareClaimedFriendReferenceRewrite(
+  ctx: MutationCtx,
+  creator: Doc<"accounts">,
+  sourceMemberIds: string | readonly string[],
+  claimant: Pick<Doc<"accounts">, "id" | "email" | "display_name" | "member_id">,
+  readBudget: MergeReadBudget = createMergeReadBudget()
+) {
+  if (!claimant.member_id) {
+    throw new Error("Claimant account is missing a canonical member ID");
+  }
+  const normalizedSourceMemberIds = new Set(
+    normalizeMemberIds(
+      typeof sourceMemberIds === "string" ? [sourceMemberIds] : Array.from(sourceMemberIds)
+    )
+  );
+  return await prepareCanonicalReferenceRewrite(
+    ctx,
+    creator,
+    normalizedSourceMemberIds,
+    claimant.member_id,
+    claimant.display_name ?? claimant.email ?? "Unknown",
+    claimant.id,
+    claimant.email,
+    readBudget
+  );
 }
 
 export async function rewriteClaimedFriendReferences(
   ctx: MutationCtx,
   creator: Doc<"accounts">,
-  sourceMemberId: string,
-  claimant: Pick<Doc<"accounts">, "id" | "email" | "display_name" | "member_id">
+  sourceMemberIds: string | readonly string[],
+  claimant: Pick<Doc<"accounts">, "id" | "email" | "display_name" | "member_id">,
+  readBudget: MergeReadBudget = createMergeReadBudget()
 ) {
-  if (!claimant.member_id) {
-    throw new Error("Claimant account is missing a canonical member ID");
-  }
-  const applyCanonicalRewrite = await prepareCanonicalReferenceRewrite(
+  const applyCanonicalRewrite = await prepareClaimedFriendReferenceRewrite(
     ctx,
     creator,
-    new Set([normalizeMemberId(sourceMemberId)]),
-    claimant.member_id,
-    claimant.display_name ?? claimant.email ?? "Unknown",
-    claimant.id,
-    claimant.email
+    sourceMemberIds,
+    claimant,
+    readBudget
   );
   await applyCanonicalRewrite();
 }
@@ -863,6 +1054,7 @@ type MergeAccountFriendIntoCanonicalOptions = {
   targetName?: string;
   targetLinkedAccountId?: string;
   targetLinkedAccountEmail?: string;
+  readBudget?: MergeReadBudget;
 };
 
 const mergeEligibleFriendStatuses = new Set(["friend", "accepted", "manual"]);
@@ -912,20 +1104,22 @@ function assertMergeEligibleFriend(
 async function assertMergeIdentityIsLocal(
   ctx: MutationCtx,
   memberId: string,
-  role: "source" | "target"
+  role: "source" | "target",
+  readBudget: MergeReadBudget
 ) {
-  if (await findCanonicalAccountByMemberId(ctx, memberId)) {
-    throw new Error(
-      role === "source"
-        ? "Cannot merge a friend identity that belongs to a registered account"
-        : "Cannot merge into a friend identity that belongs to a registered account"
-    );
-  }
-  if (await findAliasByAliasMemberId(ctx.db, memberId)) {
+  const resolution = await resolveMergeAccountByMemberId(ctx, memberId, readBudget);
+  if (resolution.hasMaterializedAlias) {
     throw new Error(
       role === "source"
         ? "Cannot merge a friend identity that is already globally linked"
         : "Cannot merge into a friend identity that is already globally linked"
+    );
+  }
+  if (resolution.account) {
+    throw new Error(
+      role === "source"
+        ? "Cannot merge a friend identity that belongs to a registered account"
+        : "Cannot merge into a friend identity that belongs to a registered account"
     );
   }
 }
@@ -949,6 +1143,13 @@ function assertTrustedInviteTarget(
   }
 }
 
+export type PreparedInviteMergeSource = {
+  applyCanonicalRewrite: () => Promise<void>;
+  sourceFriend: Doc<"account_friends">;
+  targetFriend: Doc<"account_friends"> | null;
+  localAliases: string[];
+};
+
 export async function prepareInviteMergeSourceInternal(
   ctx: MutationCtx,
   options: {
@@ -959,13 +1160,14 @@ export async function prepareInviteMergeSourceInternal(
     targetLinkedAccountId: string;
     targetLinkedAccountEmail: string;
     allowMissingSource?: boolean;
+    readBudget?: MergeReadBudget;
   }
 ) {
   const accountEmail = options.accountEmail.trim().toLowerCase();
   const sourceMemberId = normalizeMemberId(options.sourceMemberId);
   const targetMemberId = normalizeMemberId(options.targetMemberId);
-  const readBudget: MergeReadBudget = { scannedRows: 0, estimatedReadBytes: 0 };
-  const sourceFriend = await findFriendRecordByMemberId(
+  const readBudget = options.readBudget ?? createMergeReadBudget();
+  const sourceFriend = await findMergeFriendRecordByMemberId(
     ctx,
     accountEmail,
     sourceMemberId,
@@ -980,20 +1182,73 @@ export async function prepareInviteMergeSourceInternal(
   const sourceMemberIds = localFriendIdentityClosure(sourceFriend, sourceMemberId);
   for (const memberId of sourceMemberIds) {
     if (memberId !== targetMemberId) {
-      await assertMergeIdentityIsLocal(ctx, memberId, "source");
+      await assertMergeIdentityIsLocal(ctx, memberId, "source", readBudget);
     }
   }
 
   if (sourceMemberId === targetMemberId) return undefined;
 
+  const targetFriend =
+    (await findMergeFriendRecordByMemberId(ctx, accountEmail, targetMemberId, readBudget)) ?? null;
+  const targetAliases = new Set(normalizeMemberIds(targetFriend?.local_alias_member_ids));
+  for (const targetAlias of targetAliases) {
+    if (targetAlias === targetMemberId) continue;
+    const resolution = await resolveMergeAccountByMemberId(ctx, targetAlias, readBudget);
+    if (resolution.account && resolution.account.id !== options.targetLinkedAccountId) {
+      throw new Error("Cannot merge because a target alias belongs to another registered account");
+    }
+    if (resolution.hasMaterializedAlias && !resolution.account) {
+      throw new Error("Cannot merge because a target alias has conflicting global materialization");
+    }
+  }
+  if (sourceMemberIds.has(targetMemberId)) {
+    throw new Error("Cannot merge friends because their local aliases form a cycle");
+  }
+  const localAliases = normalizeMemberIds([...targetAliases, ...sourceMemberIds]).filter(
+    (memberId) => memberId !== targetMemberId
+  );
+  if (localAliases.length > mergeCanonicalizationLimits.localAliasMemberIds) {
+    throw mergeWorkLimitError();
+  }
+
+  accountMergeQueriesForLimit(readBudget, 1);
   const account = await ctx.db
     .query("accounts")
     .withIndex("by_email", (q) => q.eq("email", accountEmail))
     .unique();
+  accountMergeRowsForLimit(readBudget, account ? [account] : []);
   if (!account || account.status === "deleted") {
     throw new Error("Account not found");
   }
-  return await prepareCanonicalReferenceRewrite(
+
+  const accountFriends = await collectSequentialMergeIndexRows(
+    readBudget,
+    async (cursor, limit) =>
+      await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
+        .order("asc")
+        .paginate({ cursor, numItems: limit }),
+    () => accountMergeQueriesForLimit(readBudget, 1),
+    mergeCanonicalizationLimits.friendRecords + 1
+  );
+  if (accountFriends.length > mergeCanonicalizationLimits.friendRecords) {
+    throw mergeWorkLimitError();
+  }
+  const targetMemberIds = new Set([targetMemberId, ...targetAliases]);
+  const conflictingFriend = accountFriends.find(
+    (friend) =>
+      friend._id !== sourceFriend._id &&
+      friend._id !== targetFriend?._id &&
+      Array.from(localFriendIdentityClosure(friend, friend.member_id)).some(
+        (memberId) => sourceMemberIds.has(memberId) || targetMemberIds.has(memberId)
+      )
+  );
+  if (conflictingFriend) {
+    throw new Error("Cannot merge because this identity is already attached to another friend");
+  }
+
+  const applyCanonicalRewrite = await prepareCanonicalReferenceRewrite(
     ctx,
     account,
     sourceMemberIds,
@@ -1003,6 +1258,12 @@ export async function prepareInviteMergeSourceInternal(
     options.targetLinkedAccountEmail,
     readBudget
   );
+  return {
+    applyCanonicalRewrite,
+    sourceFriend,
+    targetFriend,
+    localAliases
+  } satisfies PreparedInviteMergeSource;
 }
 
 export async function mergeAccountFriendIntoCanonicalInternal(
@@ -1012,9 +1273,9 @@ export async function mergeAccountFriendIntoCanonicalInternal(
   const accountEmail = options.accountEmail.toLowerCase().trim();
   const sourceMemberId = normalizeMemberId(options.sourceMemberId);
   const targetMemberId = normalizeMemberId(options.targetMemberId);
-  const readBudget: MergeReadBudget = { scannedRows: 0, estimatedReadBytes: 0 };
+  const readBudget = options.readBudget ?? createMergeReadBudget();
 
-  const targetFriend = await findFriendRecordByMemberId(
+  const targetFriend = await findMergeFriendRecordByMemberId(
     ctx,
     accountEmail,
     targetMemberId,
@@ -1039,12 +1300,15 @@ export async function mergeAccountFriendIntoCanonicalInternal(
         Boolean(targetFriend.linked_account_email) ||
         Boolean(targetFriend.linked_member_id);
       if (allowLinkedTarget && targetIsLinked) {
-        provenLinkedTarget = await resolveProvenFriendLink(ctx, targetFriend);
+        accountMergeQueriesForLimit(readBudget, provenFriendLinkQueryWork(targetFriend));
+        provenLinkedTarget = await resolveProvenFriendLink(ctx, targetFriend, (rows) =>
+          accountMergeRowsForLimit(readBudget, rows)
+        );
         if (!provenLinkedTarget) {
           throw new Error("Cannot merge into an unverified linked friend");
         }
       } else {
-        await assertMergeIdentityIsLocal(ctx, targetMemberId, "target");
+        await assertMergeIdentityIsLocal(ctx, targetMemberId, "target", readBudget);
         assertMergeEligibleFriend(targetFriend, "source", false);
       }
     }
@@ -1067,12 +1331,15 @@ export async function mergeAccountFriendIntoCanonicalInternal(
       Boolean(targetFriend.linked_account_email) ||
       Boolean(targetFriend.linked_member_id);
     if (allowLinkedTarget && targetIsLinked) {
-      provenLinkedTarget = await resolveProvenFriendLink(ctx, targetFriend);
+      accountMergeQueriesForLimit(readBudget, provenFriendLinkQueryWork(targetFriend));
+      provenLinkedTarget = await resolveProvenFriendLink(ctx, targetFriend, (rows) =>
+        accountMergeRowsForLimit(readBudget, rows)
+      );
       if (!provenLinkedTarget) {
         throw new Error("Cannot merge into an unverified linked friend");
       }
     } else {
-      await assertMergeIdentityIsLocal(ctx, targetMemberId, "target");
+      await assertMergeIdentityIsLocal(ctx, targetMemberId, "target", readBudget);
     }
   }
 
@@ -1089,14 +1356,14 @@ export async function mergeAccountFriendIntoCanonicalInternal(
   }
   const wasAlreadyMerged = existingTargetAliases.has(sourceMemberId);
 
-  const sourceFriend = await findFriendRecordByMemberId(
+  const sourceFriend = await findMergeFriendRecordByMemberId(
     ctx,
     accountEmail,
     sourceMemberId,
     readBudget
   );
   if (!sourceFriend) {
-    await assertMergeIdentityIsLocal(ctx, sourceMemberId, "source");
+    await assertMergeIdentityIsLocal(ctx, sourceMemberId, "source", readBudget);
     if (wasAlreadyMerged) {
       return {
         success: true,
@@ -1124,13 +1391,15 @@ export async function mergeAccountFriendIntoCanonicalInternal(
   }
 
   for (const sourceId of sourceMemberIds) {
-    await assertMergeIdentityIsLocal(ctx, sourceId, "source");
+    await assertMergeIdentityIsLocal(ctx, sourceId, "source", readBudget);
   }
 
+  accountMergeQueriesForLimit(readBudget, 1);
   const account = await ctx.db
     .query("accounts")
     .withIndex("by_email", (q) => q.eq("email", accountEmail))
     .unique();
+  accountMergeRowsForLimit(readBudget, account ? [account] : []);
   if (!account || account.status === "deleted") {
     throw new Error("Account not found");
   }
@@ -1143,7 +1412,8 @@ export async function mergeAccountFriendIntoCanonicalInternal(
         .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
         .order("asc")
         .paginate({ cursor, numItems: limit }),
-    () => {}
+    () => accountMergeQueriesForLimit(readBudget, 1),
+    mergeCanonicalizationLimits.friendRecords + 1
   );
   if (accountFriends.length > mergeCanonicalizationLimits.friendRecords) {
     throw mergeWorkLimitError();
@@ -1177,6 +1447,7 @@ export async function mergeAccountFriendIntoCanonicalInternal(
         targetFriend.linked_account_email,
       readBudget
     ));
+  assertMergeWorstCaseReadWithinLimit(readBudget);
   await applyCanonicalRewrite();
 
   await ctx.db.patch(targetFriend._id, {

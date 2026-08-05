@@ -3,17 +3,21 @@ import { mutation, query, internalMutation, MutationCtx, QueryCtx } from "./_gen
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import {
-  mergeAccountFriendIntoCanonicalInternal,
+  accountMergeQueriesForLimit,
+  accountMergeRowsForLimit,
+  assertMergeIdentityMaterializationReady,
+  assertMergeWorstCaseReadWithinLimit,
+  collectSequentialMergeIndexRows,
+  createMergeReadBudget,
+  findMergeFriendRecordByMemberId,
+  prepareClaimedFriendReferenceRewrite,
   prepareInviteMergeSourceInternal,
-  resolveCanonicalMemberIdInternal,
-  rewriteClaimedFriendReferences
+  resolveMergeAccountByMemberId,
+  type MergeReadBudget,
+  type PreparedInviteMergeSource
 } from "./aliases";
 import {
-  assertIdentityMaterializationReady,
   deterministicLinkingError,
-  ensureAccountAliasMaterialization,
-  findAccountByMemberId,
-  findAliasByAliasMemberId,
   LINKING_CONTRACT_VERSION,
   LINKING_ERROR_CODES,
   MAX_LIVE_ACCOUNT_ALIASES,
@@ -53,6 +57,85 @@ function normalizeLinkClaimContext(input: LinkClaimContext): LinkClaimContext {
 }
 
 const MAX_INVITE_TARGET_FRIENDS = 256;
+const MAX_CLAIM_ALIAS_ROWS = 8;
+
+async function prepareClaimAliasMaterialization(
+  ctx: MutationCtx,
+  account: Pick<Doc<"accounts">, "id" | "email" | "member_id">,
+  aliasMemberId: string,
+  readBudget: MergeReadBudget,
+  now: number
+) {
+  const canonicalMemberId = account.member_id ? normalizeMemberId(account.member_id) : undefined;
+  const normalizedAlias = normalizeMemberId(aliasMemberId);
+  if (!canonicalMemberId) {
+    throw new Error("Cannot materialize aliases without a canonical member_id");
+  }
+  if (!normalizedAlias || normalizedAlias === canonicalMemberId) return async () => {};
+
+  const aliasResolution = await resolveMergeAccountByMemberId(ctx, normalizedAlias, readBudget);
+  if (aliasResolution.account && aliasResolution.account.id !== account.id) {
+    throw deterministicLinkingError(
+      LINKING_ERROR_CODES.aliasConflict,
+      `alias_member_id=${normalizedAlias},canonical_account_id=${aliasResolution.account.id}`
+    );
+  }
+
+  const aliasRows = await collectSequentialMergeIndexRows(
+    readBudget,
+    async (cursor, limit) =>
+      await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", normalizedAlias))
+        .order("asc")
+        .paginate({ cursor, numItems: limit }),
+    () => accountMergeQueriesForLimit(readBudget, 1),
+    MAX_CLAIM_ALIAS_ROWS + 1
+  );
+  if (aliasRows.length > MAX_CLAIM_ALIAS_ROWS) {
+    throw new Error(`Identity maintenance required: too many mappings for ${normalizedAlias}`);
+  }
+  const conflictingRow = aliasRows.find(
+    (row) => normalizeMemberId(row.canonical_member_id) !== canonicalMemberId
+  );
+  if (conflictingRow) {
+    throw deterministicLinkingError(
+      LINKING_ERROR_CODES.aliasConflict,
+      `alias_member_id=${normalizedAlias},existing_canonical=${conflictingRow.canonical_member_id}`
+    );
+  }
+
+  const sourceRows = await collectSequentialMergeIndexRows(
+    readBudget,
+    async (cursor, limit) =>
+      await ctx.db
+        .query("member_aliases")
+        .withIndex("by_source_account_and_alias", (q) =>
+          q.eq("source_account_id", account.id).eq("alias_member_id", normalizedAlias)
+        )
+        .order("asc")
+        .paginate({ cursor, numItems: limit }),
+    () => accountMergeQueriesForLimit(readBudget, 1),
+    2
+  );
+  if (sourceRows.length > 1) {
+    throw new Error(
+      `Identity maintenance required: duplicate account materializations for ${normalizedAlias}`
+    );
+  }
+  if (sourceRows.length === 1) return async () => {};
+
+  return async () => {
+    await ctx.db.insert("member_aliases", {
+      canonical_member_id: canonicalMemberId,
+      alias_member_id: normalizedAlias,
+      account_email: account.email.toLowerCase().trim(),
+      materialization_source: "account_alias",
+      source_account_id: account.id,
+      created_at: now
+    });
+  };
+}
 
 function isUnlinkedInviteTarget(friend: Doc<"account_friends">): boolean {
   return (
@@ -62,6 +145,19 @@ function isUnlinkedInviteTarget(friend: Doc<"account_friends">): boolean {
     !friend.linked_account_email &&
     !friend.linked_member_id
   );
+}
+
+function missingFriendMetadata(primary: Doc<"account_friends">, fallback: Doc<"account_friends">) {
+  return {
+    nickname: primary.nickname ?? fallback.nickname,
+    original_name: primary.original_name ?? fallback.original_name,
+    original_nickname: primary.original_nickname ?? fallback.original_nickname,
+    prefer_nickname: primary.prefer_nickname ?? fallback.prefer_nickname,
+    first_name: primary.first_name ?? fallback.first_name,
+    last_name: primary.last_name ?? fallback.last_name,
+    display_preference: primary.display_preference ?? fallback.display_preference,
+    profile_image_url: primary.profile_image_url ?? fallback.profile_image_url
+  };
 }
 
 async function findOwnedInviteTarget(
@@ -127,39 +223,6 @@ async function readBoundInviteTarget(
     return null;
   }
   return targetFriend;
-}
-
-async function findFriendRecordByMemberId(ctx: any, accountEmail: string, memberId: string) {
-  const normalizedEmail = accountEmail.trim().toLowerCase();
-  const normalizedMemberId = normalizeMemberId(memberId);
-  for (const candidateId of new Set([normalizedMemberId, memberId.trim()])) {
-    const exact = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email_and_member_id", (q: any) =>
-        q.eq("account_email", normalizedEmail).eq("member_id", candidateId)
-      )
-      .take(2);
-    if (exact.length > 1) {
-      throw new Error("Identity maintenance required: duplicate friend identities");
-    }
-    if (exact[0]) return exact[0];
-  }
-
-  const ownerFriends = await ctx.db
-    .query("account_friends")
-    .withIndex("by_account_email", (q: any) => q.eq("account_email", normalizedEmail))
-    .take(MAX_INVITE_TARGET_FRIENDS + 1);
-  if (ownerFriends.length > MAX_INVITE_TARGET_FRIENDS) {
-    throw new Error("Identity maintenance required: too many friend identities");
-  }
-
-  const normalizedMatches = ownerFriends.filter(
-    (friend: any) => normalizeMemberId(friend.member_id) === normalizedMemberId
-  );
-  if (normalizedMatches.length > 1) {
-    throw new Error("Identity maintenance required: duplicate friend identities");
-  }
-  return normalizedMatches[0] ?? null;
 }
 
 /**
@@ -409,8 +472,18 @@ export const validate = query({
  * Shared logic for claiming a link target for a user.
  * This powers both inviteTokens:claim and linkRequests:accept.
  */
-async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
-  await assertIdentityMaterializationReady(ctx.db);
+async function claimForUser(
+  ctx: any,
+  user: any,
+  input: LinkClaimContext,
+  mergeReadBudget?: MergeReadBudget,
+  preparedSelectedFriendMerge?: PreparedInviteMergeSource,
+  identityMaterializationReady = false
+) {
+  const readBudget = mergeReadBudget ?? createMergeReadBudget();
+  if (!identityMaterializationReady) {
+    await assertMergeIdentityMaterializationReady(ctx, readBudget);
+  }
   const linkContext = normalizeLinkClaimContext(input);
   const now = Date.now();
 
@@ -424,6 +497,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
     );
   }
 
+  accountMergeQueriesForLimit(readBudget, 1);
   const creatorAccount = linkContext.creatorId
     ? await ctx.db
         .query("accounts")
@@ -433,6 +507,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         .query("accounts")
         .withIndex("by_email", (q: any) => q.eq("email", linkContext.creatorEmail))
         .unique();
+  accountMergeRowsForLimit(readBudget, creatorAccount ? [creatorAccount] : []);
   if (
     !creatorAccount ||
     creatorAccount.status === "deleted" ||
@@ -440,14 +515,21 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
   ) {
     throw new Error("Invite creator account is no longer active");
   }
-  await validateBoundInviteTarget(ctx, creatorAccount, linkContext);
+  accountMergeQueriesForLimit(readBudget, 1);
+  const targetFriend = await validateBoundInviteTarget(ctx, creatorAccount, linkContext);
+  accountMergeRowsForLimit(readBudget, [targetFriend]);
 
   const userCanonicalMemberId = user.member_id ? normalizeMemberId(user.member_id) : undefined;
   if (!userCanonicalMemberId) {
     throw new Error("User account does not have a member_id assigned");
   }
 
-  const alreadyLinkedAccount = await findAccountByMemberId(ctx.db, linkContext.targetMemberId);
+  const targetResolution = await resolveMergeAccountByMemberId(
+    ctx,
+    linkContext.targetMemberId,
+    readBudget
+  );
+  const alreadyLinkedAccount = targetResolution.account;
   if (alreadyLinkedAccount && alreadyLinkedAccount._id !== user._id) {
     throw deterministicLinkingError(
       LINKING_ERROR_CODES.aliasConflict,
@@ -455,8 +537,7 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
     );
   }
 
-  const resolvedTarget = await resolveCanonicalMemberIdInternal(ctx.db, linkContext.targetMemberId);
-  const normalizedResolvedTarget = normalizeMemberId(resolvedTarget);
+  const normalizedResolvedTarget = targetResolution.canonicalMemberId;
 
   if (
     normalizedResolvedTarget !== userCanonicalMemberId &&
@@ -466,19 +547,6 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
       LINKING_ERROR_CODES.aliasConflict,
       `target_member_id=${linkContext.targetMemberId},resolved_canonical=${normalizedResolvedTarget},claimer_canonical=${userCanonicalMemberId}`
     );
-  }
-
-  if (linkContext.targetMemberId !== userCanonicalMemberId) {
-    const existingAlias = await findAliasByAliasMemberId(ctx.db, linkContext.targetMemberId);
-    if (
-      existingAlias &&
-      normalizeMemberId(existingAlias.canonical_member_id) !== userCanonicalMemberId
-    ) {
-      throw deterministicLinkingError(
-        LINKING_ERROR_CODES.aliasConflict,
-        `alias_member_id=${linkContext.targetMemberId},existing_canonical=${existingAlias.canonical_member_id},claimer_canonical=${userCanonicalMemberId}`
-      );
-    }
   }
 
   const updatedAliases = normalizeMemberIds([
@@ -491,67 +559,112 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
       `Identity maintenance required: account ${user.id} has too many aliases for a live claim`
     );
   }
-  await rewriteClaimedFriendReferences(ctx, creatorAccount, linkContext.targetMemberId, user);
 
-  await ensureAccountAliasMaterialization(
+  const ownerLocalTargetAliases = normalizeMemberIds(targetFriend.local_alias_member_ids);
+  if (ownerLocalTargetAliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+    throw new Error("Friend merge is too large to complete safely");
+  }
+  for (const localAliasMemberId of ownerLocalTargetAliases) {
+    const localAliasResolution = await resolveMergeAccountByMemberId(
+      ctx,
+      localAliasMemberId,
+      readBudget
+    );
+    const linkedAccount = localAliasResolution.account;
+    if (linkedAccount && linkedAccount.id !== user.id) {
+      throw deterministicLinkingError(
+        LINKING_ERROR_CODES.aliasConflict,
+        `local_alias_member_id=${localAliasMemberId},existing_account_id=${linkedAccount.id},claimer_account_id=${user.id}`
+      );
+    }
+    if (localAliasResolution.hasMaterializedAlias && !linkedAccount) {
+      throw deterministicLinkingError(
+        LINKING_ERROR_CODES.aliasConflict,
+        `local_alias_member_id=${localAliasMemberId},canonical_member_id=${localAliasResolution.canonicalMemberId}`
+      );
+    }
+  }
+  const targetIdentityClosure = normalizeMemberIds([
+    linkContext.targetMemberId,
+    ...ownerLocalTargetAliases
+  ]);
+  const applyClaimedReferenceRewrite = await prepareClaimedFriendReferenceRewrite(
+    ctx,
+    creatorAccount,
+    targetIdentityClosure,
+    user,
+    readBudget
+  );
+
+  const canonicalRow = await findMergeFriendRecordByMemberId(
+    ctx,
+    linkContext.creatorEmail,
+    userCanonicalMemberId,
+    readBudget
+  );
+  const retainedLocalAliases = normalizeMemberIds([
+    ...(canonicalRow?.local_alias_member_ids ?? []),
+    ...ownerLocalTargetAliases
+  ]).filter((memberId) => memberId !== userCanonicalMemberId);
+  if (retainedLocalAliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+    throw new Error("Friend merge is too large to complete safely");
+  }
+
+  const creatorMemberId = creatorAccount.member_id
+    ? normalizeMemberId(creatorAccount.member_id)
+    : undefined;
+  const claimantFriendRecord = preparedSelectedFriendMerge
+    ? preparedSelectedFriendMerge.targetFriend
+    : creatorMemberId
+      ? await findMergeFriendRecordByMemberId(ctx, user.email, creatorMemberId, readBudget)
+      : null;
+  const applyAccountAliasMaterialization = await prepareClaimAliasMaterialization(
     ctx,
     { id: user.id, email: user.email, member_id: userCanonicalMemberId },
     linkContext.targetMemberId,
+    readBudget,
     now
   );
+
+  assertMergeWorstCaseReadWithinLimit(readBudget);
+  await preparedSelectedFriendMerge?.applyCanonicalRewrite();
+  await applyClaimedReferenceRewrite();
+  await applyAccountAliasMaterialization();
   await ctx.db.patch(user._id, {
     alias_member_ids: updatedAliases,
     updated_at: now
   });
 
-  // Update a friend row in an owner's account_friends table.
-  const updateFriendRecord = async (accountEmail: string) => {
-    const normalizedEmail = accountEmail.toLowerCase().trim();
-    const friendRecord = await findFriendRecordByMemberId(
-      ctx,
-      normalizedEmail,
-      linkContext.targetMemberId
-    );
+  const shouldStoreOriginalName = targetFriend.name !== user.display_name;
 
-    if (!friendRecord) {
-      return;
-    }
-
-    const shouldStoreOriginalName = friendRecord.name !== user.display_name;
-    const nicknameMatches =
-      friendRecord.nickname &&
-      friendRecord.nickname.trim().toLowerCase() === user.display_name.trim().toLowerCase();
-
-    // If both canonical and target rows exist, keep canonical and delete target duplicate.
-    const canonicalRow = await findFriendRecordByMemberId(
-      ctx,
-      normalizedEmail,
-      userCanonicalMemberId
-    );
-    if (canonicalRow && canonicalRow._id !== friendRecord._id) {
-      await ctx.db.patch(canonicalRow._id, {
-        has_linked_account: true,
-        link_state: "linked",
-        status: "friend",
-        linked_account_id: user.id,
-        linked_account_email: user.email,
-        linked_member_id: userCanonicalMemberId,
-        name: user.display_name ?? user.email ?? "Unknown",
-        updated_at: now
-      });
-      await ctx.db.delete(friendRecord._id);
-      return;
-    }
-
-    // Use the linked user's first/last name directly from their account
+  // If both canonical and target rows exist, keep canonical and preserve the target's owner-local
+  // aliases. These aliases stay scoped to the creator and are never materialized globally.
+  if (canonicalRow && canonicalRow._id !== targetFriend._id) {
+    await ctx.db.patch(canonicalRow._id, {
+      has_linked_account: true,
+      link_state: "linked",
+      status: "friend",
+      linked_account_id: user.id,
+      linked_account_email: user.email,
+      linked_member_id: userCanonicalMemberId,
+      local_alias_member_ids: retainedLocalAliases,
+      name: user.display_name ?? user.email ?? "Unknown",
+      ...missingFriendMetadata(canonicalRow, targetFriend),
+      updated_at: now
+    });
+    await ctx.db.delete(targetFriend._id);
+  } else {
     const userFirstName = user.first_name;
     const userLastName = user.last_name;
 
+    const nicknameMatches =
+      targetFriend.nickname &&
+      targetFriend.nickname.trim().toLowerCase() === user.display_name.trim().toLowerCase();
     if (nicknameMatches) {
-      const { nickname, ...rest } = friendRecord;
-      await ctx.db.replace(friendRecord._id, {
+      const { nickname, ...rest } = targetFriend;
+      await ctx.db.replace(targetFriend._id, {
         ...rest,
-        member_id: normalizeMemberId(friendRecord.member_id),
+        member_id: normalizeMemberId(targetFriend.member_id),
         has_linked_account: true,
         link_state: "linked",
         status: "friend",
@@ -561,12 +674,12 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         name: user.display_name ?? user.email ?? "Unknown",
         first_name: userFirstName,
         last_name: userLastName,
-        original_name: shouldStoreOriginalName ? friendRecord.name : undefined,
+        original_name: shouldStoreOriginalName ? targetFriend.name : undefined,
         updated_at: now
       });
     } else {
-      await ctx.db.patch(friendRecord._id, {
-        member_id: normalizeMemberId(friendRecord.member_id),
+      await ctx.db.patch(targetFriend._id, {
+        member_id: normalizeMemberId(targetFriend.member_id),
         has_linked_account: true,
         link_state: "linked",
         status: "friend",
@@ -576,62 +689,71 @@ async function claimForUser(ctx: any, user: any, input: LinkClaimContext) {
         name: user.display_name ?? user.email ?? "Unknown",
         first_name: userFirstName,
         last_name: userLastName,
-        nickname: friendRecord.nickname,
-        original_name: shouldStoreOriginalName ? friendRecord.name : undefined,
+        nickname: targetFriend.nickname,
+        original_name: shouldStoreOriginalName ? targetFriend.name : undefined,
         updated_at: now
       });
     }
-  };
-
-  // 1. Update the creator's friend record
-  await updateFriendRecord(linkContext.creatorEmail);
+  }
 
   // 2. Create/update friend record for the claimant to see the creator
-  if (creatorAccount?.member_id) {
-    const creatorMemberId = normalizeMemberId(creatorAccount.member_id);
-    const claimantFriendRecord = await findFriendRecordByMemberId(ctx, user.email, creatorMemberId);
-
+  if (creatorMemberId) {
     // Use the creator's first/last name directly from their account
     const creatorFirstName = creatorAccount.first_name;
     const creatorLastName = creatorAccount.last_name;
 
-    if (claimantFriendRecord) {
+    const selectedSourceFriend = preparedSelectedFriendMerge?.sourceFriend;
+    const reciprocalFriend = claimantFriendRecord ?? selectedSourceFriend ?? null;
+
+    if (reciprocalFriend) {
+      const reciprocalMetadata = selectedSourceFriend
+        ? missingFriendMetadata(reciprocalFriend, selectedSourceFriend)
+        : missingFriendMetadata(reciprocalFriend, reciprocalFriend);
       const nicknameMatches =
-        claimantFriendRecord.nickname &&
-        claimantFriendRecord.nickname.trim().toLowerCase() ===
+        reciprocalMetadata.nickname &&
+        reciprocalMetadata.nickname.trim().toLowerCase() ===
           creatorAccount.display_name.trim().toLowerCase();
 
       if (nicknameMatches) {
-        const { nickname, ...rest } = claimantFriendRecord;
-        await ctx.db.replace(claimantFriendRecord._id, {
+        const { nickname: _nickname, ...rest } = reciprocalFriend;
+        const { nickname: _mergedNickname, ...metadataWithoutNickname } = reciprocalMetadata;
+        await ctx.db.replace(reciprocalFriend._id, {
           ...rest,
-          member_id: normalizeMemberId(claimantFriendRecord.member_id),
+          ...metadataWithoutNickname,
+          member_id: creatorMemberId,
           has_linked_account: true,
           link_state: "linked",
           status: "friend",
           linked_account_id: creatorAccount.id,
           linked_account_email: creatorAccount.email,
           linked_member_id: creatorMemberId,
+          local_alias_member_ids:
+            preparedSelectedFriendMerge?.localAliases ?? reciprocalFriend.local_alias_member_ids,
           name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
           first_name: creatorFirstName,
           last_name: creatorLastName,
           updated_at: now
         });
       } else {
-        await ctx.db.patch(claimantFriendRecord._id, {
-          member_id: normalizeMemberId(claimantFriendRecord.member_id),
+        await ctx.db.patch(reciprocalFriend._id, {
+          ...reciprocalMetadata,
+          member_id: creatorMemberId,
           has_linked_account: true,
           link_state: "linked",
           status: "friend",
           linked_account_id: creatorAccount.id,
           linked_account_email: creatorAccount.email,
           linked_member_id: creatorMemberId,
+          local_alias_member_ids:
+            preparedSelectedFriendMerge?.localAliases ?? reciprocalFriend.local_alias_member_ids,
           name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
           first_name: creatorFirstName,
           last_name: creatorLastName,
-          nickname: claimantFriendRecord.nickname,
           updated_at: now
         });
+      }
+      if (selectedSourceFriend && selectedSourceFriend._id !== reciprocalFriend._id) {
+        await ctx.db.delete(selectedSourceFriend._id);
       }
     } else {
       await ctx.db.insert("account_friends", {
@@ -676,9 +798,13 @@ export const claim = mutation({
     mergeLocalFriendMemberId: v.optional(v.string())
   },
   handler: async (ctx, args) => {
+    const mergeReadBudget = createMergeReadBudget();
+    accountMergeQueriesForLimit(mergeReadBudget, 1);
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    accountMergeRowsForLimit(mergeReadBudget, [user]);
 
+    accountMergeQueriesForLimit(mergeReadBudget, 1);
     const token = await ctx.db
       .query("invite_tokens")
       .withIndex("by_client_id", (q) => q.eq("id", args.id))
@@ -687,12 +813,23 @@ export const claim = mutation({
     if (!token) {
       throw new Error("Token not found");
     }
+    accountMergeRowsForLimit(mergeReadBudget, [token]);
 
     const now = Date.now();
     const requestedMergeMemberId = args.mergeLocalFriendMemberId
       ? normalizeMemberId(args.mergeLocalFriendMemberId)
       : undefined;
-    await assertIdentityMaterializationReady(ctx.db);
+    const claimantIdentityClosure = new Set(
+      normalizeMemberIds([
+        token.target_member_id,
+        ...(user.member_id ? [user.member_id] : []),
+        ...(user.alias_member_ids ?? [])
+      ])
+    );
+    if (requestedMergeMemberId && claimantIdentityClosure.has(requestedMergeMemberId)) {
+      throw new Error("Cannot merge the claimant identity into the inviter");
+    }
+    await assertMergeIdentityMaterializationReady(ctx, mergeReadBudget);
     if (token.claimed_by) {
       if (token.claimed_by !== user.id) {
         throw new Error("Token has already been claimed");
@@ -725,10 +862,12 @@ export const claim = mutation({
       throw new Error("Invite must be recreated before it can be claimed");
     }
 
+    accountMergeQueriesForLimit(mergeReadBudget, 1);
     const creatorAccount = await ctx.db
       .query("accounts")
       .withIndex("by_auth_id", (q) => q.eq("id", token.creator_id))
       .unique();
+    accountMergeRowsForLimit(mergeReadBudget, creatorAccount ? [creatorAccount] : []);
     if (
       !creatorAccount ||
       creatorAccount.status === "deleted" ||
@@ -743,7 +882,9 @@ export const claim = mutation({
       creatorEmail: token.creator_email,
       creatorId: token.creator_id
     });
-    await validateBoundInviteTarget(ctx, creatorAccount, linkContext);
+    accountMergeQueriesForLimit(mergeReadBudget, 1);
+    const boundTargetFriend = await validateBoundInviteTarget(ctx, creatorAccount, linkContext);
+    accountMergeRowsForLimit(mergeReadBudget, [boundTargetFriend]);
 
     const creatorMemberId = creatorAccount.member_id
       ? normalizeMemberId(creatorAccount.member_id)
@@ -752,7 +893,7 @@ export const claim = mutation({
       throw new Error("Creator account is missing a canonical member_id");
     }
 
-    const preparedCanonicalRewrite =
+    const preparedSelectedFriendMerge =
       requestedMergeMemberId &&
       creatorMemberId &&
       (!token.claimed_by || requestedMergeMemberId !== creatorMemberId)
@@ -763,41 +904,36 @@ export const claim = mutation({
             targetName: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
             targetLinkedAccountId: creatorAccount.id,
             targetLinkedAccountEmail: creatorAccount.email,
-            allowMissingSource: Boolean(token.claimed_by)
+            allowMissingSource: Boolean(token.claimed_by),
+            readBudget: mergeReadBudget
           })
         : undefined;
-    if (preparedCanonicalRewrite) {
-      await preparedCanonicalRewrite();
+    if (
+      preparedSelectedFriendMerge?.localAliases.some((memberId) =>
+        claimantIdentityClosure.has(memberId)
+      )
+    ) {
+      throw new Error("Cannot merge the claimant identity into the inviter");
     }
+    const claimResult = await claimForUser(
+      ctx,
+      user,
+      {
+        targetMemberId: token.target_member_id,
+        targetFriendId: token.target_friend_id,
+        creatorEmail: token.creator_email,
+        creatorId: token.creator_id
+      },
+      mergeReadBudget,
+      preparedSelectedFriendMerge,
+      true
+    );
 
     await ctx.db.patch(token._id, {
       claimed_by: user.id,
       claimed_at: now,
       claim_merge_local_friend_member_id: requestedMergeMemberId
     });
-
-    const claimResult = await claimForUser(ctx, user, {
-      targetMemberId: token.target_member_id,
-      targetFriendId: token.target_friend_id,
-      creatorEmail: token.creator_email,
-      creatorId: token.creator_id
-    });
-
-    if (requestedMergeMemberId && creatorMemberId && requestedMergeMemberId !== creatorMemberId) {
-      await mergeAccountFriendIntoCanonicalInternal(ctx, {
-        accountEmail: user.email,
-        sourceMemberId: requestedMergeMemberId,
-        targetMemberId: creatorMemberId,
-        trustedInviteTarget: {
-          accountId: creatorAccount.id,
-          email: creatorAccount.email
-        },
-        targetName: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
-        targetLinkedAccountId: creatorAccount.id,
-        targetLinkedAccountEmail: creatorAccount.email,
-        preparedCanonicalRewrite: preparedCanonicalRewrite ? async () => {} : undefined
-      });
-    }
 
     return claimResult;
   }
@@ -858,15 +994,20 @@ export const _internalClaimForAccount = internalMutation({
     tokenId: v.string()
   },
   handler: async (ctx, args) => {
+    const readBudget = createMergeReadBudget();
+    accountMergeQueriesForLimit(readBudget, 1);
     const user = await ctx.db.get(args.userAccountId);
     if (!user) throw new Error("User not found");
+    accountMergeRowsForLimit(readBudget, [user]);
 
+    accountMergeQueriesForLimit(readBudget, 1);
     const token = await ctx.db
       .query("invite_tokens")
       .withIndex("by_client_id", (q) => q.eq("id", args.tokenId))
       .unique();
 
     if (!token) throw new Error("Token not found");
+    accountMergeRowsForLimit(readBudget, [token]);
 
     const now = Date.now();
     if (token.expires_at < now) {
@@ -881,18 +1022,25 @@ export const _internalClaimForAccount = internalMutation({
       throw new Error("Invite must be recreated before it can be claimed");
     }
 
-    await assertIdentityMaterializationReady(ctx.db);
+    await assertMergeIdentityMaterializationReady(ctx, readBudget);
+    const result = await claimForUser(
+      ctx,
+      user,
+      {
+        targetMemberId: token.target_member_id,
+        targetFriendId: token.target_friend_id,
+        creatorEmail: token.creator_email,
+        creatorId: token.creator_id
+      },
+      readBudget,
+      undefined,
+      true
+    );
     await ctx.db.patch(token._id, {
       claimed_by: user.id,
       claimed_at: now
     });
-
-    return await claimForUser(ctx, user, {
-      targetMemberId: token.target_member_id,
-      targetFriendId: token.target_friend_id,
-      creatorEmail: token.creator_email,
-      creatorId: token.creator_id
-    });
+    return result;
   }
 });
 
@@ -905,14 +1053,22 @@ export const _internalClaimTargetMemberForAccount = internalMutation({
     creatorId: v.optional(v.string())
   },
   handler: async (ctx, args) => {
+    const readBudget = createMergeReadBudget();
+    accountMergeQueriesForLimit(readBudget, 1);
     const user = await ctx.db.get(args.userAccountId);
     if (!user) throw new Error("User not found");
+    accountMergeRowsForLimit(readBudget, [user]);
 
-    return await claimForUser(ctx, user, {
-      targetMemberId: args.targetMemberId,
-      targetFriendId: args.targetFriendId,
-      creatorEmail: args.creatorEmail,
-      creatorId: args.creatorId
-    });
+    return await claimForUser(
+      ctx,
+      user,
+      {
+        targetMemberId: args.targetMemberId,
+        targetFriendId: args.targetFriendId,
+        creatorEmail: args.creatorEmail,
+        creatorId: args.creatorId
+      },
+      readBudget
+    );
   }
 });
