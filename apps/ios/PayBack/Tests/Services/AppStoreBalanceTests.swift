@@ -49,6 +49,81 @@ final class AppStoreBalanceTests: XCTestCase {
 
     // MARK: - Net Balance (Single Group) Tests
 
+    func testNetBalanceForFriendIncludesImportedGroupMemberPointerIdentity() {
+        let friendMemberId = UUID()
+        let importedGroupMemberId = UUID()
+        let group = SpendingGroup(
+            name: "Imported Trip",
+            members: [
+                sut.currentUser,
+                GroupMember(
+                    id: importedGroupMemberId,
+                    name: "Friend",
+                    accountFriendMemberId: friendMemberId
+                )
+            ]
+        )
+        sut.groups = [group]
+        sut.expenses = [
+            Expense(
+                groupId: group.id,
+                description: "Dinner",
+                totalAmount: 20,
+                paidByMemberId: sut.currentUser.id,
+                involvedMemberIds: [sut.currentUser.id, importedGroupMemberId],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 10),
+                    ExpenseSplit(memberId: importedGroupMemberId, amount: 10)
+                ]
+            )
+        ]
+
+        let mergePreviewFriend = GroupMember(
+            id: friendMemberId,
+            name: "Friend",
+            accountFriendMemberId: friendMemberId
+        )
+
+        XCTAssertEqual(sut.netBalance(forFriend: mergePreviewFriend), 10, accuracy: 0.01)
+    }
+
+    func testNetBalanceForFriendIncludesSparseLinkedMemberIdentity() {
+        let localFriendMemberId = UUID()
+        let linkedMemberId = UUID()
+        let friend = AccountFriend(
+            memberId: localFriendMemberId,
+            name: "Friend",
+            hasLinkedAccount: true,
+            linkedMemberId: linkedMemberId
+        )
+        let group = SpendingGroup(
+            name: "Legacy Trip",
+            members: [
+                sut.currentUser,
+                GroupMember(id: linkedMemberId, name: "Friend")
+            ]
+        )
+        sut.friends = [friend]
+        sut.groups = [group]
+        sut.expenses = [
+            Expense(
+                groupId: group.id,
+                description: "Dinner",
+                totalAmount: 20,
+                paidByMemberId: sut.currentUser.id,
+                involvedMemberIds: [sut.currentUser.id, linkedMemberId],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 10),
+                    ExpenseSplit(memberId: linkedMemberId, amount: 10)
+                ]
+            )
+        ]
+
+        let previewFriend = GroupMember(id: localFriendMemberId, name: "Friend")
+
+        XCTAssertEqual(sut.netBalance(forFriend: previewFriend), 10, accuracy: 0.01)
+    }
+
     func testNetBalance_NoExpenses_ReturnsZero() {
         // Given
         let group = SpendingGroup(name: "Test Group", members: [sut.currentUser])
