@@ -1,8 +1,96 @@
 import { convexTest } from "convex-test";
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
 import { expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
+import type { Doc } from "../_generated/dataModel";
+import { isExpenseOwnedByAccount, isGroupOwnedByAccount } from "../bulkImport";
+import { resolveProvenFriendLink } from "../friendLinkProvenance";
 import schema from "../schema";
 import { modules } from "../test.setup";
+
+const legacyGroupOwnershipSchema = defineSchema({
+  ...schema.tables,
+  groups: defineTable({
+    id: v.string(),
+    name: v.string(),
+    members: v.array(
+      v.object({
+        id: v.string(),
+        name: v.string(),
+        profile_image_url: v.optional(v.string()),
+        profile_avatar_color: v.optional(v.string()),
+        is_current_user: v.optional(v.boolean())
+      })
+    ),
+    owner_email: v.optional(v.string()),
+    owner_account_id: v.optional(v.string()),
+    owner_id: v.optional(v.id("accounts")),
+    is_direct: v.optional(v.boolean()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    is_payback_generated_mock_data: v.optional(v.boolean())
+  })
+    .index("by_owner_account_id", ["owner_account_id"])
+    .index("by_owner_email", ["owner_email"])
+    .index("by_owner_id", ["owner_id"])
+    .index("by_client_id", ["id"])
+    .index("by_is_payback_generated_mock_data", ["is_payback_generated_mock_data"])
+});
+
+async function createBoundedImportScenario() {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+  });
+  const owner = t.withIdentity({
+    subject: "owner_auth",
+    email: "owner@test.com",
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+  return { t, owner, now };
+}
+
+function importExpense(id: string, groupId: string, description = id) {
+  return {
+    id,
+    group_id: groupId,
+    description,
+    date: 1,
+    total_amount: 1,
+    paid_by_member_id: "owner_member",
+    involved_member_ids: ["owner_member"],
+    splits: [
+      {
+        id: `${id}_split`,
+        member_id: "owner_member",
+        amount: 1,
+        is_settled: false
+      }
+    ],
+    is_settled: false,
+    participant_member_ids: ["owner_member"],
+    participants: [{ member_id: "owner_member", name: "Owner" }]
+  };
+}
 
 test("import_robustness: handles aliases and id mismatches", async () => {
   const t = convexTest(schema, modules);
@@ -100,6 +188,375 @@ test("import_robustness: handles aliases and id mismatches", async () => {
   const memberIds = group.members.map((m) => m.id);
   expect(memberIds).toContain(canonicalFriendId.toLowerCase());
   expect(memberIds).not.toContain(aliasFriendId.toLowerCase());
+});
+
+test("bulkImport rejects aggregate nested identity work before canonicalization", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+  });
+
+  const members = Array.from({ length: 769 }, (_, index) => ({
+    id: `import_member_${index}`,
+    name: `Member ${index}`
+  }));
+  const owner = t.withIdentity({
+    subject: "owner_auth",
+    email: "owner@test.com",
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, {
+      friends: [],
+      groups: [{ id: "oversized_group", name: "Oversized", members }],
+      expenses: []
+    })
+  ).rejects.toThrow("Import identity work exceeds the safe limit");
+
+  expect(await t.run(async (ctx) => ctx.db.query("groups").collect())).toHaveLength(0);
+});
+
+test("bulkImport deduplicates normalized incoming friend identities before writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+  });
+
+  const owner = t.withIdentity({
+    subject: "owner_auth",
+    email: "owner@test.com",
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+  await owner.mutation(api.bulkImport.bulkImport, {
+    friends: [
+      {
+        member_id: " FRIEND_MEMBER ",
+        name: "First copy",
+        profile_avatar_color: "#111111"
+      },
+      {
+        member_id: "friend_member",
+        name: "Latest copy",
+        profile_avatar_color: "#222222"
+      }
+    ],
+    groups: [],
+    expenses: []
+  });
+
+  const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
+  expect(friends).toHaveLength(1);
+  expect(friends[0]).toMatchObject({
+    member_id: "friend_member",
+    name: "Latest copy",
+    profile_avatar_color: "#222222"
+  });
+});
+
+test("bulkImport caps distinct incoming friends before writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+  });
+
+  const friends = Array.from({ length: 257 }, (_, index) => ({
+    member_id: `friend_${index}`,
+    name: `Friend ${index}`,
+    profile_avatar_color: "#111111"
+  }));
+  const owner = t.withIdentity({
+    subject: "owner_auth",
+    email: "owner@test.com",
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, { friends, groups: [], expenses: [] })
+  ).rejects.toThrow("Import contains too many distinct friends");
+  expect(await t.run(async (ctx) => ctx.db.query("account_friends").collect())).toHaveLength(0);
+});
+
+test("bulkImport reserves aggregate proven-link work before friend writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+    for (let index = 0; index < 140; index += 1) {
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@test.com",
+        member_id: `legacy_friend_${index}`,
+        name: `Legacy ${index}`,
+        profile_avatar_color: "#111111",
+        has_linked_account: true,
+        linked_account_id: `missing_link_${index}`,
+        local_alias_member_ids: Array.from(
+          { length: 15 },
+          (_, aliasIndex) => `legacy_friend_${index}_alias_${aliasIndex}`
+        ),
+        updated_at: now
+      });
+    }
+  });
+
+  const owner = t.withIdentity({
+    subject: "owner_auth",
+    email: "owner@test.com",
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, {
+      friends: [
+        {
+          member_id: "new_friend",
+          name: "New friend",
+          profile_avatar_color: "#222222"
+        }
+      ],
+      groups: [],
+      expenses: []
+    })
+  ).rejects.toThrow("Import identity work exceeds the safe limit");
+
+  const newFriend = await t.run(async (ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "new_friend")
+      )
+      .unique()
+  );
+  expect(newFriend).toBeNull();
+});
+
+test("bulkImport charges historical link evidence bytes before friend writes", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const largeEvidenceName = "x".repeat(500 * 1024);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "linked_auth",
+      email: "linked@test.com",
+      display_name: "Linked",
+      created_at: now,
+      member_id: "linked_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "legacy_friend",
+      name: "Legacy",
+      profile_avatar_color: "#111111",
+      has_linked_account: true,
+      linked_account_id: "linked_auth",
+      updated_at: now
+    });
+    for (let index = 0; index < 17; index += 1) {
+      await ctx.db.insert("invite_tokens", {
+        id: `large_evidence_${index}`,
+        creator_id: "owner_auth",
+        creator_email: "owner@test.com",
+        target_member_id: "legacy_friend",
+        target_member_name: largeEvidenceName,
+        created_at: now,
+        expires_at: now + 60_000,
+        claimed_by: "linked_auth",
+        claimed_at: now
+      });
+    }
+  });
+
+  const owner = t.withIdentity({
+    subject: "owner_auth",
+    email: "owner@test.com",
+    name: "Owner",
+    pictureUrl: "",
+    tokenIdentifier: "owner_auth",
+    issuer: "",
+    emailVerified: true,
+    updatedAt: ""
+  });
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, {
+      friends: [
+        {
+          member_id: "new_friend",
+          name: "New friend",
+          profile_avatar_color: "#222222"
+        }
+      ],
+      groups: [],
+      expenses: []
+    })
+  ).rejects.toThrow("Import work exceeds the safe limit");
+
+  const newFriend = await t.run(async (ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "new_friend")
+      )
+      .unique()
+  );
+  expect(newFriend).toBeNull();
+}, 30_000);
+
+test("proven-link evidence is charged one bounded document at a time across surfaces", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const largeEvidenceName = "x".repeat(300 * 1024);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "evidence_owner_auth",
+      email: "evidence-owner@test.com",
+      display_name: "Evidence owner",
+      created_at: now,
+      member_id: "evidence_owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "evidence_linked_auth",
+      email: "evidence-linked@test.com",
+      display_name: "Evidence linked",
+      created_at: now,
+      member_id: "evidence_linked_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "evidence-owner@test.com",
+      member_id: "evidence_legacy_member",
+      name: "Evidence friend",
+      profile_avatar_color: "#111111",
+      has_linked_account: true,
+      linked_account_id: "evidence_linked_auth",
+      updated_at: now
+    });
+    for (let index = 0; index < 2; index += 1) {
+      await ctx.db.insert("invite_tokens", {
+        id: `evidence_invite_${index}`,
+        creator_id: "evidence_owner_auth",
+        creator_email: "evidence-owner@test.com",
+        target_member_id: "evidence_legacy_member",
+        target_member_name: largeEvidenceName,
+        created_at: now,
+        expires_at: now + 60_000,
+        claimed_by: "evidence_linked_auth",
+        claimed_at: now
+      });
+      await ctx.db.insert("link_requests", {
+        id: `evidence_request_${index}`,
+        requester_id: "evidence_owner_auth",
+        requester_email: "evidence-owner@test.com",
+        requester_name: "Evidence owner",
+        recipient_email: "evidence-linked@test.com",
+        target_member_id: "evidence_legacy_member",
+        target_member_name: largeEvidenceName,
+        status: "accepted",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+    }
+  });
+
+  const observation = await t.run(async (ctx) => {
+    const friend = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "evidence-owner@test.com").eq("member_id", "evidence_legacy_member")
+      )
+      .unique();
+    if (!friend) throw new Error("missing evidence friend");
+    const batchSizes: number[] = [];
+    const provenLink = await resolveProvenFriendLink(ctx, friend, (rows) => {
+      batchSizes.push(rows.length);
+    });
+    return { batchSizes, linkedAccountId: provenLink?.linkedAccountId };
+  });
+
+  expect(observation.linkedAccountId).toBe("evidence_linked_auth");
+  expect(observation.batchSizes.filter((size) => size > 0)).toHaveLength(6);
+  expect(Math.max(...observation.batchSizes)).toBe(1);
 });
 
 test("bulkImport matches a normalized legacy friend at the compatibility boundary", async () => {
@@ -527,6 +984,354 @@ test("bulkImport ignores client link claims for new friends and expense particip
     { member_id: "legacy_friend", name: "Friend" }
   ]);
   expect(state.visibility.map((row) => row.user_id)).toEqual(["owner_auth"]);
+});
+
+test("bulkImport deduplicates incoming group and expense client IDs before work", async () => {
+  const { t, owner } = await createBoundedImportScenario();
+
+  await owner.mutation(api.bulkImport.bulkImport, {
+    friends: [],
+    groups: [
+      { id: "duplicate_group", name: "First group", members: [] },
+      { id: "duplicate_group", name: "Latest group", members: [] }
+    ],
+    expenses: [
+      importExpense("duplicate_expense", "duplicate_group", "First expense"),
+      importExpense("duplicate_expense", "duplicate_group", "Latest expense")
+    ]
+  });
+
+  const state = await t.run(async (ctx) => ({
+    groups: await ctx.db.query("groups").collect(),
+    expenses: await ctx.db.query("expenses").collect()
+  }));
+  expect(state.groups).toHaveLength(1);
+  expect(state.groups[0].name).toBe("Latest group");
+  expect(state.expenses).toHaveLength(1);
+  expect(state.expenses[0].description).toBe("Latest expense");
+});
+
+test("bulkImport caps distinct incoming group IDs before writes", async () => {
+  const { t, owner } = await createBoundedImportScenario();
+  const groups = Array.from({ length: 257 }, (_, index) => ({
+    id: `group_${index}`,
+    name: `Group ${index}`,
+    members: []
+  }));
+
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, { friends: [], groups, expenses: [] })
+  ).rejects.toThrow("Import contains too many distinct groups");
+  expect(await t.run(async (ctx) => ctx.db.query("groups").collect())).toHaveLength(0);
+});
+
+test("bulkImport caps distinct incoming expense IDs before writes", async () => {
+  const { t, owner, now } = await createBoundedImportScenario();
+  await t.run(async (ctx) => {
+    const account = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!account) throw new Error("missing owner");
+    await ctx.db.insert("groups", {
+      id: "existing_group",
+      name: "Existing",
+      members: [],
+      owner_email: account.email,
+      owner_account_id: account.id,
+      owner_id: account._id,
+      created_at: now,
+      updated_at: now
+    });
+  });
+  const expenses = Array.from({ length: 513 }, (_, index) =>
+    importExpense(`expense_${index}`, "existing_group")
+  );
+
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, { friends: [], groups: [], expenses })
+  ).rejects.toThrow("Import contains too many distinct expenses");
+  expect(await t.run(async (ctx) => ctx.db.query("expenses").collect())).toHaveLength(0);
+});
+
+test("bulkImport caps aggregate potential write fanout before writes", async () => {
+  const { t, owner } = await createBoundedImportScenario();
+  const participantIds = Array.from({ length: 8 }, (_, index) => `participant_${index}`);
+  const expenses = Array.from({ length: 512 }, (_, index) => ({
+    ...importExpense(`fanout_expense_${index}`, "missing_group"),
+    participant_member_ids: participantIds
+  }));
+
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, { friends: [], groups: [], expenses })
+  ).rejects.toThrow("Import work exceeds the safe limit");
+  expect(await t.run(async (ctx) => ctx.db.query("expenses").collect())).toHaveLength(0);
+});
+
+test("bulkImport reserves owner visibility when the owner is omitted at the write boundary", async () => {
+  const { t, owner, now } = await createBoundedImportScenario();
+  const participantIds = ["participant_one", "participant_two", "participant_three"];
+
+  await t.run(async (ctx) => {
+    const ownerAccount = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!ownerAccount) throw new Error("missing owner");
+    await ctx.db.insert("groups", {
+      id: "write_boundary_group",
+      name: "Write boundary",
+      members: [],
+      owner_email: ownerAccount.email,
+      owner_account_id: ownerAccount.id,
+      owner_id: ownerAccount._id,
+      created_at: now,
+      updated_at: now
+    });
+
+    for (const [index, memberId] of participantIds.entries()) {
+      const accountId = `participant_${index + 1}_auth`;
+      const email = `participant-${index + 1}@test.com`;
+      await ctx.db.insert("accounts", {
+        id: accountId,
+        email,
+        display_name: `Participant ${index + 1}`,
+        created_at: now,
+        member_id: memberId
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: ownerAccount.email,
+        member_id: memberId,
+        name: `Participant ${index + 1}`,
+        profile_avatar_color: "#123456",
+        has_linked_account: true,
+        link_state: "linked",
+        status: "friend",
+        linked_account_id: accountId,
+        linked_account_email: email,
+        linked_member_id: memberId,
+        updated_at: now
+      });
+    }
+  });
+
+  const expenses = Array.from({ length: 512 }, (_, index) => ({
+    ...importExpense(`owner_visibility_boundary_${index}`, "write_boundary_group"),
+    participant_member_ids: participantIds,
+    participants: participantIds.map((memberId, participantIndex) => ({
+      member_id: memberId,
+      name: `Participant ${participantIndex + 1}`
+    }))
+  }));
+
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, { friends: [], groups: [], expenses })
+  ).rejects.toThrow("Import work exceeds the safe limit");
+  expect(await t.run(async (ctx) => ctx.db.query("expenses").collect())).toHaveLength(0);
+});
+
+test("bulkImport bounds stale expense visibility before any writes", async () => {
+  const { t, owner, now } = await createBoundedImportScenario();
+  const expenseId = "stale_visibility_expense";
+  const largeUserId = "x".repeat(400 * 1024);
+
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 22; index += 1) {
+      await ctx.db.insert("user_expenses", {
+        user_id: `${largeUserId}_${index}`,
+        expense_id: expenseId,
+        updated_at: now
+      });
+    }
+  });
+
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, {
+      friends: [],
+      groups: [{ id: "new_visibility_group", name: "New group", members: [] }],
+      expenses: [importExpense(expenseId, "new_visibility_group")]
+    })
+  ).rejects.toThrow("Import work exceeds the safe limit");
+
+  const state = await t.run(async (ctx) => ({
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "new_visibility_group"))
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", expenseId))
+      .unique(),
+    visibilityCount: (
+      await ctx.db
+        .query("user_expenses")
+        .withIndex("by_expense_id", (q) => q.eq("expense_id", expenseId))
+        .collect()
+    ).length
+  }));
+  expect(state.group).toBeNull();
+  expect(state.expense).toBeNull();
+  expect(state.visibilityCount).toBe(22);
+});
+
+test("bulkImport bounds existing owned-group bytes before the Convex read limit", async () => {
+  const { t, owner, now } = await createBoundedImportScenario();
+  const largeText = "x".repeat(400 * 1024);
+  await t.run(async (ctx) => {
+    const account = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!account) throw new Error("missing owner");
+    for (let index = 0; index < 22; index += 1) {
+      await ctx.db.insert("groups", {
+        id: `large_existing_group_${index}`,
+        name: `Large ${index}`,
+        members: [{ id: `member_${index}`, name: largeText }],
+        owner_email: account.email,
+        owner_account_id: account.id,
+        owner_id: account._id,
+        created_at: now,
+        updated_at: now
+      });
+    }
+  });
+
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, { friends: [], groups: [], expenses: [] })
+  ).rejects.toThrow("Import work exceeds the safe limit");
+});
+
+test.each(["owner_account_id", "owner_email"] as const)(
+  "bulkImport resolves an expense group through legacy %s ownership",
+  async (ownerField) => {
+    const t = convexTest(legacyGroupOwnershipSchema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "owner_auth",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: now,
+        member_id: "owner_member"
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: now
+      });
+    });
+    const owner = t.withIdentity({
+      subject: "owner_auth",
+      email: "owner@test.com",
+      name: "Owner",
+      pictureUrl: "",
+      tokenIdentifier: "owner_auth",
+      issuer: "",
+      emailVerified: true,
+      updatedAt: ""
+    });
+    const groupId = `existing_${ownerField}_group`;
+    const expenseId = `existing_${ownerField}_expense`;
+    const groupRef = await t.run(async (ctx) => {
+      return await ctx.db.insert("groups", {
+        id: groupId,
+        name: "Existing legacy group",
+        members: [{ id: "owner_member", name: "Owner" }],
+        ...(ownerField === "owner_account_id"
+          ? { owner_account_id: "owner_auth" }
+          : { owner_email: "owner@test.com" }),
+        created_at: now,
+        updated_at: now
+      });
+    });
+
+    await expect(
+      owner.mutation(api.bulkImport.bulkImport, {
+        friends: [],
+        groups: [],
+        expenses: [importExpense(expenseId, groupId)]
+      })
+    ).resolves.toMatchObject({ success: true, created: { expenses: 1 } });
+
+    const expense = await t.run(async (ctx) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", expenseId))
+        .unique()
+    );
+    expect(expense?.group_ref).toBe(groupRef);
+  }
+);
+
+test("bulkImport rejects conflicting group ownership before applying friend writes", async () => {
+  const { t, owner, now } = await createBoundedImportScenario();
+  await t.run(async (ctx) => {
+    const ownerAccount = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!ownerAccount) throw new Error("missing owner");
+    await ctx.db.insert("groups", {
+      id: "conflicting_owner_group",
+      name: "Conflicting owner group",
+      members: [{ id: "owner_member", name: "Owner", is_current_user: true }],
+      owner_email: "victim@test.com",
+      owner_account_id: "victim_auth",
+      owner_id: ownerAccount._id,
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, {
+      friends: [
+        {
+          member_id: "new_friend",
+          name: "New Friend",
+          profile_avatar_color: "#123456"
+        }
+      ],
+      groups: [{ id: "conflicting_owner_group", name: "Overwrite", members: [] }],
+      expenses: []
+    })
+  ).rejects.toThrow("Group conflicting_owner_group belongs to another account");
+
+  const state = await t.run(async (ctx) => ({
+    friends: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email", (q) => q.eq("account_email", "owner@test.com"))
+      .collect()
+  }));
+  expect(state.friends).toHaveLength(0);
+});
+
+test("bulkImport accepts each single-field legacy group owner identity", () => {
+  const account = {
+    _id: "account_document_id" as Doc<"accounts">["_id"],
+    id: "owner_auth",
+    email: "Owner@Test.com"
+  };
+
+  expect(isGroupOwnedByAccount({ owner_id: account._id }, account)).toBe(true);
+  expect(isGroupOwnedByAccount({ owner_account_id: account.id }, account)).toBe(true);
+  expect(isGroupOwnedByAccount({ owner_email: "owner@test.com" }, account)).toBe(true);
+  expect(isGroupOwnedByAccount({}, account)).toBe(false);
+});
+
+test("bulkImport accepts each single-field legacy expense owner identity", () => {
+  const account = {
+    _id: "account_document_id" as Doc<"accounts">["_id"],
+    id: "owner_auth",
+    email: "Owner@Test.com"
+  };
+
+  expect(isExpenseOwnedByAccount({ owner_id: account._id }, account)).toBe(true);
+  expect(isExpenseOwnedByAccount({ owner_account_id: account.id }, account)).toBe(true);
+  expect(isExpenseOwnedByAccount({ owner_email: "owner@test.com" }, account)).toBe(true);
+  expect(isExpenseOwnedByAccount({}, account)).toBe(false);
 });
 
 test("bulkImport rejects a group ID owned by another account", async () => {

@@ -1,15 +1,19 @@
 import { Doc } from "./_generated/dataModel";
 import { MutationCtx, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUserOrThrow, reconcileUserExpenses } from "./helpers";
-import { resolveCanonicalMemberIdInternal } from "./aliases";
+import { getCurrentUserOrThrow } from "./helpers";
 import {
   assertIdentityMaterializationReady,
+  findDirectAccountByMemberId,
   findAliasByAliasMemberId,
   normalizeMemberId,
   normalizeMemberIds
 } from "./identity";
-import { isGhostFriendIdentity, resolveProvenFriendLink } from "./friendLinkProvenance";
+import {
+  isGhostFriendIdentity,
+  provenFriendLinkQueryWork,
+  resolveProvenFriendLink
+} from "./friendLinkProvenance";
 
 const friendValidator = v.object({
   member_id: v.string(),
@@ -77,20 +81,139 @@ const expenseValidator = v.object({
 
 const MAX_IMPORT_IDENTITY_MATCHES = 8;
 const MAX_IMPORT_OWNER_FRIENDS = 256;
+const MAX_IMPORT_INCOMING_FRIENDS = 256;
+const MAX_IMPORT_INCOMING_GROUPS = 256;
+const MAX_IMPORT_INCOMING_EXPENSES = 512;
+const MAX_IMPORT_IDENTITY_QUERY_WORK = 3072;
+const MAX_IMPORT_QUERY_WORK = 3584;
+const MAX_IMPORT_WRITE_WORK = 2048;
+const MAX_IMPORT_READ_ROWS = 2048;
+const MAX_IMPORT_ESTIMATED_BYTES = 8 * 1024 * 1024;
+const MAX_IMPORT_DOCUMENT_RESERVATION_BYTES = 2 * 1024 * 1024;
+const MAX_IMPORT_HARD_READ_BYTES = 10 * 1024 * 1024;
+const MAX_IMPORT_PAGE_ROWS = 5;
 
-function isGroupOwnedByAccount(group: Doc<"groups">, account: Doc<"accounts">): boolean {
+type ImportWorkBudget = {
+  queries: number;
+  writes: number;
+  readRows: number;
+  estimatedBytes: number;
+};
+
+function importWorkLimitError() {
+  return new Error("Import work exceeds the safe limit");
+}
+
+function chargeImportQueries(budget: ImportWorkBudget, count: number) {
+  budget.queries += count;
+  if (budget.queries > MAX_IMPORT_QUERY_WORK) throw importWorkLimitError();
+}
+
+function chargeImportWrites(budget: ImportWorkBudget, count: number) {
+  budget.writes += count;
+  if (budget.writes > MAX_IMPORT_WRITE_WORK) throw importWorkLimitError();
+}
+
+function accountImportRows(budget: ImportWorkBudget, rows: readonly unknown[]) {
+  budget.readRows += rows.length;
+  budget.estimatedBytes += rows.reduce<number>(
+    (total, row) => total + new TextEncoder().encode(JSON.stringify(row) ?? "").length,
+    0
+  );
+  if (
+    budget.readRows > MAX_IMPORT_READ_ROWS ||
+    budget.estimatedBytes > MAX_IMPORT_ESTIMATED_BYTES
+  ) {
+    throw importWorkLimitError();
+  }
+}
+
+async function collectSequentialImportRows<T>(
+  budget: ImportWorkBudget,
+  readPage: (
+    cursor: string | null,
+    limit: number
+  ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>
+): Promise<T[]> {
+  const rows: T[] = [];
+  let cursor: string | null = null;
+  while (true) {
+    const remainingRows = MAX_IMPORT_READ_ROWS - budget.readRows + 1;
+    const remainingHardBytes = MAX_IMPORT_HARD_READ_BYTES - budget.estimatedBytes;
+    const byteReservedRows = Math.floor(remainingHardBytes / MAX_IMPORT_DOCUMENT_RESERVATION_BYTES);
+    const pageSize = Math.min(MAX_IMPORT_PAGE_ROWS, remainingRows, byteReservedRows);
+    if (pageSize <= 0) throw importWorkLimitError();
+
+    chargeImportQueries(budget, 1);
+    const result = await readPage(cursor, pageSize);
+    accountImportRows(budget, result.page);
+    rows.push(...result.page);
+    if (result.isDone) return rows;
+    if (result.continueCursor === cursor) throw importWorkLimitError();
+    cursor = result.continueCursor;
+  }
+}
+
+async function reconcilePreloadedUserExpenses(
+  ctx: MutationCtx,
+  expenseId: string,
+  participantUserIds: string[],
+  existingRows: Doc<"user_expenses">[]
+) {
+  const existingUserIds = new Set(existingRows.map((row) => row.user_id));
+  const targetUserIds = new Set(participantUserIds);
+  const toAdd = participantUserIds.filter((userId) => !existingUserIds.has(userId));
+  const toRemove = existingRows.filter((row) => !targetUserIds.has(row.user_id));
+
+  await Promise.all(
+    toAdd.map((userId) =>
+      ctx.db.insert("user_expenses", {
+        user_id: userId,
+        expense_id: expenseId,
+        updated_at: Date.now()
+      })
+    )
+  );
+  await Promise.all(toRemove.map((row) => ctx.db.delete(row._id)));
+}
+
+type ImportOwnerIdentity = {
+  owner_id?: Doc<"accounts">["_id"];
+  owner_account_id?: string;
+  owner_email?: string;
+};
+
+type ImportAccountIdentity = Pick<Doc<"accounts">, "_id" | "id" | "email">;
+
+export function isGroupOwnedByAccount(
+  group: ImportOwnerIdentity,
+  account: ImportAccountIdentity
+): boolean {
+  const hasOwnerDocumentId = Boolean(group.owner_id);
+  const hasOwnerAccountId = Boolean(group.owner_account_id?.trim());
+  const ownerEmail = group.owner_email?.trim().toLowerCase();
+  const hasOwnerEmail = Boolean(ownerEmail);
   return (
-    group.owner_id === account._id ||
-    group.owner_account_id === account.id ||
-    group.owner_email?.trim().toLowerCase() === account.email.trim().toLowerCase()
+    (!hasOwnerDocumentId || group.owner_id === account._id) &&
+    (!hasOwnerAccountId || group.owner_account_id === account.id) &&
+    (!hasOwnerEmail || ownerEmail === account.email.trim().toLowerCase()) &&
+    (hasOwnerDocumentId || hasOwnerAccountId || hasOwnerEmail)
   );
 }
 
-function isExpenseOwnedByAccount(expense: Doc<"expenses">, account: Doc<"accounts">): boolean {
+export function isExpenseOwnedByAccount(
+  expense: ImportOwnerIdentity,
+  account: ImportAccountIdentity
+): boolean {
+  const hasOwnerDocumentId = Boolean(expense.owner_id);
+  const hasOwnerAccountId = Boolean(expense.owner_account_id?.trim());
+  const ownerEmail = expense.owner_email?.trim().toLowerCase();
+  const hasOwnerEmail = Boolean(ownerEmail);
   return (
-    expense.owner_id === account._id ||
-    expense.owner_account_id === account.id ||
-    expense.owner_email?.trim().toLowerCase() === account.email.trim().toLowerCase()
+    (!hasOwnerDocumentId || expense.owner_id === account._id) &&
+    (!hasOwnerAccountId || expense.owner_account_id === account.id) &&
+    (!hasOwnerEmail || ownerEmail === account.email.trim().toLowerCase()) &&
+    (hasOwnerDocumentId || hasOwnerAccountId || hasOwnerEmail)
   );
 }
 
@@ -101,11 +224,14 @@ function hasServerLinkedMarker(friend: Doc<"account_friends">): boolean {
 async function resolveServerProvenLinkedAccount(
   ctx: MutationCtx,
   friend: Doc<"account_friends">,
-  friendCache: Map<string, Doc<"accounts"> | null>
+  friendCache: Map<string, Doc<"accounts"> | null>,
+  importBudget: ImportWorkBudget
 ): Promise<Doc<"accounts"> | null> {
   const cacheKey = String(friend._id);
   if (friendCache.has(cacheKey)) return friendCache.get(cacheKey) ?? null;
-  const provenLink = await resolveProvenFriendLink(ctx, friend);
+  const provenLink = await resolveProvenFriendLink(ctx, friend, (rows) =>
+    accountImportRows(importBudget, rows)
+  );
   const account = provenLink?.account ?? null;
   friendCache.set(cacheKey, account);
   return account;
@@ -131,58 +257,36 @@ function registerTrustedLinkedAccount(
 }
 
 async function findExistingImportedFriend(
-  ctx: MutationCtx,
-  accountEmail: string,
-  originalMemberId: string,
+  originalMemberIds: readonly string[],
   resolvedMemberId: string,
   ownerFriends: Doc<"account_friends">[]
 ): Promise<Doc<"account_friends"> | null> {
-  const identityIds = Array.from(new Set([originalMemberId, resolvedMemberId]));
+  const identityIds = Array.from(new Set([...originalMemberIds, resolvedMemberId]));
   const identityIdSet = new Set(identityIds);
-  const candidatePages = await Promise.all(
-    identityIds.flatMap((memberId) => [
-      ctx.db
-        .query("account_friends")
-        .withIndex("by_account_email_and_member_id", (q) =>
-          q.eq("account_email", accountEmail).eq("member_id", memberId)
-        )
-        .take(MAX_IMPORT_IDENTITY_MATCHES + 1),
-      ctx.db
-        .query("account_friends")
-        .withIndex("by_account_email_and_linked_member_id", (q) =>
-          q.eq("account_email", accountEmail).eq("linked_member_id", memberId)
-        )
-        .take(MAX_IMPORT_IDENTITY_MATCHES + 1)
-    ])
-  );
-  if (candidatePages.some((page) => page.length > MAX_IMPORT_IDENTITY_MATCHES)) {
-    throw new Error("Identity maintenance required: too many matching friend identities");
-  }
-
   const candidatesById = new Map<string, Doc<"account_friends">>();
-  for (const candidate of [
-    ...candidatePages.flat(),
-    ...ownerFriends.filter(
-      (friend) =>
-        identityIdSet.has(normalizeMemberId(friend.member_id)) ||
-        (friend.linked_member_id !== undefined &&
-          identityIdSet.has(normalizeMemberId(friend.linked_member_id))) ||
-        normalizeMemberIds(friend.local_alias_member_ids).some((aliasMemberId) =>
-          identityIdSet.has(aliasMemberId)
-        )
-    )
-  ]) {
+  for (const candidate of ownerFriends.filter(
+    (friend) =>
+      identityIdSet.has(normalizeMemberId(friend.member_id)) ||
+      (friend.linked_member_id !== undefined &&
+        identityIdSet.has(normalizeMemberId(friend.linked_member_id))) ||
+      normalizeMemberIds(friend.local_alias_member_ids).some((aliasMemberId) =>
+        identityIdSet.has(aliasMemberId)
+      )
+  )) {
     candidatesById.set(String(candidate._id), candidate);
   }
   const candidates = Array.from(candidatesById.values());
+  if (candidates.length > MAX_IMPORT_IDENTITY_MATCHES) {
+    throw new Error("Identity maintenance required: too many matching friend identities");
+  }
   return (
     candidates.sort((left, right) => {
       const linkedRank = Number(hasServerLinkedMarker(right)) - Number(hasServerLinkedMarker(left));
       if (linkedRank !== 0) return linkedRank;
 
       const originalRank =
-        Number(normalizeMemberId(right.member_id) === originalMemberId) -
-        Number(normalizeMemberId(left.member_id) === originalMemberId);
+        Number(originalMemberIds.includes(normalizeMemberId(right.member_id))) -
+        Number(originalMemberIds.includes(normalizeMemberId(left.member_id)));
       if (originalRank !== 0) return originalRank;
 
       if (left._creationTime !== right._creationTime) {
@@ -203,64 +307,194 @@ export const bulkImport = mutation({
     const { user } = await getCurrentUserOrThrow(ctx);
     const accountEmail = user.email.trim().toLowerCase();
     await assertIdentityMaterializationReady(ctx.db);
+    const importBudget: ImportWorkBudget = {
+      queries: 0,
+      writes: 0,
+      readRows: 0,
+      estimatedBytes: new TextEncoder().encode(JSON.stringify(args) ?? "").length
+    };
+    if (importBudget.estimatedBytes > MAX_IMPORT_ESTIMATED_BYTES) {
+      throw importWorkLimitError();
+    }
+    const currentUserMemberIds = new Set(
+      [user.member_id, ...(user.alias_member_ids ?? [])]
+        .filter((memberId): memberId is string => Boolean(memberId?.trim()))
+        .map(normalizeMemberId)
+    );
+    let identityQueryWork = 0;
+    const chargeIdentityQueries = (count: number) => {
+      identityQueryWork += count;
+      if (identityQueryWork > MAX_IMPORT_IDENTITY_QUERY_WORK) {
+        throw new Error("Import identity work exceeds the safe limit");
+      }
+      chargeImportQueries(importBudget, count);
+    };
+    const normalizedIncomingFriends = new Map<
+      string,
+      { friend: (typeof args.friends)[number]; originalMemberIds: string[] }
+    >();
+    for (const friend of args.friends) {
+      const originalMemberId = normalizeMemberId(friend.member_id);
+      const existing = normalizedIncomingFriends.get(originalMemberId);
+      if (existing) {
+        existing.friend = friend;
+      } else {
+        normalizedIncomingFriends.set(originalMemberId, {
+          friend,
+          originalMemberIds: [originalMemberId]
+        });
+      }
+    }
+    if (normalizedIncomingFriends.size > MAX_IMPORT_INCOMING_FRIENDS) {
+      throw new Error("Import contains too many distinct friends");
+    }
+    const incomingGroupsById = new Map<string, (typeof args.groups)[number]>();
+    for (const group of args.groups) incomingGroupsById.set(group.id, group);
+    if (incomingGroupsById.size > MAX_IMPORT_INCOMING_GROUPS) {
+      throw new Error("Import contains too many distinct groups");
+    }
+    const importedGroups = Array.from(incomingGroupsById.values());
+
+    const incomingExpensesById = new Map<string, (typeof args.expenses)[number]>();
+    for (const expense of args.expenses) incomingExpensesById.set(expense.id, expense);
+    if (incomingExpensesById.size > MAX_IMPORT_INCOMING_EXPENSES) {
+      throw new Error("Import contains too many distinct expenses");
+    }
+    const importedExpenses = Array.from(incomingExpensesById.values());
+    chargeImportWrites(
+      importBudget,
+      normalizedIncomingFriends.size +
+        importedGroups.length +
+        importedExpenses.reduce((total, expense) => {
+          const participantMemberIds = new Set(
+            [
+              ...expense.participant_member_ids,
+              ...expense.participants.map((participant) => participant.member_id)
+            ].map(normalizeMemberId)
+          );
+          const includesOwner = Array.from(participantMemberIds).some((memberId) =>
+            currentUserMemberIds.has(memberId)
+          );
+          const potentialVisibilityWrites = participantMemberIds.size + Number(!includesOwner);
+          return total + 1 + potentialVisibilityWrites;
+        }, 0)
+    );
+    // Reserve one ownership lookup per client ID before starting paginated preflight reads.
+    chargeImportQueries(importBudget, importedGroups.length + importedExpenses.length);
+    // Reserve the compatibility alias read that can occur later for every distinct friend.
+    // This keeps all identity reads inside one pre-write aggregate budget.
+    chargeIdentityQueries(normalizedIncomingFriends.size);
+    const existingVisibilityRowsByExpenseId = new Map<string, Doc<"user_expenses">[]>();
+    for (const expense of importedExpenses) {
+      const visibilityRows = await collectSequentialImportRows(importBudget, (cursor, limit) =>
+        ctx.db
+          .query("user_expenses")
+          .withIndex("by_expense_id", (q) => q.eq("expense_id", expense.id))
+          .order("asc")
+          .paginate({ cursor, numItems: limit })
+      );
+      existingVisibilityRowsByExpenseId.set(expense.id, visibilityRows);
+      chargeImportWrites(importBudget, visibilityRows.length);
+    }
+    const resolvedImportIdentities = new Map<string, string>();
+    const resolveImportIdentity = async (memberId: string) => {
+      const normalized = normalizeMemberId(memberId);
+      if (resolvedImportIdentities.has(normalized)) {
+        return resolvedImportIdentities.get(normalized)!;
+      }
+      let currentMemberId = normalized;
+      const visited = new Set<string>();
+      for (let depth = 0; depth < 20; depth += 1) {
+        if (!currentMemberId || visited.has(currentMemberId)) break;
+        visited.add(currentMemberId);
+
+        // findDirectAccountByMemberId performs one indexed read and one readiness read for
+        // normalized input. Charge an extra range for compatibility before executing it.
+        chargeIdentityQueries(3);
+        const account = await findDirectAccountByMemberId(ctx.db, currentMemberId);
+        accountImportRows(importBudget, account ? [account] : []);
+        if (account?.member_id) {
+          currentMemberId = normalizeMemberId(account.member_id);
+          break;
+        }
+
+        // Materialized imports use normalized IDs, but retain one spare query range for legacy
+        // casing compatibility in the alias helper.
+        chargeIdentityQueries(2);
+        const alias = await findAliasByAliasMemberId(ctx.db, currentMemberId);
+        accountImportRows(importBudget, alias ? [alias] : []);
+        if (!alias) break;
+        currentMemberId = normalizeMemberId(alias.canonical_member_id);
+      }
+      resolvedImportIdentities.set(normalized, currentMemberId);
+      return currentMemberId;
+    };
     const ownerFriends =
-      args.friends.length === 0 && args.expenses.length === 0
+      normalizedIncomingFriends.size === 0 && importedExpenses.length === 0
         ? []
-        : await ctx.db
-            .query("account_friends")
-            .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
-            .take(MAX_IMPORT_OWNER_FRIENDS + 1);
+        : await collectSequentialImportRows(importBudget, async (cursor, limit) =>
+            ctx.db
+              .query("account_friends")
+              .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
+              .order("asc")
+              .paginate({ cursor, numItems: limit })
+          );
     if (ownerFriends.length > MAX_IMPORT_OWNER_FRIENDS) {
       throw new Error(
         `Identity maintenance required: normalize identities before importing friends for accounts with more than ${MAX_IMPORT_OWNER_FRIENDS} friend rows`
       );
     }
 
-    // Retain caller IDs so canonical resolution cannot hide an existing linked legacy row.
-    const originalFriendMemberIds = args.friends.map((friend) =>
-      normalizeMemberId(friend.member_id)
-    );
-    for (const [index, friend] of args.friends.entries()) {
-      const originalId = originalFriendMemberIds[index];
-      friend.member_id = await resolveCanonicalMemberIdInternal(ctx.db, originalId);
+    for (const friend of ownerFriends) {
+      if (!friend.linked_account_id?.trim() || isGhostFriendIdentity(friend)) continue;
+      // Reserve the complete proven-link query envelope once per persisted friend. Historical
+      // evidence is paged one document at a time so byte accounting can stop before another read.
+      chargeIdentityQueries(provenFriendLinkQueryWork(friend));
     }
 
-    for (const group of args.groups) {
+    // Retain caller IDs so canonical resolution cannot hide an existing linked legacy row.
+    const resolvedIncomingFriends = new Map<
+      string,
+      { friend: (typeof args.friends)[number]; originalMemberIds: string[] }
+    >();
+    for (const entry of normalizedIncomingFriends.values()) {
+      const resolvedMemberId = await resolveImportIdentity(entry.originalMemberIds[0]);
+      entry.friend.member_id = resolvedMemberId;
+      const existing = resolvedIncomingFriends.get(resolvedMemberId);
+      if (existing) {
+        existing.friend = entry.friend;
+        existing.originalMemberIds.push(...entry.originalMemberIds);
+      } else {
+        resolvedIncomingFriends.set(resolvedMemberId, entry);
+      }
+    }
+    const importedFriends = Array.from(resolvedIncomingFriends.values());
+
+    for (const group of importedGroups) {
       for (const member of group.members) {
-        member.id = await resolveCanonicalMemberIdInternal(ctx.db, normalizeMemberId(member.id));
+        member.id = await resolveImportIdentity(member.id);
       }
     }
 
-    for (const expense of args.expenses) {
-      expense.paid_by_member_id = await resolveCanonicalMemberIdInternal(
-        ctx.db,
-        normalizeMemberId(expense.paid_by_member_id)
-      );
+    for (const expense of importedExpenses) {
+      expense.paid_by_member_id = await resolveImportIdentity(expense.paid_by_member_id);
       for (let i = 0; i < expense.involved_member_ids.length; i++) {
-        expense.involved_member_ids[i] = await resolveCanonicalMemberIdInternal(
-          ctx.db,
-          normalizeMemberId(expense.involved_member_ids[i])
+        expense.involved_member_ids[i] = await resolveImportIdentity(
+          expense.involved_member_ids[i]
         );
       }
       expense.involved_member_ids = normalizeMemberIds(expense.involved_member_ids);
       for (const split of expense.splits) {
-        split.member_id = await resolveCanonicalMemberIdInternal(
-          ctx.db,
-          normalizeMemberId(split.member_id)
-        );
+        split.member_id = await resolveImportIdentity(split.member_id);
       }
       for (let i = 0; i < expense.participant_member_ids.length; i++) {
-        expense.participant_member_ids[i] = await resolveCanonicalMemberIdInternal(
-          ctx.db,
-          normalizeMemberId(expense.participant_member_ids[i])
+        expense.participant_member_ids[i] = await resolveImportIdentity(
+          expense.participant_member_ids[i]
         );
       }
       expense.participant_member_ids = normalizeMemberIds(expense.participant_member_ids);
       for (const participant of expense.participants) {
-        participant.member_id = await resolveCanonicalMemberIdInternal(
-          ctx.db,
-          normalizeMemberId(participant.member_id)
-        );
+        participant.member_id = await resolveImportIdentity(participant.member_id);
       }
     }
 
@@ -268,8 +502,8 @@ export const bulkImport = mutation({
     const created = { friends: 0, groups: 0, expenses: 0 };
 
     // Validation
-    for (let i = 0; i < args.friends.length; i++) {
-      const friend = args.friends[i];
+    for (let i = 0; i < importedFriends.length; i++) {
+      const friend = importedFriends[i].friend;
       if (!friend.member_id) errors.push(`friends[${i}]: missing member_id`);
       if (!friend.name) errors.push(`friends[${i}]: missing name`);
       if (!friend.profile_avatar_color) errors.push(`friends[${i}]: missing profile_avatar_color`);
@@ -277,13 +511,29 @@ export const bulkImport = mutation({
 
     const memberIdMap = new Map<string, string>();
     const linkedFriendCache = new Map<string, Doc<"accounts"> | null>();
-
-    // Process Friends
-    for (const [index, friend] of args.friends.entries()) {
-      const existing = await findExistingImportedFriend(
+    const trustedAccountsByMemberId = new Map<string, Doc<"accounts">>();
+    for (const existingFriend of ownerFriends) {
+      const linkedAccount = await resolveServerProvenLinkedAccount(
         ctx,
-        accountEmail,
-        originalFriendMemberIds[index],
+        existingFriend,
+        linkedFriendCache,
+        importBudget
+      );
+      if (linkedAccount) {
+        registerTrustedLinkedAccount(trustedAccountsByMemberId, existingFriend, linkedAccount);
+      }
+    }
+    const friendPatches: Array<{
+      id: Doc<"account_friends">["_id"];
+      patch: Partial<Omit<Doc<"account_friends">, "_id" | "_creationTime">>;
+    }> = [];
+    const friendInserts: Array<Omit<Doc<"account_friends">, "_id" | "_creationTime">> = [];
+
+    // Plan every friend write first. Later ownership and aggregate-byte checks must complete
+    // before any plan is applied.
+    for (const { friend, originalMemberIds } of importedFriends) {
+      const existing = await findExistingImportedFriend(
+        originalMemberIds,
         normalizeMemberId(friend.member_id),
         ownerFriends
       );
@@ -303,7 +553,7 @@ export const bulkImport = mutation({
         const isGhost = isGhostFriendIdentity(match);
         const trustedLinkedAccount = isGhost
           ? null
-          : await resolveServerProvenLinkedAccount(ctx, match, linkedFriendCache);
+          : await resolveServerProvenLinkedAccount(ctx, match, linkedFriendCache, importBudget);
         if (isGhost) {
           finalLinkState = "ghost";
           finalStatus = "ghost";
@@ -325,7 +575,9 @@ export const bulkImport = mutation({
         // linked canonical identity. Unlinked exact matches continue mapping to their own ID.
         const canonicalImportedMemberId = normalizeMemberId(linkedMemberId ?? match.member_id);
         memberIdMap.set(friend.member_id, canonicalImportedMemberId);
-        memberIdMap.set(originalFriendMemberIds[index], canonicalImportedMemberId);
+        for (const originalMemberId of originalMemberIds) {
+          memberIdMap.set(originalMemberId, canonicalImportedMemberId);
+        }
 
         // Keep friend metadata up-to-date for existing rows, even when there is no new linking event.
         const patch: Record<string, any> = {};
@@ -364,8 +616,7 @@ export const bulkImport = mutation({
         }
         if (Object.keys(patch).length > 0) {
           patch.updated_at = Date.now();
-          await ctx.db.patch(match._id, patch);
-          created.friends++;
+          friendPatches.push({ id: match._id, patch });
         }
 
         continue;
@@ -374,8 +625,10 @@ export const bulkImport = mutation({
       // Check if this ID is already an alias for a known user (Robust Fix)
       // This handles cases where the CSV has an old/garbage ID that we *know*
       const knownAlias = await findAliasByAliasMemberId(ctx.db, friend.member_id);
+      accountImportRows(importBudget, knownAlias ? [knownAlias] : []);
 
       if (knownAlias) {
+        chargeImportQueries(importBudget, 1);
         const canonicalFriend = await ctx.db
           .query("account_friends")
           .withIndex("by_account_email_and_member_id", (q) =>
@@ -384,6 +637,7 @@ export const bulkImport = mutation({
               .eq("member_id", normalizeMemberId(knownAlias.canonical_member_id))
           )
           .unique();
+        accountImportRows(importBudget, canonicalFriend ? [canonicalFriend] : []);
 
         if (canonicalFriend) {
           memberIdMap.set(friend.member_id, normalizeMemberId(knownAlias.canonical_member_id));
@@ -397,7 +651,7 @@ export const bulkImport = mutation({
       // NO MATCH FOUND - Create New Friend
       memberIdMap.set(friend.member_id, friend.member_id); // Map to itself
 
-      await ctx.db.insert("account_friends", {
+      friendInserts.push({
         account_email: accountEmail,
         member_id: friend.member_id,
         name: friend.name || "Unknown",
@@ -412,48 +666,92 @@ export const bulkImport = mutation({
         profile_image_url: friend.profile_image_url,
         updated_at: Date.now()
       });
-
-      created.friends++;
     }
 
-    const trustedAccountsByMemberId = new Map<string, Doc<"accounts">>();
-    for (const existingFriend of ownerFriends) {
-      const linkedAccount = await resolveServerProvenLinkedAccount(
-        ctx,
-        existingFriend,
-        linkedFriendCache
-      );
-      if (linkedAccount) {
-        registerTrustedLinkedAccount(trustedAccountsByMemberId, existingFriend, linkedAccount);
-      }
-    }
-    const currentUserMemberIds = new Set(
-      [user.member_id, ...(user.alias_member_ids ?? [])]
-        .filter((memberId): memberId is string => Boolean(memberId?.trim()))
-        .map(normalizeMemberId)
+    // Preload the complete ownership surface before applying friend, group, or expense writes.
+    const groupsByOwnerId = await collectSequentialImportRows(importBudget, async (cursor, limit) =>
+      ctx.db
+        .query("groups")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    );
+    const groupsByOwnerAccountId = await collectSequentialImportRows(
+      importBudget,
+      async (cursor, limit) =>
+        ctx.db
+          .query("groups")
+          .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
+          .order("asc")
+          .paginate({ cursor, numItems: limit })
+    );
+    const groupsByOwnerEmail = await collectSequentialImportRows(
+      importBudget,
+      async (cursor, limit) =>
+        ctx.db
+          .query("groups")
+          .withIndex("by_owner_email", (q) => q.eq("owner_email", accountEmail))
+          .order("asc")
+          .paginate({ cursor, numItems: limit })
+    );
+    const existingGroups = Array.from(
+      new Map(
+        [...groupsByOwnerId, ...groupsByOwnerAccountId, ...groupsByOwnerEmail].map((group) => [
+          String(group._id),
+          group
+        ])
+      ).values()
     );
 
-    // Process Groups (Simplified logic as original)
-    const existingGroups = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-      .collect();
-
     const groupRefMap = new Map<string, (typeof existingGroups)[0]["_id"]>();
-    for (const eg of existingGroups) groupRefMap.set(eg.id, eg._id);
+    for (const existingGroup of existingGroups) {
+      if (!isGroupOwnedByAccount(existingGroup, user)) {
+        throw new Error(`Group ${existingGroup.id} belongs to another account`);
+      }
+      groupRefMap.set(existingGroup.id, existingGroup._id);
+    }
 
-    for (const group of args.groups) {
+    const existingImportedGroups = new Map<string, Doc<"groups"> | null>();
+    for (const group of importedGroups) {
       const existing = await ctx.db
         .query("groups")
         .withIndex("by_client_id", (q) => q.eq("id", group.id))
         .unique();
+      accountImportRows(importBudget, existing ? [existing] : []);
       if (existing) {
         if (!isGroupOwnedByAccount(existing, user)) {
           throw new Error(`Group ${group.id} belongs to another account`);
         }
         groupRefMap.set(group.id, existing._id);
-        continue;
       }
+      existingImportedGroups.set(group.id, existing);
+    }
+
+    const existingImportedExpenses = new Map<string, Doc<"expenses"> | null>();
+    for (const expense of importedExpenses) {
+      const existing = await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", expense.id))
+        .unique();
+      accountImportRows(importBudget, existing ? [existing] : []);
+      if (existing && !isExpenseOwnedByAccount(existing, user)) {
+        throw new Error(`Expense ${expense.id} belongs to another account`);
+      }
+      existingImportedExpenses.set(expense.id, existing);
+    }
+
+    // All database reads and application-level limits are complete. Apply the prepared writes.
+    for (const plan of friendPatches) {
+      await ctx.db.patch(plan.id, plan.patch);
+      created.friends += 1;
+    }
+    for (const friend of friendInserts) {
+      await ctx.db.insert("account_friends", friend);
+      created.friends += 1;
+    }
+
+    for (const group of importedGroups) {
+      if (existingImportedGroups.get(group.id)) continue;
 
       // Remap members
       const remappedMembers = group.members.map((m) => ({
@@ -477,17 +775,8 @@ export const bulkImport = mutation({
     }
 
     // Process Expenses
-    for (const expense of args.expenses) {
-      const existing = await ctx.db
-        .query("expenses")
-        .withIndex("by_client_id", (q) => q.eq("id", expense.id))
-        .unique();
-      if (existing) {
-        if (!isExpenseOwnedByAccount(existing, user)) {
-          throw new Error(`Expense ${expense.id} belongs to another account`);
-        }
-        continue;
-      }
+    for (const expense of importedExpenses) {
+      if (existingImportedExpenses.get(expense.id)) continue;
 
       const groupRef = groupRefMap.get(expense.group_id);
       if (!groupRef) {
@@ -564,8 +853,12 @@ export const bulkImport = mutation({
         updated_at: Date.now()
       });
 
-      // Reconcile user_expenses for this new expense
-      await reconcileUserExpenses(ctx, expense.id, Array.from(participantUserIds));
+      await reconcilePreloadedUserExpenses(
+        ctx,
+        expense.id,
+        Array.from(participantUserIds),
+        existingVisibilityRowsByExpenseId.get(expense.id) ?? []
+      );
 
       created.expenses++;
     }
