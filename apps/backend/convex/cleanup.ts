@@ -1,6 +1,17 @@
-import { mutation, internalMutation, query, MutationCtx } from "./_generated/server";
+import {
+  mutation,
+  internalAction,
+  internalMutation,
+  query,
+  MutationCtx
+} from "./_generated/server";
+import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
+import {
+  ensureCleanupEmailMaterializationScheduled,
+  isCleanupEmailMaterializationReady
+} from "./cleanupEmailMaterialization";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import {
   assertIdentityMaterializationReady,
@@ -14,6 +25,7 @@ import {
   collectActiveExpenseMemberIds,
   createExpenseIdentityResolutionCache,
   ExpenseIdentityResolutionCache,
+  getCurrentUserOrThrow,
   resolveActiveExpenseParticipantAccounts,
   resolveConsistentExpenseParticipantAccount
 } from "./helpers";
@@ -32,38 +44,11 @@ import { GROUP_VISIBILITY_MATERIALIZATION_KEY } from "./migrations/groupVisibili
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) {
-    throw new Error("Unauthenticated");
-  }
-  const user = await ctx.db
-    .query("accounts")
-    .withIndex("by_email", (q: any) => q.eq("email", identity.email!))
-    .unique();
-
-  return { identity, user };
+  return await getCurrentUserOrThrow(ctx);
 }
-
-const HARD_DELETE_GROUP_LIMIT = 256;
 
 function expenseDeleteOperations(expenses: Iterable<Doc<"expenses">>): ExpenseWriteOperation[] {
   return Array.from(expenses, (expense) => ({ kind: "delete" as const, expense }));
-}
-
-async function deleteBoundedOrphanVisibilityRows(
-  ctx: MutationCtx,
-  accountAuthId: string,
-  limit: number
-): Promise<number> {
-  const rows = await ctx.db
-    .query("user_expenses")
-    .withIndex("by_user_id", (query) => query.eq("user_id", accountAuthId))
-    .take(limit + 1);
-  if (rows.length > limit) {
-    throw new Error("Expense cleanup requires resumable processing");
-  }
-  for (const row of rows) await ctx.db.delete(row._id);
-  return rows.length;
 }
 
 async function deleteAccountSyncState(ctx: MutationCtx, accountId: Id<"accounts">): Promise<void> {
@@ -740,303 +725,6 @@ function scrubDeletedAccountFromExpense(
   };
 }
 
-const MAX_SAMPLE_IDS = 10;
-const sampleIds = (ids: string[]) => ids.slice(0, MAX_SAMPLE_IDS);
-
-const logHardDelete = (
-  base: {
-    operationId: string;
-    source: string;
-    email: string;
-    subject: string;
-    accountId: string;
-  },
-  step: string,
-  data: Record<string, unknown>
-) => {
-  console.log(
-    JSON.stringify({
-      scope: "cleanup.hard_delete",
-      ...base,
-      step,
-      ...data
-    })
-  );
-};
-
-async function performHardDelete(ctx: any, account: any, source: string) {
-  const operationId = crypto.randomUUID();
-  const baseLog = {
-    operationId,
-    source,
-    email: account.email,
-    subject: account.id,
-    accountId: account._id,
-    memberId: account.member_id
-  };
-
-  logHardDelete(baseLog, "start", { message: "Starting hard delete" });
-
-  const deletionProgressRows = new Map<string, Doc<"account_deletion_progress">>();
-  for (const progress of await ctx.db
-    .query("account_deletion_progress")
-    .withIndex("by_auth_subject", (q: any) => q.eq("auth_subject", account.id))
-    .collect()) {
-    deletionProgressRows.set(String(progress._id), progress);
-  }
-  for (const progress of await ctx.db
-    .query("account_deletion_progress")
-    .withIndex("by_account_id", (q: any) => q.eq("account_id", account._id))
-    .collect()) {
-    deletionProgressRows.set(String(progress._id), progress);
-  }
-  for (const progress of deletionProgressRows.values()) await ctx.db.delete(progress._id);
-
-  const friends = await ctx.db
-    .query("account_friends")
-    .withIndex("by_account_email", (q: any) => q.eq("account_email", account.email))
-    .collect();
-  const friendIds: string[] = [];
-  for (const friend of friends) {
-    await ctx.db.delete(friend._id);
-    friendIds.push(friend._id);
-  }
-  logHardDelete(baseLog, "delete_account_friends", {
-    deletedCount: friendIds.length,
-    sampleIds: sampleIds(friendIds)
-  });
-
-  const groupsByEmail = await ctx.db
-    .query("groups")
-    .withIndex("by_owner_email", (q: any) => q.eq("owner_email", account.email))
-    .take(HARD_DELETE_GROUP_LIMIT + 1);
-  const groupsByAccountId = await ctx.db
-    .query("groups")
-    .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", account.id))
-    .take(HARD_DELETE_GROUP_LIMIT + 1);
-  if (
-    groupsByEmail.length > HARD_DELETE_GROUP_LIMIT ||
-    groupsByAccountId.length > HARD_DELETE_GROUP_LIMIT
-  ) {
-    throw new Error("Hard delete requires resumable group processing");
-  }
-  const groupsById = new Map<string, any>();
-  for (const group of groupsByEmail) {
-    groupsById.set(group._id, group);
-  }
-  for (const group of groupsByAccountId) {
-    groupsById.set(group._id, group);
-  }
-  if (groupsById.size > HARD_DELETE_GROUP_LIMIT) {
-    throw new Error("Hard delete requires resumable group processing");
-  }
-
-  const groupIds: string[] = [];
-  const groupExpenseIds: string[] = [];
-  const deletedExpenseIds = new Set<string>();
-  const expensesToDelete = new Map<string, Doc<"expenses">>();
-  const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
-  for (const group of groupsById.values()) {
-    const remainingExpenseCapacity = MAX_EXPENSE_WRITE_OPERATIONS - expensesToDelete.size;
-    const groupExpenses = await ctx.db
-      .query("expenses")
-      .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-      .take(remainingExpenseCapacity + 1);
-    if (groupExpenses.length > remainingExpenseCapacity) {
-      throw new Error("Hard delete requires resumable expense processing");
-    }
-    for (const expense of groupExpenses) {
-      if (deletedExpenseIds.has(expense._id)) continue;
-      expensesToDelete.set(String(expense._id), expense);
-      deletedExpenseIds.add(expense._id);
-      groupExpenseIds.push(expense._id);
-    }
-    await groupVisibilityBatch.delete(group._id);
-    groupIds.push(group._id);
-  }
-  await groupVisibilityBatch.flush();
-  logHardDelete(baseLog, "delete_groups", {
-    deletedCount: groupIds.length,
-    sampleIds: sampleIds(groupIds)
-  });
-  logHardDelete(baseLog, "delete_group_expenses", {
-    deletedCount: groupExpenseIds.length,
-    sampleIds: sampleIds(groupExpenseIds)
-  });
-
-  const expensesByEmail = await ctx.db
-    .query("expenses")
-    .withIndex("by_owner_email", (q: any) => q.eq("owner_email", account.email))
-    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
-  const expensesByAccountId = await ctx.db
-    .query("expenses")
-    .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", account.id))
-    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
-  if (
-    expensesByEmail.length > MAX_EXPENSE_WRITE_OPERATIONS ||
-    expensesByAccountId.length > MAX_EXPENSE_WRITE_OPERATIONS
-  ) {
-    throw new Error("Hard delete requires resumable expense processing");
-  }
-  const expenseById = new Map<string, any>();
-  for (const expense of expensesByEmail) {
-    expenseById.set(expense._id, expense);
-  }
-  for (const expense of expensesByAccountId) {
-    expenseById.set(expense._id, expense);
-  }
-  const ownedExpenseIds: string[] = [];
-  for (const expense of expenseById.values()) {
-    if (deletedExpenseIds.has(expense._id)) continue;
-    expensesToDelete.set(String(expense._id), expense);
-    deletedExpenseIds.add(expense._id);
-    ownedExpenseIds.push(expense._id);
-  }
-  if (expensesToDelete.size > MAX_EXPENSE_WRITE_OPERATIONS) {
-    throw new Error("Hard delete requires resumable expense processing");
-  }
-  await applyExpenseWriteBatch(ctx, expenseDeleteOperations(expensesToDelete.values()));
-  await deleteBoundedOrphanVisibilityRows(ctx, account.id, MAX_EXPENSE_WRITE_OPERATIONS);
-  logHardDelete(baseLog, "delete_owned_expenses", {
-    deletedCount: ownedExpenseIds.length,
-    sampleIds: sampleIds(ownedExpenseIds)
-  });
-
-  const deletedFriendRecordIds: string[] = [];
-
-  const linkedById = await ctx.db
-    .query("account_friends")
-    .withIndex("by_linked_account_id", (q: any) => q.eq("linked_account_id", account.id))
-    .collect();
-  for (const fr of linkedById) {
-    await ctx.db.delete(fr._id);
-    deletedFriendRecordIds.push(fr._id);
-  }
-
-  const linkedByEmail = await ctx.db
-    .query("account_friends")
-    .withIndex("by_linked_account_email", (q: any) => q.eq("linked_account_email", account.email))
-    .collect();
-  for (const fr of linkedByEmail) {
-    if (deletedFriendRecordIds.includes(fr._id)) continue;
-    await ctx.db.delete(fr._id);
-    deletedFriendRecordIds.push(fr._id);
-  }
-
-  if (account.member_id) {
-    const linkedByMemberId = await ctx.db
-      .query("account_friends")
-      .withIndex("by_linked_member_id", (q: any) => q.eq("linked_member_id", account.member_id))
-      .collect();
-    for (const fr of linkedByMemberId) {
-      if (deletedFriendRecordIds.includes(fr._id)) continue;
-      await ctx.db.delete(fr._id);
-      deletedFriendRecordIds.push(fr._id);
-    }
-  }
-
-  logHardDelete(baseLog, "delete_linked_friend_records", {
-    deletedCount: deletedFriendRecordIds.length,
-    sampleIds: sampleIds(deletedFriendRecordIds)
-  });
-
-  const incomingRequests = await ctx.db
-    .query("link_requests")
-    .withIndex("by_recipient_email", (q: any) => q.eq("recipient_email", account.email))
-    .collect();
-  let deletedRequests = 0;
-  const requestIds: string[] = [];
-  for (const req of incomingRequests) {
-    await ctx.db.delete(req._id);
-    deletedRequests++;
-    requestIds.push(req._id);
-  }
-
-  const outgoingRequests = await ctx.db
-    .query("link_requests")
-    .withIndex("by_requester_id", (q: any) => q.eq("requester_id", account.id))
-    .collect();
-
-  for (const req of outgoingRequests) {
-    await ctx.db.delete(req._id);
-    deletedRequests++;
-    requestIds.push(req._id);
-  }
-  logHardDelete(baseLog, "delete_link_requests", {
-    deletedCount: deletedRequests,
-    sampleIds: sampleIds(requestIds)
-  });
-
-  const invites = await ctx.db
-    .query("invite_tokens")
-    .withIndex("by_creator_id", (q: any) => q.eq("creator_id", account.id))
-    .collect();
-  const inviteIds: string[] = [];
-  for (const invite of invites) {
-    await ctx.db.delete(invite._id);
-    inviteIds.push(invite._id);
-  }
-  logHardDelete(baseLog, "delete_invite_tokens", {
-    deletedCount: inviteIds.length,
-    sampleIds: sampleIds(inviteIds)
-  });
-
-  let aliasesDeleted = 0;
-  const aliasIds: string[] = [];
-  if (account.member_id) {
-    const aliasesAsCanonical = await ctx.db
-      .query("member_aliases")
-      .withIndex("by_canonical_member_id", (q: any) =>
-        q.eq("canonical_member_id", account.member_id!)
-      )
-      .collect();
-
-    for (const alias of aliasesAsCanonical) {
-      await ctx.db.delete(alias._id);
-      aliasesDeleted++;
-      aliasIds.push(alias._id);
-    }
-
-    const aliasesAsAlias = await ctx.db
-      .query("member_aliases")
-      .withIndex("by_alias_member_id", (q: any) => q.eq("alias_member_id", account.member_id!))
-      .collect();
-
-    for (const alias of aliasesAsAlias) {
-      await ctx.db.delete(alias._id);
-      aliasesDeleted++;
-      aliasIds.push(alias._id);
-    }
-  }
-  logHardDelete(baseLog, "delete_member_aliases", {
-    deletedCount: aliasesDeleted,
-    sampleIds: sampleIds(aliasIds)
-  });
-
-  await deleteAccountSyncState(ctx, account._id);
-  await ctx.db.delete(account._id);
-  logHardDelete(baseLog, "complete", {
-    friendsDeleted: friendIds.length,
-    groupsDeleted: groupIds.length,
-    groupExpensesDeleted: groupExpenseIds.length,
-    expensesDeleted: ownedExpenseIds.length,
-    linkedFriendRecordsDeleted: deletedFriendRecordIds.length,
-    linkRequestsDeleted: deletedRequests,
-    invitesDeleted: inviteIds.length,
-    aliasesDeleted
-  });
-
-  return {
-    success: true,
-    message: `Hard deleted account ${account.email}`,
-    friendsDeleted: friendIds.length,
-    groupsDeleted: groupIds.length,
-    expensesDeleted: ownedExpenseIds.length + groupExpenseIds.length,
-    linkedFriendRecordsDeleted: deletedFriendRecordIds.length,
-    aliasesDeleted
-  };
-}
-
 export const deleteSelfFriends = internalMutation({
   args: {},
   handler: async (ctx) => {
@@ -1047,7 +735,9 @@ export const deleteSelfFriends = internalMutation({
     for (const user of users) {
       const friends = await ctx.db
         .query("account_friends")
-        .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+        .withIndex("by_account_email", (q) =>
+          q.eq("account_email", user.email.trim().toLowerCase())
+        )
         .collect();
 
       let selfFriendsCount = 0;
@@ -1106,7 +796,12 @@ export const deleteAccountByEmail = internalMutation({
       return { success: false, message: "User not found" };
     }
 
-    return await performHardDelete(ctx, user, "deleteAccountByEmail");
+    const progress = await beginHardDeleteAccount(ctx, user);
+    return {
+      success: true,
+      message: "Hard deletion started",
+      requestId: progress.request_id
+    };
   }
 });
 
@@ -1191,14 +886,7 @@ export const deleteLinkedFriend = mutation({
       [...equivalentIds, ...(friend.local_alias_member_ids ?? [])].map(normalizeMemberId)
     );
 
-    const userAccount = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", accountEmail))
-      .unique();
-
-    if (!userAccount) {
-      return { success: false, message: "Account not found" };
-    }
+    const userAccount = user;
 
     let directGroupDeleted = false;
     let expensesDeleted = 0;
@@ -1496,7 +1184,7 @@ export const deleteUnlinkedFriend = mutation({
         await groupVisibilityBatch.patch(groupPlan.group._id, {
           owner_id: user._id,
           owner_account_id: user.id,
-          owner_email: user.email,
+          owner_email: user.email.trim().toLowerCase(),
           members: groupPlan.remainingMembers,
           updated_at: Date.now()
         });
@@ -1538,7 +1226,12 @@ export const hardDeleteAccount = internalMutation({
       return { success: false, message: "Account not found" };
     }
 
-    return await performHardDelete(ctx, account, "hardDeleteAccount");
+    const progress = await beginHardDeleteAccount(ctx, account);
+    return {
+      success: true,
+      message: "Hard deletion started",
+      requestId: progress.request_id
+    };
   }
 });
 
@@ -1800,9 +1493,18 @@ async function prepareSelfDeletionExpenseMutations(
     const ownerMatches =
       expense.owner_id === account._id ||
       expense.owner_account_id === account.id ||
-      normalizeEmail(expense.owner_email) === progress.account_email;
+      normalizeEmail(expense.owner_email) === normalizeEmail(progress.account_email);
     if (ownerMatches && !hasConsistentExpenseOwner(expense, account)) {
       throw new Error("Cannot delete records with a conflicting owner identity");
+    }
+    if (ownerMatches && progress.deletion_mode === "hard") {
+      plans.push({
+        expense,
+        patch: null,
+        participantAccounts: [],
+        visibilityRows: visibilityRows.get(expense.id) ?? []
+      });
+      continue;
     }
     const stewardMemberIds = expenseStewardMemberIds(expense, deletedMemberIds);
     await prepareSelfDeletionMemberAccounts(ctx, stewardMemberIds, budget, cache);
@@ -1822,7 +1524,7 @@ async function prepareSelfDeletionExpenseMutations(
       expense,
       deletedMemberIds,
       account.id,
-      progress.account_email,
+      normalizeEmail(progress.account_email) ?? progress.account_email,
       steward
     );
     const patchedExpense = { ...expense, ...patch };
@@ -2194,11 +1896,15 @@ async function advanceSelfDeletion(
         account.status === "deleted" ||
         progress.account_id !== account._id ||
         progress.account_auth_id !== account.id ||
-        progress.account_email !== normalizeEmail(account.email)
+        normalizeEmail(progress.account_email) !== normalizeEmail(account.email)
       ) {
         throw new Error("Account deletion fence does not match the authenticated account");
       }
-      if (!(await isSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY))) {
+      const groupVisibilityReady = await isSyncMaterializationReady(
+        ctx.db,
+        GROUP_VISIBILITY_MATERIALIZATION_KEY
+      );
+      if (!groupVisibilityReady && progress.deletion_mode !== "hard") {
         throw new Error("Account deletion is temporarily unavailable while data is prepared");
       }
       const memberIds = await collectSelfDeletionMemberIds(ctx, account);
@@ -2217,7 +1923,7 @@ async function advanceSelfDeletion(
           current_group_is_last: undefined,
           fence_activated: true,
           member_ids: memberIds,
-          group_visibility_ready_at_fence: true,
+          group_visibility_ready_at_fence: groupVisibilityReady,
           shared_group_scan_completed: undefined
         },
         1
@@ -2252,16 +1958,22 @@ async function advanceSelfDeletion(
               : [];
       let newlyUnlinked = 0;
       for (const friend of rows) {
-        if (normalizeEmail(friend.account_email) !== progress.account_email) newlyUnlinked += 1;
-        await ctx.db.patch(friend._id, {
-          has_linked_account: false,
-          linked_account_id: undefined,
-          linked_account_email: undefined,
-          linked_member_id: undefined,
-          link_state: "ghost",
-          status: "ghost",
-          updated_at: deletedAt
-        });
+        if (normalizeEmail(friend.account_email) !== normalizeEmail(progress.account_email)) {
+          newlyUnlinked += 1;
+        }
+        if (progress.deletion_mode === "hard") {
+          await ctx.db.delete(friend._id);
+        } else {
+          await ctx.db.patch(friend._id, {
+            has_linked_account: false,
+            linked_account_id: undefined,
+            linked_account_email: undefined,
+            linked_member_id: undefined,
+            link_state: "ghost",
+            status: "ghost",
+            updated_at: deletedAt
+          });
+        }
       }
       if (rows.length > 0) {
         return await updateSelfDeletionProgress(
@@ -2385,6 +2097,18 @@ async function advanceSelfDeletion(
       if (!hasConsistentGroupOwner(group, account)) {
         throw new Error("Cannot delete records with a conflicting owner identity");
       }
+      if (progress.deletion_mode === "hard") {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          {
+            phase: "owned_group_expenses_by_client_id",
+            current_group_id: group._id,
+            current_group_client_id: group.id
+          },
+          1
+        );
+      }
       const memberIds = group.members
         .map((member) => member.id)
         .filter((memberId) => !deletedMemberIds.has(normalizeMemberId(memberId)));
@@ -2408,7 +2132,7 @@ async function advanceSelfDeletion(
       await patchGroupWithVisibility(ctx, group._id, {
         owner_id: steward._id,
         owner_account_id: steward.id,
-        owner_email: steward.email,
+        owner_email: steward.email.trim().toLowerCase(),
         members: group.members.map((member) =>
           deletedMemberIds.has(normalizeMemberId(member.id))
             ? {
@@ -2664,6 +2388,52 @@ async function advanceSelfDeletion(
       );
     }
     case "tombstone_aliases": {
+      if (progress.deletion_mode === "hard") {
+        const provenanceAliases = await ctx.db
+          .query("member_aliases")
+          .withIndex("by_account_email", (q) => q.eq("account_email", progress.account_email))
+          .take(SELF_DELETE_BATCH_SIZE);
+        if (provenanceAliases.length > 0) {
+          for (const alias of provenanceAliases) await ctx.db.delete(alias._id);
+          return await updateSelfDeletionProgress(ctx, progress, {}, provenanceAliases.length);
+        }
+
+        const memberIndex = progress.member_index ?? 0;
+        const memberId = progress.member_ids[memberIndex];
+        if (memberId) {
+          const aliasesById = new Map<string, Doc<"member_aliases">>();
+          for (const alias of await ctx.db
+            .query("member_aliases")
+            .withIndex("by_canonical_member_id", (q) => q.eq("canonical_member_id", memberId))
+            .take(SELF_DELETE_BATCH_SIZE)) {
+            aliasesById.set(String(alias._id), alias);
+          }
+          for (const alias of await ctx.db
+            .query("member_aliases")
+            .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", memberId))
+            .take(SELF_DELETE_BATCH_SIZE)) {
+            aliasesById.set(String(alias._id), alias);
+          }
+          if (aliasesById.size > 0) {
+            for (const alias of aliasesById.values()) await ctx.db.delete(alias._id);
+            return await updateSelfDeletionProgress(ctx, progress, {}, aliasesById.size);
+          }
+          if (memberIndex + 1 < progress.member_ids.length) {
+            return await updateSelfDeletionProgress(
+              ctx,
+              progress,
+              { member_index: memberIndex + 1 },
+              1
+            );
+          }
+        }
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "delete_owned_friends", member_index: undefined },
+          1
+        );
+      }
       const aliases = await ctx.db
         .query("member_aliases")
         .withIndex("by_account_email", (q) => q.eq("account_email", progress.account_email))
@@ -2881,23 +2651,51 @@ async function advanceSelfDeletion(
         );
       }
 
-      await ctx.db.insert("account_deletion_receipts", {
-        auth_subject: progress.auth_subject,
-        request_id: progress.request_id,
-        deleted_at: deletedAt,
-        friendships_unlinked: progress.friendships_unlinked,
-        expenses_preserved: true
-      });
-      await ctx.db.patch(account._id, {
-        email: progress.tombstone_email,
-        display_name: "Deleted User",
-        first_name: undefined,
-        last_name: undefined,
-        profile_image_url: undefined,
-        status: "deleted",
-        deleted_at: deletedAt,
-        updated_at: deletedAt
-      });
+      const existingReceipt = await ctx.db
+        .query("account_deletion_receipts")
+        .withIndex("by_auth_subject", (q) => q.eq("auth_subject", progress.auth_subject))
+        .unique();
+      if (!existingReceipt) {
+        await ctx.db.insert("account_deletion_receipts", {
+          auth_subject: progress.auth_subject,
+          account_id: account._id,
+          account_email: progress.account_email,
+          normalized_account_email: normalizeEmail(progress.account_email),
+          request_id: progress.request_id,
+          deleted_at: deletedAt,
+          friendships_unlinked: progress.friendships_unlinked,
+          expenses_preserved: progress.deletion_mode !== "hard"
+        });
+      } else if (progress.deletion_mode === "hard") {
+        await ctx.db.patch(existingReceipt._id, {
+          account_id: account._id,
+          account_email: progress.account_email,
+          normalized_account_email: normalizeEmail(progress.account_email),
+          request_id: progress.request_id,
+          deleted_at: deletedAt,
+          friendships_unlinked: Math.max(
+            existingReceipt.friendships_unlinked,
+            progress.friendships_unlinked
+          ),
+          expenses_preserved: false
+        });
+      }
+      if (progress.deletion_mode === "hard") {
+        await deleteAccountSyncState(ctx, account._id);
+        await ctx.db.delete(account._id);
+      } else {
+        await ctx.db.patch(account._id, {
+          email: progress.tombstone_email,
+          normalized_email: normalizeEmail(progress.tombstone_email),
+          display_name: "Deleted User",
+          first_name: undefined,
+          last_name: undefined,
+          profile_image_url: undefined,
+          status: "deleted",
+          deleted_at: deletedAt,
+          updated_at: deletedAt
+        });
+      }
       await ctx.db.delete(progress._id);
       return null;
     }
@@ -2935,7 +2733,22 @@ export const selfDeleteAccount = mutation({
         message: "Account was already deleted"
       };
     }
-
+    if (!(await isCleanupEmailMaterializationReady(ctx))) {
+      await ensureCleanupEmailMaterializationScheduled(ctx);
+      return {
+        success: false,
+        inProgress: true,
+        state: "deleting" as const,
+        requestId: `maintenance:${identity.subject}`,
+        deletedAt: 0,
+        friendshipsUnlinked: 0,
+        expensesPreserved: false,
+        phase: "prepare_cleanup_email",
+        progressToken: `maintenance:${identity.subject}`,
+        processedCount: 0,
+        message: "Account maintenance is in progress; deletion will resume shortly"
+      };
+    }
     let progress = await ctx.db
       .query("account_deletion_progress")
       .withIndex("by_auth_subject", (q) => q.eq("auth_subject", identity.subject))
@@ -2945,20 +2758,29 @@ export const selfDeleteAccount = mutation({
       user = await ctx.db.get(progress.account_id);
     } else {
       const identityEmail = normalizeEmail(identity.email);
-      if (!identityEmail) throw new Error("Authenticated identity email is invalid");
-      user = await ctx.db
+      if (!identityEmail) {
+        throw new Error("Authenticated identity email is invalid");
+      }
+      const subjectUsers = await ctx.db
         .query("accounts")
-        .withIndex("by_email", (q) => q.eq("email", identityEmail))
-        .unique();
+        .withIndex("by_auth_id", (q) => q.eq("id", identity.subject))
+        .take(2);
+      if (subjectUsers.length > 1) {
+        throw new Error("Authenticated account identity is ambiguous");
+      }
+      user = subjectUsers[0] ?? null;
+      if (user && normalizeEmail(user.email) !== identityEmail) {
+        throw new Error("Authenticated identity does not match the account email");
+      }
     }
     if (!user || user.status === "deleted") throw new Error("User not found");
     if (user.id !== identity.subject) {
       throw new Error("Authenticated identity does not own this account");
     }
 
-    const accountEmail = normalizeEmail(user.email);
-    if (!accountEmail) throw new Error("User email is invalid");
-    if (args.accountEmail && normalizeEmail(args.accountEmail) !== accountEmail) {
+    const normalizedAccountEmail = normalizeEmail(user.email);
+    if (!normalizedAccountEmail) throw new Error("User email is invalid");
+    if (args.accountEmail && normalizeEmail(args.accountEmail) !== normalizedAccountEmail) {
       throw new Error("Can only delete your own account");
     }
 
@@ -2966,9 +2788,16 @@ export const selfDeleteAccount = mutation({
       if (
         progress.account_id !== user._id ||
         progress.account_auth_id !== user.id ||
-        progress.account_email !== accountEmail
+        normalizeEmail(progress.account_email) !== normalizedAccountEmail
       ) {
         throw new Error("Account deletion progress does not match the authenticated account");
+      }
+      if (progress.account_email !== normalizedAccountEmail) {
+        await ctx.db.patch(progress._id, {
+          account_email: normalizedAccountEmail,
+          updated_at: Date.now()
+        });
+        progress = (await ctx.db.get(progress._id)) ?? progress;
       }
       if (
         (progress.fence_activated && user.status !== "deleting") ||
@@ -3016,10 +2845,11 @@ export const selfDeleteAccount = mutation({
         auth_subject: identity.subject,
         account_id: user._id,
         account_auth_id: user.id,
-        account_email: accountEmail,
+        account_email: normalizedAccountEmail,
         member_ids: memberIds,
         request_id: user.id,
         tombstone_email: `deleted+${user._id}@payback.invalid`,
+        deletion_mode: "soft",
         phase: "preflight_groups_owner_id",
         fence_activated: false,
         friendships_unlinked: 0,
@@ -3052,5 +2882,181 @@ export const selfDeleteAccount = mutation({
       processedCount: progress.processed_count + 1,
       message: "Account deletion completed"
     };
+  }
+});
+
+export async function beginHardDeleteAccount(ctx: MutationCtx, account: Doc<"accounts">) {
+  const [progressByAccount, progressBySubject] = await Promise.all([
+    ctx.db
+      .query("account_deletion_progress")
+      .withIndex("by_account_id", (query) => query.eq("account_id", account._id))
+      .unique(),
+    ctx.db
+      .query("account_deletion_progress")
+      .withIndex("by_auth_subject", (query) => query.eq("auth_subject", account.id))
+      .unique()
+  ]);
+  if (progressByAccount && progressBySubject && progressByAccount._id !== progressBySubject._id) {
+    throw new Error("Conflicting account deletion progress requires maintenance");
+  }
+  const existing = progressByAccount ?? progressBySubject;
+  if (existing) {
+    const accountEmail = normalizeEmail(account.email);
+    if (
+      existing.account_id !== account._id ||
+      existing.account_auth_id !== account.id ||
+      existing.auth_subject !== account.id
+    ) {
+      throw new Error("Hard deletion progress does not match the account identity");
+    }
+    if (normalizeEmail(existing.account_email) !== normalizeEmail(accountEmail)) {
+      throw new Error("Hard deletion progress does not match the account email");
+    }
+    if (existing.account_email !== accountEmail) {
+      await ctx.db.patch(existing._id, { account_email: accountEmail, updated_at: Date.now() });
+    }
+    if (existing.deletion_mode !== "hard") {
+      const canPromoteWithoutReconciliation =
+        existing.phase.startsWith("preflight_") || existing.phase === "activate_deletion_fence";
+      if (!canPromoteWithoutReconciliation) {
+        throw new Error(
+          "Soft deletion is already applying changes and cannot be promoted without reconciliation"
+        );
+      }
+      const isAlreadyFenced = existing.fence_activated === true || account.status === "deleting";
+      await ctx.db.patch(existing._id, {
+        deletion_mode: "hard",
+        phase: "preflight_groups_owner_id",
+        cursor: undefined,
+        next_cursor: undefined,
+        member_index: undefined,
+        current_group_id: undefined,
+        current_group_client_id: undefined,
+        current_group_is_last: undefined,
+        fence_activated: isAlreadyFenced,
+        group_visibility_ready_at_fence: isAlreadyFenced
+          ? existing.group_visibility_ready_at_fence
+          : undefined,
+        shared_group_scan_completed: undefined,
+        hard_delete_status: "pending",
+        hard_delete_retry_count: 0,
+        hard_delete_last_error: undefined,
+        updated_at: Date.now()
+      });
+    } else if (existing.hard_delete_status === "failed") {
+      await ctx.db.patch(existing._id, {
+        hard_delete_status: "pending",
+        hard_delete_retry_count: 0,
+        hard_delete_last_error: undefined,
+        updated_at: Date.now()
+      });
+    }
+    await ctx.scheduler.runAfter(0, internal.cleanup.advanceHardDeleteAccount, {
+      progressId: existing._id
+    });
+    return (await ctx.db.get(existing._id)) ?? existing;
+  }
+  if (account.status === "deleting") {
+    throw new Error("Account deletion progress is missing for a fenced account");
+  }
+
+  const memberIds = await collectSelfDeletionMemberIds(ctx, account);
+  const accountEmail = normalizeEmail(account.email);
+  if (!accountEmail) throw new Error("Hard deletion account email is invalid");
+  const now = Date.now();
+  const progressId = await ctx.db.insert("account_deletion_progress", {
+    auth_subject: account.id,
+    account_id: account._id,
+    account_auth_id: account.id,
+    account_email: accountEmail,
+    member_ids: memberIds,
+    request_id: `admin:${crypto.randomUUID()}`,
+    tombstone_email: `deleted+${account._id}@payback.invalid`,
+    deletion_mode: "hard",
+    hard_delete_status: "pending",
+    hard_delete_retry_count: 0,
+    phase: "preflight_groups_owner_id",
+    fence_activated: account.status === "deleted",
+    group_visibility_ready_at_fence: account.status === "deleted" ? false : undefined,
+    shared_group_scan_completed: account.status === "deleted" ? false : undefined,
+    friendships_unlinked: 0,
+    processed_count: 0,
+    started_at: now,
+    updated_at: now
+  });
+  const progress = await ctx.db.get(progressId);
+  if (!progress) throw new Error("Unable to initialize hard deletion");
+  await ctx.scheduler.runAfter(0, internal.cleanup.advanceHardDeleteAccount, { progressId });
+  return progress;
+}
+
+export const advanceHardDeleteAccountStep = internalMutation({
+  args: { progressId: v.id("account_deletion_progress") },
+  handler: async (ctx, args) => {
+    const progress = await ctx.db.get(args.progressId);
+    if (!progress) return null;
+    if (progress.hard_delete_status === "failed") return null;
+    if (progress.deletion_mode !== "hard") {
+      throw new Error("Hard deletion worker received a soft deletion request");
+    }
+    if (!(await isCleanupEmailMaterializationReady(ctx))) {
+      await ensureCleanupEmailMaterializationScheduled(ctx);
+      await ctx.scheduler.runAfter(2_000, internal.cleanup.advanceHardDeleteAccount, {
+        progressId: progress._id
+      });
+      return null;
+    }
+    const account = await ctx.db.get(progress.account_id);
+    if (!account) throw new Error("Hard deletion account no longer exists");
+    const next = await advanceSelfDeletion(ctx, progress, account);
+    if (next) {
+      await ctx.scheduler.runAfter(0, internal.cleanup.advanceHardDeleteAccount, {
+        progressId: next._id
+      });
+    }
+    return null;
+  }
+});
+
+export const recordHardDeleteFailure = internalMutation({
+  args: { progressId: v.id("account_deletion_progress"), error: v.string() },
+  handler: async (ctx, args) => {
+    const progress = await ctx.db.get(args.progressId);
+    if (!progress || progress.deletion_mode !== "hard") return null;
+    const retryCount = (progress.hard_delete_retry_count ?? 0) + 1;
+    if (retryCount < 3) {
+      await ctx.db.patch(progress._id, {
+        hard_delete_status: "pending",
+        hard_delete_retry_count: retryCount,
+        hard_delete_last_error: args.error.slice(0, 256),
+        updated_at: Date.now()
+      });
+      await ctx.scheduler.runAfter(0, internal.cleanup.advanceHardDeleteAccount, {
+        progressId: progress._id
+      });
+    } else {
+      await ctx.db.patch(progress._id, {
+        hard_delete_status: "failed",
+        hard_delete_retry_count: retryCount,
+        hard_delete_last_error: args.error.slice(0, 256),
+        updated_at: Date.now()
+      });
+    }
+    return null;
+  }
+});
+
+export const advanceHardDeleteAccount = internalAction({
+  args: { progressId: v.id("account_deletion_progress") },
+  handler: async (ctx, args) => {
+    try {
+      await ctx.runMutation(internal.cleanup.advanceHardDeleteAccountStep, args);
+    } catch (error) {
+      await ctx.runMutation(internal.cleanup.recordHardDeleteFailure, {
+        progressId: args.progressId,
+        error: String(error)
+      });
+    }
+    return null;
   }
 });

@@ -1,4 +1,12 @@
-import { mutation, query, action, MutationCtx } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  mutation,
+  query,
+  action,
+  MutationCtx
+} from "./_generated/server";
+import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { Doc } from "./_generated/dataModel";
 import { getRandomAvatarColor } from "./utils";
@@ -6,17 +14,31 @@ import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./a
 import { checkRateLimit } from "./rateLimit";
 import {
   assertIdentityMaterializationReady,
+  assertMemberIdentityNotCleanupFenced,
   findAliasByAliasMemberId,
   findAccountByAuthIdOrDocId,
+  findAccountByMemberId,
+  findAccountsByEmailIdentity,
   normalizeMemberId,
   syncAccountAliasMaterialization
 } from "./identity";
-import { assertAccountCanAcceptChanges } from "./helpers";
+import {
+  assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
+  resolveAuthenticatedAccount
+} from "./helpers";
 import { GroupVisibilityWriteBatch } from "./groupVisibility";
 import { applyExpenseWriteBatch, MAX_EXPENSE_WRITE_OPERATIONS } from "./expenseWrites";
+import { inferOrphanCleanupMetadata, processOrphanCleanupStep } from "./orphanCleanup";
+import { beginHardDeleteAccount } from "./cleanup";
+import {
+  ensureCleanupEmailMaterializationScheduled,
+  isCleanupEmailMaterializationReady,
+  persistCleanupEmailMaterializationFailure,
+  runCleanupEmailMaterializationStep
+} from "./cleanupEmailMaterialization";
 
 const MAX_SAMPLE_IDS = 10;
-const MAX_EQUIVALENT_MEMBER_IDS = 50;
 const MAX_ORPHAN_CLEANUP_GROUPS = 256;
 
 const sampleIds = (ids: string[]) => ids.slice(0, MAX_SAMPLE_IDS);
@@ -48,23 +70,283 @@ async function deleteBoundedOrphanVisibility(
   for (const row of rows) await ctx.db.delete(row._id);
 }
 
-async function deleteOrphanAccountSyncState(ctx: MutationCtx, email: string): Promise<void> {
-  const accounts = await ctx.db
-    .query("accounts")
+const MAX_EQUIVALENT_MEMBER_IDS = 50;
+// Stay well below the iOS preparation deadline so one login attempt can recover a lost worker.
+const ORPHAN_JOB_STALE_MS = 30_000;
+
+async function findOrphanCleanupJob(ctx: MutationCtx, email: string) {
+  return await ctx.db
+    .query("orphan_cleanup_jobs")
     .withIndex("by_email", (query) => query.eq("email", email))
-    .take(2);
-  if (accounts.length > 1) throw new Error(`Account email ${email} is not unique`);
-  const account = accounts[0];
-  if (!account) return;
-  await deleteBoundedOrphanVisibility(ctx, account.id);
-  const states = await ctx.db
-    .query("account_sync_state")
-    .withIndex("by_account_id", (query) => query.eq("account_id", account._id))
-    .take(2);
-  if (states.length > 1) {
-    throw new Error(`Sync maintenance required: duplicate account state ${String(account._id)}`);
+    .unique();
+}
+
+async function scheduleOrphanCleanupJob(ctx: MutationCtx, job: Doc<"orphan_cleanup_jobs">) {
+  await ctx.scheduler.runAfter(0, internal.users.advanceOrphanCleanupJob, {
+    jobId: job._id
+  });
+}
+
+export async function resumeOrphanCleanupJob(
+  ctx: MutationCtx,
+  rawEmail: string,
+  resetDerivedState: boolean
+) {
+  const email = rawEmail.trim().toLowerCase();
+  if (!email) throw new Error("Orphan cleanup email is invalid");
+  const job = await findOrphanCleanupJob(ctx, email);
+  if (!job) throw new Error("Orphan cleanup job not found");
+  if (job.status === "complete") return job;
+  const previousFenceGeneration = job.member_fence_generation ?? 0;
+  await ctx.db.patch(job._id, {
+    status: "pending",
+    retry_count: 0,
+    last_error: undefined,
+    member_fence_generation: previousFenceGeneration + 1,
+    member_fence_complete: false,
+    member_fence_index: 0,
+    member_fence_release_pending: undefined,
+    ...(resetDerivedState
+      ? {
+          subject: job.requested_subject ?? `orphan:${email}`,
+          account_id: job.requested_account_id,
+          member_ids: job.requested_member_ids ?? [],
+          account_scan_cursor: undefined,
+          account_scan_complete: false,
+          matched_account_id: undefined,
+          orphan_scan_phase: "groups_source_email" as const,
+          orphan_scan_cursor: undefined,
+          linked_scan_phase: "aliases_source_email" as const,
+          linked_scan_cursor: undefined,
+          member_scan_complete: false,
+          member_scan_index: 0,
+          cleanup_member_index: undefined,
+          metadata_refresh_complete: undefined
+        }
+      : {}),
+    updated_at: Date.now()
+  });
+  const resumed = await ctx.db.get(job._id);
+  if (!resumed) throw new Error("Unable to resume orphan cleanup");
+  await ctx.scheduler.runAfter(0, internal.users.releaseOrphanCleanupMemberFences, {
+    jobId: job._id,
+    generation: previousFenceGeneration
+  });
+  await scheduleOrphanCleanupJob(ctx, resumed);
+  return resumed;
+}
+
+export async function enqueueOrphanCleanupJob(
+  ctx: MutationCtx,
+  rawIdentity: {
+    email: string;
+    sourceEmail?: string;
+    subject?: string;
+    accountId?: Doc<"accounts">["_id"];
+    memberIds?: string[];
+    mode: "precreate" | "hard";
+    allowLiveAccountHardDelete?: boolean;
   }
-  if (states[0]) await ctx.db.delete(states[0]._id);
+) {
+  const email = rawIdentity.email.trim().toLowerCase();
+  if (!email) throw new Error("Orphan cleanup email is invalid");
+  const requestedMemberIds = rawIdentity.memberIds
+    ? Array.from(new Set(rawIdentity.memberIds.map((memberId) => memberId.trim()).filter(Boolean)))
+    : undefined;
+  const existing = await findOrphanCleanupJob(ctx, email);
+  const now = Date.now();
+  if (existing) {
+    const mode =
+      existing.status === "pending" && existing.mode === "hard" ? "hard" : rawIdentity.mode;
+    const allowLiveAccountHardDelete =
+      existing.status === "pending"
+        ? existing.allow_live_account_hard_delete === true ||
+          rawIdentity.allowLiveAccountHardDelete === true
+        : rawIdentity.allowLiveAccountHardDelete === true;
+    const sourceEmail = rawIdentity.sourceEmail?.trim() || existing.source_email;
+    const subject = rawIdentity.subject?.trim() || existing.subject;
+    const accountId = rawIdentity.accountId ?? existing.account_id;
+    const memberIds = requestedMemberIds ?? existing.member_ids;
+    const requestedSubject = rawIdentity.subject?.trim() || existing.requested_subject;
+    const requestedAccountId = rawIdentity.accountId ?? existing.requested_account_id;
+    const requestedIdentityMemberIds = requestedMemberIds ?? existing.requested_member_ids;
+    const previousFenceGeneration = existing.member_fence_generation ?? 0;
+    if (existing.status === "complete") {
+      await ctx.db.patch(existing._id, {
+        source_email: sourceEmail,
+        subject,
+        account_id: accountId,
+        member_ids: memberIds,
+        requested_subject: requestedSubject,
+        requested_account_id: requestedAccountId,
+        requested_member_ids: requestedIdentityMemberIds,
+        mode,
+        allow_live_account_hard_delete: allowLiveAccountHardDelete,
+        status: "pending",
+        processed_count: 0,
+        retry_count: 0,
+        last_error: undefined,
+        account_scan_cursor: undefined,
+        account_scan_complete: false,
+        matched_account_id: undefined,
+        orphan_scan_phase: "groups_source_email",
+        orphan_scan_cursor: undefined,
+        linked_scan_phase: "aliases_source_email",
+        linked_scan_cursor: undefined,
+        member_scan_complete: false,
+        member_scan_index: 0,
+        member_fence_complete: false,
+        member_fence_index: 0,
+        member_fence_generation: previousFenceGeneration + 1,
+        member_fence_release_pending: undefined,
+        cleanup_member_index: undefined,
+        metadata_refresh_complete: undefined,
+        updated_at: now
+      });
+      const restarted = await ctx.db.get(existing._id);
+      if (!restarted) throw new Error("Unable to restart orphan cleanup");
+      await ctx.scheduler.runAfter(0, internal.users.releaseOrphanCleanupMemberFences, {
+        jobId: existing._id,
+        generation: previousFenceGeneration
+      });
+      const resetJob = await ctx.db.get(existing._id);
+      if (resetJob) await scheduleOrphanCleanupJob(ctx, resetJob);
+      await scheduleOrphanCleanupJob(ctx, restarted);
+      return restarted;
+    }
+    if (existing.status === "failed") {
+      if (existing.retry_count >= 3) {
+        throw new Error("Orphan cleanup requires manual maintenance");
+      }
+      await ctx.db.patch(existing._id, {
+        source_email: sourceEmail,
+        subject,
+        account_id: accountId,
+        member_ids: memberIds,
+        requested_subject: requestedSubject,
+        requested_account_id: requestedAccountId,
+        requested_member_ids: requestedIdentityMemberIds,
+        mode,
+        allow_live_account_hard_delete: allowLiveAccountHardDelete,
+        status: "pending",
+        retry_count: existing.retry_count + 1,
+        last_error: undefined,
+        account_scan_cursor: undefined,
+        account_scan_complete: false,
+        matched_account_id: undefined,
+        orphan_scan_phase: "groups_source_email",
+        orphan_scan_cursor: undefined,
+        linked_scan_phase: "aliases_source_email",
+        linked_scan_cursor: undefined,
+        member_scan_complete: false,
+        member_scan_index: 0,
+        member_fence_complete: false,
+        member_fence_index: 0,
+        member_fence_generation: previousFenceGeneration + 1,
+        member_fence_release_pending: undefined,
+        cleanup_member_index: undefined,
+        metadata_refresh_complete: undefined,
+        updated_at: now
+      });
+      const retry = await ctx.db.get(existing._id);
+      if (!retry) throw new Error("Unable to retry orphan cleanup");
+      await ctx.scheduler.runAfter(0, internal.users.releaseOrphanCleanupMemberFences, {
+        jobId: existing._id,
+        generation: previousFenceGeneration
+      });
+      await scheduleOrphanCleanupJob(ctx, retry);
+      return retry;
+    }
+    const identityChanged =
+      mode !== existing.mode ||
+      allowLiveAccountHardDelete !== existing.allow_live_account_hard_delete ||
+      sourceEmail !== existing.source_email ||
+      accountId !== existing.account_id ||
+      memberIds.length !== existing.member_ids.length ||
+      memberIds.some((memberId, index) => memberId !== existing.member_ids[index]) ||
+      requestedSubject !== existing.requested_subject ||
+      requestedAccountId !== existing.requested_account_id ||
+      (requestedIdentityMemberIds ?? []).length !== (existing.requested_member_ids ?? []).length ||
+      (requestedIdentityMemberIds ?? []).some(
+        (memberId, index) => memberId !== existing.requested_member_ids?.[index]
+      );
+    if (identityChanged) {
+      await ctx.db.patch(existing._id, {
+        source_email: sourceEmail,
+        subject,
+        account_id: accountId,
+        member_ids: memberIds,
+        requested_subject: requestedSubject,
+        requested_account_id: requestedAccountId,
+        requested_member_ids: requestedIdentityMemberIds,
+        mode,
+        allow_live_account_hard_delete: allowLiveAccountHardDelete,
+        account_scan_cursor: undefined,
+        account_scan_complete: false,
+        matched_account_id: undefined,
+        orphan_scan_phase: "groups_source_email",
+        orphan_scan_cursor: undefined,
+        linked_scan_phase: "aliases_source_email",
+        linked_scan_cursor: undefined,
+        member_scan_complete: false,
+        member_scan_index: 0,
+        member_fence_complete: false,
+        member_fence_index: 0,
+        member_fence_generation: previousFenceGeneration + 1,
+        member_fence_release_pending: undefined,
+        cleanup_member_index: undefined,
+        metadata_refresh_complete: undefined,
+        updated_at: now
+      });
+      await ctx.scheduler.runAfter(0, internal.users.releaseOrphanCleanupMemberFences, {
+        jobId: existing._id,
+        generation: previousFenceGeneration
+      });
+      const refreshedJob = await ctx.db.get(existing._id);
+      if (refreshedJob) await scheduleOrphanCleanupJob(ctx, refreshedJob);
+    }
+    if (now - existing.updated_at >= ORPHAN_JOB_STALE_MS) {
+      await ctx.db.patch(existing._id, { updated_at: now });
+      await scheduleOrphanCleanupJob(ctx, (await ctx.db.get(existing._id)) ?? existing);
+    }
+    return (await ctx.db.get(existing._id)) ?? existing;
+  }
+
+  const inferred = await inferOrphanCleanupMetadata(
+    ctx,
+    rawIdentity.sourceEmail ?? rawIdentity.email
+  );
+  const subject = rawIdentity.subject?.trim() || inferred.subject;
+  if (!subject) throw new Error("Orphan cleanup identity is invalid");
+
+  const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+    email,
+    source_email: rawIdentity.sourceEmail?.trim() || inferred.sourceEmail,
+    subject,
+    account_id: rawIdentity.accountId ?? inferred.accountId,
+    member_ids: requestedMemberIds ?? inferred.memberIds,
+    requested_subject: rawIdentity.subject?.trim(),
+    requested_account_id: rawIdentity.accountId,
+    requested_member_ids: requestedMemberIds,
+    mode: rawIdentity.mode,
+    allow_live_account_hard_delete: rawIdentity.allowLiveAccountHardDelete,
+    status: "pending",
+    processed_count: 0,
+    retry_count: 0,
+    account_scan_complete: false,
+    orphan_scan_phase: "groups_source_email",
+    member_scan_complete: false,
+    member_scan_index: 0,
+    member_fence_complete: false,
+    member_fence_index: 0,
+    member_fence_generation: 0,
+    created_at: now,
+    updated_at: now
+  });
+  const job = await ctx.db.get(jobId);
+  if (!job) throw new Error("Unable to initialize orphan cleanup");
+  await scheduleOrphanCleanupJob(ctx, job);
+  return job;
 }
 
 export interface CreateAccountInput {
@@ -84,6 +366,7 @@ export async function createAccountRecord(
   return ctx.db.insert("accounts", {
     id: input.id,
     email: input.email,
+    normalized_email: input.email.trim().toLowerCase(),
     display_name: input.display_name,
     first_name: input.first_name,
     last_name: input.last_name,
@@ -109,11 +392,12 @@ const logSelfHeal = (
   );
 };
 
-export async function cleanupOrphanedDataForEmail(
+async function cleanupOrphanedDataForEmailLegacy(
   ctx: any,
   identity: { email: string; subject: string }
 ) {
   const { email, subject } = identity;
+  const normalizedEmail = email.trim().toLowerCase();
   const operationId = crypto.randomUUID();
   const baseLog = { operationId, email, subject };
 
@@ -157,6 +441,15 @@ export async function cleanupOrphanedDataForEmail(
     groupsById.set(group._id, group);
   }
   if (groupsById.size > MAX_ORPHAN_CLEANUP_GROUPS) throw orphanCleanupLimitError("groups");
+  for (const group of groupsById.values()) {
+    if (
+      group.owner_account_id !== subject ||
+      group.owner_email.trim().toLowerCase() !== normalizedEmail ||
+      (await ctx.db.get(group.owner_id))
+    ) {
+      throw new Error("Cannot clean a group with conflicting live ownership");
+    }
+  }
 
   const groupIds: string[] = [];
   const groupExpenseIds: string[] = [];
@@ -174,6 +467,13 @@ export async function cleanupOrphanedDataForEmail(
     }
 
     for (const expense of groupExpenses) {
+      if (
+        expense.owner_account_id !== subject ||
+        expense.owner_email.trim().toLowerCase() !== normalizedEmail ||
+        (await ctx.db.get(expense.owner_id))
+      ) {
+        throw new Error("Cannot clean an expense with conflicting live ownership");
+      }
       if (deletedExpenseIds.has(expense._id)) continue;
       expensesToDelete.set(String(expense._id), expense);
       deletedExpenseIds.add(expense._id);
@@ -217,6 +517,13 @@ export async function cleanupOrphanedDataForEmail(
 
   const ownedExpenseIds: string[] = [];
   for (const expense of expenseById.values()) {
+    if (
+      expense.owner_account_id !== subject ||
+      expense.owner_email.trim().toLowerCase() !== normalizedEmail ||
+      (await ctx.db.get(expense.owner_id))
+    ) {
+      throw new Error("Cannot clean an expense with conflicting live ownership");
+    }
     if (deletedExpenseIds.has(expense._id)) continue;
     expensesToDelete.set(String(expense._id), expense);
     deletedExpenseIds.add(expense._id);
@@ -253,10 +560,38 @@ export async function cleanupOrphanedDataForEmail(
     if (!friend.has_linked_account && !friend.linked_account_id && !friend.linked_account_email) {
       continue;
     }
+    const rawLinkedEmail = friend.linked_account_email?.trim();
+    const candidates = new Map<string, Doc<"accounts">>();
+    const byId = friend.linked_account_id
+      ? await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id)
+      : null;
+    const byEmail = rawLinkedEmail ? await findAccountsByEmailIdentity(ctx.db, rawLinkedEmail) : [];
+    const byMember = friend.linked_member_id
+      ? await findAccountByMemberId(ctx.db, friend.linked_member_id)
+      : null;
+    for (const account of [byId, ...byEmail, byMember]) {
+      if (account) candidates.set(account.id, account);
+    }
+    if (candidates.size > 1) {
+      throw new Error("Cannot clean a friend with conflicting linked ownership");
+    }
+    const survivingAccount = Array.from(candidates.values())[0];
+    if (survivingAccount && survivingAccount.status !== "deleted") {
+      await ctx.db.patch(friend._id, {
+        has_linked_account: true,
+        linked_account_id: survivingAccount.id,
+        linked_account_email: survivingAccount.email.trim().toLowerCase(),
+        linked_member_id: survivingAccount.member_id,
+        link_state: "linked",
+        updated_at: Date.now()
+      });
+      continue;
+    }
     await ctx.db.patch(friend._id, {
       has_linked_account: false,
       linked_account_id: undefined,
       linked_account_email: undefined,
+      linked_member_id: undefined,
       updated_at: Date.now()
     });
     unlinkedIds.push(friend._id);
@@ -334,146 +669,22 @@ export async function cleanupOrphanedDataForEmail(
   };
 }
 
-export async function hardCleanupOrphanedAccount(ctx: any, { email }: { email: string }) {
-  const operationId = crypto.randomUUID();
-
-  const friends = await ctx.db
-    .query("account_friends")
-    .withIndex("by_account_email", (q: any) => q.eq("account_email", email))
-    .collect();
-
-  let friendsDeleted = 0;
-  for (const friend of friends) {
-    await ctx.db.delete(friend._id);
-    friendsDeleted++;
-  }
-
-  const linkedByEmail = await ctx.db
-    .query("account_friends")
-    .withIndex("by_linked_account_email", (q: any) => q.eq("linked_account_email", email))
-    .collect();
-
-  let linkedFriendsDeleted = 0;
-  for (const friend of linkedByEmail) {
-    await ctx.db.delete(friend._id);
-    linkedFriendsDeleted++;
-  }
-
-  const groupsByEmail = await ctx.db
-    .query("groups")
-    .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
-    .take(MAX_ORPHAN_CLEANUP_GROUPS + 1);
-  if (groupsByEmail.length > MAX_ORPHAN_CLEANUP_GROUPS) {
-    throw orphanCleanupLimitError("groups");
-  }
-
-  let groupsDeleted = 0;
-  const expensesToDelete = new Map<string, Doc<"expenses">>();
-  const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
-  for (const group of groupsByEmail) {
-    const remainingExpenseCapacity = MAX_EXPENSE_WRITE_OPERATIONS - expensesToDelete.size;
-    const expenses = await ctx.db
-      .query("expenses")
-      .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-      .take(remainingExpenseCapacity + 1);
-    if (expenses.length > remainingExpenseCapacity) {
-      throw orphanCleanupLimitError("expenses");
-    }
-
-    for (const expense of expenses) {
-      expensesToDelete.set(String(expense._id), expense);
-    }
-
-    await groupVisibilityBatch.delete(group._id);
-    groupsDeleted++;
-  }
-  await groupVisibilityBatch.flush();
-
-  const expensesByEmail = await ctx.db
-    .query("expenses")
-    .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
-    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
-  if (expensesByEmail.length > MAX_EXPENSE_WRITE_OPERATIONS) {
-    throw orphanCleanupLimitError("expenses");
-  }
-
-  for (const expense of expensesByEmail) {
-    expensesToDelete.set(String(expense._id), expense);
-  }
-  await deleteOrphanCleanupExpenses(ctx, expensesToDelete);
-  const expensesDeleted = expensesToDelete.size;
-  await deleteOrphanAccountSyncState(ctx, email);
-
-  const linkRequests = await ctx.db
-    .query("link_requests")
-    .withIndex("by_recipient_email", (q: any) => q.eq("recipient_email", email))
-    .collect();
-
-  let requestsDeleted = 0;
-  for (const req of linkRequests) {
-    await ctx.db.delete(req._id);
-    requestsDeleted++;
-  }
-
-  const outgoingRequests = await ctx.db
-    .query("link_requests")
-    .withIndex("by_requester_email", (q: any) => q.eq("requester_email", email))
-    .collect();
-
-  for (const req of outgoingRequests) {
-    await ctx.db.delete(req._id);
-    requestsDeleted++;
-  }
-
-  const invites = await ctx.db
-    .query("invite_tokens")
-    .withIndex("by_creator_email", (q: any) => q.eq("creator_email", email))
-    .collect();
-
-  let invitesDeleted = 0;
-  for (const invite of invites) {
-    await ctx.db.delete(invite._id);
-    invitesDeleted++;
-  }
-
-  console.log(
-    JSON.stringify({
-      scope: "users.hardCleanupOrphanedAccount",
-      operationId,
-      email,
-      friendsDeleted,
-      linkedFriendsDeleted,
-      groupsDeleted,
-      expensesDeleted,
-      requestsDeleted,
-      invitesDeleted
-    })
-  );
-
-  return {
-    operationId,
-    friendsDeleted,
-    linkedFriendsDeleted,
-    groupsDeleted,
-    expensesDeleted,
-    requestsDeleted,
-    invitesDeleted
-  };
-}
-
 /**
  * Stores or updates the current user in the `accounts` table.
  * Should be called after authentication to ensure the user exists in our DB.
  */
 export const store = mutation({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    clientCapability: v.optional(v.literal("resumable_orphan_cleanup_v1"))
+  },
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       throw new Error("Called storeUser without authentication present");
     }
-
-    await checkRateLimit(ctx, identity.subject, "users:store", 10);
+    const rawIdentityEmail = identity.email?.trim();
+    const identityEmail = rawIdentityEmail?.toLowerCase();
+    if (!identityEmail) throw new Error("Authenticated identity email is invalid");
 
     const deletionReceipt = await ctx.db
       .query("account_deletion_receipts")
@@ -485,17 +696,37 @@ export const store = mutation({
 
     // Check if we already have an account for this user
 
-    const user = await ctx.db
+    const emailUsers = await findAccountsByEmailIdentity(ctx.db, rawIdentityEmail ?? identityEmail);
+    if (emailUsers.length > 1) {
+      throw new Error("Duplicate accounts exist for the authenticated email");
+    }
+    let user = emailUsers[0] ?? null;
+
+    const accountBySubject = await ctx.db
       .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
+      .withIndex("by_auth_id", (query) => query.eq("id", identity.subject))
       .unique();
+    if (!user && accountBySubject?.email.trim().toLowerCase() === identityEmail) {
+      user = accountBySubject;
+    }
+    if (user && accountBySubject && user._id !== accountBySubject._id) {
+      throw new Error("Authenticated identity resolves to conflicting accounts");
+    }
 
     if (user !== null) {
+      if (user.id !== identity.subject) {
+        throw new Error("Authenticated identity does not own the email-matched account");
+      }
+      await checkRateLimit(ctx, identity.subject, "users:store", 10);
       assertAccountCanAcceptChanges(user);
       // Update existing user if needed (e.g. name changed)
-      if (user.display_name !== identity.name && identity.name) {
+      if (
+        (user.display_name !== identity.name && identity.name) ||
+        user.normalized_email !== identityEmail
+      ) {
         await ctx.db.patch(user._id, {
-          display_name: identity.name,
+          normalized_email: identityEmail,
+          display_name: identity.name || user.display_name,
           first_name: identity.givenName || user.first_name,
           last_name: identity.familyName || user.last_name,
           updated_at: Date.now()
@@ -504,22 +735,559 @@ export const store = mutation({
       return user._id;
     }
 
-    await cleanupOrphanedDataForEmail(ctx, {
-      email: identity.email!,
-      subject: identity.subject
-    });
+    if (accountBySubject) {
+      throw new Error("Authenticated identity is already bound to another account email");
+    }
+
+    if (args.clientCapability === undefined) {
+      if (!(await isCleanupEmailMaterializationReady(ctx))) {
+        await ensureCleanupEmailMaterializationScheduled(ctx);
+        return `preparing:${identity.subject}`;
+      }
+      await cleanupOrphanedDataForEmailLegacy(ctx, {
+        email: identityEmail,
+        subject: identity.subject
+      });
+    } else {
+      const cleanupJob = await findOrphanCleanupJob(ctx, identityEmail);
+      if (cleanupJob?.status === "pending") {
+        if (Date.now() - cleanupJob.updated_at >= ORPHAN_JOB_STALE_MS) {
+          await ctx.db.patch(cleanupJob._id, { updated_at: Date.now() });
+          await scheduleOrphanCleanupJob(ctx, cleanupJob);
+        }
+        return `preparing:${identity.subject}`;
+      }
+      if (cleanupJob?.status === "failed") {
+        throw new Error("Account preparation requires support");
+      }
+
+      if (!cleanupJob) {
+        const metadata = await inferOrphanCleanupMetadata(ctx, rawIdentityEmail ?? identityEmail);
+        if (metadata.hasCleanupWork || !(await isCleanupEmailMaterializationReady(ctx))) {
+          await enqueueOrphanCleanupJob(ctx, {
+            email: identityEmail,
+            sourceEmail: rawIdentityEmail,
+            subject: metadata.subject,
+            accountId: metadata.accountId,
+            memberIds: metadata.memberIds,
+            mode: "precreate"
+          });
+          return `preparing:${identity.subject}`;
+        }
+      } else {
+        await ctx.db.delete(cleanupJob._id);
+      }
+    }
+
+    await checkRateLimit(ctx, identity.subject, "users:store", 10);
 
     const displayName = identity.name || identity.email!.split("@")[0] || "User";
 
     const newUserId = await createAccountRecord(ctx, {
       id: identity.subject,
-      email: identity.email!,
+      email: identityEmail,
       display_name: displayName,
       first_name: identity.givenName || undefined,
       last_name: identity.familyName || undefined
     });
 
     return newUserId;
+  }
+});
+
+export const advanceOrphanCleanupJobStep = internalMutation({
+  args: { jobId: v.id("orphan_cleanup_jobs") },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.jobId);
+    if (!job || job.status !== "pending") return null;
+    if (job.member_fence_release_pending === true) {
+      await ctx.scheduler.runAfter(0, internal.users.releaseOrphanCleanupMemberFences, {
+        jobId: job._id,
+        generation: job.member_fence_generation ?? 0
+      });
+      return null;
+    }
+    if (job.account_scan_complete !== true) {
+      const accountPage = await ctx.db.query("accounts").paginate({
+        numItems: 64,
+        cursor: job.account_scan_cursor ?? null
+      });
+      const matches = accountPage.page.filter(
+        (account) => account.email.trim().toLowerCase() === job.email
+      );
+      if (matches.length > 1) {
+        throw new Error("Multiple accounts match the orphan cleanup email");
+      }
+      const pageMatch = matches[0];
+      if (pageMatch && job.matched_account_id && pageMatch._id !== job.matched_account_id) {
+        throw new Error("Multiple accounts match the orphan cleanup email");
+      }
+      const matchedAccountId = pageMatch?._id ?? job.matched_account_id;
+      if (!accountPage.isDone) {
+        await ctx.db.patch(job._id, {
+          account_scan_cursor: accountPage.continueCursor,
+          matched_account_id: matchedAccountId,
+          updated_at: Date.now()
+        });
+        await scheduleOrphanCleanupJob(ctx, job);
+        return null;
+      }
+      const matchedAccount = matchedAccountId ? await ctx.db.get(matchedAccountId) : null;
+      if (matchedAccount) {
+        if (job.requested_subject && job.requested_subject !== matchedAccount.id) {
+          throw new Error("Orphan cleanup requested subject conflicts with the email account");
+        }
+        if (job.requested_account_id && job.requested_account_id !== matchedAccount._id) {
+          throw new Error("Orphan cleanup requested document conflicts with the email account");
+        }
+        const normalizedEmail = matchedAccount.email.trim().toLowerCase();
+        if (matchedAccount.normalized_email !== normalizedEmail) {
+          await ctx.db.patch(matchedAccount._id, {
+            normalized_email: normalizedEmail,
+            updated_at: Date.now()
+          });
+        }
+        if (job.mode === "hard" && job.allow_live_account_hard_delete === true) {
+          await beginHardDeleteAccount(ctx, matchedAccount);
+        }
+        await ctx.db.patch(job._id, { status: "complete", updated_at: Date.now() });
+        return null;
+      }
+      await ctx.db.patch(job._id, {
+        account_scan_cursor: undefined,
+        account_scan_complete: true,
+        matched_account_id: undefined,
+        updated_at: Date.now()
+      });
+      const scannedJob = await ctx.db.get(job._id);
+      if (scannedJob) await scheduleOrphanCleanupJob(ctx, scannedJob);
+      return null;
+    }
+    if (!(await isCleanupEmailMaterializationReady(ctx))) {
+      await ensureCleanupEmailMaterializationScheduled(ctx);
+      await ctx.scheduler.runAfter(2_000, internal.users.advanceOrphanCleanupJob, {
+        jobId: job._id
+      });
+      return null;
+    }
+    if (job.metadata_refresh_complete !== true) {
+      const metadata = await inferOrphanCleanupMetadata(ctx, job.source_email ?? job.email);
+      const inferredSubject = metadata.subject.startsWith("orphan:") ? undefined : metadata.subject;
+      if (job.requested_subject && inferredSubject && job.requested_subject !== inferredSubject) {
+        throw new Error("Orphan cleanup found conflicting requested account identity");
+      }
+      if (
+        job.requested_account_id &&
+        metadata.accountId &&
+        job.requested_account_id !== metadata.accountId
+      ) {
+        throw new Error("Orphan cleanup found conflicting requested account document");
+      }
+      await ctx.db.patch(job._id, {
+        subject: job.requested_subject ?? inferredSubject ?? `orphan:${job.email}`,
+        account_id: job.requested_account_id ?? metadata.accountId,
+        member_ids: Array.from(
+          new Set([...(job.requested_member_ids ?? []), ...metadata.memberIds])
+        ),
+        metadata_refresh_complete: true,
+        orphan_scan_phase: "groups_source_email",
+        orphan_scan_cursor: undefined,
+        linked_scan_phase: "aliases_source_email",
+        linked_scan_cursor: undefined,
+        member_scan_complete: undefined,
+        member_scan_index: undefined,
+        member_fence_complete: false,
+        member_fence_index: 0,
+        member_fence_release_pending: undefined,
+        cleanup_member_index: undefined,
+        updated_at: Date.now()
+      });
+      const refreshedJob = await ctx.db.get(job._id);
+      if (refreshedJob) await scheduleOrphanCleanupJob(ctx, refreshedJob);
+      return null;
+    }
+    const orphanScanPhase = job.orphan_scan_phase ?? "groups_source_email";
+    if (orphanScanPhase !== "complete") {
+      const scanEmail =
+        orphanScanPhase.endsWith("source_email") && job.source_email ? job.source_email : job.email;
+      const page =
+        orphanScanPhase === "groups_source_email" || orphanScanPhase === "groups_email"
+          ? await ctx.db
+              .query("groups")
+              .withIndex("by_owner_email", (query) => query.eq("owner_email", scanEmail))
+              .paginate({ numItems: 8, cursor: job.orphan_scan_cursor ?? null })
+          : orphanScanPhase === "groups_subject"
+            ? await ctx.db
+                .query("groups")
+                .withIndex("by_owner_account_id", (query) =>
+                  query.eq("owner_account_id", job.subject)
+                )
+                .paginate({ numItems: 8, cursor: job.orphan_scan_cursor ?? null })
+            : orphanScanPhase === "expenses_source_email" || orphanScanPhase === "expenses_email"
+              ? await ctx.db
+                  .query("expenses")
+                  .withIndex("by_owner_email", (query) => query.eq("owner_email", scanEmail))
+                  .paginate({ numItems: 8, cursor: job.orphan_scan_cursor ?? null })
+              : await ctx.db
+                  .query("expenses")
+                  .withIndex("by_owner_account_id", (query) =>
+                    query.eq("owner_account_id", job.subject)
+                  )
+                  .paginate({ numItems: 8, cursor: job.orphan_scan_cursor ?? null });
+      for (const row of page.page) {
+        const matchesEmail = row.owner_email.trim().toLowerCase() === job.email;
+        const matchesSubject = row.owner_account_id === job.subject;
+        if (!matchesEmail && !matchesSubject) continue;
+        if (!matchesEmail || !matchesSubject) {
+          throw new Error("Orphan cleanup found conflicting ownership metadata");
+        }
+        if (job.account_id && row.owner_id !== job.account_id) {
+          throw new Error("Orphan cleanup found conflicting account document identity");
+        }
+        if (await ctx.db.get(row.owner_id)) {
+          throw new Error("Orphan cleanup found a live record owner");
+        }
+      }
+      if (!page.isDone) {
+        await ctx.db.patch(job._id, {
+          orphan_scan_cursor: page.continueCursor,
+          updated_at: Date.now()
+        });
+      } else {
+        const nextPhase = (
+          {
+            groups_source_email: "groups_email",
+            groups_email: "groups_subject",
+            groups_subject: "expenses_source_email",
+            expenses_source_email: "expenses_email",
+            expenses_email: "expenses_subject",
+            expenses_subject: "complete"
+          } as const
+        )[orphanScanPhase];
+        await ctx.db.patch(job._id, {
+          orphan_scan_phase: nextPhase,
+          orphan_scan_cursor: undefined,
+          updated_at: Date.now()
+        });
+      }
+      const scannedJob = await ctx.db.get(job._id);
+      if (scannedJob) await scheduleOrphanCleanupJob(ctx, scannedJob);
+      return null;
+    }
+    const linkedScanPhase = job.linked_scan_phase ?? "aliases_source_email";
+    if (linkedScanPhase !== "complete") {
+      const linkedEmail =
+        (linkedScanPhase === "aliases_source_email" || linkedScanPhase === "source_email") &&
+        job.source_email
+          ? job.source_email
+          : job.email;
+      if (linkedScanPhase === "aliases_source_email" || linkedScanPhase === "aliases_email") {
+        const aliasPage = await ctx.db
+          .query("member_aliases")
+          .withIndex("by_account_email", (query) => query.eq("account_email", linkedEmail))
+          .paginate({ numItems: 8, cursor: job.linked_scan_cursor ?? null });
+        const memberIds = new Set(job.member_ids);
+        for (const alias of aliasPage.page) {
+          memberIds.add(alias.canonical_member_id);
+          memberIds.add(alias.alias_member_id);
+        }
+        await ctx.db.patch(job._id, {
+          member_ids: Array.from(memberIds),
+          linked_scan_phase: aliasPage.isDone
+            ? linkedScanPhase === "aliases_source_email"
+              ? "aliases_email"
+              : "source_email"
+            : linkedScanPhase,
+          linked_scan_cursor: aliasPage.isDone ? undefined : aliasPage.continueCursor,
+          updated_at: Date.now()
+        });
+        const scannedJob = await ctx.db.get(job._id);
+        if (scannedJob) await scheduleOrphanCleanupJob(ctx, scannedJob);
+        return null;
+      }
+      const page =
+        linkedScanPhase === "subject"
+          ? await ctx.db
+              .query("account_friends")
+              .withIndex("by_linked_account_id", (query) =>
+                query.eq("linked_account_id", job.subject)
+              )
+              .paginate({ numItems: 8, cursor: job.linked_scan_cursor ?? null })
+          : await ctx.db
+              .query("account_friends")
+              .withIndex("by_linked_account_email", (query) =>
+                query.eq("linked_account_email", linkedEmail)
+              )
+              .paginate({ numItems: 8, cursor: job.linked_scan_cursor ?? null });
+      const memberIds = new Set(job.member_ids);
+      let subject = job.subject;
+      for (const friend of page.page) {
+        if (friend.linked_account_id) {
+          if (subject.startsWith("orphan:")) {
+            subject = friend.linked_account_id;
+          } else if (friend.linked_account_id !== subject) {
+            throw new Error("Linked friend rows have conflicting account identities");
+          }
+        }
+        if (
+          friend.linked_account_email &&
+          friend.linked_account_email.trim().toLowerCase() !== job.email
+        ) {
+          throw new Error("Linked friend rows have conflicting email identities");
+        }
+        for (const memberId of [friend.linked_member_id, friend.member_id]) {
+          const normalizedMemberId = memberId?.trim();
+          if (normalizedMemberId) memberIds.add(normalizedMemberId);
+        }
+      }
+      if (!page.isDone) {
+        await ctx.db.patch(job._id, {
+          subject,
+          member_ids: Array.from(memberIds),
+          linked_scan_cursor: page.continueCursor,
+          updated_at: Date.now()
+        });
+      } else {
+        const nextLinkedScanPhase = (
+          {
+            source_email: "email",
+            email: "subject",
+            subject: "complete"
+          } as const
+        )[linkedScanPhase];
+        await ctx.db.patch(job._id, {
+          subject,
+          member_ids: Array.from(memberIds),
+          linked_scan_phase: nextLinkedScanPhase,
+          linked_scan_cursor: undefined,
+          updated_at: Date.now()
+        });
+      }
+      const scannedJob = await ctx.db.get(job._id);
+      if (scannedJob) await scheduleOrphanCleanupJob(ctx, scannedJob);
+      return null;
+    }
+    if (job.member_fence_complete !== true) {
+      const fenceGeneration = job.member_fence_generation ?? 0;
+      const memberIndex = job.member_fence_index ?? 0;
+      const rawMemberId = job.member_ids[memberIndex];
+      if (!rawMemberId) {
+        await ctx.db.patch(job._id, {
+          member_scan_complete: true,
+          member_scan_index: undefined,
+          member_fence_complete: true,
+          member_fence_index: undefined,
+          updated_at: Date.now()
+        });
+      } else {
+        const memberId = normalizeMemberId(rawMemberId);
+        if (await findAccountByMemberId(ctx.db, memberId)) {
+          throw new Error("Orphan cleanup member identity belongs to an existing account");
+        }
+        const fences = await ctx.db
+          .query("orphan_cleanup_member_fences")
+          .withIndex("by_member_id", (query) => query.eq("member_id", memberId))
+          .take(9);
+        if (fences.length > 8) {
+          throw new Error("Identity maintenance required: duplicate orphan cleanup fences");
+        }
+        let hasCurrentFence = false;
+        for (const fence of fences) {
+          if (fence.job_id === job._id && fence.generation === fenceGeneration) {
+            hasCurrentFence = true;
+            continue;
+          }
+          const fenceJob = await ctx.db.get(fence.job_id);
+          if (
+            fenceJob?.status === "pending" &&
+            fence.generation === (fenceJob.member_fence_generation ?? 0)
+          ) {
+            throw new Error("Member identity is already locked by another cleanup job");
+          }
+          await ctx.db.delete(fence._id);
+        }
+        if (!hasCurrentFence) {
+          await ctx.db.insert("orphan_cleanup_member_fences", {
+            job_id: job._id,
+            member_id: memberId,
+            generation: fenceGeneration,
+            created_at: Date.now()
+          });
+        }
+        await ctx.db.patch(job._id, {
+          member_scan_index: memberIndex + 1,
+          member_fence_index: memberIndex + 1,
+          updated_at: Date.now()
+        });
+      }
+      const fencedJob = await ctx.db.get(job._id);
+      if (fencedJob) await scheduleOrphanCleanupJob(ctx, fencedJob);
+      return null;
+    }
+    const emailAccounts = await findAccountsByEmailIdentity(ctx.db, job.source_email ?? job.email);
+    if (emailAccounts.length > 1) {
+      throw new Error("Multiple accounts match the orphan cleanup email");
+    }
+    const emailAccount = emailAccounts[0];
+    const subjectAccounts = await ctx.db
+      .query("accounts")
+      .withIndex("by_auth_id", (query) => query.eq("id", job.subject))
+      .take(2);
+    if (subjectAccounts.length > 1) {
+      throw new Error("Orphan cleanup subject identity is ambiguous");
+    }
+    const subjectAccount = subjectAccounts[0];
+    if (subjectAccount && subjectAccount._id !== emailAccount?._id) {
+      throw new Error("Orphan cleanup metadata points to an unrelated live account");
+    }
+    if (emailAccount) {
+      if (job.mode === "hard" && job.allow_live_account_hard_delete === true) {
+        await beginHardDeleteAccount(ctx, emailAccount);
+      }
+      await ctx.db.patch(job._id, {
+        member_fence_release_pending: true,
+        updated_at: Date.now()
+      });
+      await ctx.scheduler.runAfter(0, internal.users.releaseOrphanCleanupMemberFences, {
+        jobId: job._id,
+        generation: job.member_fence_generation ?? 0
+      });
+      return null;
+    }
+
+    const result = await processOrphanCleanupStep(ctx, job);
+    if (result.inProgress) {
+      await ctx.db.patch(job._id, {
+        processed_count: job.processed_count + result.processed,
+        updated_at: Date.now()
+      });
+      await scheduleOrphanCleanupJob(ctx, job);
+    } else {
+      await ctx.db.patch(job._id, {
+        member_fence_release_pending: true,
+        updated_at: Date.now()
+      });
+      await ctx.scheduler.runAfter(0, internal.users.releaseOrphanCleanupMemberFences, {
+        jobId: job._id,
+        generation: job.member_fence_generation ?? 0
+      });
+    }
+    return null;
+  }
+});
+
+export const releaseOrphanCleanupMemberFences = internalMutation({
+  args: { jobId: v.id("orphan_cleanup_jobs"), generation: v.number() },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.jobId);
+    if (!job) return null;
+    const currentGeneration = job.member_fence_generation ?? 0;
+    if (args.generation > currentGeneration) return null;
+    if (args.generation === currentGeneration && job.member_fence_release_pending !== true) {
+      return null;
+    }
+    const fences = await ctx.db
+      .query("orphan_cleanup_member_fences")
+      .withIndex("by_job_id_and_generation", (query) =>
+        query.eq("job_id", args.jobId).eq("generation", args.generation)
+      )
+      .take(32);
+    for (const fence of fences) await ctx.db.delete(fence._id);
+
+    if (fences.length === 32) {
+      await ctx.scheduler.runAfter(0, internal.users.releaseOrphanCleanupMemberFences, args);
+      return null;
+    }
+
+    const latestJob = await ctx.db.get(args.jobId);
+    if (
+      latestJob &&
+      args.generation === (latestJob.member_fence_generation ?? 0) &&
+      latestJob.member_fence_release_pending === true
+    ) {
+      await ctx.db.patch(job._id, {
+        status: latestJob.status === "pending" ? "complete" : latestJob.status,
+        member_fence_release_pending: undefined,
+        updated_at: Date.now()
+      });
+    }
+    return null;
+  }
+});
+
+export const markOrphanCleanupJobFailed = internalMutation({
+  args: { jobId: v.id("orphan_cleanup_jobs"), error: v.string() },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.jobId);
+    if (!job || job.status !== "pending") return null;
+    const retryCount = job.retry_count + 1;
+    if (retryCount < 3) {
+      await ctx.db.patch(job._id, {
+        retry_count: retryCount,
+        last_error: args.error.slice(0, 256),
+        updated_at: Date.now()
+      });
+      const retry = await ctx.db.get(job._id);
+      if (retry) await scheduleOrphanCleanupJob(ctx, retry);
+    } else {
+      await ctx.db.patch(job._id, {
+        status: "failed",
+        retry_count: retryCount,
+        last_error: args.error.slice(0, 256),
+        member_fence_release_pending: true,
+        updated_at: Date.now()
+      });
+      await ctx.scheduler.runAfter(0, internal.users.releaseOrphanCleanupMemberFences, {
+        jobId: job._id,
+        generation: job.member_fence_generation ?? 0
+      });
+    }
+    return null;
+  }
+});
+
+export const advanceOrphanCleanupJob = internalAction({
+  args: { jobId: v.id("orphan_cleanup_jobs") },
+  handler: async (ctx, args) => {
+    try {
+      await ctx.runMutation(internal.users.advanceOrphanCleanupJobStep, args);
+    } catch (error) {
+      await ctx.runMutation(internal.users.markOrphanCleanupJobFailed, {
+        jobId: args.jobId,
+        error: String(error)
+      });
+    }
+    return null;
+  }
+});
+
+export const advanceCleanupEmailMaterializationStep = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    await runCleanupEmailMaterializationStep(ctx);
+    return null;
+  }
+});
+
+export const markCleanupEmailMaterializationFailed = internalMutation({
+  args: { error: v.string() },
+  handler: async (ctx, args) => {
+    await persistCleanupEmailMaterializationFailure(ctx, args.error);
+    return null;
+  }
+});
+
+export const advanceCleanupEmailMaterialization = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    try {
+      await ctx.runMutation(internal.users.advanceCleanupEmailMaterializationStep, {});
+    } catch (error) {
+      await ctx.runMutation(internal.users.markCleanupEmailMaterializationFailed, {
+        error: String(error)
+      });
+    }
+    return null;
   }
 });
 
@@ -540,15 +1308,8 @@ export const isAuthenticated = query({
 export const viewer = query({
   args: {},
   handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      return null;
-    }
-
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
+    if (!(await ctx.auth.getUserIdentity())) return null;
+    const { user } = await resolveAuthenticatedAccount(ctx);
 
     if (!user || user.status === "deleted") {
       return null;
@@ -575,20 +1336,7 @@ export const viewer = query({
 export const updateLinkedMemberId = mutation({
   args: { member_id: v.string() },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("Unauthenticated");
-    }
-
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
-
-    if (!user) {
-      throw new Error("User not found");
-    }
-    assertAccountCanAcceptChanges(user);
+    const { user } = await getCurrentUserOrThrow(ctx);
 
     const requestedMemberId = normalizeMemberId(args.member_id);
     if (!requestedMemberId) {
@@ -606,6 +1354,7 @@ export const updateLinkedMemberId = mutation({
     }
 
     await assertIdentityMaterializationReady(ctx.db);
+    await assertMemberIdentityNotCleanupFenced(ctx, requestedMemberId);
     // Legacy-only bootstrap path for old rows without member_id.
     // Never allow adopting a member ID already used by a different account.
     const takenByAccount = await ctx.db
@@ -665,16 +1414,7 @@ export const updateProfile = mutation({
     storage_id: v.optional(v.id("_storage"))
   },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
-
-    if (!user) throw new Error("User not found");
-    assertAccountCanAcceptChanges(user);
+    const { user } = await getCurrentUserOrThrow(ctx);
 
     const patches: any = { updated_at: Date.now() };
     if (args.profile_avatar_color !== undefined)
@@ -723,16 +1463,7 @@ export const updateSettings = mutation({
     prefer_whole_names: v.optional(v.boolean())
   },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
-
-    if (!user) throw new Error("User not found");
-    assertAccountCanAcceptChanges(user);
+    const { user } = await getCurrentUserOrThrow(ctx);
 
     const patches: any = { updated_at: Date.now() };
     if (args.prefer_nicknames !== undefined) patches.prefer_nicknames = args.prefer_nicknames;
@@ -750,15 +1481,8 @@ export const updateSettings = mutation({
 export const sessionStatus = query({
   args: {},
   handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      return "unauthenticated";
-    }
-
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
+    if (!(await ctx.auth.getUserIdentity())) return "unauthenticated";
+    const { user } = await resolveAuthenticatedAccount(ctx);
 
     return user?.status === "deleting" ? "deleting" : user ? "active" : "deleted";
   }
@@ -792,18 +1516,8 @@ export const validateAccountIds = query({
 export const resolveLinkedAccountsForMemberIds = query({
   args: { memberIds: v.array(v.string()) },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("Unauthenticated");
-    }
-
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
-    if (!user) {
-      throw new Error("User not found");
-    }
+    const { user } = await getCurrentUserOrThrow(ctx);
+    const accountEmail = user.normalized_email ?? user.email.trim().toLowerCase();
 
     // Build the caller's authorized member-id surface from:
     // - self canonical/aliases
@@ -822,7 +1536,7 @@ export const resolveLinkedAccountsForMemberIds = query({
       .collect();
     const ownerGroupsByEmail = await ctx.db
       .query("groups")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
+      .withIndex("by_owner_email", (q) => q.eq("owner_email", accountEmail))
       .collect();
     const ownerGroupIdSet = new Set(ownerGroupsByAccount.map((group) => String(group._id)));
     ownerGroupsByEmail.forEach((group) => ownerGroupIdSet.add(String(group._id)));
@@ -842,7 +1556,7 @@ export const resolveLinkedAccountsForMemberIds = query({
 
     const myFriends = await ctx.db
       .query("account_friends")
-      .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+      .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
       .collect();
     for (const friend of myFriends) {
       authorizedMemberIds.add(normalizeMemberId(friend.member_id));
