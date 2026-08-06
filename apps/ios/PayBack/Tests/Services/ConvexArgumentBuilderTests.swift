@@ -4,6 +4,33 @@ import XCTest
 /// Tests for Convex argument builder pure functions and ClerkAuthError
 final class ConvexArgumentBuilderTests: XCTestCase {
 
+    // MARK: - InviteClaimArgumentBuilder Tests
+
+    func testBuildInviteClaimArgs_WithoutMerge_OmitsOptionalKey() {
+        let tokenId = UUID()
+
+        let result = InviteClaimArgumentBuilder.build(
+            tokenId: tokenId,
+            mergeLocalFriendMemberId: nil
+        )
+
+        XCTAssertEqual(result, ["id": tokenId.uuidString])
+        XCTAssertNil(result["mergeLocalFriendMemberId"])
+    }
+
+    func testBuildInviteClaimArgs_WithMerge_IncludesMemberId() {
+        let tokenId = UUID()
+        let mergeMemberId = UUID()
+
+        let result = InviteClaimArgumentBuilder.build(
+            tokenId: tokenId,
+            mergeLocalFriendMemberId: mergeMemberId
+        )
+
+        XCTAssertEqual(result["id"], tokenId.uuidString)
+        XCTAssertEqual(result["mergeLocalFriendMemberId"], mergeMemberId.uuidString)
+    }
+
     // MARK: - ExpenseArgumentBuilder Tests
 
     func testBuildSplitArgs_EmptyArray_ReturnsEmptyArray() {
