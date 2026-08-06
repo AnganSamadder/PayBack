@@ -116,6 +116,14 @@ if ! [[ "$XCODE_MAJOR" =~ ^[0-9]+$ ]] || [ "$XCODE_MAJOR" -lt 26 ]; then
 	exit 1
 fi
 IOS_SDK_VERSION=$(xcodebuild -showsdks | grep -o 'iphoneos[0-9]*\.[0-9]*' | sed 's/iphoneos//' | sort -V | tail -1)
+
+# Mirrors the GitHub Actions job budgets. The local script does not enforce a wall-clock
+# timeout, but reporting the same value keeps parity drift visible in diagnostic output.
+if [ "$SANITIZER" = "none" ]; then
+	CI_JOB_TIMEOUT_MINUTES=75
+else
+	CI_JOB_TIMEOUT_MINUTES=90
+fi
 IOS_SDK_MAJOR=${IOS_SDK_VERSION%%.*}
 if ! [[ "$IOS_SDK_MAJOR" =~ ^[0-9]+$ ]]; then
 	echo -e "${RED}✗ Could not detect the selected Xcode's iOS SDK${NC}"
@@ -125,6 +133,7 @@ export PAYBACK_IOS_SDK_MAJOR="$IOS_SDK_MAJOR"
 echo "  iOS SDK: $IOS_SDK_VERSION"
 echo "  CI_FLAVOR: $CI_FLAVOR"
 echo "  SANITIZER: $SANITIZER"
+echo "  CI job timeout budget: ${CI_JOB_TIMEOUT_MINUTES} minutes"
 echo "  FAIL_ON_WARNINGS: $FAIL_ON_WARNINGS"
 echo "  Parallel testing: $EFFECTIVE_PARALLEL_TESTING"
 if [ "$EFFECTIVE_PARALLEL_TESTING" = "YES" ]; then

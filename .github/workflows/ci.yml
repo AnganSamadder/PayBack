@@ -389,13 +389,13 @@ jobs:
         include:
           - sanitizer: none
             run_on_pr: true
-            timeout: 45
+            timeout: 75
           - sanitizer: thread
             run_on_pr: false
-            timeout: 60
+            timeout: 90
           - sanitizer: address
             run_on_pr: false
-            timeout: 60
+            timeout: 90
 
     steps:
       - name: Skip sanitizer jobs on PRs

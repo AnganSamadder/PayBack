@@ -244,7 +244,9 @@ final class AppStore: ObservableObject {
         guard shouldStart else { return }
 
         AppConfig.markTiming("AppStore.checkSession started")
+        #if DEBUG
         print("[AuthDebug] AppStore.checkSession started")
+        #endif
 
         do {
             let identity = try await authenticationSessionLoader()
@@ -647,22 +649,32 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Polls the server until authentication is confirmed or timeout
     private func waitForServerAuthentication(timeout: TimeInterval = 10.0) async throws {
+        #if DEBUG
         print("[AuthDebug] Waiting for server authentication...")
+        #endif
         let start = Date()
         while Date().timeIntervalSince(start) < timeout {
              do {
                  let isAuth = try await accountService.checkAuthentication()
                  if isAuth {
+                     #if DEBUG
                      print("[AuthDebug] Server confirmed authentication")
+                     #endif
                      return
                  }
+                 #if DEBUG
                  print("[AuthDebug] Server not yet authenticated, retrying...")
+                 #endif
              } catch {
+                 #if DEBUG
                  print("[AuthDebug] Auth check error: \(error)")
+                 #endif
              }
              try await Task.sleep(nanoseconds: 200_000_000) // 200ms poll
         }
+        #if DEBUG
         print("[AuthDebug] Server authentication timed out")
+        #endif
         throw PayBackError.underlying(message: "Server authentication timed out")
     }
 
@@ -740,7 +752,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         signOutIdentity: Bool,
         logicalSessionAlreadyInvalidated: Bool = false
     ) async {
-        print("[AuthDebug] signOut called. Current User: \(currentUser.name) (\(currentUser.id))")
+        #if DEBUG
+        print("[AuthDebug] signOut called")
+        #endif
         if !logicalSessionAlreadyInvalidated {
             invalidateLogicalSessionForSignOut()
         }
