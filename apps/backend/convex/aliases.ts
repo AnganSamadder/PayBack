@@ -1,4 +1,4 @@
-import { query, internalQuery, mutation, DatabaseReader, MutationCtx } from "./_generated/server";
+import { internalQuery, mutation, DatabaseReader, MutationCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { getConvexSize, type Value, v } from "convex/values";
 import {
@@ -66,18 +66,7 @@ export async function resolveCanonicalMemberIdInternal(
  * Transitive: if A→B and B→C, resolving A returns C.
  * No alias: returns the input ID unchanged.
  */
-export const resolveCanonicalMemberId = query({
-  args: { memberId: v.string() },
-  handler: async (ctx, args) => {
-    return await resolveCanonicalMemberIdInternal(ctx.db, args.memberId);
-  }
-});
-
-/**
- * Internal query version for use within other Convex functions.
- * Avoids auth overhead when called internally.
- */
-export const resolveCanonicalMemberIdInternalQuery = internalQuery({
+export const resolveCanonicalMemberId = internalQuery({
   args: { memberId: v.string() },
   handler: async (ctx, args) => {
     return await resolveCanonicalMemberIdInternal(ctx.db, args.memberId);
@@ -93,7 +82,7 @@ export const resolveCanonicalMemberIdInternalQuery = internalQuery({
  * Returns: Array of alias_member_id strings that resolve to this canonical ID.
  * Note: This is NOT transitive - it only returns direct aliases.
  */
-export const getAliasesForMember = query({
+export const getAliasesForMember = internalQuery({
   args: { canonicalMemberId: v.string() },
   handler: async (ctx, args) => {
     return await getEquivalentAliasMemberIds(ctx.db, args.canonicalMemberId);
