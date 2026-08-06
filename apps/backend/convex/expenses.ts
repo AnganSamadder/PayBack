@@ -280,7 +280,7 @@ function requireMatchingMemberSets(values: {
 
 type ExpenseParticipant = Doc<"expenses">["participants"][number];
 
-function expenseMemberIds(expense: Doc<"expenses">) {
+export function expenseMemberIds(expense: Doc<"expenses">) {
   return normalizeMemberIds([
     expense.paid_by_member_id,
     ...expense.involved_member_ids,

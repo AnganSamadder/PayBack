@@ -23,6 +23,7 @@ import {
   type ExpenseWriteOperation,
   MAX_EXPENSE_WRITE_OPERATIONS
 } from "./expenseWrites";
+import { expenseMemberIds } from "./expenses";
 import {
   getAccountSyncRevision,
   MAX_SYNC_PAGE_SIZE,
@@ -530,12 +531,8 @@ export const removeMemberAndExpenses = mutation({
       return null;
     }
 
-    const affectedExpenses = (await collectGroupExpenses(ctx, group)).filter(
-      (expense) =>
-        targetMemberIds.has(normalizeMemberId(expense.paid_by_member_id)) ||
-        expense.involved_member_ids.some((memberId) =>
-          targetMemberIds.has(normalizeMemberId(memberId))
-        )
+    const affectedExpenses = (await collectGroupExpenses(ctx, group)).filter((expense) =>
+      expenseMemberIds(expense).some((memberId) => targetMemberIds.has(memberId))
     );
     await applyExpenseWriteBatch(
       ctx,
