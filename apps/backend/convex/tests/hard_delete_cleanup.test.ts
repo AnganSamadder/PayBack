@@ -278,6 +278,65 @@ describe("Hard Delete Cleanup", () => {
     expect(receipt?.expenses_preserved).toBe(false);
   }, 240_000);
 
+  test("admin hard deletion accepts a 65-participant expense", async () => {
+    const t = convexTest(schema, modules);
+    await markCleanupEmailMaterializationReady(t);
+    const accountId = await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "boundary_delete_auth",
+        email: "boundary-delete@test.com",
+        display_name: "Boundary Delete",
+        member_id: "boundary_delete_member",
+        created_at: 1
+      });
+      const memberIds = Array.from({ length: 65 }, (_, index) => `boundary_member_${index}`);
+      await ctx.db.insert("expenses", {
+        id: "boundary_delete_expense",
+        group_id: "",
+        context_kind: "grouped_individual",
+        description: "Boundary delete",
+        date: 1,
+        total_amount: 65,
+        paid_by_member_id: memberIds[0],
+        involved_member_ids: memberIds,
+        splits: memberIds.map((memberId, index) => ({
+          id: `boundary_split_${index}`,
+          member_id: memberId,
+          amount: 1,
+          is_settled: false
+        })),
+        is_settled: false,
+        owner_email: "boundary-delete@test.com",
+        owner_account_id: "boundary_delete_auth",
+        owner_id: ownerId,
+        participant_member_ids: memberIds,
+        participant_emails: [],
+        participants: memberIds.map((memberId) => ({ member_id: memberId, name: memberId })),
+        created_at: 1,
+        updated_at: 1
+      });
+      return ownerId;
+    });
+
+    process.env.ADMIN_EMAILS = "admin@test.com";
+    await expect(
+      t
+        .withIdentity(adminIdentity())
+        .mutation(api.admin.hardDeleteUser, { email: "boundary-delete@test.com" })
+    ).resolves.toMatchObject({ status: "in_progress" });
+    await finishScheduled(t);
+
+    expect(await t.run((ctx) => ctx.db.get(accountId))).toBeNull();
+    expect(
+      await t.run((ctx) =>
+        ctx.db
+          .query("expenses")
+          .withIndex("by_client_id", (q) => q.eq("id", "boundary_delete_expense"))
+          .unique()
+      )
+    ).toBeNull();
+  });
+
   test("internal hard delete awaits centralized expense cleanup and bumps surviving viewers once", async () => {
     const t = convexTest(schema, modules);
     await markCleanupEmailMaterializationReady(t);

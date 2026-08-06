@@ -413,7 +413,7 @@ test("fenced deletion retries reject progress that no longer belongs to the acco
   expect(state.progress?.account_email).toBe("other@test.com");
 });
 
-test("deletion fences writes then re-preflights work created before the fence", async () => {
+test("soft deletion accepts a 65-participant expense created before the fence", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
     await ctx.db.insert("accounts", {
@@ -486,36 +486,28 @@ test("deletion fences writes then re-preflights work created before the fence", 
   result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   expect(result.phase).toBe("preflight_groups_owner_id");
 
-  let failure: unknown;
-  for (let attempt = 0; attempt < 40 && failure === undefined; attempt += 1) {
-    try {
-      await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
-    } catch (error) {
-      failure = error;
-    }
+  for (let attempt = 0; result.inProgress && attempt < 120; attempt += 1) {
+    result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   }
-  expect(String(failure)).toContain("too many member identities");
+  expect(result).toMatchObject({ success: true, state: "deleted" });
 
-  const fenced = await t.run(async (ctx) => ({
+  const deleted = await t.run(async (ctx) => ({
     account: await ctx.db
       .query("accounts")
       .withIndex("by_auth_id", (q) => q.eq("id", "owner_auth"))
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "late_oversized_expense"))
       .unique(),
     linkedFriend: await ctx.db
       .query("account_friends")
       .withIndex("by_linked_account_id", (q) => q.eq("linked_account_id", "owner_auth"))
       .unique()
   }));
-  expect(fenced.account?.status).toBe("deleting");
-  expect(fenced.linkedFriend).toMatchObject({ has_linked_account: true });
-
-  await expect(
-    owner.mutation(api.groups.create, {
-      id: "blocked_group",
-      name: "Blocked",
-      members: [{ id: "owner_member", name: "Owner" }]
-    })
-  ).rejects.toThrow("being deleted");
+  expect(deleted.account?.status).toBe("deleted");
+  expect(deleted.expense).toBeNull();
+  expect(deleted.linkedFriend).toBeNull();
 });
 
 test("deletion refreshes aliases created during preflight before activating the fence", async () => {

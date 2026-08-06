@@ -37,6 +37,7 @@ import {
 import {
   applyExpenseWriteBatch,
   type ExpenseWriteOperation,
+  MAX_EXPENSE_VIEWERS,
   MAX_EXPENSE_WRITE_OPERATIONS
 } from "./expenseWrites";
 import { isSyncMaterializationReady } from "./syncState";
@@ -1279,7 +1280,7 @@ export const selfDeletionStatus = query({
 });
 
 const SELF_DELETE_BATCH_SIZE = 4;
-const SELF_DELETE_MAX_MEMBER_IDS_PER_RECORD = 64;
+const SELF_DELETE_MAX_MEMBER_IDS_PER_RECORD = MAX_EXPENSE_VIEWERS;
 const SELF_DELETE_MAX_VISIBILITY_ROWS_PER_EXPENSE = 128;
 
 type SelfDeletionProgress = Doc<"account_deletion_progress">;
