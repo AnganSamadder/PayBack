@@ -611,6 +611,13 @@ All group deletions (`deleteGroup`, `deleteGroups`, clear/leave flows removing w
 - In authenticated sessions, self-friend detection must be ID/link based only.
 - Name-equality fallback is allowed only for no-session/local contexts.
 
+### 9.7 Group member removal atomicity
+
+- Removing a member and deleting that member's affected group expenses must run in one authenticated Convex mutation.
+- The mutation must verify group ownership, resolve member aliases, and reconcile expense visibility in the same transaction.
+- iOS must await that single mutation; never sequence a group upsert followed by separate expense deletions.
+- Optimistic rollback must be account/data-epoch fenced and must not overwrite a concurrently updated group snapshot.
+
 ## 10) Convex Environment Routing (iOS Build Pipeline)
 
 Goal: route iOS builds automatically:

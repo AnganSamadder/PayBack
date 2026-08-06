@@ -43,44 +43,44 @@ function isGroupOwner(group: any, user: any): boolean {
   return group.owner_id === user._id;
 }
 
-async function deleteGroupWithExpenses(
-  ctx: any,
-  group: any,
-  groupVisibilityBatch?: GroupVisibilityWriteBatch,
-  expenseOperations?: ExpenseWriteOperation[]
-) {
-  const expenseByDocId = new Map<string, any>();
+async function collectGroupExpenses(ctx: any, group: Doc<"groups">): Promise<Doc<"expenses">[]> {
+  const expenseByDocId = new Map<string, Doc<"expenses">>();
 
   const byGroupRef = await ctx.db
     .query("expenses")
     .withIndex("by_group_ref", (q: any) => q.eq("group_ref", group._id))
     .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
   if (byGroupRef.length > MAX_EXPENSE_WRITE_OPERATIONS) {
-    throw new Error(
-      `Group deletion requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
-    );
+    throw new Error(`Group mutation supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`);
   }
-  byGroupRef.forEach((expense: any) => expenseByDocId.set(expense._id, expense));
+  byGroupRef.forEach((expense: Doc<"expenses">) => expenseByDocId.set(expense._id, expense));
 
   const byGroupId = await ctx.db
     .query("expenses")
     .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
     .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
   if (byGroupId.length > MAX_EXPENSE_WRITE_OPERATIONS) {
-    throw new Error(
-      `Group deletion requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
-    );
+    throw new Error(`Group mutation supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`);
   }
-  byGroupId.forEach((expense: any) => expenseByDocId.set(expense._id, expense));
+  byGroupId.forEach((expense: Doc<"expenses">) => expenseByDocId.set(expense._id, expense));
 
   if (expenseByDocId.size > MAX_EXPENSE_WRITE_OPERATIONS) {
-    throw new Error(
-      `Group deletion requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
-    );
+    throw new Error(`Group mutation supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`);
   }
-  const deleteOperations: ExpenseWriteOperation[] = Array.from(expenseByDocId.values()).map(
-    (expense) => ({ kind: "delete", expense })
-  );
+  return Array.from(expenseByDocId.values());
+}
+
+async function deleteGroupWithExpenses(
+  ctx: any,
+  group: any,
+  groupVisibilityBatch?: GroupVisibilityWriteBatch,
+  expenseOperations?: ExpenseWriteOperation[]
+) {
+  const groupExpenses = await collectGroupExpenses(ctx, group);
+  const deleteOperations: ExpenseWriteOperation[] = groupExpenses.map((expense) => ({
+    kind: "delete",
+    expense
+  }));
   if (expenseOperations) {
     if (expenseOperations.length + deleteOperations.length > MAX_EXPENSE_WRITE_OPERATIONS) {
       throw new Error(
@@ -482,6 +482,70 @@ export const get = query({
     }
 
     return group;
+  }
+});
+
+export const removeMemberAndExpenses = mutation({
+  args: {
+    id: v.string(),
+    memberId: v.string()
+  },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+
+    const group = await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (query) => query.eq("id", args.id))
+      .unique();
+    if (!group) throw new Error("Group not found");
+    if (!isGroupOwner(group, user)) {
+      throw new Error("Not authorized to remove members from this group");
+    }
+
+    const targetMemberIds = new Set(
+      (await getAllEquivalentMemberIds(ctx.db, args.memberId)).map(normalizeMemberId)
+    );
+    const callerMemberIds = new Set(
+      (await getAllEquivalentMemberIds(ctx.db, user.member_id ?? user.id)).map(normalizeMemberId)
+    );
+    if (Array.from(targetMemberIds).some((memberId) => callerMemberIds.has(memberId))) {
+      throw new Error("Cannot remove the current user from a group");
+    }
+
+    const removedMember = group.members.find((member) =>
+      targetMemberIds.has(normalizeMemberId(member.id))
+    );
+    if (!removedMember) throw new Error("Member not found in group");
+
+    const remainingMembers = group.members.filter(
+      (member) => !targetMemberIds.has(normalizeMemberId(member.id))
+    );
+    const remainingOtherMembers = remainingMembers.filter(
+      (member) => !callerMemberIds.has(normalizeMemberId(member.id))
+    );
+
+    if (remainingOtherMembers.length === 0) {
+      await deleteGroupWithExpenses(ctx, group);
+      return null;
+    }
+
+    const affectedExpenses = (await collectGroupExpenses(ctx, group)).filter(
+      (expense) =>
+        targetMemberIds.has(normalizeMemberId(expense.paid_by_member_id)) ||
+        expense.involved_member_ids.some((memberId) =>
+          targetMemberIds.has(normalizeMemberId(memberId))
+        )
+    );
+    await applyExpenseWriteBatch(
+      ctx,
+      affectedExpenses.map((expense) => ({ kind: "delete", expense }))
+    );
+    await patchGroupWithVisibility(ctx, group._id, {
+      members: remainingMembers,
+      updated_at: Date.now()
+    });
+    return null;
   }
 });
 
