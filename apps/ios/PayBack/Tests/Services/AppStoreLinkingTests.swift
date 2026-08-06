@@ -1565,6 +1565,18 @@ private actor SuspendedSignOutEmailAuthService: EmailAuthService {
         throw PayBackError.authInvalidCredentials(message: "Not implemented")
     }
 
+    func verifyPasswordResetCode(code: String) async throws {
+        throw PayBackError.authSessionMissing
+    }
+
+    func resendPasswordResetCode() async throws {
+        throw PayBackError.authSessionMissing
+    }
+
+    func completePasswordReset(newPassword: String) async throws -> PasswordResetResult {
+        throw PayBackError.authSessionMissing
+    }
+
     func resendConfirmationEmail(email: String) async throws {
         throw PayBackError.authInvalidCredentials(message: "Not implemented")
     }
