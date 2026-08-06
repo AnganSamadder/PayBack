@@ -7,6 +7,92 @@ enum ConvexRevisionedSyncError: Error, Equatable {
     case streamEndedWithoutValue
     case invalidExpense(field: String)
     case invalidGroup(field: String)
+    case duplicateGroupID(String)
+}
+
+struct ConvexPreparedGroups {
+    let groups: [SpendingGroup]
+    let documentIDs: [UUID: String]
+}
+
+struct ConvexSyncGeneration {
+    private(set) var current: UInt64 = 0
+
+    @discardableResult
+    mutating func advance() -> UInt64 {
+        current &+= 1
+        return current
+    }
+
+    func isCurrent(_ candidate: UInt64) -> Bool {
+        current == candidate
+    }
+}
+
+enum ConvexSyncChannel: Hashable {
+    case groups
+    case expenses
+    case friends
+    case incomingLinkRequests
+    case outgoingLinkRequests
+    case inviteTokens
+}
+
+struct ConvexSyncChannelErrorState {
+    private var errors: [ConvexSyncChannel: Error] = [:]
+    private var recency: [ConvexSyncChannel] = []
+
+    var current: Error? {
+        recency.last.flatMap { errors[$0] }
+    }
+
+    mutating func record(_ error: Error, for channel: ConvexSyncChannel) {
+        errors[channel] = error
+        recency.removeAll { $0 == channel }
+        recency.append(channel)
+    }
+
+    mutating func clear(_ channel: ConvexSyncChannel) {
+        errors[channel] = nil
+        recency.removeAll { $0 == channel }
+    }
+
+    mutating func clearAll() {
+        errors.removeAll()
+        recency.removeAll()
+    }
+}
+
+enum ConvexLegacyFallbackOutcome: Equatable {
+    case legacyEnded
+    case reprobeV2
+}
+
+enum ConvexLegacyFallbackProbe {
+    typealias Sleep = @Sendable (UInt64) async throws -> Void
+
+    static func run(
+        delayNanoseconds: UInt64,
+        sleep: @escaping Sleep = { try await Task.sleep(nanoseconds: $0) },
+        consumeLegacy: @escaping @Sendable () async throws -> Void
+    ) async throws -> ConvexLegacyFallbackOutcome {
+        try await withThrowingTaskGroup(of: ConvexLegacyFallbackOutcome.self) { group in
+            group.addTask {
+                try await consumeLegacy()
+                return .legacyEnded
+            }
+            group.addTask {
+                try await sleep(delayNanoseconds)
+                return .reprobeV2
+            }
+
+            guard let outcome = try await group.next() else {
+                throw ConvexRevisionedSyncError.streamEndedWithoutValue
+            }
+            group.cancelAll()
+            return outcome
+        }
+    }
 }
 
 struct ConvexRevisionedGroupsPageDTO: Decodable, Sendable {
@@ -48,6 +134,8 @@ enum ConvexSyncErrorClassifier {
 }
 
 enum ConvexSyncRetryPolicy {
+    static let legacyV2ReprobeDelayNanoseconds: UInt64 = 30_000_000_000
+
     static func delayNanoseconds(afterFailureCount failureCount: Int) -> UInt64 {
         let cappedExponent = min(max(failureCount - 1, 0), 4)
         return UInt64(1 << cappedExponent) * 1_000_000_000
@@ -103,6 +191,27 @@ enum ConvexRevisionedSync {
             stableID: \ConvexExpenseDTO.id
         )
         return try await paginator.fetchSnapshot()
+    }
+
+    static func prepareGroups(_ dtos: [ConvexGroupDTO]) throws -> ConvexPreparedGroups {
+        var seenGroupIDs = Set<UUID>()
+        var groups: [SpendingGroup] = []
+        var documentIDs: [UUID: String] = [:]
+        groups.reserveCapacity(dtos.count)
+        documentIDs.reserveCapacity(dtos.count)
+
+        for dto in dtos {
+            let group = try dto.validatedSpendingGroup()
+            guard seenGroupIDs.insert(group.id).inserted else {
+                throw ConvexRevisionedSyncError.duplicateGroupID(group.id.uuidString)
+            }
+            groups.append(group)
+            if let documentID = dto._id {
+                documentIDs[group.id] = documentID
+            }
+        }
+
+        return ConvexPreparedGroups(groups: groups, documentIDs: documentIDs)
     }
 
     static func groupArguments(

@@ -92,6 +92,77 @@ final class ConvexRevisionedSyncTests: XCTestCase {
         XCTAssertEqual(ConvexSyncRetryPolicy.delayNanoseconds(afterFailureCount: 20), 16_000_000_000)
     }
 
+    func testPreparingGroupsRejectsNormalizedUUIDCollisions() throws {
+        let groupID = UUID()
+        let lowercasedDTO = try groupDTO(
+            id: groupID.uuidString.lowercased(),
+            documentID: "lowercase-document"
+        )
+        let uppercasedDTO = try groupDTO(
+            id: groupID.uuidString.uppercased(),
+            documentID: "uppercase-document"
+        )
+
+        XCTAssertThrowsError(
+            try ConvexRevisionedSync.prepareGroups([lowercasedDTO, uppercasedDTO])
+        ) { error in
+            XCTAssertEqual(
+                error as? ConvexRevisionedSyncError,
+                .duplicateGroupID(groupID.uuidString)
+            )
+        }
+    }
+
+    func testAdvancingGenerationInvalidatesPriorPublication() {
+        var generation = ConvexSyncGeneration()
+        let firstSession = generation.advance()
+
+        XCTAssertTrue(generation.isCurrent(firstSession))
+
+        let secondSession = generation.advance()
+
+        XCTAssertFalse(generation.isCurrent(firstSession))
+        XCTAssertTrue(generation.isCurrent(secondSession))
+    }
+
+    func testClearingOneChannelDoesNotClearAnotherChannelsFailure() {
+        var errors = ConvexSyncChannelErrorState()
+        let groupError = TestSyncError.groups
+        let expenseError = TestSyncError.expenses
+
+        errors.record(groupError, for: .groups)
+        errors.record(expenseError, for: .expenses)
+        errors.clear(.groups)
+
+        XCTAssertEqual(errors.current as? TestSyncError, expenseError)
+    }
+
+    func testLegacyFallbackReturnsForV2ReprobeAndCancelsLegacySubscription() async throws {
+        let recorder = LegacyFallbackRecorder()
+
+        let outcome = try await ConvexLegacyFallbackProbe.run(
+            delayNanoseconds: 1,
+            sleep: { _ in
+                while !(await recorder.didStart) {
+                    await Task.yield()
+                }
+            },
+            consumeLegacy: {
+                await recorder.recordStart()
+                do {
+                    try await Task.sleep(nanoseconds: 10_000_000_000)
+                } catch is CancellationError {
+                    await recorder.recordCancellation()
+                    throw CancellationError()
+                }
+            }
+        )
+
+        XCTAssertEqual(outcome, .reprobeV2)
+        let didCancel = await recorder.didCancel
+        XCTAssertTrue(didCancel)
+    }
+
     private func validExpenseData(expenseID: String) throws -> Data {
         let groupID = UUID().uuidString
         let memberID = UUID().uuidString
@@ -116,6 +187,40 @@ final class ConvexRevisionedSyncTests: XCTestCase {
             }
             """.utf8
         )
+    }
+
+    private func groupDTO(id: String, documentID: String) throws -> ConvexGroupDTO {
+        let memberID = UUID().uuidString
+        let data = Data(
+            """
+            {
+              "id": "\(id)",
+              "name": "Trip",
+              "created_at": 1000,
+              "members": [{"id": "\(memberID)", "name": "Rio"}],
+              "_id": "\(documentID)"
+            }
+            """.utf8
+        )
+        return try JSONDecoder().decode(ConvexGroupDTO.self, from: data)
+    }
+}
+
+private enum TestSyncError: Error {
+    case groups
+    case expenses
+}
+
+private actor LegacyFallbackRecorder {
+    private(set) var didStart = false
+    private(set) var didCancel = false
+
+    func recordStart() {
+        didStart = true
+    }
+
+    func recordCancellation() {
+        didCancel = true
     }
 }
 #endif
