@@ -58,6 +58,7 @@ final class AppStore: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
+    private var clearAllDataTask: Task<Void, Never>?
     private var remoteLoadGeneration: UInt64 = 0
     /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseUpsertIds: Set<UUID> = []
@@ -732,6 +733,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         #if DEBUG
         print("[AuthDebug] signOut called")
         #endif
+        cancelClearAllDataWork()
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
         invalidateRemoteLoad()
@@ -807,20 +809,21 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// - Removes current user from shared groups (doesn't delete group if others remain)
     /// - Deletes groups where current user is the only member
     /// - Clears friend list (doesn't affect linked friends' own data)
+    @MainActor
     func clearAllUserData() {
         guard !isClearingAllData else { return }
         isClearingAllData = true
         clearAllDataErrorMessage = nil
+        let initiatingAccountId = session?.account.id
+        let initiatingEpoch = dataEpoch
         #if DEBUG
         print("[AppStore] Clearing all data for user")
         #endif
 
         // 1. Stop real-time sync FIRST to prevent repopulation
-        Task { @MainActor in
-            #if !PAYBACK_CI_NO_CONVEX
-            Dependencies.syncManager?.stopSync()
-            #endif
-        }
+        #if !PAYBACK_CI_NO_CONVEX
+        Dependencies.syncManager?.stopSync()
+        #endif
 
         // Clear local data immediately
         let expenseCount = expenses.count
@@ -838,32 +841,56 @@ func completeAuthentication(id: String, email: String, name: String?) {
         persistCurrentState()
 
         // Restart sync only after every cloud cleanup confirms completion.
-        Task {
+        clearAllDataTask = Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
+                try Task.checkCancellation()
+                guard isClearAllDataContextCurrent(accountId: initiatingAccountId, epoch: initiatingEpoch) else { return }
                 try await expenseCloudService.clearAllData()
+
+                try Task.checkCancellation()
+                guard isClearAllDataContextCurrent(accountId: initiatingAccountId, epoch: initiatingEpoch) else { return }
                 try await groupCloudService.clearAllData()
+
+                try Task.checkCancellation()
+                guard isClearAllDataContextCurrent(accountId: initiatingAccountId, epoch: initiatingEpoch) else { return }
                 try await accountService.clearFriends()
-                await MainActor.run {
-                    isClearingAllData = false
-                    #if !PAYBACK_CI_NO_CONVEX
-                    Dependencies.syncManager?.startSync()
-                    #endif
-                    Haptics.notify(.success)
-                }
+
+                try Task.checkCancellation()
+                guard isClearAllDataContextCurrent(accountId: initiatingAccountId, epoch: initiatingEpoch) else { return }
+                isClearingAllData = false
+                clearAllDataTask = nil
+                #if !PAYBACK_CI_NO_CONVEX
+                Dependencies.syncManager?.startSync()
+                #endif
+                Haptics.notify(.success)
+            } catch is CancellationError {
+                return
             } catch {
-                await MainActor.run {
-                    isClearingAllData = false
-                    clearAllDataErrorMessage = "Cloud cleanup did not finish. Your local data is clear, but sync remains paused. Please try Clear All My Data again."
-                }
+                guard isClearAllDataContextCurrent(accountId: initiatingAccountId, epoch: initiatingEpoch) else { return }
+                isClearingAllData = false
+                clearAllDataTask = nil
+                clearAllDataErrorMessage = "Cloud cleanup did not finish. Your local data is clear, but sync remains paused. Please try Clear All My Data again."
                 return
             }
 
             #if DEBUG
-            await MainActor.run {
-                print("[AppStore] Cleared \(expenseCount) expenses, \(groupCount) groups, \(friendCount) friends from local and cloud")
-            }
+            print("[AppStore] Cleared \(expenseCount) expenses, \(groupCount) groups, \(friendCount) friends from local and cloud")
             #endif
         }
+    }
+
+    @MainActor
+    private func cancelClearAllDataWork() {
+        clearAllDataTask?.cancel()
+        clearAllDataTask = nil
+        isClearingAllData = false
+        clearAllDataErrorMessage = nil
+    }
+
+    @MainActor
+    private func isClearAllDataContextCurrent(accountId: String?, epoch: UUID) -> Bool {
+        dataEpoch == epoch && session?.account.id == accountId
     }
 
     func applyDisplayName(_ name: String) {

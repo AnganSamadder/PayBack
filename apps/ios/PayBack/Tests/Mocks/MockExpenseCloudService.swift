@@ -9,6 +9,8 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var upsertDelaysNanoseconds: [UInt64] = []
     private var upsertInvocationCount = 0
     private var clearAllInvocationCount = 0
+    private var shouldSuspendClearAll = false
+    private var clearAllContinuation: CheckedContinuation<Void, Never>?
 
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
         if shouldFail {
@@ -75,6 +77,11 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
 
     func clearAllData() async throws {
         clearAllInvocationCount += 1
+        if shouldSuspendClearAll {
+            await withCheckedContinuation { continuation in
+                clearAllContinuation = continuation
+            }
+        }
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
@@ -103,6 +110,16 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         clearAllInvocationCount
     }
 
+    func suspendNextClearAll() {
+        shouldSuspendClearAll = true
+    }
+
+    func resumeClearAll() {
+        shouldSuspendClearAll = false
+        clearAllContinuation?.resume()
+        clearAllContinuation = nil
+    }
+
     func reset() {
         expenses.removeAll()
         participantsByExpenseId.removeAll()
@@ -110,6 +127,9 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         upsertDelaysNanoseconds.removeAll()
         upsertInvocationCount = 0
         clearAllInvocationCount = 0
+        shouldSuspendClearAll = false
+        clearAllContinuation?.resume()
+        clearAllContinuation = nil
     }
 
     func participants(for expenseId: UUID) -> [ExpenseParticipant]? {

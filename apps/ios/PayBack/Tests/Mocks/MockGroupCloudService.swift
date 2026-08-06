@@ -9,6 +9,8 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
     private var queuedFetchDelaysNanoseconds: [UInt64] = []
     private var fetchInvocationCount = 0
     private var clearAllInvocationCount = 0
+    private var shouldSuspendClearAll = false
+    private var clearAllContinuation: CheckedContinuation<Void, Never>?
 
     func upsertGroup(_ group: SpendingGroup) async throws {
         if shouldFail {
@@ -59,6 +61,11 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
 
     func clearAllData() async throws {
         clearAllInvocationCount += 1
+        if shouldSuspendClearAll {
+            await withCheckedContinuation { continuation in
+                clearAllContinuation = continuation
+            }
+        }
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
@@ -87,6 +94,16 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         clearAllInvocationCount
     }
 
+    func suspendNextClearAll() {
+        shouldSuspendClearAll = true
+    }
+
+    func resumeClearAll() {
+        shouldSuspendClearAll = false
+        clearAllContinuation?.resume()
+        clearAllContinuation = nil
+    }
+
     func reset() {
         groups.removeAll()
         shouldFail = false
@@ -94,5 +111,8 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         queuedFetchDelaysNanoseconds.removeAll()
         fetchInvocationCount = 0
         clearAllInvocationCount = 0
+        shouldSuspendClearAll = false
+        clearAllContinuation?.resume()
+        clearAllContinuation = nil
     }
 }
