@@ -13,7 +13,7 @@ describe("security boundaries", () => {
   });
 
   test("backend maintenance paths do not log account or financial records", () => {
-    for (const file of ["janitor.ts", "users.ts"]) {
+    for (const file of ["janitor.ts", "migrations.ts", "users.ts"]) {
       expect(convexSource(file), file).not.toMatch(/console\.(?:log|info|warn|error)\s*\(/);
     }
   });
