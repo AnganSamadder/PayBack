@@ -8,6 +8,7 @@ import {
   getCurrentUserOrThrow,
   resolveAuthenticatedAccount
 } from "./helpers";
+import { checkRateLimit } from "./rateLimit";
 import {
   applyClaimForUser,
   assertBudgetedIdentityMaterializationReady,
@@ -149,12 +150,6 @@ async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequ
     throw new Error("Friend name is required");
   }
 
-  const recipientMatches = await findAccountsByEmailIdentity(ctx.db, recipientEmail);
-  if (recipientMatches.length > 1) {
-    throw new Error("Recipient account identity requires maintenance");
-  }
-  assertAccountCanAcceptChanges(recipientMatches[0] ?? null);
-
   const existing = await ctx.db
     .query("link_requests")
     .withIndex("by_client_id", (q) => q.eq("id", args.id))
@@ -171,6 +166,14 @@ async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequ
 
     return existing;
   }
+
+  await checkRateLimit(ctx, user.id, "linkRequests:create", 10);
+
+  const recipientMatches = await findAccountsByEmailIdentity(ctx.db, recipientEmail);
+  if (recipientMatches.length > 1) {
+    throw new Error("Recipient account identity requires maintenance");
+  }
+  assertAccountCanAcceptChanges(recipientMatches[0] ?? null);
 
   const targetFriend = await ctx.db
     .query("account_friends")
@@ -206,6 +209,20 @@ async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequ
       return activeDuplicate;
     }
     throw new Error("An active link request already exists for this recipient");
+  }
+
+  const activeTargetRequests = await ctx.db
+    .query("link_requests")
+    .withIndex("by_requester_target_status_and_expiry", (q) =>
+      q
+        .eq("requester_id", user.id)
+        .eq("target_member_id", targetMemberId)
+        .eq("status", "pending")
+        .gt("expires_at", now)
+    )
+    .take(2);
+  if (activeTargetRequests.length > 0) {
+    throw new Error("An active link request already exists for this friend");
   }
 
   const storedRequest = {
