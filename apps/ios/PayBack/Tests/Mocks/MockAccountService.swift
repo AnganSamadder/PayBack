@@ -16,6 +16,12 @@ actor MockAccountServiceForAppStore: AccountService {
     private var mergeMemberIdCalls: [(source: UUID, target: UUID)] = []
     private var mergeUnlinkedFriendCalls: [(target: String, source: String)] = []
     private var clearFriendsInvocationCount = 0
+    private var linkedFriendDeleteInvocationCount = 0
+    private var unlinkedFriendDeleteInvocationCount = 0
+    private var shouldSuspendLinkedFriendDelete = false
+    private var shouldSuspendUnlinkedFriendDelete = false
+    private var linkedFriendDeleteContinuation: CheckedContinuation<Void, Never>?
+    private var unlinkedFriendDeleteContinuation: CheckedContinuation<Void, Never>?
 
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -127,6 +133,14 @@ actor MockAccountServiceForAppStore: AccountService {
         mergeMemberIdCalls.removeAll()
         mergeUnlinkedFriendCalls.removeAll()
         clearFriendsInvocationCount = 0
+        linkedFriendDeleteInvocationCount = 0
+        unlinkedFriendDeleteInvocationCount = 0
+        shouldSuspendLinkedFriendDelete = false
+        shouldSuspendUnlinkedFriendDelete = false
+        linkedFriendDeleteContinuation?.resume()
+        unlinkedFriendDeleteContinuation?.resume()
+        linkedFriendDeleteContinuation = nil
+        unlinkedFriendDeleteContinuation = nil
     }
 
     func latestSyncedFriends(accountEmail: String) -> [AccountFriend]? {
@@ -166,6 +180,12 @@ actor MockAccountServiceForAppStore: AccountService {
     }
 
     func deleteLinkedFriend(memberId: UUID) async throws {
+        linkedFriendDeleteInvocationCount += 1
+        if shouldSuspendLinkedFriendDelete {
+            await withCheckedContinuation { continuation in
+                linkedFriendDeleteContinuation = continuation
+            }
+        }
         if shouldFail { throw PayBackError.networkUnavailable }
         for (email, var friendList) in friends {
             if let idx = friendList.firstIndex(where: { $0.memberId == memberId }) {
@@ -176,6 +196,12 @@ actor MockAccountServiceForAppStore: AccountService {
     }
 
     func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
+        unlinkedFriendDeleteInvocationCount += 1
+        if shouldSuspendUnlinkedFriendDelete {
+            await withCheckedContinuation { continuation in
+                unlinkedFriendDeleteContinuation = continuation
+            }
+        }
         if shouldFail { throw PayBackError.networkUnavailable }
         for (email, var friendList) in friends {
             if let idx = friendList.firstIndex(where: { $0.memberId == memberId }) {
@@ -184,6 +210,34 @@ actor MockAccountServiceForAppStore: AccountService {
             }
         }
         return DeleteFriendResult(groupsModified: 0, expensesDeleted: 0, expensesModified: 0, aliasesDeleted: 0)
+    }
+
+    func suspendNextLinkedFriendDelete() {
+        shouldSuspendLinkedFriendDelete = true
+    }
+
+    func suspendNextUnlinkedFriendDelete() {
+        shouldSuspendUnlinkedFriendDelete = true
+    }
+
+    func resumeLinkedFriendDelete() {
+        shouldSuspendLinkedFriendDelete = false
+        linkedFriendDeleteContinuation?.resume()
+        linkedFriendDeleteContinuation = nil
+    }
+
+    func resumeUnlinkedFriendDelete() {
+        shouldSuspendUnlinkedFriendDelete = false
+        unlinkedFriendDeleteContinuation?.resume()
+        unlinkedFriendDeleteContinuation = nil
+    }
+
+    func currentLinkedFriendDeleteInvocationCount() -> Int {
+        linkedFriendDeleteInvocationCount
+    }
+
+    func currentUnlinkedFriendDeleteInvocationCount() -> Int {
+        unlinkedFriendDeleteInvocationCount
     }
 
     func selfDeleteAccount() async throws {

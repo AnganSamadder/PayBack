@@ -1327,6 +1327,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     func deleteLinkedFriend(memberId: UUID) async throws {
         print("🔵 deleteLinkedFriend called for: \(memberId)")
 
+        let mutationContext = groupMutationContext()
         // Capture only what we'll remove so rollback doesn't clobber concurrent realtime updates.
         let removedFriend = friends.first { $0.memberId == memberId }
         let directGroup = groups.first(where: {
@@ -1347,6 +1348,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             print("✅ Backend deleteLinkedFriend success")
             scheduleFriendSync()
         } catch {
+            guard isCurrentGroupMutation(mutationContext) else { throw error }
             // Surgical rollback: restore only the specific items removed, preserving
             // any concurrent realtime updates that arrived while the request was in flight.
             if let friend = removedFriend, !friends.contains(where: { $0.memberId == memberId }) {
@@ -1368,6 +1370,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
         print("🔵 deleteUnlinkedFriend called for: \(memberId)")
 
+        let mutationContext = groupMutationContext()
         // Capture what will change for surgical rollback.
         struct GroupDeleteRecord {
             let original: SpendingGroup
@@ -1407,6 +1410,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             scheduleFriendSync()
             return result
         } catch {
+            guard isCurrentGroupMutation(mutationContext) else { throw error }
             // Surgical rollback: restore only the specific items removed.
             if let friend = removedFriend, !friends.contains(where: { $0.memberId == memberId }) {
                 friends.append(friend)
