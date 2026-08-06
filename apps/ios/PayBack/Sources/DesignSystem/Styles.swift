@@ -564,41 +564,44 @@ struct SmartCurrencyField: View {
             TextField("", text: $inputBuffer)
                 .keyboardType(.numberPad)
                 .focused($internalFocus)
-                .opacity(0.01)
+                .opacity(0)
                 .onChange(of: inputBuffer) { _, newVal in
                     handleInput(newVal)
                 }
-                .toolbar {
-                    if internalFocus {
-                        ToolbarItemGroup(placement: .keyboard) {
-                            if let onNext {
-                                Button("Done") {
-                                    internalFocus = false
-                                }
-
-                                Spacer()
-
-                                Button("Next", action: onNext)
-                                    .fontWeight(.semibold)
-                            } else {
-                                Spacer()
-
-                                Button("Done") {
-                                    internalFocus = false
-                                }
-                            }
-                        }
-                    }
-                }
 
             // Visible display
-            Text(amount.formatted(.currency(code: currency)))
-                .font(font)
-                .foregroundStyle(amount == 0 ? Color.secondary.opacity(0.5) : AppTheme.brand)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    internalFocus = true
+            HStack(spacing: 8) {
+                Text(amount.formatted(.currency(code: currency)))
+                    .font(font)
+                    .foregroundStyle(amount == 0 ? Color.secondary.opacity(0.5) : AppTheme.brand)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        internalFocus = true
+                    }
+
+                if internalFocus {
+                    Button {
+                        internalFocus = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("Done")
+
+                    if let onNext {
+                        Button(action: onNext) {
+                            Image(systemName: "arrow.right.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                        .accessibilityLabel("Next")
+                    }
                 }
+            }
+            .foregroundStyle(AppTheme.brand)
         }
         .onAppear {
             // Reconstruct buffer if amount already exists
