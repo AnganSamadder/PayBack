@@ -4,14 +4,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 const allowedLegacyWriteFiles = new Set([
-  "aliases.ts",
-  "bulkImport.ts",
   "cleanup.ts",
-  "debug.ts",
   "expenseWrites.ts",
-  "fix_alias.ts",
-  "migrations.ts",
-  "migrations/backfill_ids.ts",
   "migrations/userExpenseRefs.ts",
   "users.ts"
 ]);
