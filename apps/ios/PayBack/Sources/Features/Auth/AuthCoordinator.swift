@@ -210,6 +210,7 @@ final class AuthCoordinator: ObservableObject {
     }
 
     private func handle(error: Error) {
+        if error is CancellationError { return }
         if let paybackError = error as? PayBackError {
 #if DEBUG
             print("[AuthCoordinator] PayBackError: \(paybackError)")

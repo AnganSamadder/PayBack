@@ -75,11 +75,18 @@ actor ConvexAccountService: AccountService {
     }
 
     func createAccount(email: String, displayName: String) async throws -> UserAccount {
-        _ = try await client.mutation("users:store", with: [:])
-        guard let account = try await lookupAccount(byEmail: email) else {
-            throw PayBackError.accountNotFound(email: email)
-        }
-        return account
+        try await AccountPreparationRunner.run(
+            email: email,
+            store: {
+                try await self.client.mutation(
+                    "users:store",
+                    with: ["clientCapability": "resumable_orphan_cleanup_v1"]
+                ) as String
+            },
+            lookup: {
+                try await self.lookupAccount(byEmail: email)
+            }
+        )
     }
 
     // MARK: - Friend Sync
