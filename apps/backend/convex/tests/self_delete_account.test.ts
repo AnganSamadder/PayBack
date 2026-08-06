@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
@@ -24,13 +24,25 @@ async function markGroupVisibilityReady(t: ReturnType<typeof convexTest>) {
     const existing = (await ctx.db.query("sync_materialization_state").collect()).find(
       (state) => state.key === "group_visibility_v1"
     );
-    if (existing) return;
-    await ctx.db.insert("sync_materialization_state", {
-      key: "group_visibility_v1",
-      status: "ready",
-      processed: 0,
-      updated_at: Date.now()
-    });
+    if (!existing) {
+      await ctx.db.insert("sync_materialization_state", {
+        key: "group_visibility_v1",
+        status: "ready",
+        processed: 0,
+        updated_at: Date.now()
+      });
+    }
+    const cleanupEmailState = await ctx.db.query("cleanup_email_materialization_state").unique();
+    if (!cleanupEmailState) {
+      await ctx.db.insert("cleanup_email_materialization_state", {
+        key: "cleanup_email_canonicalization_v1",
+        status: "ready",
+        phase: "complete",
+        processed: 0,
+        retry_count: 0,
+        updated_at: Date.now()
+      });
+    }
   });
 }
 
@@ -63,6 +75,134 @@ test("legacy self deletion callers fail before creating durable progress", async
   }));
   expect(state.account?.status).toBeUndefined();
   expect(state.progress).toBeNull();
+});
+
+test("self deletion durably schedules cleanup email preparation before creating progress", async () => {
+  vi.useFakeTimers();
+  const t = convexTest(schema, modules);
+  await t.run((ctx) =>
+    ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: 1
+    })
+  );
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await expect(
+    owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient)
+  ).resolves.toMatchObject({
+    success: false,
+    inProgress: true,
+    phase: "prepare_cleanup_email"
+  });
+  const state = await t.run(async (ctx) => ({
+    materialization: await ctx.db.query("cleanup_email_materialization_state").unique(),
+    progress: await ctx.db.query("account_deletion_progress").collect()
+  }));
+  expect(state.materialization).toMatchObject({ status: "pending", phase: "accounts" });
+  expect(state.progress).toEqual([]);
+  await (
+    t.finishAllScheduledFunctions as (
+      advanceTimers: () => void,
+      maxIterations: number
+    ) => Promise<void>
+  )(vi.runAllTimers, 500);
+  vi.useRealTimers();
+});
+
+test("self deletion fails closed after cleanup email preparation exhausts retries", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: 1
+    });
+    await ctx.db.insert("cleanup_email_materialization_state", {
+      key: "cleanup_email_canonicalization_v1",
+      status: "failed",
+      phase: "account_friends",
+      processed: 1,
+      retry_count: 3,
+      last_error: "conflict",
+      updated_at: 1
+    });
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await expect(
+    owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient)
+  ).rejects.toThrow("requires support");
+  expect(await t.run((ctx) => ctx.db.query("account_deletion_progress").collect())).toEqual([]);
+});
+
+test("self deletion returns its receipt even when cleanup email maintenance failed", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("account_deletion_receipts", {
+      auth_subject: "deleted_auth",
+      account_email: "deleted@example.com",
+      normalized_account_email: "deleted@example.com",
+      request_id: "deleted_request",
+      deleted_at: 123,
+      friendships_unlinked: 4,
+      expenses_preserved: true
+    });
+    await ctx.db.insert("cleanup_email_materialization_state", {
+      key: "cleanup_email_canonicalization_v1",
+      status: "failed",
+      phase: "account_friends",
+      processed: 1,
+      retry_count: 3,
+      last_error: "conflict",
+      updated_at: 1
+    });
+  });
+
+  const deleted = t.withIdentity(identity("deleted@example.com", "deleted_auth"));
+  await expect(
+    deleted.mutation(api.cleanup.selfDeleteAccount, progressCapableClient)
+  ).resolves.toMatchObject({
+    success: true,
+    state: "already_deleted",
+    requestId: "deleted_request",
+    deletedAt: 123
+  });
+});
+
+test("self deletion resolves a materialized mixed-case account by auth subject", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "legacy_auth",
+      email: "Legacy@Example.com",
+      normalized_email: "legacy@example.com",
+      display_name: "Legacy",
+      member_id: "legacy_member",
+      created_at: 1
+    });
+    await ctx.db.insert("cleanup_email_materialization_state", {
+      key: "cleanup_email_canonicalization_v1",
+      status: "ready",
+      phase: "complete",
+      processed: 1,
+      retry_count: 0,
+      updated_at: 1
+    });
+  });
+
+  const legacy = t.withIdentity(identity("legacy@example.com", "legacy_auth"));
+  await expect(
+    legacy.mutation(api.cleanup.selfDeleteAccount, progressCapableClient)
+  ).resolves.toMatchObject({ success: false, inProgress: true });
+  expect(await t.run((ctx) => ctx.db.query("account_deletion_progress").unique())).toMatchObject({
+    account_email: "legacy@example.com"
+  });
 });
 
 test("legacy fenced deletion scans foreign groups that have no visibility row", async () => {
@@ -120,6 +260,7 @@ test("legacy fenced deletion scans foreign groups that have no visibility row", 
     });
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {

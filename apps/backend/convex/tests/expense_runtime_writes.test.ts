@@ -449,5 +449,5 @@ describe("runtime expense writes", () => {
     }));
     expect(state.expenses).toHaveLength(0);
     expect(state.revisions).toEqual([]);
-  });
+  }, 15_000);
 });

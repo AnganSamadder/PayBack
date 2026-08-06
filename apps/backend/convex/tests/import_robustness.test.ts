@@ -102,7 +102,7 @@ test("import_robustness: handles aliases and id mismatches", async () => {
   // 1. Setup User
   await t.run(async (ctx) => {
     await ctx.db.insert("accounts", {
-      id: "owner_account",
+      id: "user_a",
       email: ownerEmail,
       display_name: "Angan",
       created_at: Date.now(),
@@ -698,7 +698,7 @@ test("import_robustness: does not dedupe by name-only when id mismatches", async
   // 1. Setup User & Friend
   await t.run(async (ctx) => {
     await ctx.db.insert("accounts", {
-      id: "owner_account",
+      id: "user_a",
       email: ownerEmail,
       display_name: "Angan",
       created_at: Date.now(),

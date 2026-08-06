@@ -45,6 +45,14 @@ describe("durable clear-all processing", () => {
   test("friends V2 reports bounded progress until completion", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "owner_auth",
+        email: "owner@example.com",
+        normalized_email: "owner@example.com",
+        display_name: "Owner",
+        member_id: "owner_member",
+        created_at: 1
+      });
       for (let index = 0; index < 7; index += 1) {
         await ctx.db.insert("account_friends", {
           account_email: "owner@example.com",

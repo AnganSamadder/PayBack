@@ -3138,6 +3138,14 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
       processed: 0,
       updated_at: Date.now()
     });
+    await ctx.db.insert("cleanup_email_materialization_state", {
+      key: "cleanup_email_canonicalization_v1",
+      status: "ready",
+      phase: "complete",
+      processed: 0,
+      retry_count: 0,
+      updated_at: Date.now()
+    });
 
     const foreignOwnedGroup = await ctx.db.insert("groups", {
       id: "foreign_owned_shared_group",
