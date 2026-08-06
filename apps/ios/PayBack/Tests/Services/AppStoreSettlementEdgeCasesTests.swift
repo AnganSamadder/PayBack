@@ -449,6 +449,34 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertEqual(mockPersistence.load().expenses, [expenseB])
     }
 
+    func testRealtimeConfirmationBeforeSettlementResponseDoesNotLeavePendingState() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let originalExpense = settlementExpense(description: "Dinner")
+        let settledExpense = settlementExpense(originalExpense, settled: true)
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.addExpense(originalExpense)
+        await mockExpenseCloudService.suspendNextSettlement()
+
+        let operation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(originalExpense)
+        }
+        let requestStarted = await waitForSettlementInvocation()
+        XCTAssertTrue(requestStarted)
+
+        sut.expenses = sut.mergedRemoteExpensesPreservingPendingWrites(
+            remoteExpenses: [settledExpense]
+        )
+        XCTAssertTrue(sut.isSettlementPending(for: originalExpense.id))
+
+        await mockExpenseCloudService.resumeSettlement()
+        try await operation.value
+
+        XCTAssertEqual(sut.expenses, [settledExpense])
+        XCTAssertFalse(sut.isSettlementPending(for: originalExpense.id))
+    }
+
     func testOverlappingSettlementSuccessesKeepNewestResponse() async throws {
         sut.session = UserSession(
             account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
@@ -479,7 +507,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         try await olderOperation.value
 
         XCTAssertEqual(sut.expenses, [unsettledExpense])
-        XCTAssertTrue(sut.isSettlementPending(for: originalExpense.id))
+        XCTAssertFalse(sut.isSettlementPending(for: originalExpense.id))
     }
 
     func testOlderSettlementFailureDoesNotUndoOrSurfaceAfterNewerSuccess() async throws {
@@ -511,7 +539,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         try await olderOperation.value
 
         XCTAssertEqual(sut.expenses, [unsettledExpense])
-        XCTAssertTrue(sut.isSettlementPending(for: originalExpense.id))
+        XCTAssertFalse(sut.isSettlementPending(for: originalExpense.id))
     }
 
     func testSettlementRetrySupersededByNewerMutationDoesNotInvokeBackendAgain() async throws {

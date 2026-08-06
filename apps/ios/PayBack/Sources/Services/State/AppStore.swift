@@ -79,7 +79,9 @@ final class AppStore: ObservableObject {
     private var remoteLoadGeneration: UInt64 = 0
     /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseUpsertIds: Set<UUID> = []
-    /// Local settlement writes that have been sent to cloud but not yet observed in realtime snapshots.
+    /// Successful settlement writes not yet confirmed by a matching realtime snapshot.
+    /// This protects canonical mutation responses from stale subscription payloads without
+    /// keeping the settlement UI disabled after the server acknowledges the mutation.
     private var pendingExpenseSettlementIds: Set<UUID> = []
     /// Only the latest in-flight settlement for an expense may reconcile its response.
     private var latestSettlementMutationIdByExpense: [UUID: UUID] = [:]
@@ -1644,7 +1646,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Merge Convex realtime expense snapshots with in-flight local writes.
     /// This prevents stale snapshots from clobbering optimistic local saves.
-    private func mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: [Expense]) -> [Expense] {
+    func mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: [Expense]) -> [Expense] {
         var merged = remoteExpenses
         var remoteIndexById: [UUID: Int] = [:]
         for (index, expense) in remoteExpenses.enumerated() {
@@ -1658,7 +1660,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 if merged[remoteIndex] == localExpense {
                     pendingExpenseUpsertIds.remove(localExpense.id)
                     pendingExpenseSettlementIds.remove(localExpense.id)
-                    latestSettlementMutationIdByExpense.removeValue(forKey: localExpense.id)
                 } else {
                     merged[remoteIndex] = localExpense
                 }
@@ -1899,8 +1900,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
             } else {
                 expenses.append(canonicalExpense)
             }
-            // Keep pendingExpenseSettlementIds until the realtime snapshot confirms the
-            // remote payload matches our local state — same pattern as pendingExpenseUpsertIds.
+            // The mutation response is the UI acknowledgement. Keep only the separate
+            // realtime reconciliation tombstone until a matching subscription payload arrives.
+            latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
             persistCurrentState()
         } catch {
             guard isCurrentSettlementMutation(context) else { return }
@@ -1926,7 +1928,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     func isSettlementPending(for expenseId: UUID) -> Bool {
-        pendingExpenseSettlementIds.contains(expenseId)
+        latestSettlementMutationIdByExpense[expenseId] != nil
     }
 
     @MainActor
