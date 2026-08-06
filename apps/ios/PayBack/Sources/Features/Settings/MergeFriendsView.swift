@@ -1,6 +1,14 @@
 import SwiftUI
 
 enum MergeFriendsLogic {
+    static func reconciledSelection(
+        _ selection: AccountFriend?,
+        eligibleFriends: [AccountFriend]
+    ) -> AccountFriend? {
+        guard let selection else { return nil }
+        return eligibleFriends.first { $0.memberId == selection.memberId }
+    }
+
     static func combinedExpenseCount(
         expenses: [Expense],
         memberIds: [UUID],
@@ -121,6 +129,22 @@ struct MergeFriendsView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text(errorMessage)
+        }
+        .onChange(of: unlinkedFriends) { _, eligibleFriends in
+            let reconciledFriendA = MergeFriendsLogic.reconciledSelection(
+                friendA,
+                eligibleFriends: eligibleFriends
+            )
+            let reconciledFriendB = MergeFriendsLogic.reconciledSelection(
+                friendB,
+                eligibleFriends: eligibleFriends
+            )
+
+            friendA = reconciledFriendA
+            friendB = reconciledFriendB
+            if reconciledFriendA == nil || reconciledFriendB == nil {
+                showConfirmation = false
+            }
         }
     }
 
