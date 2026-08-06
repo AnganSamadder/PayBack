@@ -59,15 +59,6 @@ async function quarantineFriend(ctx: any, friendId: string, reason: string) {
 export const cleanupOrphans = internalMutation({
   args: {},
   handler: async (ctx) => {
-    const operationId = crypto.randomUUID();
-    console.log(
-      JSON.stringify({
-        scope: "janitor.cleanupOrphans",
-        operationId,
-        step: "start"
-      })
-    );
-
     const stateKey = "default";
     const existingState = await ctx.db
       .query("janitor_state")
@@ -211,23 +202,6 @@ export const cleanupOrphans = internalMutation({
 
     const ownerEmailsToCheck = new Set([...friendEmails, ...groupEmails, ...expenseEmails]);
 
-    console.log(
-      JSON.stringify({
-        scope: "janitor.cleanupOrphans",
-        operationId,
-        step: "scan_complete",
-        friendEmailCount: friendEmails.size,
-        groupEmailCount: groupEmails.size,
-        expenseEmailCount: expenseEmails.size,
-        orphanLinkedFriendCount: orphanedLinkedFriends.length,
-        softDeletedLinkedFriendCount: softDeletedLinkedFriends.length,
-        totalOwnerEmails: ownerEmailsToCheck.size,
-        friendPageSize: friendsPage.page.length,
-        groupsTotalSize: allGroups.length,
-        friendCursorWasNull: (existingState?.account_friends_cursor ?? null) === null
-      })
-    );
-
     await ctx.db.patch(stateId, {
       scan_phase:
         scanPhase === "accounts" && accountsPage.isDone
@@ -343,34 +317,12 @@ export const cleanupOrphans = internalMutation({
       }
     }
 
-    console.log(
-      JSON.stringify({
-        scope: "janitor.cleanupOrphans",
-        operationId,
-        step: "orphans_identified",
-        orphanOwnerCount: orphanedOwnerEmails.length,
-        orphanLinkedFriendCount: orphanedLinkedFriends.length,
-        orphanOwnerEmails: orphanedOwnerEmails.slice(0, 10),
-        orphanLinkedFriendIds: orphanedLinkedFriends
-          .slice(0, 10)
-          .map((friend) => String(friend._id))
-      })
-    );
-
     if (
       orphanedOwnerEmails.length === 0 &&
       orphanedLinkedFriends.length === 0 &&
       softDeletedLinkedFriends.length === 0 &&
       orphanedReferenceIds.size === 0
     ) {
-      console.log(
-        JSON.stringify({
-          scope: "janitor.cleanupOrphans",
-          operationId,
-          step: "complete",
-          message: "No orphans found"
-        })
-      );
       if (hasMoreInCurrentPhase) {
         await ctx.scheduler.runAfter(0, internal.janitor.cleanupOrphans, {});
       }
@@ -378,7 +330,6 @@ export const cleanupOrphans = internalMutation({
     }
 
     const linkedFriendsToClean = orphanedLinkedFriends.slice(0, MAX_ORPHANS_PER_RUN);
-    const results: any[] = [];
     for (const friend of linkedFriendsToClean) {
       if (friend.linked_member_id) {
         const memberIdentity = `orphan-member:${friend.linked_member_id}`;
@@ -388,18 +339,8 @@ export const cleanupOrphans = internalMutation({
           memberIds: [friend.linked_member_id],
           mode: "hard"
         });
-        results.push({
-          friendId: String(friend._id),
-          type: "linked_member_identity",
-          queued: true
-        });
       } else {
         await ctx.db.delete(friend._id);
-        results.push({
-          friendId: String(friend._id),
-          type: "linked_identity",
-          success: true
-        });
       }
     }
     const softDeletedFriendsToClean = softDeletedLinkedFriends.slice(0, MAX_ORPHANS_PER_RUN);
@@ -412,7 +353,6 @@ export const cleanupOrphans = internalMutation({
         status: "ghost",
         updated_at: Date.now()
       });
-      results.push({ friendId: String(friend._id), type: "soft_deleted_identity", success: true });
     }
 
     const ownerEmailsToClean = orphanedOwnerEmails.slice(0, MAX_ORPHANS_PER_RUN);
@@ -423,14 +363,12 @@ export const cleanupOrphans = internalMutation({
         sourceEmail: email.trim(),
         mode: "hard"
       });
-      results.push({ email, type: "owner", success: true, queued: true });
     }
 
     let orphanedReferencesQueued = 0;
     for (const accountId of orphanedReferenceIds.values()) {
       if (await enqueueDocumentReferenceCleanup(ctx, accountId)) {
         orphanedReferencesQueued += 1;
-        results.push({ accountId: String(accountId), type: "document_reference", queued: true });
       }
     }
 
@@ -444,18 +382,6 @@ export const cleanupOrphans = internalMutation({
       softDeletedFriendsToClean.length +
       ownerEmailsToClean.length +
       orphanedReferencesQueued;
-
-    console.log(
-      JSON.stringify({
-        scope: "janitor.cleanupOrphans",
-        operationId,
-        step: "complete",
-        orphansFound: totalOrphans,
-        orphansCleaned: totalCleaned,
-        remainingOrphans: totalOrphans - totalCleaned,
-        results
-      })
-    );
 
     if (hasMoreInCurrentPhase) {
       await ctx.scheduler.runAfter(0, internal.janitor.cleanupOrphans, {});

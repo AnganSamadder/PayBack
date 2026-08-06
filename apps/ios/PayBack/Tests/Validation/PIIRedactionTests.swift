@@ -349,6 +349,18 @@ final class PIIRedactionTests: XCTestCase {
         )
     }
 
+    func test_groupDetailDoesNotLogFinancialDetails() throws {
+        let payBackDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = payBackDirectory
+            .appendingPathComponent("Sources/Features/Groups/GroupDetailView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("print("), "Group details must not be written to stdout")
+    }
+
     // MARK: - Combined PII Redaction Tests
 
     func test_redaction_handlesMultiplePIITypes() {

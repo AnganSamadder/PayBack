@@ -973,19 +973,6 @@ private struct SettleModal: View {
             return mySplits.contains { !$0.isSettled }
         }
 
-        print("📊 Expense Analysis:")
-        print("   - Total expenses in group: \(allExpenses.count)")
-        print("   - Unsettled expenses: \(filtered.count)")
-
-        for expense in allExpenses {
-            let mySplits = expense.splits.filter { store.isMe($0.memberId) }
-            let currentUserSettled = !mySplits.contains { !$0.isSettled }
-            print("   - Expense: \(expense.description)")
-            print("     * Fully settled: \(expense.isSettled)")
-            print("     * Current user settled: \(currentUserSettled)")
-            print("     * Can settle: \(store.canSettleExpenseForSelf(expense))")
-        }
-
         return filtered
     }
 

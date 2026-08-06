@@ -14,4 +14,10 @@ describe("security boundaries", () => {
     );
     expect(source).toMatch(/export const getAliasesForMember = internalQuery\s*\(/);
   });
+
+  test("backend maintenance paths do not log account or financial records", () => {
+    for (const file of ["janitor.ts", "users.ts"]) {
+      expect(convexSource(file), file).not.toMatch(/console\.(?:log|info|warn|error)\s*\(/);
+    }
+  });
 });
