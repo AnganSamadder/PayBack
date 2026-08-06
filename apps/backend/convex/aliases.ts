@@ -2,7 +2,6 @@ import { query, internalQuery, mutation, DatabaseReader, MutationCtx } from "./_
 import { Doc, Id } from "./_generated/dataModel";
 import { getConvexSize, type Value, v } from "convex/values";
 import {
-  assertIdentityMaterializationReady,
   findAccountByMemberId,
   findAliasByAliasMemberId,
   getEquivalentAliasMemberIds,
@@ -11,9 +10,9 @@ import {
   normalizeMemberIds
 } from "./identity";
 import {
+  assertAccountCanAcceptChanges,
   canonicalizeExpenseParticipantLinks,
   createExpenseIdentityResolutionCache,
-  getCurrentUserOrThrow,
   resolveActiveExpenseParticipantAccounts
 } from "./helpers";
 import {
@@ -22,7 +21,11 @@ import {
   resolveProvenFriendLink
 } from "./friendLinkProvenance";
 import { GroupVisibilityWriteBatch } from "./groupVisibility";
-import { applyExpenseWriteBatch, type ExpenseWriteOperation } from "./expenseWrites";
+import {
+  applyExpenseWriteBatch,
+  preflightExpenseWriteBatch,
+  type ExpenseWriteOperation
+} from "./expenseWrites";
 
 /**
  * Internal helper for transitive alias resolution.
@@ -360,6 +363,16 @@ const mergeReadSafetyLimits = {
   maximumPageRows: 5
 } as const;
 
+const mergeTransactionSafetyLimits = {
+  // Leave headroom below Convex's 16 MiB / 16,000-document transaction ceilings for
+  // system-field and serialization overhead that is not represented in document values.
+  writes: 12_000,
+  writeBytes: 12 * 1024 * 1024,
+  repeatedReadReservationBytesPerQuery: 1024
+} as const;
+
+const insertSystemFieldReservationBytes = 512;
+
 export type MergeReadBudget = {
   scannedRows: number;
   estimatedReadBytes: number;
@@ -368,6 +381,8 @@ export type MergeReadBudget = {
   queryWork?: number;
   reservedReadRows?: number;
   reservedReadBytes?: number;
+  plannedWrites?: number;
+  estimatedWriteBytes?: number;
 };
 
 export function createMergeReadBudget(): MergeReadBudget {
@@ -378,7 +393,9 @@ export function createMergeReadBudget(): MergeReadBudget {
     lookupWork: 0,
     queryWork: 0,
     reservedReadRows: 0,
-    reservedReadBytes: 0
+    reservedReadBytes: 0,
+    plannedWrites: 0,
+    estimatedWriteBytes: 0
   };
 }
 
@@ -397,6 +414,38 @@ export async function assertMergeIdentityMaterializationReady(
       "Identity maintenance required: indexed identity migration is not complete; try again later"
     );
   }
+}
+
+export async function findBudgetedManualMergeAccount(
+  ctx: MutationCtx,
+  identity: { subject: string; email?: string },
+  readBudget: MergeReadBudget
+) {
+  accountMergeQueriesForLimit(readBudget, 1);
+  const accounts = await ctx.db
+    .query("accounts")
+    .withIndex("by_auth_id", (q) => q.eq("id", identity.subject))
+    .take(2);
+  accountMergeRowsForLimit(readBudget, accounts);
+  if (accounts.length > 1) throw new Error("Authenticated account identity is ambiguous");
+
+  const user = accounts[0];
+  const identityEmail = identity.email?.trim().toLowerCase();
+  if (!identityEmail || (user && user.email.trim().toLowerCase() !== identityEmail)) {
+    throw new Error("Authenticated identity does not match the account email");
+  }
+  if (!user) throw new Error("User not found");
+  assertAccountCanAcceptChanges(user);
+  return user;
+}
+
+async function getBudgetedManualMergeAccountOrThrow(
+  ctx: MutationCtx,
+  readBudget: MergeReadBudget
+) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) throw new Error("Unauthenticated");
+  return await findBudgetedManualMergeAccount(ctx, identity, readBudget);
 }
 
 function mergeWorkLimitError() {
@@ -446,6 +495,34 @@ export function accountMergeQueriesForLimit(budget: MergeReadBudget, count: numb
   }
 }
 
+export function reserveMergeWritesForLimit(
+  budget: MergeReadBudget,
+  count: number,
+  bytes: number
+) {
+  budget.plannedWrites = (budget.plannedWrites ?? 0) + count;
+  budget.estimatedWriteBytes = (budget.estimatedWriteBytes ?? 0) + bytes;
+  if (
+    budget.plannedWrites > mergeTransactionSafetyLimits.writes ||
+    budget.estimatedWriteBytes > mergeTransactionSafetyLimits.writeBytes
+  ) {
+    throw mergeWorkLimitError();
+  }
+}
+
+export function reserveMergeWriteValuesForLimit(
+  budget: MergeReadBudget,
+  values: readonly Value[],
+  insertedDocuments = 0
+) {
+  reserveMergeWritesForLimit(
+    budget,
+    values.length,
+    values.reduce<number>((total, value) => total + getConvexSize(value), 0) +
+      insertedDocuments * insertSystemFieldReservationBytes
+  );
+}
+
 function accountMergeLookupWorkForLimit(budget: MergeReadBudget, count: number) {
   budget.lookupWork = (budget.lookupWork ?? 0) + count;
   accountMergeQueriesForLimit(budget, count);
@@ -467,7 +544,9 @@ export function assertMergeWorstCaseReadWithinLimit(budget: MergeReadBudget) {
     budget.scannedRows + (budget.reservedReadRows ?? 0) + lookupWork * 2 >
       mergeCanonicalizationLimits.worstCaseScannedRows ||
     budget.estimatedReadBytes + (budget.reservedReadBytes ?? 0) >
-      mergeCanonicalizationLimits.estimatedReadBytes
+      mergeCanonicalizationLimits.estimatedReadBytes ||
+    (budget.plannedWrites ?? 0) > mergeTransactionSafetyLimits.writes ||
+    (budget.estimatedWriteBytes ?? 0) > mergeTransactionSafetyLimits.writeBytes
   ) {
     throw mergeWorkLimitError();
   }
@@ -856,7 +935,6 @@ async function prepareCanonicalReferenceRewrite(
     if (expense.participants.length > mergeCanonicalizationLimits.participantRows) {
       throw mergeWorkLimitError();
     }
-    const currentReadBytes = readBudget.estimatedReadBytes;
     const visibility = await collectSequentialMergeIndexRows(
       readBudget,
       async (cursor, limit) =>
@@ -868,12 +946,7 @@ async function prepareCanonicalReferenceRewrite(
       () => lookupForLimit(1),
       mergeCanonicalizationLimits.visibilityRows + 1
     );
-    // Reserve the second indexed visibility read performed during reconciliation.
-    lookupForLimit(1);
     visibilityRows += visibility.length;
-    const currentVisibilityBytes = readBudget.estimatedReadBytes - currentReadBytes;
-    readBudget.reservedReadRows = (readBudget.reservedReadRows ?? 0) + visibility.length;
-    readBudget.reservedReadBytes = (readBudget.reservedReadBytes ?? 0) + currentVisibilityBytes;
     if (visibilityRows > mergeCanonicalizationLimits.visibilityRows) {
       throw mergeWorkLimitError();
     }
@@ -1037,9 +1110,60 @@ async function prepareCanonicalReferenceRewrite(
     });
   }
 
+  const chargeRepeatedQueries = (count: number) => {
+    accountMergeQueriesForLimit(readBudget, count * 2);
+    readBudget.reservedReadBytes =
+      (readBudget.reservedReadBytes ?? 0) +
+      count * mergeTransactionSafetyLimits.repeatedReadReservationBytesPerQuery;
+  };
+  const chargeRepeatedRows = (rows: readonly Value[]) => {
+    // The dry run is part of this transaction and the compatibility writers repeat these reads
+    // after every rewrite has been prepared. Charging both passes makes the aggregate bound real.
+    accountMergeRowsForLimit(readBudget, rows);
+    accountMergeRowsForLimit(readBudget, rows);
+  };
+  const chargeWrites = (count: number, bytes: number) => {
+    reserveMergeWritesForLimit(readBudget, count, bytes);
+  };
+
+  const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx, {
+    dryRun: true,
+    budget: {
+      chargeQueries: chargeRepeatedQueries,
+      chargeRows: chargeRepeatedRows,
+      chargeWrites
+    }
+  });
+  for (const { group, members } of plannedGroupUpdates) {
+    await groupVisibilityBatch.patch(group._id, {
+      members,
+      owner_id: account._id,
+      owner_account_id: account.id,
+      owner_email: account.email,
+      updated_at: Date.now()
+    });
+  }
+  await groupVisibilityBatch.flush();
+
+  const expenseOperations: ExpenseWriteOperation[] = plannedExpenseUpdates.map(
+    ({ expense, patch, viewerAccountIds }) => ({
+      kind: "patch",
+      expense,
+      patch,
+      viewerAccountIds
+    })
+  );
+  await preflightExpenseWriteBatch(ctx, expenseOperations, {
+    budget: {
+      chargeQueries: chargeRepeatedQueries,
+      chargeRows: chargeRepeatedRows,
+      chargeWrites
+    }
+  });
+
   // All identity and variable-size friend/account reads are complete before the returned apply
-  // closure can perform its first write. Reconciliation's second visibility read is reserved from
-  // the exact preflight rows above.
+  // closure can perform its first write. The compatibility writers' repeated reads and their
+  // possible sync-state materialization are reserved by the aggregate hooks above.
   assertMergeWorstCaseReadWithinLimit(readBudget);
 
   return async () => {
@@ -1055,14 +1179,6 @@ async function prepareCanonicalReferenceRewrite(
     }
     await groupVisibilityBatch.flush();
 
-    const expenseOperations: ExpenseWriteOperation[] = plannedExpenseUpdates.map(
-      ({ expense, patch, viewerAccountIds }) => ({
-        kind: "patch",
-        expense,
-        patch,
-        viewerAccountIds
-      })
-    );
     await applyExpenseWriteBatch(ctx, expenseOperations);
   };
 }
@@ -1527,10 +1643,7 @@ export async function mergeAccountFriendIntoCanonicalInternal(
         targetFriend.linked_account_email,
       readBudget
     ));
-  assertMergeWorstCaseReadWithinLimit(readBudget);
-  await applyCanonicalRewrite();
-
-  await ctx.db.patch(targetFriend._id, {
+  const targetFriendPatch = {
     member_id: effectiveTargetMemberId,
     has_linked_account: provenLinkedTarget ? true : targetFriend.has_linked_account,
     linked_account_id: provenLinkedTarget?.linkedAccountId ?? targetFriend.linked_account_id,
@@ -1547,7 +1660,15 @@ export async function mergeAccountFriendIntoCanonicalInternal(
     display_preference: targetFriend.display_preference ?? sourceFriend.display_preference,
     profile_image_url: targetFriend.profile_image_url ?? sourceFriend.profile_image_url,
     updated_at: Date.now()
-  });
+  };
+  reserveMergeWriteValuesForLimit(readBudget, [
+    { ...targetFriend, ...targetFriendPatch } as Value,
+    sourceFriend as Value
+  ]);
+  assertMergeWorstCaseReadWithinLimit(readBudget);
+  await applyCanonicalRewrite();
+
+  await ctx.db.patch(targetFriend._id, targetFriendPatch);
   await ctx.db.delete(sourceFriend._id);
 
   return {
@@ -1578,8 +1699,9 @@ export const mergeMemberIds = mutation({
     accountEmail: v.optional(v.string())
   },
   handler: async (ctx, args) => {
-    const { user } = await getCurrentUserOrThrow(ctx);
-    await assertIdentityMaterializationReady(ctx.db);
+    const readBudget = createMergeReadBudget();
+    const user = await getBudgetedManualMergeAccountOrThrow(ctx, readBudget);
+    await assertMergeIdentityMaterializationReady(ctx, readBudget);
     const rawTarget = args.targetCanonicalId ?? args.targetId;
     if (!rawTarget) {
       throw new Error("targetCanonicalId is required");
@@ -1588,7 +1710,8 @@ export const mergeMemberIds = mutation({
       accountEmail: user.email,
       sourceMemberId: args.sourceId,
       targetMemberId: rawTarget,
-      allowLinkedTarget: true
+      allowLinkedTarget: true,
+      readBudget
     });
   }
 });
@@ -1614,12 +1737,14 @@ export const mergeUnlinkedFriends = mutation({
     accountEmail: v.optional(v.string())
   },
   handler: async (ctx, args) => {
-    const { user } = await getCurrentUserOrThrow(ctx);
-    await assertIdentityMaterializationReady(ctx.db);
+    const readBudget = createMergeReadBudget();
+    const user = await getBudgetedManualMergeAccountOrThrow(ctx, readBudget);
+    await assertMergeIdentityMaterializationReady(ctx, readBudget);
     return await mergeAccountFriendIntoCanonicalInternal(ctx, {
       accountEmail: user.email,
       targetMemberId: args.friendId1,
-      sourceMemberId: args.friendId2
+      sourceMemberId: args.friendId2,
+      readBudget
     });
   }
 });

@@ -6,11 +6,13 @@ import { getRandomAvatarColor } from "./utils";
 import {
   accountLinkingRows,
   applyCanonicalReferenceRewrite,
+  assertMergeWorstCaseReadWithinLimit,
   chargeLinkingQueries,
   collectSequentialLinkingRows,
   createLinkingReadBudget,
   prepareClaimedFriendReferenceRewrite,
   prepareInviteMergeSourceInternal,
+  reserveMergeWriteValuesForLimit,
   type CanonicalReferenceRewritePlan,
   type LinkingReadBudget,
   type PreparedInviteMergeSource
@@ -865,6 +867,12 @@ function storedAccountFriend(friend: Doc<"account_friends">): StoredAccountFrien
   return fields as StoredAccountFriend;
 }
 
+function definedConvexValue(value: Record<string, unknown>): Value {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, field]) => field !== undefined)
+  ) as Value;
+}
+
 export type LinkClaimPlan = {
   selectedFriendMerge?: PreparedInviteMergeSource;
   referenceRewrite: CanonicalReferenceRewritePlan;
@@ -1147,12 +1155,14 @@ export async function prepareClaimForUser(
     });
   }
 
+  let plannedReciprocalFriend: Doc<"account_friends"> | null = null;
   if (creatorMemberId) {
     const claimantFriendRecord = selectedFriendMerge
       ? selectedFriendMerge.targetFriend
       : await findFriendRecordByMemberId(ctx, user.email, creatorMemberId, budget);
     const selectedSourceFriend = selectedFriendMerge?.sourceFriend;
     const reciprocalFriend = claimantFriendRecord ?? selectedSourceFriend ?? null;
+    plannedReciprocalFriend = reciprocalFriend;
 
     if (reciprocalFriend) {
       const reciprocalMetadata = selectedSourceFriend
@@ -1233,6 +1243,45 @@ export async function prepareClaimForUser(
       });
     }
   }
+
+  const knownFriendRows = new Map(
+    [
+      targetFriend,
+      canonicalRow,
+      selectedFriendMerge?.sourceFriend,
+      selectedFriendMerge?.targetFriend,
+      plannedReciprocalFriend
+    ]
+      .filter((friend): friend is Doc<"account_friends"> => Boolean(friend))
+      .map((friend) => [String(friend._id), friend])
+  );
+  let insertedDocuments = aliasInsert ? 1 : 0;
+  const plannedWriteValues: Value[] = [
+    definedConvexValue({
+      ...user,
+      alias_member_ids: updatedAliases,
+      updated_at: now
+    })
+  ];
+  if (aliasInsert) plannedWriteValues.push(definedConvexValue(aliasInsert));
+  for (const write of friendWrites) {
+    if (write.kind === "insert") {
+      insertedDocuments += 1;
+      plannedWriteValues.push(definedConvexValue(write.value));
+      continue;
+    }
+    const current = knownFriendRows.get(String(write.id));
+    if (!current) {
+      throw new Error("Friend merge plan is missing a write target");
+    }
+    plannedWriteValues.push(
+      write.kind === "delete"
+        ? (current as Value)
+        : definedConvexValue({ ...current, ...write.value })
+    );
+  }
+  reserveMergeWriteValuesForLimit(budget, plannedWriteValues, insertedDocuments);
+  assertMergeWorstCaseReadWithinLimit(budget);
 
   return {
     selectedFriendMerge,
@@ -1357,11 +1406,13 @@ export const claim = mutation({
       requestedMergeMemberId
     );
 
-    await ctx.db.patch(token._id, {
+    const tokenPatch = {
       claimed_by: user.id,
       claimed_at: now,
       claim_merge_local_friend_member_id: requestedMergeMemberId
-    });
+    };
+    reserveMergeWriteValuesForLimit(budget, [definedConvexValue({ ...token, ...tokenPatch })]);
+    await ctx.db.patch(token._id, tokenPatch);
     return await applyClaimForUser(ctx, claimPlan);
   }
 });
@@ -1461,10 +1512,12 @@ export const _internalClaimForAccount = internalMutation({
       },
       budget
     );
-    await ctx.db.patch(token._id, {
+    const tokenPatch = {
       claimed_by: user.id,
       claimed_at: now
-    });
+    };
+    reserveMergeWriteValuesForLimit(budget, [definedConvexValue({ ...token, ...tokenPatch })]);
+    await ctx.db.patch(token._id, tokenPatch);
     return await applyClaimForUser(ctx, claimPlan);
   }
 });

@@ -1,6 +1,11 @@
 import { query, mutation, type MutationCtx } from "./_generated/server";
 import { getConvexSize, type Value, v } from "convex/values";
-import { accountLinkingRows, chargeLinkingQueries, createLinkingReadBudget } from "./aliases";
+import {
+  accountLinkingRows,
+  chargeLinkingQueries,
+  createLinkingReadBudget,
+  reserveMergeWriteValuesForLimit
+} from "./aliases";
 import { findAccountsByEmailIdentity, normalizeMemberId } from "./identity";
 import { isGhostFriendIdentity } from "./friendLinkProvenance";
 import {
@@ -420,9 +425,10 @@ export const accept = mutation({
       budget
     );
 
-    await ctx.db.patch(request._id, {
-      status: "accepted"
-    });
+    reserveMergeWriteValuesForLimit(budget, [
+      { ...request, status: "accepted" } as Value
+    ]);
+    await ctx.db.patch(request._id, { status: "accepted" });
     return await applyClaimForUser(ctx, claimPlan);
   }
 });

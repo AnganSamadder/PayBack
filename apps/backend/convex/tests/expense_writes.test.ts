@@ -4,7 +4,8 @@ import { Doc, Id } from "../_generated/dataModel";
 import {
   applyExpenseWriteBatch,
   MAX_EXPENSE_VIEWERS,
-  MAX_EXPENSE_VISIBILITY_ROWS
+  MAX_EXPENSE_VISIBILITY_ROWS,
+  preflightExpenseWriteBatch
 } from "../expenseWrites";
 import schema from "../schema";
 import { modules } from "../test.setup";
@@ -49,6 +50,52 @@ function expenseValue(ownerId: Id<"accounts">, id: string, updatedAt = 10): Expe
 }
 
 describe("central expense writes", () => {
+  test("preflight reports expense, visibility, and revision writes without applying them", async () => {
+    const t = convexTest(schema, modules);
+    const charges = { queries: 0, rows: 0, writes: 0, writeBytes: 0 };
+    const fixture = await t.run(async (ctx) => {
+      const ownerId = await insertAccount(ctx, "owner");
+      const expenseId = await ctx.db.insert("expenses", expenseValue(ownerId, "preflight"));
+      const expense = await ctx.db.get(expenseId);
+      if (!expense) throw new Error("Expected preflight expense");
+      await preflightExpenseWriteBatch(
+        ctx,
+        [
+          {
+            kind: "patch",
+            expense,
+            patch: { description: "After", updated_at: 20 },
+            viewerAccountIds: [ownerId]
+          }
+        ],
+        {
+          budget: {
+            chargeQueries: (count) => (charges.queries += count),
+            chargeRows: (rows) => (charges.rows += rows.length),
+            chargeWrites: (count, bytes) => {
+              charges.writes += count;
+              charges.writeBytes += bytes;
+            }
+          }
+        }
+      );
+      return { expenseId };
+    });
+
+    const state = await t.run(async (ctx) => ({
+      expense: await ctx.db.get(fixture.expenseId),
+      visibility: await ctx.db.query("user_expenses").collect(),
+      revisions: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(charges).toMatchObject({ writes: 3 });
+    expect(charges.queries).toBeGreaterThan(0);
+    expect(charges.rows).toBeGreaterThan(0);
+    expect(charges.writeBytes).toBeGreaterThan(0);
+    expect(state.expense?.description).toBe("Expense preflight");
+    expect(state.visibility).toEqual([]);
+    expect(state.revisions).toEqual([]);
+  });
+
   test("creates fully referenced visibility only for active accounts", async () => {
     const t = convexTest(schema, modules);
     const fixture = await t.run(async (ctx) => ({

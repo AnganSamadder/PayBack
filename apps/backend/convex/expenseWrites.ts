@@ -54,6 +54,17 @@ type ReadBudget = {
   rows: number;
   queries: number;
   bytes: number;
+  hooks: ExpenseWriteBatchBudgetHooks;
+};
+
+export type ExpenseWriteBatchBudgetHooks = {
+  chargeQueries?: (count: number) => void;
+  chargeRows?: (rows: readonly Value[]) => void;
+  chargeWrites?: (count: number, bytes: number) => void;
+};
+
+export type ExpenseWriteBatchOptions = {
+  budget?: ExpenseWriteBatchBudgetHooks;
 };
 
 type VisibilityAccountRows = {
@@ -91,6 +102,7 @@ function chargeQuery(budget: ReadBudget): void {
   if (budget.queries > MAX_EXPENSE_WRITE_QUERIES) {
     throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_QUERIES} queries`);
   }
+  budget.hooks.chargeQueries?.(1);
 }
 
 function chargeRows(budget: ReadBudget, rows: readonly Value[]): void {
@@ -102,6 +114,7 @@ function chargeRows(budget: ReadBudget, rows: readonly Value[]): void {
   if (budget.bytes > MAX_EXPENSE_WRITE_READ_BYTES) {
     throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_READ_BYTES} bytes`);
   }
+  budget.hooks.chargeRows?.(rows);
 }
 
 function convexValueSize(value: Record<string, unknown>): number {
@@ -556,10 +569,18 @@ async function applyRevisionWrites(
   }
 }
 
-export async function applyExpenseWriteBatch(
+type PreparedExpenseWriteBatch = {
+  plans: PreparedOperation[];
+  revisionWrites: PreparedRevisionWrite[];
+  writeCount: number;
+  writeBytes: number;
+};
+
+async function prepareExpenseWriteBatch(
   ctx: MutationCtx,
-  operations: readonly ExpenseWriteOperation[]
-): Promise<ExpenseWriteBatchResult> {
+  operations: readonly ExpenseWriteOperation[],
+  options: ExpenseWriteBatchOptions = {}
+): Promise<PreparedExpenseWriteBatch> {
   if (operations.length > MAX_EXPENSE_WRITE_OPERATIONS) {
     throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_OPERATIONS} operations`);
   }
@@ -570,7 +591,12 @@ export async function applyExpenseWriteBatch(
     operationKeys.add(key);
   }
 
-  const budget: ReadBudget = { rows: 0, queries: 0, bytes: 0 };
+  const budget: ReadBudget = {
+    rows: 0,
+    queries: 0,
+    bytes: 0,
+    hooks: options.budget ?? {}
+  };
   const cache: PreflightCache = {
     accountsById: new Map(),
     accountsByAuthId: new Map(),
@@ -605,6 +631,24 @@ export async function applyExpenseWriteBatch(
   if (writeBytes > MAX_EXPENSE_WRITE_BYTES) {
     throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_BYTES} write bytes`);
   }
+  options.budget?.chargeWrites?.(writeCount, writeBytes);
+
+  return { plans, revisionWrites, writeCount, writeBytes };
+}
+
+export async function preflightExpenseWriteBatch(
+  ctx: MutationCtx,
+  operations: readonly ExpenseWriteOperation[],
+  options: ExpenseWriteBatchOptions = {}
+): Promise<void> {
+  await prepareExpenseWriteBatch(ctx, operations, options);
+}
+
+export async function applyExpenseWriteBatch(
+  ctx: MutationCtx,
+  operations: readonly ExpenseWriteOperation[]
+): Promise<ExpenseWriteBatchResult> {
+  const { plans, revisionWrites } = await prepareExpenseWriteBatch(ctx, operations);
 
   const operationResults: ExpenseWriteBatchResult["operations"] = [];
   for (const plan of plans) {

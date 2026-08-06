@@ -64,6 +64,72 @@ async function insertBoundInvite(
   });
 }
 
+async function insertLargeRewriteSurface(
+  ctx: any,
+  options: {
+    ownerId: any;
+    ownerAuthId: string;
+    ownerEmail: string;
+    ownerMemberId: string;
+    sourceMemberId: string;
+    prefix: string;
+    payloadBytes: number;
+    now: number;
+  }
+) {
+  const largePayload = "x".repeat(options.payloadBytes);
+  const groupId = await ctx.db.insert("groups", {
+    id: `${options.prefix}_group`,
+    name: largePayload,
+    members: [
+      { id: options.ownerMemberId, name: "Owner", is_current_user: true },
+      { id: options.sourceMemberId, name: "Merge source" }
+    ],
+    owner_email: options.ownerEmail,
+    owner_account_id: options.ownerAuthId,
+    owner_id: options.ownerId,
+    created_at: options.now,
+    updated_at: options.now
+  });
+  await ctx.db.insert("expenses", {
+    id: `${options.prefix}_expense`,
+    group_id: `${options.prefix}_group`,
+    group_ref: groupId,
+    description: "Large merge expense",
+    notes: largePayload,
+    date: options.now,
+    total_amount: 20,
+    paid_by_member_id: options.sourceMemberId,
+    involved_member_ids: [options.ownerMemberId, options.sourceMemberId],
+    splits: [
+      {
+        id: `${options.prefix}_owner_split`,
+        member_id: options.ownerMemberId,
+        amount: 10,
+        is_settled: false
+      },
+      {
+        id: `${options.prefix}_source_split`,
+        member_id: options.sourceMemberId,
+        amount: 10,
+        is_settled: false
+      }
+    ],
+    is_settled: false,
+    owner_email: options.ownerEmail,
+    owner_account_id: options.ownerAuthId,
+    owner_id: options.ownerId,
+    participant_member_ids: [options.ownerMemberId, options.sourceMemberId],
+    participant_emails: [options.ownerEmail],
+    participants: [
+      { member_id: options.ownerMemberId, name: "Owner" },
+      { member_id: options.sourceMemberId, name: "Merge source" }
+    ],
+    created_at: options.now,
+    updated_at: options.now
+  });
+}
+
 describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
   test("accepts a claimed-token alias whose audit email is the creator", async () => {
     const t = convexTest(schema, modules);
@@ -1966,4 +2032,214 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     );
     expect(token?.claimed_by).toBeUndefined();
   });
+
+  test("rejects aggregate group and expense rewrite work before claiming the invite", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      const creatorId = await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "aggregate_rewrite_invite",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      await insertLargeRewriteSurface(ctx, {
+        ownerId: creatorId,
+        ownerAuthId: "creator_auth",
+        ownerEmail: "creator@test.com",
+        ownerMemberId: "creator_member",
+        sourceMemberId: "claimer_legacy_member",
+        prefix: "aggregate_rewrite",
+        payloadBytes: 850 * 1024,
+        now
+      });
+    });
+
+    const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await expect(
+      claimer.mutation(api.inviteTokens.claim, { id: "aggregate_rewrite_invite" })
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    const state = await t.run(async (ctx) => ({
+      token: await ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "aggregate_rewrite_invite"))
+        .unique(),
+      group: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "aggregate_rewrite_group"))
+        .unique(),
+      expense: await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "aggregate_rewrite_expense"))
+        .unique(),
+      claimant: await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", "claimer_auth"))
+        .unique(),
+      targetFriend: await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", "creator@test.com").eq("member_id", "claimer_legacy_member")
+        )
+        .unique(),
+      aliases: await ctx.db.query("member_aliases").collect(),
+      groupVisibility: await ctx.db.query("group_visibility").collect(),
+      expenseVisibility: await ctx.db.query("user_expenses").collect(),
+      syncStates: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(state.token?.claimed_by).toBeUndefined();
+    expect(state.claimant?.alias_member_ids).toBeUndefined();
+    expect(state.targetFriend).toMatchObject({
+      has_linked_account: false,
+      link_state: "unlinked"
+    });
+    expect(state.aliases).toEqual([]);
+    expect(state.group?.members.map((member) => member.id)).toContain("claimer_legacy_member");
+    expect(state.expense?.participant_member_ids).toContain("claimer_legacy_member");
+    expect(state.groupVisibility).toEqual([]);
+    expect(state.expenseVisibility).toEqual([]);
+    expect(state.syncStates).toEqual([]);
+  }, 30_000);
+
+  test("rejects two individually safe invite rewrites when their aggregate work is unsafe", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      const creatorId = await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      const claimerId = await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "aggregate_two_rewrite_invite",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: "creator_local_duplicate",
+        name: "Creator duplicate",
+        profile_avatar_color: "#444444",
+        has_linked_account: false,
+        link_state: "unlinked",
+        status: "friend",
+        updated_at: now
+      });
+      await insertLargeRewriteSurface(ctx, {
+        ownerId: creatorId,
+        ownerAuthId: "creator_auth",
+        ownerEmail: "creator@test.com",
+        ownerMemberId: "creator_member",
+        sourceMemberId: "claimer_legacy_member",
+        prefix: "creator_aggregate",
+        payloadBytes: 360 * 1024,
+        now
+      });
+      await insertLargeRewriteSurface(ctx, {
+        ownerId: claimerId,
+        ownerAuthId: "claimer_auth",
+        ownerEmail: "claimer@test.com",
+        ownerMemberId: "claimer_member",
+        sourceMemberId: "creator_local_duplicate",
+        prefix: "claimer_aggregate",
+        payloadBytes: 360 * 1024,
+        now
+      });
+    });
+
+    const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await expect(
+      claimer.mutation(api.inviteTokens.claim, {
+        id: "aggregate_two_rewrite_invite",
+        mergeLocalFriendMemberId: "creator_local_duplicate"
+      })
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    const state = await t.run(async (ctx) => ({
+      token: await ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "aggregate_two_rewrite_invite"))
+        .unique(),
+      localFriend: await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q
+            .eq("account_email", "claimer@test.com")
+            .eq("member_id", "creator_local_duplicate")
+        )
+        .unique(),
+      creatorGroup: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "creator_aggregate_group"))
+        .unique(),
+      claimerGroup: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "claimer_aggregate_group"))
+        .unique(),
+      creatorExpense: await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "creator_aggregate_expense"))
+        .unique(),
+      claimerExpense: await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "claimer_aggregate_expense"))
+        .unique(),
+      claimant: await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", "claimer_auth"))
+        .unique(),
+      aliases: await ctx.db.query("member_aliases").collect(),
+      groupVisibility: await ctx.db.query("group_visibility").collect(),
+      expenseVisibility: await ctx.db.query("user_expenses").collect(),
+      syncStates: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(state.token?.claimed_by).toBeUndefined();
+    expect(state.claimant?.alias_member_ids).toBeUndefined();
+    expect(state.aliases).toEqual([]);
+    expect(state.localFriend).not.toBeNull();
+    expect(state.creatorGroup?.members.map((member) => member.id)).toContain(
+      "claimer_legacy_member"
+    );
+    expect(state.claimerGroup?.members.map((member) => member.id)).toContain(
+      "creator_local_duplicate"
+    );
+    expect(state.creatorExpense?.participant_member_ids).toContain("claimer_legacy_member");
+    expect(state.claimerExpense?.participant_member_ids).toContain("creator_local_duplicate");
+    expect(state.groupVisibility).toEqual([]);
+    expect(state.expenseVisibility).toEqual([]);
+    expect(state.syncStates).toEqual([]);
+  }, 30_000);
 });

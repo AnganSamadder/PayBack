@@ -1,6 +1,12 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
+import {
+  accountMergeQueriesForLimit,
+  assertMergeIdentityMaterializationReady,
+  createMergeReadBudget,
+  findBudgetedManualMergeAccount
+} from "../aliases";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
@@ -372,6 +378,27 @@ describe("mergeUnlinkedFriends eligibility", () => {
     });
 
     expect(budget.scannedRows).toBeLessThanOrEqual(265);
+  });
+
+  test("charges manual-merge account and materialization pre-reads to one budget", async () => {
+    const { t } = await createEligibilityScenario();
+    const budget = createMergeReadBudget();
+    budget.queryWork = 4094;
+    const user = await t.run((ctx) =>
+      findBudgetedManualMergeAccount(
+        ctx,
+        { subject: "owner_auth", email: "owner@test.com" },
+        budget
+      )
+    );
+    expect(user.id).toBe("owner_auth");
+    expect(budget.queryWork).toBe(4095);
+
+    await t.run((ctx) => assertMergeIdentityMaterializationReady(ctx, budget));
+    expect(budget.queryWork).toBe(4096);
+    expect(() => accountMergeQueriesForLimit(budget, 1)).toThrow(
+      "Friend merge is too large to complete safely"
+    );
   });
 
   test.each(["pending", " ReJeCtEd ", "request_sent", "request_received", "ghost"])(

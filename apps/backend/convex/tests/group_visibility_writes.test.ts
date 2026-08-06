@@ -10,6 +10,57 @@ import schema from "../schema";
 import { modules } from "../test.setup";
 
 describe("group visibility writes", () => {
+  test("dry-run batches report the complete patch budget without writing", async () => {
+    const t = convexTest(schema, modules);
+    const charges = { queries: 0, rows: 0, writes: 0, writeBytes: 0 };
+    const groupId = await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "preflight_owner_auth",
+        email: "preflight-owner@test.com",
+        display_name: "Owner",
+        member_id: "preflight_owner_member",
+        created_at: 1
+      });
+      const id = await ctx.db.insert("groups", {
+        id: "preflight_group",
+        name: "Before",
+        members: [{ id: "preflight_owner_member", name: "Owner", is_current_user: true }],
+        owner_email: "preflight-owner@test.com",
+        owner_account_id: "preflight_owner_auth",
+        owner_id: ownerId,
+        created_at: 1,
+        updated_at: 1
+      });
+      const batch = new GroupVisibilityWriteBatch(ctx, {
+        dryRun: true,
+        budget: {
+          chargeQueries: (count) => (charges.queries += count),
+          chargeRows: (rows) => (charges.rows += rows.length),
+          chargeWrites: (count, bytes) => {
+            charges.writes += count;
+            charges.writeBytes += bytes;
+          }
+        }
+      });
+      await batch.patch(id, { name: "After", updated_at: 2 });
+      await batch.flush();
+      return id;
+    });
+
+    const state = await t.run(async (ctx) => ({
+      group: await ctx.db.get(groupId),
+      visibility: await ctx.db.query("group_visibility").collect(),
+      revisions: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(charges).toMatchObject({ writes: 3 });
+    expect(charges.queries).toBeGreaterThan(0);
+    expect(charges.rows).toBeGreaterThan(0);
+    expect(charges.writeBytes).toBeGreaterThan(0);
+    expect(state.group?.name).toBe("Before");
+    expect(state.visibility).toEqual([]);
+    expect(state.revisions).toEqual([]);
+  });
+
   test("rejects new fenced identities and scrubs existing group member snapshots", async () => {
     const t = convexTest(schema, modules);
     const fixture = await t.run(async (ctx) => {
