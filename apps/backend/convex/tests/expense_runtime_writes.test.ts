@@ -389,7 +389,7 @@ describe("runtime expense writes", () => {
     expect(await t.run((ctx) => ctx.db.query("expenses").collect())).toEqual([]);
   });
 
-  test("oversized clear-all rolls back without deleting expenses or advancing revisions", async () => {
+  test("oversized clear-all completes in bounded resumable batches", async () => {
     const t = convexTest(schema, modules);
     const ownerId = await t.run((ctx) =>
       ctx.db.insert("accounts", {
@@ -434,17 +434,18 @@ describe("runtime expense writes", () => {
       });
     }
 
-    await expect(
-      t
-        .withIdentity(identity("runtime-owner@test.com", "runtime_owner_auth"))
-        .mutation(api.expenses.clearAllForUser, {})
-    ).rejects.toThrow("resumable processing above 512 expenses");
+    const owner = t.withIdentity(identity("runtime-owner@test.com", "runtime_owner_auth"));
+    let result = await owner.mutation(api.expenses.clearAllForUser, {});
+    for (let attempt = 0; result.inProgress && attempt < 40; attempt += 1) {
+      result = await owner.mutation(api.expenses.clearAllForUser, {});
+    }
+    expect(result.inProgress).toBe(false);
 
-    const result = await t.run(async (ctx) => ({
+    const state = await t.run(async (ctx) => ({
       expenses: await ctx.db.query("expenses").collect(),
       revisions: await ctx.db.query("account_sync_state").collect()
     }));
-    expect(result.expenses).toHaveLength(513);
-    expect(result.revisions).toEqual([]);
+    expect(state.expenses).toHaveLength(0);
+    expect(state.revisions).toEqual([]);
   });
 });

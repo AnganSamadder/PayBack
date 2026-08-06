@@ -1,6 +1,15 @@
 // swiftlint:disable identifier_name
 import Foundation
 
+struct ConvexClearAllProgressDTO: Decodable, Sendable {
+    let inProgress: Bool
+    let processed: Int
+}
+
+enum ConvexClearAllError: Error {
+    case stalled
+}
+
 struct ConvexSelfDeletionReceiptDTO: Decodable, Sendable {
     let success: Bool
     let inProgress: Bool

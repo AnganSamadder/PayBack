@@ -197,7 +197,15 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
     }
 
     func clearAllData() async throws {
-        _ = try await client.mutation("expenses:clearAllForUser", with: [:])
+        while true {
+            try Task.checkCancellation()
+            let result: ConvexClearAllProgressDTO = try await client.mutation(
+                "expenses:clearAllForUser",
+                with: [:]
+            )
+            if !result.inProgress { return }
+            guard result.processed > 0 else { throw ConvexClearAllError.stalled }
+        }
     }
 }
 

@@ -1328,56 +1328,56 @@ export const deleteExpenses = mutation({
 });
 
 // Clear ALL expenses for the current user
+const CLEAR_ALL_EXPENSE_BATCH_SIZE = 32;
+const clearAllProgressValidator = v.object({
+  inProgress: v.boolean(),
+  processed: v.number()
+});
+
 export const clearAllForUser = mutation({
   args: {},
+  returns: clearAllProgressValidator,
   handler: async (ctx) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
-    // Get all expenses owned by this user
-    const ownedExpenses = await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
-
-    const byEmail = await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
-      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
-    if (
-      ownedExpenses.length > MAX_EXPENSE_WRITE_OPERATIONS ||
-      byEmail.length > MAX_EXPENSE_WRITE_OPERATIONS
-    ) {
-      throw new Error(
-        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
-      );
-    }
-
-    // Merge and dedupe by client UUID so we can reconcile user_expenses correctly.
-    const ownedExpenseByClientId = new Map<string, any>();
-    for (const expense of [...ownedExpenses, ...byEmail]) {
-      const existing = ownedExpenseByClientId.get(expense.id);
-      if (existing && existing._id !== expense._id) {
-        throw new Error(`Expense ${expense.id} is not unique`);
+    const ownedExpenseByDocumentId = new Map<string, Doc<"expenses">>();
+    let hasMoreOwnedExpenses = false;
+    const addOwnedExpenses = (expenses: Doc<"expenses">[]) => {
+      for (const expense of expenses) {
+        if (ownedExpenseByDocumentId.size >= CLEAR_ALL_EXPENSE_BATCH_SIZE) {
+          hasMoreOwnedExpenses = true;
+          break;
+        }
+        ownedExpenseByDocumentId.set(String(expense._id), expense);
       }
-      ownedExpenseByClientId.set(expense.id, expense);
-    }
+    };
+    addOwnedExpenses(
+      await ctx.db
+        .query("expenses")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
+        .take(CLEAR_ALL_EXPENSE_BATCH_SIZE + 1)
+    );
+    addOwnedExpenses(
+      await ctx.db
+        .query("expenses")
+        .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
+        .take(CLEAR_ALL_EXPENSE_BATCH_SIZE + 1)
+    );
+    addOwnedExpenses(
+      await ctx.db
+        .query("expenses")
+        .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
+        .take(CLEAR_ALL_EXPENSE_BATCH_SIZE + 1)
+    );
 
-    // Also remove this user from user_expenses visibility rows for shared expenses.
     const viewerExpenseRows = await ctx.db
       .query("user_expenses")
       .withIndex("by_user_id", (q) => q.eq("user_id", user.id))
-      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
-    if (viewerExpenseRows.length > MAX_EXPENSE_WRITE_OPERATIONS) {
-      throw new Error(
-        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} visibility rows`
-      );
-    }
+      .take(CLEAR_ALL_EXPENSE_BATCH_SIZE);
 
-    const ownedDocumentIds = new Set(
-      Array.from(ownedExpenseByClientId.values()).map((expense) => String(expense._id))
-    );
     const sharedExpenses = new Map<string, Doc<"expenses">>();
+    const orphanVisibilityRows: Doc<"user_expenses">[] = [];
     for (const row of viewerExpenseRows) {
       let expense = row.expense_ref ? await ctx.db.get(row.expense_ref) : null;
       if (!expense) {
@@ -1389,14 +1389,15 @@ export const clearAllForUser = mutation({
         expense = matches[0] ?? null;
       }
       if (!expense) {
-        throw new Error("Expense visibility maintenance is required before clearing all data");
+        orphanVisibilityRows.push(row);
+        continue;
       }
-      if (!ownedDocumentIds.has(String(expense._id))) {
+      if (!ownedExpenseByDocumentId.has(String(expense._id))) {
         sharedExpenses.set(String(expense._id), expense);
       }
     }
 
-    const operations: ExpenseWriteOperation[] = Array.from(ownedExpenseByClientId.values()).map(
+    const operations: ExpenseWriteOperation[] = Array.from(ownedExpenseByDocumentId.values()).map(
       (expense) => ({
         kind: "delete" as const,
         expense
@@ -1409,14 +1410,13 @@ export const clearAllForUser = mutation({
         viewerAccountIds: await resolveExpenseViewerAccountIds(ctx, expense, new Set([user.id]))
       });
     }
-    if (operations.length > MAX_EXPENSE_WRITE_OPERATIONS) {
-      throw new Error(
-        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
-      );
-    }
     await applyExpenseWriteBatch(ctx, operations);
+    for (const row of orphanVisibilityRows) await ctx.db.delete(row._id);
 
-    return null;
+    return {
+      inProgress: hasMoreOwnedExpenses || viewerExpenseRows.length === CLEAR_ALL_EXPENSE_BATCH_SIZE,
+      processed: operations.length + orphanVisibilityRows.length
+    };
   }
 });
 

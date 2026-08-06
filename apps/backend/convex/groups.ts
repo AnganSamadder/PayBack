@@ -490,16 +490,20 @@ export const deleteGroups = mutation({
   }
 });
 
-// Clear ALL groups for the current user (nuclear option)
+// Clear all groups in bounded, retryable units.
+const clearAllProgressValidator = v.object({
+  inProgress: v.boolean(),
+  processed: v.number()
+});
+
 export const clearAllForUser = mutation({
   args: {},
+  returns: clearAllProgressValidator,
   handler: async (ctx) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
-    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
-    const expenseOperations: ExpenseWriteOperation[] = [];
+    await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
 
-    // Resolve all member IDs that represent this user so we can leave shared groups too.
     const canonicalMemberId = await resolveCanonicalMemberIdInternal(
       ctx.db,
       user.member_id ?? user.id
@@ -507,87 +511,48 @@ export const clearAllForUser = mutation({
     const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
     const membershipIds = new Set([
       normalizeMemberId(canonicalMemberId),
-      ...equivalentIds.map((id) => normalizeMemberId(id)),
-      ...(user.alias_member_ids || []).map((id: string) => normalizeMemberId(id))
+      ...equivalentIds.map(normalizeMemberId),
+      ...(user.alias_member_ids ?? []).map(normalizeMemberId)
     ]);
 
-    // 1) Delete groups owned by the current user.
-    const ownedGroups = await ctx.db
+    const ownedGroup = await ctx.db
       .query("groups")
-      .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
-      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
-
-    const byEmail = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
-      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
-    if (
-      ownedGroups.length > MAX_EXPENSE_WRITE_OPERATIONS ||
-      byEmail.length > MAX_EXPENSE_WRITE_OPERATIONS
-    ) {
-      throw new Error(
-        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} groups`
-      );
+      .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
+      .first();
+    if (ownedGroup) {
+      await deleteGroupWithExpenses(ctx, ownedGroup);
+      return { inProgress: true, processed: 1 };
     }
 
-    // Merge and dedupe
-    const ownedGroupIdSet = new Set<string>();
-    ownedGroups.forEach((g) => ownedGroupIdSet.add(g._id));
-    byEmail.forEach((g) => ownedGroupIdSet.add(g._id));
-    const ownedGroupMap = new Map<string, any>();
-    ownedGroups.forEach((g) => ownedGroupMap.set(g._id, g));
-    byEmail.forEach((g) => ownedGroupMap.set(g._id, g));
-    if (ownedGroupMap.size > MAX_EXPENSE_WRITE_OPERATIONS) {
-      throw new Error(
-        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} groups`
-      );
+    const visibilityRow = await ctx.db
+      .query("group_visibility")
+      .withIndex("by_account_id_and_group_updated_at", (q) => q.eq("account_id", user._id))
+      .first();
+    if (!visibilityRow) return { inProgress: false, processed: 0 };
+
+    const group = await ctx.db.get(visibilityRow.group_id);
+    if (!group) {
+      await ctx.db.delete(visibilityRow._id);
+      return { inProgress: true, processed: 1 };
     }
 
-    // Delete owned groups and cascade-delete their expenses.
-    for (const group of ownedGroupMap.values()) {
-      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch, expenseOperations);
+    const remainingMembers = group.members.filter(
+      (member) => !membershipIds.has(normalizeMemberId(member.id))
+    );
+    if (remainingMembers.length === group.members.length) {
+      await ctx.db.delete(visibilityRow._id);
+      return { inProgress: true, processed: 1 };
+    }
+    if (remainingMembers.length === 0) {
+      await deleteGroupWithExpenses(ctx, group);
+      return { inProgress: true, processed: 1 };
     }
 
-    // 2) Leave any remaining shared groups where this user is still a member.
-    // Note: Inefficient full scan, but acceptable for "nuclear" infrequent op.
-    const allGroups = await ctx.db.query("groups").take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
-    if (allGroups.length > MAX_EXPENSE_WRITE_OPERATIONS) {
-      throw new Error(
-        `Clear all requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} groups`
-      );
-    }
-    let sharedGroupsUpdated = 0;
-    let emptySharedGroupsDeleted = 0;
-
-    for (const group of allGroups) {
-      if (ownedGroupIdSet.has(group._id)) continue;
-
-      const hasViewerMembership = group.members.some((member: any) =>
-        membershipIds.has(normalizeMemberId(member.id))
-      );
-      if (!hasViewerMembership) continue;
-
-      const remainingMembers = group.members.filter(
-        (member: any) => !membershipIds.has(normalizeMemberId(member.id))
-      );
-
-      if (remainingMembers.length === 0) {
-        await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch, expenseOperations);
-        emptySharedGroupsDeleted += 1;
-        continue;
-      }
-
-      await groupVisibilityBatch.patch(group._id, {
-        members: remainingMembers,
-        updated_at: Date.now()
-      });
-      sharedGroupsUpdated += 1;
-    }
-
-    await applyExpenseWriteBatch(ctx, expenseOperations);
-    await groupVisibilityBatch.flush();
-
-    return null;
+    await patchGroupWithVisibility(ctx, group._id, {
+      members: remainingMembers,
+      updated_at: Date.now()
+    });
+    return { inProgress: true, processed: 1 };
   }
 });
 
