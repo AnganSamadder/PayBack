@@ -541,6 +541,76 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertEqual(merged, [concurrentRemoteExpense])
     }
 
+    func testSettlementRealtimeAcknowledgementRequiresDistinctEquivalentSplits() async throws {
+        let aliasMemberId = UUID()
+        let unrelatedMemberId = UUID()
+        sut.session = UserSession(
+            account: UserAccount(
+                id: "account-a",
+                email: "a@example.com",
+                displayName: "Account A",
+                linkedMemberId: sut.currentUser.id,
+                equivalentMemberIds: [aliasMemberId]
+            )
+        )
+        sut.processFriendsUpdate([
+            AccountFriend(
+                memberId: sut.currentUser.id,
+                name: "Account A",
+                aliasMemberIds: [aliasMemberId]
+            )
+        ])
+        let originalExpense = Expense(
+            groupId: UUID(),
+            description: "Legacy aliases",
+            totalAmount: 30,
+            paidByMemberId: unrelatedMemberId,
+            involvedMemberIds: [sut.currentUser.id, aliasMemberId, unrelatedMemberId],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 10),
+                ExpenseSplit(memberId: aliasMemberId, amount: 10),
+                ExpenseSplit(memberId: unrelatedMemberId, amount: 10)
+            ]
+        )
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.addExpense(originalExpense)
+
+        try await sut.settleExpenseForCurrentUser(originalExpense)
+        let acknowledgedLocalExpense = try XCTUnwrap(sut.expenses.first)
+
+        var partiallyStaleRemoteExpense = acknowledgedLocalExpense
+        partiallyStaleRemoteExpense.splits = partiallyStaleRemoteExpense.splits.map { split in
+            var updatedSplit = split
+            if split.memberId == aliasMemberId {
+                updatedSplit.isSettled = false
+            } else if split.memberId == unrelatedMemberId {
+                updatedSplit.isSettled = true
+            }
+            return updatedSplit
+        }
+        partiallyStaleRemoteExpense.isSettled = false
+
+        let preserved = sut.mergedRemoteExpensesPreservingPendingWrites(
+            remoteExpenses: [partiallyStaleRemoteExpense]
+        )
+        XCTAssertEqual(preserved, [acknowledgedLocalExpense])
+
+        var fullyAcknowledgedRemoteExpense = acknowledgedLocalExpense
+        fullyAcknowledgedRemoteExpense.splits = fullyAcknowledgedRemoteExpense.splits.map { split in
+            var updatedSplit = split
+            if split.memberId == unrelatedMemberId {
+                updatedSplit.isSettled = true
+            }
+            return updatedSplit
+        }
+        fullyAcknowledgedRemoteExpense.isSettled = true
+
+        let accepted = sut.mergedRemoteExpensesPreservingPendingWrites(
+            remoteExpenses: [fullyAcknowledgedRemoteExpense]
+        )
+        XCTAssertEqual(accepted, [fullyAcknowledgedRemoteExpense])
+    }
+
     func testOverlappingSettlementSuccessesKeepNewestResponse() async throws {
         sut.session = UserSession(
             account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
