@@ -10,52 +10,23 @@ final class ConvexGroupService: GroupCloudService, Sendable {
         self.client = client
     }
 
-    private struct GroupDTO: Decodable {
-        let id: String
-        let name: String
-        let created_at: Double
-        let members: [GroupMemberDTO]
-        let is_direct: Bool?
-        let is_payback_generated_mock_data: Bool?
-    }
-
-    private struct GroupMemberDTO: Decodable {
-        let id: String
-        let name: String
-        let profile_image_url: String?
-        let profile_avatar_color: String?
-        let is_current_user: Bool?
-    }
-
     func fetchGroups() async throws -> [SpendingGroup] {
-        // Using subscribe pattern for one-off fetch with Decodable DTO
-        for try await result in client.subscribe(to: "groups:list", yielding: [GroupDTO].self).values {
-             return result.compactMap { dto in
-                 guard let id = UUID(uuidString: dto.id),
-                       let createdAt = Date(timeIntervalSince1970: dto.created_at / 1000) as Date? else { return nil }
-
-                  let members = dto.members.compactMap { mDto -> GroupMember? in
-                      guard let mId = UUID(uuidString: mDto.id) else { return nil }
-                      return GroupMember(
-                          id: mId,
-                          name: mDto.name,
-                          profileImageUrl: mDto.profile_image_url,
-                          profileColorHex: mDto.profile_avatar_color,
-                          isCurrentUser: mDto.is_current_user
-                      )
-                  }
-
-                 return SpendingGroup(
-                     id: id,
-                     name: dto.name,
-                     members: members,
-                     createdAt: createdAt,
-                     isDirect: dto.is_direct ?? false,
-                     isDebug: dto.is_payback_generated_mock_data ?? false
-                 )
-             }
+        do {
+            return try await ConvexRevisionedSync.fetchGroupDTOs(client: client)
+                .map { try $0.validatedSpendingGroup() }
+        } catch where ConvexSyncErrorClassifier.isV2Unavailable(error) {
+            return try await fetchLegacyGroups()
         }
-        return []
+    }
+
+    private func fetchLegacyGroups() async throws -> [SpendingGroup] {
+        for try await result in client.subscribe(
+            to: "groups:list",
+            yielding: [ConvexGroupDTO].self
+        ).values {
+            return try result.map { try $0.validatedSpendingGroup() }
+        }
+        throw ConvexRevisionedSyncError.streamEndedWithoutValue
     }
 
     func fetchGroupsPaginated(cursor: String? = nil, limit: Int = 20) async throws -> (groups: [SpendingGroup], nextCursor: String?) {
@@ -65,7 +36,7 @@ final class ConvexGroupService: GroupCloudService, Sendable {
         ]
 
         for try await result in client.subscribe(to: "groups:listPaginated", with: args, yielding: ConvexPaginatedGroupsDTO.self).values {
-            let groups = result.items.compactMap { $0.toSpendingGroup() }
+            let groups = try result.items.map { try $0.validatedSpendingGroup() }
             return (groups, result.nextCursor)
         }
         return ([], nil)
@@ -137,7 +108,19 @@ func deleteDebugGroups() async throws {
     }
 
     func clearAllData() async throws {
-        _ = try await client.mutation("groups:clearAllForUser", with: [:])
+        var cutoff: Double?
+        while true {
+            try Task.checkCancellation()
+            var args: [String: ConvexEncodable?] = [:]
+            args.updateValue(cutoff, forKey: "cutoff")
+            let result: ConvexClearAllProgressDTO = try await client.mutation(
+                "groups:clearAllForUserV2",
+                with: args
+            )
+            if !result.inProgress { return }
+            guard result.processed > 0 else { throw ConvexClearAllError.stalled }
+            cutoff = result.cutoff
+        }
     }
 
     func leaveGroup(_ groupId: UUID) async throws {

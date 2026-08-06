@@ -1,12 +1,195 @@
-import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { query, mutation, internalMutation, type MutationCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { Doc } from "./_generated/dataModel";
+import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { findAccountByAuthIdOrDocId, normalizeMemberId, normalizeMemberIds } from "./identity";
+import {
+  findAccountByAuthIdOrDocId,
+  findAccountByMemberId,
+  normalizeMemberId,
+  normalizeMemberIds
+} from "./identity";
+import {
+  assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
+  isAccountDeletionFenced,
+  resolveAuthenticatedAccount
+} from "./helpers";
 import {
   isGhostFriendIdentity,
   ProvenFriendLink,
+  provenFriendLinkQueryWork,
   resolveProvenFriendLink
 } from "./friendLinkProvenance";
+
+const FRIEND_LIST_LIMITS = {
+  friends: 512,
+  readRows: 2048,
+  queries: 1024,
+  estimatedReadBytes: 8 * 1024 * 1024,
+  hardReadSafetyBytes: 10 * 1024 * 1024,
+  maximumDocumentReservationBytes: 2 * 1024 * 1024,
+  maximumPageRows: 5
+} as const;
+
+const LEGACY_FRIEND_LOOKUP_LIMITS = {
+  rows: 256,
+  estimatedReadBytes: 8 * 1024 * 1024,
+  hardReadSafetyBytes: 10 * 1024 * 1024,
+  maximumDocumentReservationBytes: 2 * 1024 * 1024,
+  maximumPageRows: 5
+} as const;
+const FRIEND_CLEAR_BATCH_SIZE = 5;
+
+type FriendListBudget = {
+  friendRows: number;
+  readRows: number;
+  queries: number;
+  estimatedReadBytes: number;
+};
+
+function friendListLimitError() {
+  return new Error("Friend list is too large to load safely");
+}
+
+function chargeFriendListQueries(budget: FriendListBudget, count: number) {
+  budget.queries += count;
+  if (budget.queries > FRIEND_LIST_LIMITS.queries) throw friendListLimitError();
+}
+
+function accountFriendListRows(
+  budget: FriendListBudget,
+  rows: readonly unknown[],
+  areFriendRows = false
+) {
+  budget.readRows += rows.length;
+  if (areFriendRows) budget.friendRows += rows.length;
+  budget.estimatedReadBytes += rows.reduce<number>(
+    (total, row) => total + getConvexSize(row as Value),
+    0
+  );
+  if (
+    budget.friendRows > FRIEND_LIST_LIMITS.friends ||
+    budget.readRows > FRIEND_LIST_LIMITS.readRows ||
+    budget.estimatedReadBytes > FRIEND_LIST_LIMITS.estimatedReadBytes
+  ) {
+    throw friendListLimitError();
+  }
+}
+
+async function collectFriendListRows<T>(
+  budget: FriendListBudget,
+  readPage: (
+    cursor: string | null,
+    limit: number
+  ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>
+): Promise<T[]> {
+  const rows: T[] = [];
+  let cursor: string | null = null;
+
+  while (true) {
+    const remainingFriends = FRIEND_LIST_LIMITS.friends - budget.friendRows + 1;
+    const remainingRows = FRIEND_LIST_LIMITS.readRows - budget.readRows + 1;
+    const remainingHardBytes = FRIEND_LIST_LIMITS.hardReadSafetyBytes - budget.estimatedReadBytes;
+    const byteReservedRows = Math.floor(
+      remainingHardBytes / FRIEND_LIST_LIMITS.maximumDocumentReservationBytes
+    );
+    const pageSize = Math.min(
+      FRIEND_LIST_LIMITS.maximumPageRows,
+      remainingFriends,
+      remainingRows,
+      byteReservedRows
+    );
+    if (pageSize <= 0) throw friendListLimitError();
+
+    chargeFriendListQueries(budget, 1);
+    const result = await readPage(cursor, pageSize);
+    accountFriendListRows(budget, result.page, true);
+    rows.push(...result.page);
+    if (result.isDone) return rows;
+    if (result.continueCursor === cursor) throw friendListLimitError();
+    cursor = result.continueCursor;
+  }
+}
+
+async function findBoundedLegacyFriend(
+  ctx: MutationCtx,
+  accountEmail: string,
+  normalizedMemberId: string
+) {
+  const rows: Doc<"account_friends">[] = [];
+  let cursor: string | null = null;
+  let readBytes = 0;
+
+  while (true) {
+    const remainingRows = LEGACY_FRIEND_LOOKUP_LIMITS.rows - rows.length + 1;
+    const remainingHardBytes = LEGACY_FRIEND_LOOKUP_LIMITS.hardReadSafetyBytes - readBytes;
+    const byteReservedRows = Math.floor(
+      remainingHardBytes / LEGACY_FRIEND_LOOKUP_LIMITS.maximumDocumentReservationBytes
+    );
+    const pageSize = Math.min(
+      LEGACY_FRIEND_LOOKUP_LIMITS.maximumPageRows,
+      remainingRows,
+      byteReservedRows
+    );
+    if (pageSize <= 0) throw new Error("Friend lookup is too large to complete safely");
+
+    const result = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
+      .order("asc")
+      .paginate({ cursor, numItems: pageSize });
+    readBytes += result.page.reduce((total, row) => total + getConvexSize(row as Value), 0);
+    rows.push(...result.page);
+    if (
+      rows.length > LEGACY_FRIEND_LOOKUP_LIMITS.rows ||
+      readBytes > LEGACY_FRIEND_LOOKUP_LIMITS.estimatedReadBytes
+    ) {
+      throw new Error("Friend lookup is too large to complete safely");
+    }
+    if (result.isDone) {
+      const matches = rows.filter(
+        (friend) => normalizeMemberId(friend.member_id) === normalizedMemberId
+      );
+      if (matches.length > 1) {
+        throw new Error("Identity maintenance required: duplicate friend identities");
+      }
+      return matches[0] ?? null;
+    }
+    if (result.continueCursor === cursor) {
+      throw new Error("Friend lookup is too large to complete safely");
+    }
+    cursor = result.continueCursor;
+  }
+}
+
+async function deleteFriendBatch(
+  ctx: MutationCtx,
+  accountEmail: string,
+  cutoff: number,
+  scheduleContinuation: boolean
+) {
+  const friends = await ctx.db
+    .query("account_friends")
+    .withIndex("by_account_email_and_updated_at", (q) =>
+      q.eq("account_email", accountEmail).lte("updated_at", cutoff)
+    )
+    .order("asc")
+    .take(FRIEND_CLEAR_BATCH_SIZE);
+
+  await Promise.all(friends.map((friend) => ctx.db.delete(friend._id)));
+  if (scheduleContinuation && friends.length === FRIEND_CLEAR_BATCH_SIZE) {
+    await ctx.scheduler.runAfter(0, internal.friends.clearAllForUserBatch, {
+      accountEmail,
+      cutoff
+    });
+  }
+  return {
+    inProgress: friends.length === FRIEND_CLEAR_BATCH_SIZE,
+    processed: friends.length,
+    cutoff
+  };
+}
 
 export const list = query({
   args: {},
@@ -14,17 +197,27 @@ export const list = query({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
 
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
+    const budget: FriendListBudget = {
+      friendRows: 0,
+      readRows: 0,
+      queries: 0,
+      estimatedReadBytes: 0
+    };
+
+    chargeFriendListQueries(budget, 1);
+    const { user } = await resolveAuthenticatedAccount(ctx);
+    accountFriendListRows(budget, user ? [user] : []);
 
     if (!user) return [];
+    const accountEmail = user.email.trim().toLowerCase();
 
-    const friends = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
-      .collect();
+    const friends = await collectFriendListRows(budget, async (cursor, limit) =>
+      ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
+        .order("asc")
+        .paginate({ cursor, numItems: limit })
+    );
 
     type LinkedIdentityContext = {
       provenLink: ProvenFriendLink;
@@ -46,7 +239,10 @@ export const list = query({
       (friend) => friend.has_linked_account || friend.link_state === "linked"
     );
     for (const friend of linkedFriends) {
-      const provenLink = await resolveProvenFriendLink(ctx, friend);
+      chargeFriendListQueries(budget, provenFriendLinkQueryWork(friend));
+      const provenLink = await resolveProvenFriendLink(ctx, friend, (rows) =>
+        accountFriendListRows(budget, rows)
+      );
       if (!provenLink) continue;
       provenLinksByFriendId.set(String(friend._id), provenLink);
 
@@ -107,9 +303,11 @@ export const list = query({
         Boolean(friend.linked_member_id);
       if (hasPersistedLinkClaim) {
         if (!provenLink) {
+          if (friend.linked_account_id) chargeFriendListQueries(budget, 2);
           const persistedAccount = friend.linked_account_id
             ? await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id)
             : null;
+          accountFriendListRows(budget, persistedAccount ? [persistedAccount] : []);
           const isGhost = persistedAccount?.status === "deleted";
           validatedFriends.push({
             ...friend,
@@ -258,9 +456,25 @@ export const upsert = mutation({
     status: v.optional(v.string())
   },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    const { user: caller } = await getCurrentUserOrThrow(ctx);
+    const accountEmail = caller.email.trim().toLowerCase();
     const normalizedMemberId = normalizeMemberId(args.member_id);
+
+    let targetAccount = args.linked_account_id
+      ? await findAccountByAuthIdOrDocId(ctx.db, args.linked_account_id)
+      : null;
+    if (!targetAccount && args.linked_account_email?.trim()) {
+      targetAccount = await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) =>
+          q.eq("email", args.linked_account_email!.trim().toLowerCase())
+        )
+        .unique();
+    }
+    targetAccount ??= await findAccountByMemberId(ctx.db, normalizedMemberId);
+    const requestedLinkedTarget = Boolean(
+      args.has_linked_account || args.linked_account_id || args.linked_account_email
+    );
 
     // Ensure name is never empty
     const safeName = args.name?.trim() || "Unknown";
@@ -273,19 +487,48 @@ export const upsert = mutation({
     const existing = await ctx.db
       .query("account_friends")
       .withIndex("by_account_email_and_member_id", (q) =>
-        q.eq("account_email", identity.email!).eq("member_id", normalizedMemberId)
+        q.eq("account_email", accountEmail).eq("member_id", normalizedMemberId)
       )
       .unique();
-    const existingLegacy =
-      existing ??
-      (
-        await ctx.db
-          .query("account_friends")
-          .withIndex("by_account_email", (q) => q.eq("account_email", identity.email!))
-          .collect()
-      ).find((friend) => normalizeMemberId(friend.member_id) === normalizedMemberId);
+    let existingLegacy = existing;
+    const rawMemberId = args.member_id.trim();
+    if (!existingLegacy && rawMemberId !== normalizedMemberId) {
+      existingLegacy = await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", accountEmail).eq("member_id", rawMemberId)
+        )
+        .unique();
+    }
+    existingLegacy ??= await findBoundedLegacyFriend(ctx, accountEmail, normalizedMemberId);
+
+    if (requestedLinkedTarget && isAccountDeletionFenced(targetAccount) && !existingLegacy) {
+      assertAccountCanAcceptChanges(targetAccount);
+    }
 
     if (existingLegacy) {
+      if (isAccountDeletionFenced(targetAccount) || isGhostFriendIdentity(existingLegacy)) {
+        await ctx.db.patch(existingLegacy._id, {
+          member_id: normalizedMemberId,
+          name: "Deleted User",
+          nickname: undefined,
+          original_name: undefined,
+          original_nickname: undefined,
+          prefer_nickname: undefined,
+          first_name: undefined,
+          last_name: undefined,
+          display_preference: undefined,
+          profile_image_url: undefined,
+          has_linked_account: false,
+          linked_account_id: undefined,
+          linked_account_email: undefined,
+          linked_member_id: undefined,
+          link_state: "ghost",
+          status: "ghost",
+          updated_at: Date.now()
+        });
+        return existingLegacy._id;
+      }
       const provenLink = await resolveProvenFriendLink(ctx, existingLegacy);
       const isGhost = isGhostFriendIdentity(existingLegacy);
 
@@ -313,18 +556,19 @@ export const upsert = mutation({
       });
       return existingLegacy._id;
     } else {
-      const isGhost = args.status?.trim().toLowerCase() === "ghost";
+      const isGhost =
+        args.status?.trim().toLowerCase() === "ghost" || isAccountDeletionFenced(targetAccount);
       return await ctx.db.insert("account_friends", {
-        account_email: identity.email!,
+        account_email: accountEmail,
         member_id: normalizedMemberId,
-        name: safeName,
-        nickname: normalizedNickname,
-        original_name: args.original_name,
-        original_nickname: args.original_nickname,
-        prefer_nickname: args.prefer_nickname,
-        first_name: args.first_name,
-        last_name: args.last_name,
-        display_preference: args.display_preference,
+        name: isGhost ? "Deleted User" : safeName,
+        nickname: isGhost ? undefined : normalizedNickname,
+        original_name: isGhost ? undefined : args.original_name,
+        original_nickname: isGhost ? undefined : args.original_nickname,
+        prefer_nickname: isGhost ? undefined : args.prefer_nickname,
+        first_name: isGhost ? undefined : args.first_name,
+        last_name: isGhost ? undefined : args.last_name,
+        display_preference: isGhost ? undefined : args.display_preference,
         profile_avatar_color: getRandomAvatarColor(),
         has_linked_account: false,
         link_state: isGhost ? "ghost" : "unlinked",
@@ -341,17 +585,35 @@ export const upsert = mutation({
 export const clearAllForUser = mutation({
   args: {},
   handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    const { user } = await getCurrentUserOrThrow(ctx);
 
-    const friends = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email", (q) => q.eq("account_email", identity.email!))
-      .collect();
+    await deleteFriendBatch(ctx, user.email.trim().toLowerCase(), Date.now(), true);
+    return null;
+  }
+});
 
-    for (const friend of friends) {
-      await ctx.db.delete(friend._id);
-    }
+export const clearAllForUserV2 = mutation({
+  args: { cutoff: v.optional(v.number()) },
+  returns: v.object({
+    inProgress: v.boolean(),
+    processed: v.number(),
+    cutoff: v.number()
+  }),
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUserOrThrow(ctx);
+    return await deleteFriendBatch(
+      ctx,
+      user.email.trim().toLowerCase(),
+      args.cutoff ?? Date.now(),
+      false
+    );
+  }
+});
+
+export const clearAllForUserBatch = internalMutation({
+  args: { accountEmail: v.string(), cutoff: v.number() },
+  handler: async (ctx, args) => {
+    await deleteFriendBatch(ctx, args.accountEmail.trim().toLowerCase(), args.cutoff, true);
     return null;
   }
 });

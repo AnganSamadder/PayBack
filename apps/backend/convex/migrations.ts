@@ -1,14 +1,13 @@
 import { internalMutation } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
+import type { PaginationOptions } from "convex/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import {
-  reconcileExpenseVisibility,
-  reconcileUserExpenses,
-  resolveActiveExpenseParticipantAccounts
-} from "./helpers";
+import { resolveActiveExpenseParticipantAccounts } from "./helpers";
+import { applyExpenseWriteBatch, type ExpenseWriteOperation } from "./expenseWrites";
 import {
   assertIdentityMaterializationReady,
+  assertMemberIdentityNotCleanupFenced,
   applyPreflightedAccountAliasMaterialization,
   ensureAccountAliasMaterialization,
   findAccountByAuthIdOrDocId,
@@ -20,6 +19,7 @@ import {
   normalizeMemberIds,
   preflightNormalizedAccountAliasMaterialization
 } from "./identity";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
 
 function normalizeEmail(value: string | undefined | null): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -28,10 +28,12 @@ function normalizeEmail(value: string | undefined | null): string | undefined {
 }
 
 async function deriveExpenseParticipantEmails(ctx: any, expense: any): Promise<string[]> {
-  const accounts = await resolveActiveExpenseParticipantAccounts(ctx, {
-    ...expense,
-    participant_emails: []
-  });
+  const accounts = (
+    await resolveActiveExpenseParticipantAccounts(ctx, {
+      ...expense,
+      participant_emails: []
+    })
+  ).filter((account) => account.status !== "deleting" && account.status !== "deleted");
   return Array.from(
     new Set(
       accounts
@@ -57,9 +59,36 @@ function arraysEqual(lhs: string[], rhs: string[]): boolean {
 }
 
 const MAX_EXPENSE_REPAIR_BATCH_SIZE = 64;
+const MAX_EXPENSE_PAGE_BYTES = 4 * 1024 * 1024;
 const MAX_NAME_REPAIR_ACCOUNT_BATCH_SIZE = 2;
 const MAX_NAME_REPAIR_EXPENSES_PER_BATCH = 256;
 const MAX_REPAIR_ROWS_PER_ACCOUNT = 128;
+
+type ExpensePatchOperation = Extract<ExpenseWriteOperation, { kind: "patch" }>;
+type ExpenseVisibilityOperation = Extract<ExpenseWriteOperation, { kind: "visibility" }>;
+type ExpenseMaintenanceOperation = ExpensePatchOperation | ExpenseVisibilityOperation;
+type BoundedPaginationOptions = PaginationOptions & {
+  maximumRowsRead: number;
+  maximumBytesRead: number;
+};
+
+function expensePageLimit(limit: number | undefined): number {
+  const resolved = limit ?? 32;
+  validateExpenseRepairBatchSize(resolved);
+  return resolved;
+}
+
+function expensePaginationOptions(
+  cursor: string | undefined,
+  limit: number
+): BoundedPaginationOptions {
+  return {
+    cursor: cursor ?? null,
+    numItems: limit,
+    maximumRowsRead: limit,
+    maximumBytesRead: MAX_EXPENSE_PAGE_BYTES
+  };
+}
 
 function validateExpenseRepairBatchSize(limit: number): void {
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_EXPENSE_REPAIR_BATCH_SIZE) {
@@ -90,23 +119,31 @@ function expenseReferencesMemberId(expense: Doc<"expenses">, memberId: string): 
   );
 }
 
-async function reconcileMigratedExpenseVisibility(
+async function expensePatchOperation(
   ctx: any,
-  expenseId: string,
-  participantEmails: string[]
-) {
-  const visibilityAccounts = await Promise.all(
-    participantEmails.map((email) =>
-      ctx.db
-        .query("accounts")
-        .withIndex("by_email", (q: any) => q.eq("email", email))
-        .unique()
-    )
-  );
-  const visibilityAccountIds = visibilityAccounts
-    .filter((account): account is NonNullable<typeof account> => account !== null)
-    .map((account) => account.id);
-  await reconcileUserExpenses(ctx, expenseId, visibilityAccountIds);
+  expense: Doc<"expenses">,
+  patch: ExpensePatchOperation["patch"]
+): Promise<ExpensePatchOperation> {
+  const nextExpense = { ...expense, ...patch };
+  const viewerAccounts = await resolveActiveExpenseParticipantAccounts(ctx, nextExpense);
+  return {
+    kind: "patch",
+    expense,
+    patch,
+    viewerAccountIds: viewerAccounts.map((account) => account._id)
+  };
+}
+
+async function expenseVisibilityOperation(
+  ctx: any,
+  expense: Doc<"expenses">
+): Promise<ExpenseVisibilityOperation> {
+  const viewerAccounts = await resolveActiveExpenseParticipantAccounts(ctx, expense);
+  return {
+    kind: "visibility",
+    expense,
+    viewerAccountIds: viewerAccounts.map((account) => account._id)
+  };
 }
 
 async function rewriteExpenseMemberIdPreservingRevocation(
@@ -114,7 +151,10 @@ async function rewriteExpenseMemberIdPreservingRevocation(
   expense: Doc<"expenses">,
   oldMemberId: string,
   newMemberId: string
-): Promise<"unchanged" | "rewritten" | "skipped_revocation_collision"> {
+): Promise<{
+  outcome: "unchanged" | "rewritten" | "skipped_revocation_collision";
+  operation?: ExpenseMaintenanceOperation;
+}> {
   const normalizedOldMemberId = normalizeMemberId(oldMemberId);
   const normalizedNewMemberId = normalizeMemberId(newMemberId);
   const inactiveMemberIds = new Set(
@@ -140,17 +180,22 @@ async function rewriteExpenseMemberIdPreservingRevocation(
         canonicalEmailArray(participantEmails)
       )
     ) {
-      await ctx.db.patch(expense._id, {
-        participant_emails: participantEmails,
-        updated_at: Date.now()
-      });
+      return {
+        outcome: "skipped_revocation_collision",
+        operation: await expensePatchOperation(ctx, expense, {
+          participant_emails: participantEmails,
+          updated_at: Date.now()
+        })
+      };
     }
-    await reconcileMigratedExpenseVisibility(ctx, expense.id, participantEmails);
-    return "skipped_revocation_collision";
+    return {
+      outcome: "skipped_revocation_collision",
+      operation: await expenseVisibilityOperation(ctx, expense)
+    };
   }
 
   if (!oldIdentityIsReferenced || normalizedOldMemberId === normalizedNewMemberId) {
-    return "unchanged";
+    return { outcome: "unchanged" };
   }
 
   const replaceMemberId = (candidate: string) =>
@@ -179,18 +224,19 @@ async function rewriteExpenseMemberIdPreservingRevocation(
   const participantEmails = await deriveExpenseParticipantEmails(ctx, nextExpense);
   nextExpense.participant_emails = participantEmails;
 
-  await ctx.db.patch(expense._id, {
-    paid_by_member_id: nextExpense.paid_by_member_id,
-    involved_member_ids: nextExpense.involved_member_ids,
-    splits: nextExpense.splits,
-    participants: nextExpense.participants,
-    participant_member_ids: nextExpense.participant_member_ids,
-    inactive_participant_member_ids: nextExpense.inactive_participant_member_ids,
-    participant_emails: nextExpense.participant_emails,
-    updated_at: nextExpense.updated_at
-  });
-  await reconcileMigratedExpenseVisibility(ctx, nextExpense.id, participantEmails);
-  return "rewritten";
+  return {
+    outcome: "rewritten",
+    operation: await expensePatchOperation(ctx, expense, {
+      paid_by_member_id: nextExpense.paid_by_member_id,
+      involved_member_ids: nextExpense.involved_member_ids,
+      splits: nextExpense.splits,
+      participants: nextExpense.participants,
+      participant_member_ids: nextExpense.participant_member_ids,
+      inactive_participant_member_ids: nextExpense.inactive_participant_member_ids,
+      participant_emails: nextExpense.participant_emails,
+      updated_at: nextExpense.updated_at
+    })
+  };
 }
 
 /**
@@ -291,6 +337,7 @@ export const createMemberAliasesFromClaimedTokens = internalMutation({
 export const backfillProfileColors = internalMutation({
   args: {},
   handler: async (ctx) => {
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     // Backfill accounts
     const accounts = await ctx.db.query("accounts").collect();
     let accountsUpdated = 0;
@@ -329,10 +376,11 @@ export const backfillProfileColors = internalMutation({
       });
 
       if (groupChanged) {
-        await ctx.db.patch(group._id, { members: newMembers });
+        await groupVisibilityBatch.patch(group._id, { members: newMembers });
         groupsUpdated++;
       }
     }
+    await groupVisibilityBatch.flush();
 
     return { accountsUpdated, friendsUpdated, groupsUpdated };
   }
@@ -410,6 +458,7 @@ export const fixLinkedMemberIds = internalMutation({
         );
 
         if (matchingMember) {
+          await assertMemberIdentityNotCleanupFenced(ctx, matchingMember.id);
           await ctx.db.patch(account._id, {
             member_id: matchingMember.id,
             updated_at: Date.now()
@@ -437,13 +486,13 @@ export const fixExpenseMemberIds = internalMutation({
   handler: async (ctx, args) => {
     const limit = args.limit ?? MAX_NAME_REPAIR_ACCOUNT_BATCH_SIZE;
     validateNameRepairAccountBatchSize(limit);
-    const accountsPage = await ctx.db.query("accounts").paginate({
-      cursor: args.cursor ?? null,
-      numItems: limit
-    });
+    const accountsPage = await ctx.db
+      .query("accounts")
+      .paginate(expensePaginationOptions(args.cursor, limit));
     let expensesFixed = 0;
     let expensesSkipped = 0;
     let expensesScanned = 0;
+    const expenseOperations: ExpenseMaintenanceOperation[] = [];
 
     for (const account of accountsPage.page) {
       if (!account.member_id) continue;
@@ -470,16 +519,18 @@ export const fixExpenseMemberIds = internalMutation({
         );
         if (!userParticipant) continue;
 
-        const outcome = await rewriteExpenseMemberIdPreservingRevocation(
+        const rewrite = await rewriteExpenseMemberIdPreservingRevocation(
           ctx,
           expense,
           expense.paid_by_member_id,
           account.member_id
         );
-        if (outcome === "rewritten") expensesFixed++;
-        if (outcome === "skipped_revocation_collision") expensesSkipped++;
+        if (rewrite.operation) expenseOperations.push(rewrite.operation);
+        if (rewrite.outcome === "rewritten") expensesFixed++;
+        if (rewrite.outcome === "skipped_revocation_collision") expensesSkipped++;
       }
     }
+    await applyExpenseWriteBatch(ctx, expenseOperations);
 
     return {
       expensesFixed,
@@ -504,25 +555,28 @@ export const fixAllExpenseMemberIds = internalMutation({
     limit: v.optional(v.number())
   },
   handler: async (ctx, args) => {
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     const { old_member_id, new_member_id, account_email } = args;
     const limit = args.limit ?? 32;
     validateExpenseRepairBatchSize(limit);
     const expensesPage = await ctx.db
       .query("expenses")
       .withIndex("by_owner_email", (q) => q.eq("owner_email", account_email))
-      .paginate({ cursor: args.cursor ?? null, numItems: limit });
+      .paginate(expensePaginationOptions(args.cursor, limit));
 
     let fixed = 0;
     let skipped = 0;
+    const expenseOperations: ExpenseMaintenanceOperation[] = [];
     for (const expense of expensesPage.page) {
-      const outcome = await rewriteExpenseMemberIdPreservingRevocation(
+      const rewrite = await rewriteExpenseMemberIdPreservingRevocation(
         ctx,
         expense,
         old_member_id,
         new_member_id
       );
-      if (outcome === "rewritten") fixed++;
-      if (outcome === "skipped_revocation_collision") skipped++;
+      if (rewrite.operation) expenseOperations.push(rewrite.operation);
+      if (rewrite.outcome === "rewritten") fixed++;
+      if (rewrite.outcome === "skipped_revocation_collision") skipped++;
     }
 
     let groupsFixed = 0;
@@ -546,11 +600,16 @@ export const fixAllExpenseMemberIds = internalMutation({
                 ? normalizeMemberId(new_member_id)
                 : member.id
           }));
-          await ctx.db.patch(group._id, { members: newMembers, updated_at: Date.now() });
+          await groupVisibilityBatch.patch(group._id, {
+            members: newMembers,
+            updated_at: Date.now()
+          });
           groupsFixed++;
         }
       }
     }
+    await groupVisibilityBatch.flush();
+    await applyExpenseWriteBatch(ctx, expenseOperations);
 
     return {
       expensesFixed: fixed,
@@ -612,6 +671,7 @@ export const setLinkedMemberId = internalMutation({
 
     const previousId = user.member_id;
 
+    await assertMemberIdentityNotCleanupFenced(ctx, args.linked_member_id);
     await ctx.db.patch(user._id, {
       member_id: args.linked_member_id,
       updated_at: Date.now()
@@ -632,12 +692,20 @@ export const setLinkedMemberId = internalMutation({
  * for cross-account visibility.
  */
 export const backfillParticipantEmails = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const expenses = await ctx.db.query("expenses").collect();
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = expensePageLimit(args.limit);
+    const expensesPage = await ctx.db
+      .query("expenses")
+      .order("asc")
+      .paginate(expensePaginationOptions(args.cursor, limit));
     let updated = 0;
+    const operations: ExpenseMaintenanceOperation[] = [];
 
-    for (const expense of expenses) {
+    for (const expense of expensesPage.page) {
       const emails = await deriveExpenseParticipantEmails(ctx, expense);
 
       // Only update if emails changed
@@ -645,30 +713,26 @@ export const backfillParticipantEmails = internalMutation({
       const hasNewEmails = emails.some((e) => !currentEmails.includes(e));
 
       if (hasNewEmails || emails.length !== currentEmails.length) {
-        await ctx.db.patch(expense._id, {
-          participant_emails: emails,
-          updated_at: Date.now()
-        });
-        const visibilityUsers = await Promise.all(
-          emails.map((email) =>
-            ctx.db
-              .query("accounts")
-              .withIndex("by_email", (q: any) => q.eq("email", email))
-              .unique()
-          )
+        operations.push(
+          await expensePatchOperation(ctx, expense, {
+            participant_emails: emails,
+            updated_at: Date.now()
+          })
         );
-        const visibilityUserIds = visibilityUsers
-          .filter((account): account is NonNullable<typeof account> => account !== null)
-          .map((account) => account.id);
-        await reconcileUserExpenses(ctx, expense.id, visibilityUserIds);
         updated++;
         console.log(
           `Backfilled participant_emails for expense ${expense.id}: ${emails.join(", ")}`
         );
       }
     }
+    await applyExpenseWriteBatch(ctx, operations);
 
-    return { updated };
+    return {
+      processed: expensesPage.page.length,
+      updated,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
+    };
   }
 });
 
@@ -677,43 +741,43 @@ export const backfillParticipantEmails = internalMutation({
  * This is more thorough than the simple backfill.
  */
 export const backfillParticipantEmailsAdvanced = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    // Build a map of member_id -> account email
-    const accounts = await ctx.db.query("accounts").collect();
-    const memberIdToEmail = new Map<string, string>();
-
-    for (const account of accounts) {
-      if (account.member_id) {
-        memberIdToEmail.set(account.member_id, account.email);
-        console.log(`Member ${account.member_id} -> ${account.email}`);
-      }
-    }
-
-    const expenses = await ctx.db.query("expenses").collect();
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = expensePageLimit(args.limit);
+    const expensesPage = await ctx.db
+      .query("expenses")
+      .order("asc")
+      .paginate(expensePaginationOptions(args.cursor, limit));
     let updated = 0;
+    const memberMappings = new Set<string>();
+    const operations: ExpenseMaintenanceOperation[] = [];
 
-    for (const expense of expenses) {
-      const emails = new Set<string>();
+    for (const expense of expensesPage.page) {
       const inactiveMemberIds = new Set(
         (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
       );
-
-      // Add owner email
-      if (expense.owner_email) {
-        emails.add(expense.owner_email);
-      }
-
-      // Add linked participant emails from lookup
-      for (const memberId of expense.involved_member_ids) {
-        if (inactiveMemberIds.has(normalizeMemberId(memberId))) continue;
-        const email = memberIdToEmail.get(memberId);
-        if (email) {
-          emails.add(email);
+      const activeAccounts = await resolveActiveExpenseParticipantAccounts(ctx, {
+        ...expense,
+        participant_emails: []
+      });
+      const accountByMemberId = new Map<string, (typeof activeAccounts)[number]>();
+      for (const account of activeAccounts) {
+        const memberIds = normalizeMemberIds([
+          ...(account.member_id ? [account.member_id] : []),
+          ...(account.alias_member_ids ?? [])
+        ]);
+        for (const memberId of memberIds) {
+          accountByMemberId.set(memberId, account);
+          memberMappings.add(`${memberId}\u0000${account.email}`);
         }
       }
 
-      const emailArray = Array.from(emails);
+      const emailArray = Array.from(
+        new Set(activeAccounts.map((account) => account.email.trim().toLowerCase()))
+      );
       const currentEmails = expense.participant_emails || [];
       const canonicalCurrentEmails = canonicalEmailArray(currentEmails);
       const canonicalNextEmails = canonicalEmailArray(emailArray);
@@ -722,57 +786,62 @@ export const backfillParticipantEmailsAdvanced = internalMutation({
         // Also update participant info with linked account details
         const updatedParticipants = expense.participants.map((p: any) => {
           if (inactiveMemberIds.has(normalizeMemberId(p.member_id))) return p;
-          const email = memberIdToEmail.get(p.member_id);
-          const account = accounts.find((a) => a.email === email);
+          const account = accountByMemberId.get(normalizeMemberId(p.member_id));
           if (account) {
             return {
               ...p,
               name: account.display_name,
               linked_account_id: account.id,
-              linked_account_email: account.email
+              linked_account_email: account.email.trim().toLowerCase()
             };
           }
           return p;
         });
 
-        await ctx.db.patch(expense._id, {
-          participant_emails: emailArray,
-          participants: updatedParticipants,
-          updated_at: Date.now()
-        });
-        const visibilityUsers = await Promise.all(
-          emailArray.map((email) =>
-            ctx.db
-              .query("accounts")
-              .withIndex("by_email", (q: any) => q.eq("email", email))
-              .unique()
-          )
+        operations.push(
+          await expensePatchOperation(ctx, expense, {
+            participant_emails: emailArray,
+            participants: updatedParticipants,
+            updated_at: Date.now()
+          })
         );
-        const visibilityUserIds = visibilityUsers
-          .filter((account): account is NonNullable<typeof account> => account !== null)
-          .map((account) => account.id);
-        await reconcileUserExpenses(ctx, expense.id, visibilityUserIds);
         updated++;
         console.log(`Updated expense ${expense.id} with emails: ${emailArray.join(", ")}`);
       }
     }
+    await applyExpenseWriteBatch(ctx, operations);
 
-    return { updated, memberMappings: memberIdToEmail.size };
+    return {
+      processed: expensesPage.page.length,
+      updated,
+      memberMappings: memberMappings.size,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
+    };
   }
 });
 
 export const backfillUserExpenses = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const expenses = await ctx.db.query("expenses").collect();
-    let processed = 0;
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = expensePageLimit(args.limit);
+    const expensesPage = await ctx.db
+      .query("expenses")
+      .order("asc")
+      .paginate(expensePaginationOptions(args.cursor, limit));
+    const operations = await Promise.all(
+      expensesPage.page.map((expense) => expenseVisibilityOperation(ctx, expense))
+    );
+    await applyExpenseWriteBatch(ctx, operations);
 
-    for (const expense of expenses) {
-      await reconcileExpenseVisibility(ctx, expense);
-      processed++;
-    }
-
-    return { processed };
+    return {
+      processed: expensesPage.page.length,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
+    };
   }
 });
 
@@ -783,14 +852,22 @@ export const backfillUserExpenses = internalMutation({
  * 3) reconcile `user_expenses` visibility rows from the rebuilt participant emails
  */
 export const repairExpenseSettlementAndVisibility = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const expenses = await ctx.db.query("expenses").collect();
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = expensePageLimit(args.limit);
+    const expensesPage = await ctx.db
+      .query("expenses")
+      .order("asc")
+      .paginate(expensePaginationOptions(args.cursor, limit));
 
     let patchedCount = 0;
     let reconciledCount = 0;
+    const operations: ExpenseMaintenanceOperation[] = [];
 
-    for (const expense of expenses) {
+    for (const expense of expensesPage.page) {
       const computedSettled =
         Array.isArray(expense.splits) &&
         expense.splits.length > 0 &&
@@ -804,33 +881,27 @@ export const repairExpenseSettlementAndVisibility = internalMutation({
         expense.is_settled !== computedSettled ||
         !arraysEqual(canonicalCurrentEmails, canonicalNextEmails)
       ) {
-        await ctx.db.patch(expense._id, {
-          is_settled: computedSettled,
-          participant_emails: canonicalNextEmails,
-          updated_at: Date.now()
-        });
+        operations.push(
+          await expensePatchOperation(ctx, expense, {
+            is_settled: computedSettled,
+            participant_emails: canonicalNextEmails,
+            updated_at: Date.now()
+          })
+        );
         patchedCount += 1;
+      } else {
+        operations.push(await expenseVisibilityOperation(ctx, expense));
       }
-
-      const participantUsers = await Promise.all(
-        canonicalNextEmails.map((email) =>
-          ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q: any) => q.eq("email", email))
-            .unique()
-        )
-      );
-      const participantUserIds = participantUsers
-        .filter((user): user is NonNullable<typeof user> => user !== null)
-        .map((user) => user.id);
-      await reconcileUserExpenses(ctx, expense.id, participantUserIds);
       reconciledCount += 1;
     }
+    await applyExpenseWriteBatch(ctx, operations);
 
     return {
-      processed: expenses.length,
+      processed: expensesPage.page.length,
       patched: patchedCount,
-      reconciled: reconciledCount
+      reconciled: reconciledCount,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
     };
   }
 });
@@ -938,15 +1009,23 @@ export const backfillFirstLastNames = internalMutation({
  * Run via:  npx convex run --no-push migrations:backfillExpenseContextKind
  */
 export const backfillExpenseContextKind = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const expenses = await ctx.db.query("expenses").collect();
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = expensePageLimit(args.limit);
+    const expensesPage = await ctx.db
+      .query("expenses")
+      .order("asc")
+      .paginate(expensePaginationOptions(args.cursor, limit));
 
     let skipped = 0;
     let patchedDirect = 0;
     let patchedGroup = 0;
+    const operations: ExpensePatchOperation[] = [];
 
-    for (const expense of expenses) {
+    for (const expense of expensesPage.page) {
       if (expense.context_kind) {
         skipped++;
         continue;
@@ -971,10 +1050,12 @@ export const backfillExpenseContextKind = internalMutation({
         }
       }
 
-      await ctx.db.patch(expense._id, {
-        context_kind: contextKind,
-        updated_at: Date.now()
-      });
+      operations.push(
+        await expensePatchOperation(ctx, expense, {
+          context_kind: contextKind,
+          updated_at: Date.now()
+        })
+      );
 
       if (contextKind === "direct") {
         patchedDirect++;
@@ -982,12 +1063,16 @@ export const backfillExpenseContextKind = internalMutation({
         patchedGroup++;
       }
     }
+    await applyExpenseWriteBatch(ctx, operations);
 
     return {
-      total: expenses.length,
+      total: expensesPage.page.length,
+      processed: expensesPage.page.length,
       skipped,
       patchedDirect,
-      patchedGroup
+      patchedGroup,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
     };
   }
 });

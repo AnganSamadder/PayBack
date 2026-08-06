@@ -96,12 +96,26 @@ normalized `status` and `link_state`, and keep name-based identity repair endpoi
 
 ### Cleanup Functions
 
-| Function                      | Location     | When Called             | Behavior                                                  |
-| ----------------------------- | ------------ | ----------------------- | --------------------------------------------------------- |
-| `performHardDelete`           | `cleanup.ts` | API deletion endpoints  | DELETEs friend records pointing to deleted account        |
-| `hardCleanupOrphanedAccount`  | `users.ts`   | Janitor cron            | DELETEs orphaned data for a given email                   |
-| `cleanupOrphanedDataForEmail` | `users.ts`   | Account re-creation     | UNLINKS (soft) for account re-registration                |
-| `friends.list`                | `friends.ts` | Every friend list query | Validates links exist, returns unlinked state if orphaned |
+| Function                   | Location           | When Called             | Behavior                                                  |
+| -------------------------- | ------------------ | ----------------------- | --------------------------------------------------------- |
+| `beginHardDeleteAccount`   | `cleanup.ts`       | API deletion endpoints  | Starts bounded, resumable hard deletion                   |
+| `processOrphanCleanupStep` | `orphanCleanup.ts` | Re-creation and janitor | Processes one bounded orphan-cleanup step                 |
+| `advanceOrphanCleanupJob`  | `users.ts`         | Scheduled worker        | Reschedules the persisted orphan job until complete       |
+| `friends.list`             | `friends.ts`       | Every friend list query | Validates links exist, returns unlinked state if orphaned |
+
+Cleanup email identity is case-insensitive. `cleanupEmailMaterialization.ts` owns the versioned,
+bounded canonicalization pass for legacy email-bearing rows. New writes must store normalized
+lowercase identity emails. Account creation and email-selected admin deletion must wait for the
+`cleanup_email_canonicalization_v1` readiness stamp; never treat missing optional
+`accounts.normalized_email` as proof that no matching account exists.
+
+Orphan and hard-delete workers must remain resumable: persist scan/member cursors and perform
+bounded work per mutation. Before destructive orphan cleanup, install
+`orphan_cleanup_member_fences` for every discovered member ID. Runtime account/alias claim paths
+must call `assertMemberIdentityNotCleanupFenced`; late identity discovery pauses cleanup until the
+new IDs are fenced. Release fences in bounded batches on completion or terminal failure. Continue
+to re-check auth ID, document ID, normalized email, and target-local ownership in every destructive
+transaction.
 
 ### Janitor Cron (`janitor.ts`)
 

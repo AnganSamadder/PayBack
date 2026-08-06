@@ -8,6 +8,7 @@ enum LogoutAlert: Identifiable { case accountDeleted; var id: Int { hashValue } 
 enum AccountDeletionState: Equatable {
     case idle
     case deletingBackendAccount
+    case awaitingBackendDeletion
     case deletingAuthenticationAccount
     case awaitingAuthenticationDeletion
 }
@@ -76,6 +77,8 @@ final class AppStore: ObservableObject {
     @Published var logoutAlert: LogoutAlert?
     @Published private(set) var accountDeletionState: AccountDeletionState = .idle
     @Published private(set) var authenticationSessionRecoveryMessage: String?
+    @Published private(set) var isClearingAllData = false
+    @Published private(set) var clearAllDataErrorMessage: String?
     private var isAuthenticationSessionCheckInProgress = false
 
     var isAuthenticationSessionRecoveryBlocking: Bool {
@@ -87,8 +90,14 @@ final class AppStore: ObservableObject {
     }
 
     var isAccountDeletionBlocking: Bool {
-        accountDeletionState == .deletingAuthenticationAccount ||
+        accountDeletionState == .deletingBackendAccount ||
+            accountDeletionState == .awaitingBackendDeletion ||
+            accountDeletionState == .deletingAuthenticationAccount ||
             accountDeletionState == .awaitingAuthenticationDeletion
+    }
+
+    var accountDeletionRecoveryErrorMessage: String? {
+        isAccountDeletionBlocking ? authenticationSessionRecoveryMessage : nil
     }
 
     /// When true, suppresses all cloud writes (friend sync, group upsert, expense upsert).
@@ -250,9 +259,14 @@ final class AppStore: ObservableObject {
             let email = identity.email
             try await convexAuthenticator()
 
+            try await waitForServerAuthentication()
+            if try await completePendingAccountDeletionIfNeeded() {
+                await finishAuthenticationSessionCheck(recoveryError: nil)
+                return
+            }
+
             let accountService = self.accountService
             let account: UserAccount? = try await RetryPolicy.startup.execute {
-                try await self.waitForServerAuthentication()
                 return try await accountService.lookupAccount(byEmail: email)
             }
 
@@ -264,9 +278,7 @@ final class AppStore: ObservableObject {
                 }
             } else {
                 AppConfig.markTiming("Account lookup complete (not found)")
-                if try await completePendingAccountDeletionIfNeeded() == false {
-                    try await signOutMissingAccountDuringSessionRecovery()
-                }
+                try await signOutMissingAccountDuringSessionRecovery()
             }
 
             await finishAuthenticationSessionCheck(recoveryError: nil)
@@ -473,28 +485,45 @@ final class AppStore: ObservableObject {
         sessionMonitorTask?.cancel()
         sessionMonitorTask = Task { @MainActor in
             for await account in accountService.monitorSession() {
-                if let account {
-                    let previousSession = self.session
-                    self.session = UserSession(account: account)
-
-                    if let linkedId = account.linkedMemberId, self.currentUser.id != linkedId {
-                        self.currentUser = GroupMember(
-                            id: linkedId,
-                            name: self.currentUser.name,
-                            profileImageUrl: self.currentUser.profileImageUrl,
-                            profileColorHex: self.currentUser.profileColorHex,
-                            isCurrentUser: true
-                        )
-                    }
-
-                    // Keep persisted session identity in sync with realtime account updates.
-                    if previousSession?.account != self.session?.account {
-                        self.persistCurrentState()
-                    }
-                } else if self.session != nil, self.accountDeletionState == .idle {
-                    self.handleForcedLogout(reason: "Account deleted")
-                }
+                self.handleRealtimeAccountUpdate(account)
             }
+        }
+    }
+
+    @MainActor
+    func handleRealtimeAccountUpdate(_ account: UserAccount?) {
+        if let account {
+            let previousSession = session
+            session = UserSession(account: account)
+
+            if account.status == "deleting" {
+                invalidateRemoteLoad()
+                friendSyncTask?.cancel()
+                friendSyncTask = nil
+                hasCompletedInitialRemoteLoad = false
+                #if !PAYBACK_CI_NO_CONVEX
+                Dependencies.syncManager?.stopSync()
+                #endif
+                accountDeletionState = .awaitingBackendDeletion
+                return
+            }
+
+            if let linkedId = account.linkedMemberId, currentUser.id != linkedId {
+                currentUser = GroupMember(
+                    id: linkedId,
+                    name: currentUser.name,
+                    profileImageUrl: currentUser.profileImageUrl,
+                    profileColorHex: currentUser.profileColorHex,
+                    isCurrentUser: true
+                )
+            }
+
+            // Keep persisted session identity in sync with realtime account updates.
+            if previousSession?.account != session?.account {
+                persistCurrentState()
+            }
+        } else if session != nil, accountDeletionState == .idle {
+            handleForcedLogout(reason: "Account deleted")
         }
     }
 
@@ -780,6 +809,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// - Deletes groups where current user is the only member
     /// - Clears friend list (doesn't affect linked friends' own data)
     func clearAllUserData() {
+        guard !isClearingAllData else { return }
+        isClearingAllData = true
+        clearAllDataErrorMessage = nil
         #if DEBUG
         print("[AppStore] Clearing all data for user")
         #endif
@@ -806,29 +838,26 @@ func completeAuthentication(id: String, email: String, name: String?) {
         // Persist locally
         persistCurrentState()
 
-        // Sync deletions to cloud and restart sync after
+        // Restart sync only after every cloud cleanup confirms completion.
         Task {
-            #if !PAYBACK_CI_NO_CONVEX
-            // Use the new clearAllForUser mutations that delete everything server-side
-            if let convexExpenseService = expenseCloudService as? ConvexExpenseService {
-                try? await convexExpenseService.clearAllData()
+            do {
+                try await expenseCloudService.clearAllData()
+                try await groupCloudService.clearAllData()
+                try await accountService.clearFriends()
+                await MainActor.run {
+                    isClearingAllData = false
+                    #if !PAYBACK_CI_NO_CONVEX
+                    Dependencies.syncManager?.startSync()
+                    #endif
+                    Haptics.notify(.success)
+                }
+            } catch {
+                await MainActor.run {
+                    isClearingAllData = false
+                    clearAllDataErrorMessage = "Cloud cleanup did not finish. Your local data is clear, but sync remains paused. Please try Clear All My Data again."
+                }
+                return
             }
-            if let convexGroupService = groupCloudService as? ConvexGroupService {
-                try? await convexGroupService.clearAllData()
-            }
-            // Clear friends from Convex
-            if let convexAccountService = accountService as? ConvexAccountService {
-                try? await convexAccountService.clearFriends()
-            }
-
-            // Wait a moment for server to process
-            try? await Task.sleep(nanoseconds: 500_000_000)
-
-            // Restart sync after deletions are complete
-            await MainActor.run {
-                Dependencies.syncManager?.startSync()
-            }
-            #endif
 
             #if DEBUG
             await MainActor.run {
@@ -836,8 +865,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
             }
             #endif
         }
-
-        Haptics.notify(.success)
     }
 
     func applyDisplayName(_ name: String) {
@@ -868,6 +895,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 try? await groupCloudService.upsertGroup(group)
             }
         }
+    }
+
+    func dismissClearAllDataError() {
+        clearAllDataErrorMessage = nil
     }
 
     func updateUserProfile(color: String?, imageUrl: String?) {
@@ -1258,19 +1289,19 @@ func completeAuthentication(id: String, email: String, name: String?) {
             throw PayBackError.underlying(message: "Account deletion is already in progress.")
         }
 
-        if accountDeletionState == .idle {
+        let shouldDeleteBackend = accountDeletionState != .awaitingAuthenticationDeletion
+        if shouldDeleteBackend {
             accountDeletionState = .deletingBackendAccount
         }
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
 
-        if accountDeletionState != .awaitingAuthenticationDeletion {
+        if shouldDeleteBackend {
             do {
                 try await accountService.selfDeleteAccount()
                 print("✅ Backend selfDeleteAccount success")
             } catch {
-                accountDeletionState = .idle
-                startSessionMonitoring()
+                accountDeletionState = .awaitingBackendDeletion
                 throw error
             }
         }
@@ -1291,12 +1322,24 @@ func completeAuthentication(id: String, email: String, name: String?) {
     @MainActor
     @discardableResult
     func completePendingAccountDeletionIfNeeded() async throws -> Bool {
-        guard try await accountService.hasCompletedSelfDeletion() else {
+        let status = try await accountService.selfDeletionStatus()
+        guard status.completed || status.inProgress else {
             return false
         }
 
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
+
+        if status.inProgress {
+            accountDeletionState = .deletingBackendAccount
+            do {
+                try await accountService.selfDeleteAccount()
+            } catch {
+                accountDeletionState = .awaitingBackendDeletion
+                throw error
+            }
+        }
+
         accountDeletionState = .deletingAuthenticationAccount
         do {
             try await emailAuthService.deleteCurrentUser()
@@ -1335,7 +1378,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func syncFriendsToCloud() async {
-        guard let session else { return }
+        guard let session,
+              session.account.status != "deleting",
+              accountDeletionState == .idle else { return }
         friendSyncTask?.cancel()
         do {
             try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: friends)
@@ -1940,7 +1985,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
     // MARK: - Friend Sync
 
     private func scheduleFriendSync() {
-        guard let session, !isImporting else { return }
+        guard let session,
+              session.account.status != "deleting",
+              accountDeletionState == .idle,
+              !isImporting else { return }
         processFriendsUpdate(friends)
         purgeCurrentUserFriendRecords()
         pruneSelfOnlyDirectGroups()
@@ -1965,6 +2013,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     func loadRemoteData() async {
+        guard session?.account.status != "deleting",
+              accountDeletionState == .idle else { return }
         remoteLoadGeneration &+= 1
         let generation = remoteLoadGeneration
         let previousLoad = remoteLoadTask

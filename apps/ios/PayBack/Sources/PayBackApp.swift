@@ -171,14 +171,15 @@ struct RootViewWithStore: View {
                     Text("Finish Deleting Your Account")
                         .font(.title2.bold())
                         .multilineTextAlignment(.center)
-                    Text("Your PayBack data is deleted. Finish removing your sign-in account before continuing.")
+                    Text(accountDeletionRecoveryDescription)
                         .font(.body)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.white.opacity(0.82))
                 }
                 .foregroundStyle(.white)
 
-                if store.accountDeletionState == .deletingAuthenticationAccount {
+                if store.accountDeletionState == .deletingBackendAccount ||
+                    store.accountDeletionState == .deletingAuthenticationAccount {
                     ProgressView("Finishing account deletion…")
                         .tint(.white)
                         .foregroundStyle(.white)
@@ -194,16 +195,27 @@ struct RootViewWithStore: View {
                     .foregroundStyle(Color(red: 0.25, green: 0.18, blue: 0.55))
                 }
 
-                if let accountDeletionRecoveryError {
-                    Text(accountDeletionRecoveryError)
+                if let recoveryError = accountDeletionRecoveryError ?? store.accountDeletionRecoveryErrorMessage {
+                    Text(recoveryError)
                         .font(.footnote)
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
-                        .accessibilityLabel("Account deletion error: \(accountDeletionRecoveryError)")
+                        .accessibilityLabel("Account deletion error: \(recoveryError)")
                 }
             }
             .padding(32)
             .frame(maxWidth: 520)
+        }
+    }
+
+    private var accountDeletionRecoveryDescription: String {
+        switch store.accountDeletionState {
+        case .deletingBackendAccount, .awaitingBackendDeletion:
+            "Your account deletion is in progress. Finish deleting your PayBack data and sign-in account before continuing."
+        case .deletingAuthenticationAccount, .awaitingAuthenticationDeletion:
+            "Your PayBack data is deleted. Finish removing your sign-in account before continuing."
+        case .idle:
+            "Finish deleting your PayBack account before continuing."
         }
     }
 
@@ -354,7 +366,7 @@ struct PayBackApp: App {
         AppConfig.markAppStart()
 
         let clerk = Clerk.configure(
-            publishableKey: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA"
+            publishableKey: AppConfig.clerkPublishableKey
         )
         _clerk = State(initialValue: clerk)
 

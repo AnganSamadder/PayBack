@@ -44,6 +44,12 @@ describe("clearAllForUser", () => {
     });
 
     await t.run(async (ctx) => {
+      await ctx.db.insert("sync_materialization_state", {
+        key: "group_visibility_v1",
+        status: "ready",
+        processed: 0,
+        updated_at: now
+      });
       await ctx.db.insert("member_aliases", {
         canonical_member_id: "owner_b_member",
         alias_member_id: "owner_b_legacy",
@@ -53,7 +59,7 @@ describe("clearAllForUser", () => {
         created_at: now
       });
 
-      await ctx.db.insert("groups", {
+      const ownedGroupId = await ctx.db.insert("groups", {
         id: "owned_by_b",
         name: "Owned By B",
         members: [
@@ -67,7 +73,7 @@ describe("clearAllForUser", () => {
         updated_at: now
       });
 
-      await ctx.db.insert("groups", {
+      const sharedGroupId = await ctx.db.insert("groups", {
         id: "shared_owned_by_a",
         name: "Shared Group",
         members: [
@@ -81,10 +87,37 @@ describe("clearAllForUser", () => {
         created_at: now,
         updated_at: now
       });
+      await ctx.db.insert("group_visibility", {
+        account_id: ownerBId,
+        group_id: ownedGroupId,
+        group_updated_at: now,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("group_visibility", {
+        account_id: ownerAId,
+        group_id: sharedGroupId,
+        group_updated_at: now,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("group_visibility", {
+        account_id: ownerBId,
+        group_id: sharedGroupId,
+        group_updated_at: now,
+        created_at: now,
+        updated_at: now
+      });
     });
 
     const ownerBCtx = t.withIdentity(identityFor("owner-b@example.com", "owner_b_auth"));
-    await ownerBCtx.mutation(api.groups.clearAllForUser, {});
+    let result = await ownerBCtx.mutation(api.groups.clearAllForUserV2, {});
+    for (let attempt = 0; result.inProgress && attempt < 10; attempt += 1) {
+      result = await ownerBCtx.mutation(api.groups.clearAllForUserV2, {
+        cutoff: result.cutoff
+      });
+    }
+    expect(result.inProgress).toBe(false);
 
     const groups = await t.run(async (ctx) => await ctx.db.query("groups").collect());
     expect(groups.find((group) => group.id === "owned_by_b")).toBeUndefined();
@@ -94,6 +127,102 @@ describe("clearAllForUser", () => {
     expect(shared?.members.some((member) => member.id === "owner_b_member")).toBe(false);
     expect(shared?.members.some((member) => member.id === "owner_b_legacy")).toBe(false);
     expect(shared?.members.some((member) => member.id === "owner_a_member")).toBe(true);
+  });
+
+  test("groups.clearAllForUser ignores unrelated global group cardinality", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const fixture = await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "bounded_owner_auth",
+        email: "bounded-owner@example.com",
+        display_name: "Bounded Owner",
+        member_id: "bounded_owner_member",
+        created_at: now
+      });
+      const otherId = await ctx.db.insert("accounts", {
+        id: "bounded_other_auth",
+        email: "bounded-other@example.com",
+        display_name: "Bounded Other",
+        member_id: "bounded_other_member",
+        created_at: now
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: now
+      });
+      await ctx.db.insert("sync_materialization_state", {
+        key: "group_visibility_v1",
+        status: "ready",
+        processed: 0,
+        updated_at: now
+      });
+      const sharedGroupId = await ctx.db.insert("groups", {
+        id: "bounded_shared_group",
+        name: "Shared",
+        members: [
+          { id: "bounded_owner_member", name: "Owner" },
+          { id: "bounded_other_member", name: "Other" }
+        ],
+        owner_email: "bounded-other@example.com",
+        owner_account_id: "bounded_other_auth",
+        owner_id: otherId,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("group_visibility", {
+        account_id: ownerId,
+        group_id: sharedGroupId,
+        group_updated_at: now,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("group_visibility", {
+        account_id: otherId,
+        group_id: sharedGroupId,
+        group_updated_at: now,
+        created_at: now,
+        updated_at: now
+      });
+      return { otherId };
+    });
+    for (let start = 0; start < 513; start += 100) {
+      await t.run(async (ctx) => {
+        for (let index = start; index < Math.min(start + 100, 513); index += 1) {
+          await ctx.db.insert("groups", {
+            id: `unrelated_group_${index}`,
+            name: "Unrelated",
+            members: [{ id: "bounded_other_member", name: "Other" }],
+            owner_email: "bounded-other@example.com",
+            owner_account_id: "bounded_other_auth",
+            owner_id: fixture.otherId,
+            created_at: now,
+            updated_at: now
+          });
+        }
+      });
+    }
+
+    const owner = t.withIdentity(identityFor("bounded-owner@example.com", "bounded_owner_auth"));
+    let result = await owner.mutation(api.groups.clearAllForUserV2, {});
+    for (let attempt = 0; result.inProgress && attempt < 10; attempt += 1) {
+      result = await owner.mutation(api.groups.clearAllForUserV2, { cutoff: result.cutoff });
+    }
+    expect(result.inProgress).toBe(false);
+
+    const state = await t.run(async (ctx) => ({
+      shared: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (query) => query.eq("id", "bounded_shared_group"))
+        .unique(),
+      unrelated: (await ctx.db.query("groups").collect()).filter((group) =>
+        group.id.startsWith("unrelated_group_")
+      )
+    }));
+    expect(state.shared?.members.map((member) => member.id)).toEqual(["bounded_other_member"]);
+    expect(state.unrelated).toHaveLength(513);
   });
 
   test("expenses.clearAllForUser removes owned expenses and viewer visibility rows", async () => {
@@ -238,7 +367,12 @@ describe("clearAllForUser", () => {
     });
 
     const viewerCtx = t.withIdentity(identityFor("viewer@example.com", "viewer_auth"));
-    await viewerCtx.mutation(api.expenses.clearAllForUser, {});
+    let result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {});
+    while (result.inProgress) {
+      result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {
+        cutoff: result.cutoff
+      });
+    }
 
     const expenses = await t.run(async (ctx) => await ctx.db.query("expenses").collect());
     expect(expenses.find((expense) => expense.id === "expense_owned_by_viewer")).toBeUndefined();
@@ -375,7 +509,12 @@ describe("clearAllForUser", () => {
     const viewerCtx = t.withIdentity(
       identityFor("grouped-viewer@example.com", "grouped_viewer_auth")
     );
-    await viewerCtx.mutation(api.expenses.clearAllForUser, {});
+    let result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {});
+    while (result.inProgress) {
+      result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {
+        cutoff: result.cutoff
+      });
+    }
 
     const expenses = await t.run(async (ctx) => await ctx.db.query("expenses").collect());
     expect(

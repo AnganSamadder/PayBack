@@ -1,6 +1,6 @@
 import { query, internalQuery, mutation, DatabaseReader, MutationCtx } from "./_generated/server";
-import { Doc } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { Doc, Id } from "./_generated/dataModel";
+import { getConvexSize, type Value, v } from "convex/values";
 import {
   assertIdentityMaterializationReady,
   findAccountByMemberId,
@@ -14,7 +14,6 @@ import {
   canonicalizeExpenseParticipantLinks,
   createExpenseIdentityResolutionCache,
   getCurrentUserOrThrow,
-  reconcileUserExpenses,
   resolveActiveExpenseParticipantAccounts
 } from "./helpers";
 import {
@@ -22,6 +21,8 @@ import {
   provenFriendLinkQueryWork,
   resolveProvenFriendLink
 } from "./friendLinkProvenance";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
+import { applyExpenseWriteBatch, type ExpenseWriteOperation } from "./expenseWrites";
 
 /**
  * Internal helper for transitive alias resolution.
@@ -362,6 +363,7 @@ const mergeReadSafetyLimits = {
 export type MergeReadBudget = {
   scannedRows: number;
   estimatedReadBytes: number;
+  accountFriendRows?: number;
   lookupWork?: number;
   queryWork?: number;
   reservedReadRows?: number;
@@ -372,6 +374,7 @@ export function createMergeReadBudget(): MergeReadBudget {
   return {
     scannedRows: 0,
     estimatedReadBytes: 0,
+    accountFriendRows: 0,
     lookupWork: 0,
     queryWork: 0,
     reservedReadRows: 0,
@@ -403,7 +406,7 @@ function mergeWorkLimitError() {
 export function accountMergeRowsForLimit(budget: MergeReadBudget, rows: readonly unknown[]) {
   budget.scannedRows += rows.length;
   budget.estimatedReadBytes += rows.reduce<number>(
-    (total, row) => total + new TextEncoder().encode(JSON.stringify(row) ?? "").length,
+    (total, row) => total + getConvexSize(row as Value),
     0
   );
   if (
@@ -411,6 +414,28 @@ export function accountMergeRowsForLimit(budget: MergeReadBudget, rows: readonly
     budget.estimatedReadBytes > mergeCanonicalizationLimits.estimatedReadBytes
   ) {
     throw mergeWorkLimitError();
+  }
+}
+
+export type LinkingReadBudget = MergeReadBudget;
+
+export function createLinkingReadBudget(): LinkingReadBudget {
+  return createMergeReadBudget();
+}
+
+export function chargeLinkingQueries(budget: LinkingReadBudget, count: number) {
+  accountMergeQueriesForLimit(budget, count);
+}
+
+export function accountLinkingRows(
+  budget: LinkingReadBudget,
+  rows: readonly unknown[],
+  areAccountFriendRows = false
+) {
+  accountMergeRowsForLimit(budget, rows);
+  if (areAccountFriendRows) {
+    budget.accountFriendRows = (budget.accountFriendRows ?? 0) + rows.length;
+    if (budget.accountFriendRows > 512) throw mergeWorkLimitError();
   }
 }
 
@@ -490,6 +515,27 @@ export async function collectSequentialMergeIndexRows<T>(
   }
 }
 
+export async function collectSequentialLinkingRows<T>(
+  budget: LinkingReadBudget,
+  readPage: (
+    cursor: string | null,
+    limit: number
+  ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>,
+  areAccountFriendRows = false
+) {
+  const rows = await collectSequentialMergeIndexRows(
+    budget,
+    readPage,
+    () => accountMergeQueriesForLimit(budget, 1),
+    areAccountFriendRows ? 513 : undefined
+  );
+  if (areAccountFriendRows) {
+    budget.accountFriendRows = (budget.accountFriendRows ?? 0) + rows.length;
+    if (budget.accountFriendRows > 512) throw mergeWorkLimitError();
+  }
+  return rows;
+}
+
 function localFriendIdentityClosure(friend: Doc<"account_friends">, primaryMemberId: string) {
   const localAliases = normalizeMemberIds(friend.local_alias_member_ids);
   if (localAliases.length > mergeCanonicalizationLimits.localAliasMemberIds) {
@@ -529,7 +575,7 @@ function assertNoConflictingOwnerIdentity(
   account: Doc<"accounts">
 ) {
   if (rows.some((row) => !isGroupOrExpenseOwnedByAccount(row, account))) {
-    throw new Error("Cannot merge records with a conflicting owner identity");
+    throw new Error("Cannot merge records with inconsistent ownership: conflicting owner identity");
   }
 }
 
@@ -899,7 +945,7 @@ async function prepareCanonicalReferenceRewrite(
   const plannedExpenseUpdates: Array<{
     expense: Doc<"expenses">;
     patch: Partial<Doc<"expenses">>;
-    participantAccountIds: string[];
+    viewerAccountIds: Id<"accounts">[];
   }> = [];
   for (const expense of plannedExpenses) {
     const rewritableSourceMemberIds = rewritableSourceMemberIdsForExpense(expense, sourceMemberIds);
@@ -987,7 +1033,7 @@ async function prepareCanonicalReferenceRewrite(
     plannedExpenseUpdates.push({
       expense,
       patch: expensePatch,
-      participantAccountIds: participantAccounts.map((participantAccount) => participantAccount.id)
+      viewerAccountIds: participantAccounts.map((participantAccount) => participantAccount._id)
     });
   }
 
@@ -997,8 +1043,9 @@ async function prepareCanonicalReferenceRewrite(
   assertMergeWorstCaseReadWithinLimit(readBudget);
 
   return async () => {
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     for (const { group, members } of plannedGroupUpdates) {
-      await ctx.db.patch(group._id, {
+      await groupVisibilityBatch.patch(group._id, {
         members,
         owner_id: account._id,
         owner_account_id: account.id,
@@ -1006,13 +1053,27 @@ async function prepareCanonicalReferenceRewrite(
         updated_at: Date.now()
       });
     }
+    await groupVisibilityBatch.flush();
 
-    for (const update of plannedExpenseUpdates) {
-      await ctx.db.patch(update.expense._id, update.patch);
-
-      await reconcileUserExpenses(ctx, update.expense.id, update.participantAccountIds);
-    }
+    const expenseOperations: ExpenseWriteOperation[] = plannedExpenseUpdates.map(
+      ({ expense, patch, viewerAccountIds }) => ({
+        kind: "patch",
+        expense,
+        patch,
+        viewerAccountIds
+      })
+    );
+    await applyExpenseWriteBatch(ctx, expenseOperations);
   };
+}
+
+export type CanonicalReferenceRewritePlan = () => Promise<void>;
+
+export async function applyCanonicalReferenceRewrite(
+  _ctx: MutationCtx,
+  plan: CanonicalReferenceRewritePlan
+) {
+  await plan();
 }
 
 export async function prepareClaimedFriendReferenceRewrite(

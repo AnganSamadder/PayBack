@@ -1,21 +1,24 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
 import { query, internalQuery, internalMutation, QueryCtx } from "./_generated/server";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
 
 export const fixMissingDirectFlags = internalMutation({
   args: {},
   handler: async (ctx) => {
     const groups = await ctx.db.query("groups").collect();
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     let updated = 0;
     for (const group of groups) {
       if (group.members.length === 2 && !group.is_direct) {
-        await ctx.db.patch(group._id, {
+        await groupVisibilityBatch.patch(group._id, {
           is_direct: true,
           updated_at: Date.now()
         });
         updated++;
       }
     }
+    await groupVisibilityBatch.flush();
     return { updated };
   }
 });

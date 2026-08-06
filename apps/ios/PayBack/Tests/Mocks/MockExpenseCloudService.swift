@@ -8,6 +8,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var shouldFail: Bool = false
     private var upsertDelaysNanoseconds: [UInt64] = []
     private var upsertInvocationCount = 0
+    private var clearAllInvocationCount = 0
 
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
         if shouldFail {
@@ -72,6 +73,15 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         // No-op for mock - just clear expenses flagged as debug
     }
 
+    func clearAllData() async throws {
+        clearAllInvocationCount += 1
+        if shouldFail {
+            throw PayBackError.networkUnavailable
+        }
+        expenses.removeAll()
+        participantsByExpenseId.removeAll()
+    }
+
     // Test helpers
     func addExpense(_ expense: Expense) {
         expenses[expense.id] = expense
@@ -89,12 +99,17 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         upsertInvocationCount
     }
 
+    func currentClearAllInvocationCount() -> Int {
+        clearAllInvocationCount
+    }
+
     func reset() {
         expenses.removeAll()
         participantsByExpenseId.removeAll()
         shouldFail = false
         upsertDelaysNanoseconds.removeAll()
         upsertInvocationCount = 0
+        clearAllInvocationCount = 0
     }
 
     func participants(for expenseId: UUID) -> [ExpenseParticipant]? {

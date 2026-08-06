@@ -8,6 +8,7 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
     private var queuedFetchGroups: [[SpendingGroup]] = []
     private var queuedFetchDelaysNanoseconds: [UInt64] = []
     private var fetchInvocationCount = 0
+    private var clearAllInvocationCount = 0
 
     func upsertGroup(_ group: SpendingGroup) async throws {
         if shouldFail {
@@ -56,6 +57,14 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         groups.removeValue(forKey: groupId)
     }
 
+    func clearAllData() async throws {
+        clearAllInvocationCount += 1
+        if shouldFail {
+            throw PayBackError.networkUnavailable
+        }
+        groups.removeAll()
+    }
+
     // Test helpers
     func addGroup(_ group: SpendingGroup) {
         groups[group.id] = group
@@ -74,11 +83,16 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         fetchInvocationCount
     }
 
+    func currentClearAllInvocationCount() -> Int {
+        clearAllInvocationCount
+    }
+
     func reset() {
         groups.removeAll()
         shouldFail = false
         queuedFetchGroups.removeAll()
         queuedFetchDelaysNanoseconds.removeAll()
         fetchInvocationCount = 0
+        clearAllInvocationCount = 0
     }
 }

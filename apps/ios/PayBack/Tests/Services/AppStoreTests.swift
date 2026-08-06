@@ -1691,6 +1691,42 @@ final class AppStoreTests: XCTestCase {
         )
     }
 
+    func testClearAllUserData_waitsForEveryCloudService() async throws {
+        sut.clearAllUserData()
+
+        for _ in 0..<100 where sut.isClearingAllData {
+            await Task.yield()
+        }
+
+        XCTAssertFalse(sut.isClearingAllData)
+        XCTAssertNil(sut.clearAllDataErrorMessage)
+        let expenseCalls = await mockExpenseCloudService.currentClearAllInvocationCount()
+        let groupCalls = await mockGroupCloudService.currentClearAllInvocationCount()
+        let friendCalls = await mockAccountService.currentClearFriendsInvocationCount()
+        XCTAssertEqual(expenseCalls, 1)
+        XCTAssertEqual(groupCalls, 1)
+        XCTAssertEqual(friendCalls, 1)
+    }
+
+    func testClearAllUserData_keepsFailureVisibleAndStopsRemainingCloudWork() async throws {
+        await mockExpenseCloudService.setShouldFail(true)
+
+        sut.clearAllUserData()
+
+        for _ in 0..<100 where sut.isClearingAllData {
+            await Task.yield()
+        }
+
+        XCTAssertFalse(sut.isClearingAllData)
+        XCTAssertNotNil(sut.clearAllDataErrorMessage)
+        let expenseCalls = await mockExpenseCloudService.currentClearAllInvocationCount()
+        let groupCalls = await mockGroupCloudService.currentClearAllInvocationCount()
+        let friendCalls = await mockAccountService.currentClearFriendsInvocationCount()
+        XCTAssertEqual(expenseCalls, 1)
+        XCTAssertEqual(groupCalls, 0)
+        XCTAssertEqual(friendCalls, 0)
+    }
+
 
 }
 

@@ -91,11 +91,11 @@ final class AppStoreRemoteDataTests: XCTestCase {
         _ = UserSession(account: account)
 
         // When
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
-        // Then - wait for linked member ID to be set
-        try await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertNotNil(sut.session)
+        // Then
+        let session = try XCTUnwrap(sut.session)
+        XCTAssertNotNil(session.account.linkedMemberId)
     }
 
     // MARK: - Apply Display Name Tests

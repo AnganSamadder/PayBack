@@ -572,6 +572,90 @@ test.each(["invite", "link request"] as const)(
   }
 );
 
+test.each(["invite", "link request"] as const)(
+  "%s claim cannot adopt an identity fenced by orphan cleanup",
+  async (claimKind) => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@example.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@example.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_canonical"
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: now
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "creator@example.com",
+        member_id: "claimer_legacy",
+        name: "Claimer",
+        profile_avatar_color: "#123456",
+        has_linked_account: false,
+        link_state: "unlinked",
+        status: "manual",
+        updated_at: now
+      });
+    });
+
+    const creator = t.withIdentity(authIdentity("creator@example.com", "creator_auth"));
+    const claimer = t.withIdentity(authIdentity("claimer@example.com", "claimer_auth"));
+    if (claimKind === "invite") {
+      await creator.mutation(api.inviteTokens.create, {
+        id: "fenced_invite",
+        target_member_id: "claimer_legacy",
+        target_member_name: "Claimer"
+      });
+    } else {
+      await creator.mutation(api.linkRequests.create, {
+        id: "fenced_request",
+        recipient_email: "claimer@example.com",
+        target_member_id: "claimer_legacy",
+        target_member_name: "Claimer"
+      });
+    }
+    await t.run(async (ctx) => {
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "orphan@example.com",
+        subject: "orphan_auth",
+        member_ids: ["claimer_legacy"],
+        mode: "hard",
+        status: "pending",
+        processed_count: 0,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("orphan_cleanup_member_fences", {
+        job_id: jobId,
+        member_id: "claimer_legacy",
+        generation: 0,
+        created_at: now
+      });
+    });
+
+    const claim =
+      claimKind === "invite"
+        ? claimer.mutation(api.inviteTokens.claim, { id: "fenced_invite" })
+        : claimer.mutation(api.linkRequests.accept, { id: "fenced_request" });
+    await expect(claim).rejects.toThrow("temporarily locked for account cleanup");
+    expect(await t.run((ctx) => ctx.db.query("member_aliases").collect())).toEqual([]);
+  }
+);
+
 test("friends:upsert cannot create linked metadata from a client payload", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
