@@ -272,7 +272,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         sut.addGroup(name: "Test", memberNames: ["Alice"])
 
         // When
-        sut.deleteGroups(at: IndexSet(integer: 0))
+        try await sut.deleteGroups(at: IndexSet(integer: 0))
 
         // Then - wait for friend sync
         try await Task.sleep(nanoseconds: 300_000_000)

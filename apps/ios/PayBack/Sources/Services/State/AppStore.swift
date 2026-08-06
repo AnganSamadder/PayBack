@@ -32,6 +32,11 @@ final class AppStore: ObservableObject {
         let dirtyExpenses: [Expense]
     }
 
+    private struct GroupMutationContext {
+        let accountId: String?
+        let dataEpoch: UUID
+    }
+
     @Published var groups: [SpendingGroup]
     @Published var expenses: [Expense]
     @Published var currentUser: GroupMember
@@ -1036,37 +1041,51 @@ func completeAuthentication(id: String, email: String, name: String?) {
         scheduleFriendSync()
     }
 
-    func deleteGroups(at offsets: IndexSet) {
+    @MainActor
+    func deleteGroups(at offsets: IndexSet) async throws {
         // Filter out invalid indices to prevent crashes
         let validOffsets = offsets.filter { $0 < groups.count }
         guard !validOffsets.isEmpty else { return }
 
-        let toDelete = validOffsets.map { groups[$0].id }
+        let context = groupMutationContext()
+        let removedGroups = validOffsets.map { groups[$0] }
+        let toDelete = removedGroups.map(\.id)
         let relatedExpenses = expenses.filter { toDelete.contains($0.groupId) }
         groups.remove(atOffsets: IndexSet(validOffsets))
         expenses.removeAll { toDelete.contains($0.groupId) }
         persistCurrentState()
-        Task {
-            if !toDelete.isEmpty {
-                try? await groupCloudService.deleteGroups(toDelete)
-            }
-            for expense in relatedExpenses {
-                try? await expenseCloudService.deleteExpense(expense.id)
-            }
+
+        do {
+            try await groupCloudService.deleteGroups(toDelete)
+        } catch {
+            guard isCurrentGroupMutation(context) else { return }
+            restoreGroups(removedGroups, expenses: relatedExpenses)
+            persistCurrentState()
+            throw error
         }
+
+        guard isCurrentGroupMutation(context) else { return }
         scheduleFriendSync()
     }
 
-    func leaveGroup(_ groupId: UUID) {
-        guard let index = groups.firstIndex(where: { $0.id == groupId }) else { return }
+    @MainActor
+    func leaveGroup(_ groupId: UUID) async throws {
+        guard let group = groups.first(where: { $0.id == groupId }) else { return }
 
-        groups.remove(at: index)
+        let context = groupMutationContext()
+        let removedExpenses = expenses.filter { $0.groupId == groupId }
+        groups.removeAll { $0.id == groupId }
         expenses.removeAll { $0.groupId == groupId }
 
         persistCurrentState()
 
-        Task {
-            try? await groupCloudService.leaveGroup(groupId)
+        do {
+            try await groupCloudService.leaveGroup(groupId)
+        } catch {
+            guard isCurrentGroupMutation(context) else { return }
+            restoreGroups([group], expenses: removedExpenses)
+            persistCurrentState()
+            throw error
         }
     }
 
@@ -1075,11 +1094,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
     ///   - groupId: The ID of the group to remove the member from
     ///   - memberId: The ID of the member to remove
     /// - Note: This action cannot be undone. All expenses involving the member in this group will be deleted.
-    func removeMemberFromGroup(groupId: UUID, memberId: UUID) {
+    @MainActor
+    func removeMemberFromGroup(groupId: UUID, memberId: UUID) async throws {
         print("🔵 removeMemberFromGroup called - groupId: \(groupId), memberId: \(memberId)")
 
         // Don't allow removing the current user
-        guard memberId != currentUser.id else {
+        guard !isMe(memberId) else {
             print("🔴 Cannot remove current user")
             return
         }
@@ -1089,7 +1109,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
             print("🔴 Group not found")
             return
         }
-        var group = groups[groupIndex]
+        let context = groupMutationContext()
+        let originalGroup = groups[groupIndex]
+        guard originalGroup.members.contains(where: { $0.id == memberId }) else { return }
+        let allOriginalGroupExpenses = expenses.filter { $0.groupId == groupId }
+        var group = originalGroup
 
         let memberCountBefore = group.members.count
 
@@ -1102,8 +1126,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
         // Find and delete all expenses involving this member in this group
         let expensesToDelete = expenses.filter { expense in
             expense.groupId == groupId && (
-                expense.paidByMemberId == memberId ||
-                expense.involvedMemberIds.contains(memberId)
+                areSamePerson(expense.paidByMemberId, memberId) ||
+                expense.involvedMemberIds.contains(where: { areSamePerson($0, memberId) })
             )
         }
 
@@ -1115,34 +1139,87 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         // Check if group now has only the current user - if so, delete the entire group
         let remainingNonCurrentUserMembers = group.members.filter { !isCurrentUser($0) }
-        if remainingNonCurrentUserMembers.isEmpty {
+        let deletesEntireGroup = remainingNonCurrentUserMembers.isEmpty
+        if deletesEntireGroup {
             print("🟢 Group now has only current user - deleting entire group")
-            let allGroupExpenses = expenses.filter { $0.groupId == groupId }
             groups.removeAll { $0.id == groupId }
             expenses.removeAll { $0.groupId == groupId }
-            persistCurrentState()
-
-            Task { [groupId, allGroupExpenses] in
-                try? await groupCloudService.deleteGroups([groupId])
-                for expense in allGroupExpenses {
-                    try? await expenseCloudService.deleteExpense(expense.id)
-                }
-            }
         } else {
-            persistCurrentState()
-
             print("✅ Member removed and state persisted")
+        }
+        persistCurrentState()
 
-            // Sync to cloud
-            Task { [group, expensesToDelete] in
-                try? await groupCloudService.upsertGroup(group)
-                for expense in expensesToDelete {
-                    try? await expenseCloudService.deleteExpense(expense.id)
-                }
+        do {
+            try await groupCloudService.removeMemberFromGroup(groupId, memberId: memberId)
+        } catch {
+            guard isCurrentGroupMutation(context) else { return }
+            if deletesEntireGroup {
+                restoreGroups([originalGroup], expenses: allOriginalGroupExpenses)
+            } else {
+                restoreUpdatedGroup(
+                    originalGroup,
+                    replacing: group,
+                    expenses: allOriginalGroupExpenses
+                )
             }
+            persistCurrentState()
+            throw error
         }
 
+        guard isCurrentGroupMutation(context) else { return }
         scheduleFriendSync()
+    }
+
+    @MainActor
+    private func groupMutationContext() -> GroupMutationContext {
+        GroupMutationContext(accountId: session?.account.id, dataEpoch: dataEpoch)
+    }
+
+    @MainActor
+    private func isCurrentGroupMutation(_ context: GroupMutationContext) -> Bool {
+        context.dataEpoch == dataEpoch && context.accountId == session?.account.id
+    }
+
+    @MainActor
+    private func restoreGroups(_ removedGroups: [SpendingGroup], expenses removedExpenses: [Expense]) {
+        for group in removedGroups where !groups.contains(where: { $0.id == group.id }) {
+            groups.append(group)
+        }
+        for expense in removedExpenses where !expenses.contains(where: { $0.id == expense.id }) {
+            expenses.append(expense)
+        }
+    }
+
+    @MainActor
+    private func restoreUpdatedGroup(
+        _ originalGroup: SpendingGroup,
+        replacing optimisticGroup: SpendingGroup,
+        expenses removedExpenses: [Expense]
+    ) {
+        if let groupIndex = groups.firstIndex(where: { $0.id == optimisticGroup.id }),
+           groupContentsMatch(groups[groupIndex], optimisticGroup) {
+            groups[groupIndex] = originalGroup
+        }
+        restoreGroups([], expenses: removedExpenses)
+    }
+
+    private func groupContentsMatch(_ lhs: SpendingGroup, _ rhs: SpendingGroup) -> Bool {
+        lhs.id == rhs.id &&
+            lhs.name == rhs.name &&
+            lhs.createdAt == rhs.createdAt &&
+            lhs.isDirect == rhs.isDirect &&
+            lhs.isDebug == rhs.isDebug &&
+            lhs.members.count == rhs.members.count &&
+            zip(lhs.members, rhs.members).allSatisfy(memberContentsMatch)
+    }
+
+    private func memberContentsMatch(_ lhs: GroupMember, _ rhs: GroupMember) -> Bool {
+        lhs.id == rhs.id &&
+            lhs.name == rhs.name &&
+            lhs.profileImageUrl == rhs.profileImageUrl &&
+            lhs.profileColorHex == rhs.profileColorHex &&
+            lhs.isCurrentUser == rhs.isCurrentUser &&
+            lhs.accountFriendMemberId == rhs.accountFriendMemberId
     }
 
     /// Adds new members to an existing group

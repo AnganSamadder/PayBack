@@ -568,7 +568,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         let group = sut.groups[0]
         let aliceId = group.members.first(where: { $0.name == "Alice" })!.id
 
-        sut.removeMemberFromGroup(groupId: group.id, memberId: aliceId)
+        try await sut.removeMemberFromGroup(groupId: group.id, memberId: aliceId)
 
         // Group should be deleted (only current user left)
         XCTAssertTrue(sut.groups.isEmpty)
@@ -579,7 +579,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         let group = sut.groups[0]
         let aliceId = group.members.first(where: { $0.name == "Alice" })!.id
 
-        sut.removeMemberFromGroup(groupId: group.id, memberId: aliceId)
+        try await sut.removeMemberFromGroup(groupId: group.id, memberId: aliceId)
 
         // Group should remain with Bob
         XCTAssertEqual(sut.groups.count, 1)
@@ -591,7 +591,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let originalCount = sut.groups[0].members.count
 
-        sut.removeMemberFromGroup(groupId: UUID(), memberId: UUID())
+        try await sut.removeMemberFromGroup(groupId: UUID(), memberId: UUID())
 
         XCTAssertEqual(sut.groups[0].members.count, originalCount)
     }

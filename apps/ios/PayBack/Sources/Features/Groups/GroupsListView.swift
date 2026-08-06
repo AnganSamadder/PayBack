@@ -5,6 +5,7 @@ struct GroupsListView: View {
     @State private var showCreate = false
     @State private var groupToDelete: SpendingGroup?
     @State private var showDeleteConfirmation = false
+    @State private var deleteErrorMessage: String?
     let onGroupSelected: (SpendingGroup) -> Void
 
     var body: some View {
@@ -70,7 +71,15 @@ struct GroupsListView: View {
             Button("Delete \"\(group.name)\"", role: .destructive) {
                 Haptics.notify(.warning)
                 if let index = store.groups.firstIndex(where: { $0.id == group.id }) {
-                    store.deleteGroups(at: IndexSet(integer: index))
+                    Task {
+                        do {
+                            try await store.deleteGroups(at: IndexSet(integer: index))
+                        } catch {
+                            deleteErrorMessage = error.userFacingMessage(
+                                fallback: "The group could not be deleted from the cloud. Your local data was restored. Check your connection and try again."
+                            )
+                        }
+                    }
                 }
                 groupToDelete = nil
             }
@@ -79,6 +88,21 @@ struct GroupsListView: View {
             }
         } message: { group in
             Text("This will permanently delete the group \"\(group.name)\" and all its expenses. This action cannot be undone.")
+        }
+        .alert(
+            "Unable to Delete Group",
+            isPresented: Binding(
+                get: { deleteErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { deleteErrorMessage = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                deleteErrorMessage = nil
+            }
+        } message: {
+            Text(deleteErrorMessage ?? "Please try again.")
         }
     }
 }

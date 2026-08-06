@@ -13,6 +13,8 @@ struct GroupDetailView: View {
     @State private var showAddMemberSheet = false
     @State private var showUnsettledAlert = false
     @State private var showLeaveConfirmation = false
+    @State private var isUpdatingGroup = false
+    @State private var groupOperationErrorMessage: String?
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
@@ -74,6 +76,9 @@ struct GroupDetailView: View {
                     .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
                 }
                 .background(Color.clear)
+            } else if isUpdatingGroup {
+                ProgressView("Updating group…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // Group was deleted, go back
                 Color.clear.onAppear { handleBack() }
@@ -110,7 +115,18 @@ struct GroupDetailView: View {
         ) { member in
             Button("Remove \"\(member.name)\"", role: .destructive) {
                 Haptics.notify(.warning)
-                store.removeMemberFromGroup(groupId: groupId, memberId: member.id)
+                isUpdatingGroup = true
+                Task {
+                    do {
+                        try await store.removeMemberFromGroup(groupId: groupId, memberId: member.id)
+                        isUpdatingGroup = false
+                    } catch {
+                        isUpdatingGroup = false
+                        groupOperationErrorMessage = error.userFacingMessage(
+                            fallback: "The member could not be removed from the cloud. Your local data was restored. Check your connection and try again."
+                        )
+                    }
+                }
                 memberToDelete = nil
             }
             Button("Cancel", role: .cancel) {
@@ -126,13 +142,37 @@ struct GroupDetailView: View {
         }
         .alert("Leave Group?", isPresented: $showLeaveConfirmation) {
             Button("Leave", role: .destructive) {
-                store.leaveGroup(groupId)
-                // Back navigation is triggered automatically when group becomes nil
-                // (see the else branch: Color.clear.onAppear { handleBack() })
+                isUpdatingGroup = true
+                Task {
+                    do {
+                        try await store.leaveGroup(groupId)
+                        isUpdatingGroup = false
+                    } catch {
+                        isUpdatingGroup = false
+                        groupOperationErrorMessage = error.userFacingMessage(
+                            fallback: "The group could not be left in the cloud. Your local data was restored. Check your connection and try again."
+                        )
+                    }
+                }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Are you sure you want to leave this group?")
+        }
+        .alert(
+            "Unable to Update Group",
+            isPresented: Binding(
+                get: { groupOperationErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { groupOperationErrorMessage = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                groupOperationErrorMessage = nil
+            }
+        } message: {
+            Text(groupOperationErrorMessage ?? "Please try again.")
         }
     }
 
