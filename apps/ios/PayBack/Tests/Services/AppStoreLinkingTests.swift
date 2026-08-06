@@ -1086,7 +1086,8 @@ final class AppStoreLinkingTests: XCTestCase {
         let mergeTask = Task { @MainActor in
             try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
         }
-        XCTAssertTrue(await waitForMergeUnlinkedFriendCall())
+        let firstMergeStarted = await waitForMergeUnlinkedFriendCall()
+        XCTAssertTrue(firstMergeStarted)
         sut.session = UserSession(account: accountB)
         sut.friends = [accountBFriend]
 
