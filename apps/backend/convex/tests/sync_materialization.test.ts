@@ -40,6 +40,20 @@ async function runToCompletion(t: ReturnType<typeof convexTest>, migration: Migr
 }
 
 describe("sync materialization migrations", () => {
+  test("does not mark group visibility ready before identity materialization", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(groupVisibilityMigration, { scheduleNext: false })).rejects.toThrow(
+      "indexed identity migration is not complete"
+    );
+    const state = await t.run((ctx) =>
+      ctx.db
+        .query("sync_materialization_state")
+        .withIndex("by_key", (query) => query.eq("key", "group_visibility_v1"))
+        .unique()
+    );
+    expect(state).toBeNull();
+  });
+
   test("backfills group visibility in resumable, idempotent batches", async () => {
     const t = convexTest(schema, modules);
     const fixture = await t.run(async (ctx) => {
@@ -242,6 +256,12 @@ describe("sync materialization migrations", () => {
           created_at: 1
         });
       }
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: 1
+      });
       const groupId = await ctx.db.insert("groups", {
         id: "large_legal_group",
         name: "Large legal group",
@@ -271,6 +291,12 @@ describe("sync materialization migrations", () => {
   test("manually retries failed migration states instead of treating them as terminal", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: 1
+      });
       await ctx.db.insert("sync_materialization_state", {
         key: "group_visibility_v1",
         status: "failed",

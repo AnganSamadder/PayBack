@@ -3,6 +3,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx } from "./_generated/server";
 import { normalizeMemberId } from "./identity";
 import { bumpAccountSyncRevisions, MAX_SYNC_REVISION_ACCOUNTS } from "./syncState";
+import { assertAccountCanAcceptChanges, isAccountDeletionFenced } from "./helpers";
 
 export const MAX_GROUP_VISIBILITY_MEMBERS = 64;
 export const MAX_GROUP_VISIBILITY_ACCOUNTS = MAX_GROUP_VISIBILITY_MEMBERS + 1;
@@ -77,6 +78,28 @@ type IdentityAccountCache = {
   byMemberId: Map<string, Doc<"accounts"> | null>;
   byAccountId: Map<string, Doc<"accounts"> | null>;
 };
+
+function scrubInactiveAccountMembers(
+  members: GroupInsert["members"],
+  existingMembers: GroupInsert["members"],
+  cache: IdentityAccountCache
+): GroupInsert["members"] {
+  const existingIdentityKeys = new Set(
+    existingMembers.map((member) => {
+      const memberId = normalizeMemberId(member.id);
+      const account = cache.byMemberId.get(memberId);
+      return account ? `account:${String(account._id)}` : `member:${memberId}`;
+    })
+  );
+  return members.map((member) => {
+    const memberId = normalizeMemberId(member.id);
+    const account = cache.byMemberId.get(memberId);
+    if (!isAccountDeletionFenced(account)) return member;
+    const identityKey = account ? `account:${String(account._id)}` : `member:${memberId}`;
+    if (!existingIdentityKeys.has(identityKey)) assertAccountCanAcceptChanges(account);
+    return { id: member.id, name: "Deleted User" };
+  });
+}
 
 function chargeIdentityQuery(budget: IdentityReadBudget): void {
   budget.queries += 1;
@@ -450,6 +473,13 @@ export class GroupVisibilityWriteBatch {
       value.members.map((member) => member.id),
       value.owner_id
     );
+    const effectiveValue = {
+      ...value,
+      members: scrubInactiveAccountMembers(value.members, [], {
+        byMemberId: this.memberAccountCache,
+        byAccountId: this.accountByIdCache
+      })
+    };
     const estimatedVisibilityBytes = visibleAccountIds.reduce(
       (total, accountId) =>
         total +
@@ -465,12 +495,12 @@ export class GroupVisibilityWriteBatch {
     this.reserveWrites(
       1 + visibleAccountIds.length,
       visibleAccountIds,
-      insertedDocumentSize(value) + estimatedVisibilityBytes
+      insertedDocumentSize(effectiveValue) + estimatedVisibilityBytes
     );
 
-    const groupId = await this.ctx.db.insert("groups", value);
+    const groupId = await this.ctx.db.insert("groups", effectiveValue);
     await this.applyVisibilityPlan(
-      { _id: groupId, updated_at: value.updated_at },
+      { _id: groupId, updated_at: effectiveValue.updated_at },
       { inserts: visibleAccountIds, updates: [], deletes: [] }
     );
     return groupId;
@@ -481,7 +511,7 @@ export class GroupVisibilityWriteBatch {
     if ("id" in value) throw new Error("Group client IDs cannot be reassigned");
     const previousGroup = await this.getGroup(groupId);
     if (!previousGroup) throw new Error(`Group ${String(groupId)} not found`);
-    const nextGroup: Doc<"groups"> = { ...previousGroup, ...value };
+    let nextGroup: Doc<"groups"> = { ...previousGroup, ...value };
     if (nextGroup.members.length > MAX_GROUP_VISIBILITY_MEMBERS) {
       throw new Error(`Group visibility supports at most ${MAX_GROUP_VISIBILITY_MEMBERS} members`);
     }
@@ -493,6 +523,13 @@ export class GroupVisibilityWriteBatch {
       nextGroup.members.map((member) => member.id),
       nextGroup.owner_id
     );
+    nextGroup = {
+      ...nextGroup,
+      members: scrubInactiveAccountMembers(nextGroup.members, previousGroup.members, {
+        byMemberId: this.memberAccountCache,
+        byAccountId: this.accountByIdCache
+      })
+    };
     const existingRows = await this.getVisibilityRows(groupId);
     const plan = this.visibilityPlan(nextGroup, visibleAccountIds, existingRows);
     const revisionAccountIds = uniqueAccountIds([
@@ -506,7 +543,7 @@ export class GroupVisibilityWriteBatch {
       convexValueSize(nextGroup) + visibilityPlanWriteBytes(nextGroup, plan)
     );
 
-    await this.ctx.db.patch(groupId, value);
+    await this.ctx.db.patch(groupId, { ...value, members: nextGroup.members });
     await this.applyVisibilityPlan(nextGroup, plan);
   }
 

@@ -10,6 +10,95 @@ import schema from "../schema";
 import { modules } from "../test.setup";
 
 describe("group visibility writes", () => {
+  test("rejects new fenced identities and scrubs existing group member snapshots", async () => {
+    const t = convexTest(schema, modules);
+    const fixture = await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "privacy_owner_auth",
+        email: "privacy-owner@test.com",
+        display_name: "Owner",
+        member_id: "privacy_owner_member",
+        created_at: 1
+      });
+      const deletingId = await ctx.db.insert("accounts", {
+        id: "privacy_deleting_auth",
+        email: "privacy-deleting@test.com",
+        display_name: "Private Name",
+        member_id: "privacy_deleting_member",
+        alias_member_ids: ["privacy_deleting_alias"],
+        status: "deleting",
+        created_at: 1
+      });
+      await ctx.db.insert("member_aliases", {
+        canonical_member_id: "privacy_deleting_member",
+        alias_member_id: "privacy_deleting_alias",
+        account_email: "privacy-deleting@test.com",
+        materialization_source: "account_alias",
+        created_at: 1
+      });
+
+      await ctx.db.patch(deletingId, { status: "active" });
+      const patchedGroupId = await insertGroupWithVisibility(ctx, {
+        id: "privacy_patched_group",
+        name: "Before patch",
+        members: [
+          { id: "privacy_owner_member", name: "Owner" },
+          {
+            id: "privacy_deleting_member",
+            name: "Private Name",
+            profile_image_url: "https://example.com/private.png"
+          }
+        ],
+        owner_email: "privacy-owner@test.com",
+        owner_account_id: "privacy_owner_auth",
+        owner_id: ownerId,
+        created_at: 1,
+        updated_at: 1
+      });
+      await ctx.db.patch(deletingId, { status: "deleted" });
+      await patchGroupWithVisibility(ctx, patchedGroupId, { name: "After patch", updated_at: 2 });
+
+      return { ownerId, patchedGroupId };
+    });
+
+    await expect(
+      t.run((ctx) =>
+        insertGroupWithVisibility(ctx, {
+          id: "privacy_inserted_group",
+          name: "Inserted",
+          members: [
+            { id: "privacy_owner_member", name: "Owner" },
+            {
+              id: "privacy_deleting_alias",
+              name: "Private Name",
+              profile_image_url: "https://example.com/private.png",
+              profile_avatar_color: "#ABCDEF",
+              is_current_user: true
+            }
+          ],
+          owner_email: "privacy-owner@test.com",
+          owner_account_id: "privacy_owner_auth",
+          owner_id: fixture.ownerId,
+          created_at: 1,
+          updated_at: 1
+        })
+      )
+    ).rejects.toThrow("Account has been deleted");
+
+    const groups = await t.run(async (ctx) => ({
+      inserted: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (query) => query.eq("id", "privacy_inserted_group"))
+        .unique(),
+      patched: await ctx.db.get(fixture.patchedGroupId)
+    }));
+    expect(groups.inserted).toBeNull();
+    expect(groups.patched?.members[1]).toEqual({
+      id: "privacy_deleting_member",
+      name: "Deleted User"
+    });
+  });
+
   test("a batch bumps a common viewer once after many group writes", async () => {
     const t = convexTest(schema, modules);
     const ownerId = await t.run(async (ctx) => {

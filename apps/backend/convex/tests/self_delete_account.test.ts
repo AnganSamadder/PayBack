@@ -19,6 +19,21 @@ function identity(email: string, subject: string) {
 
 const progressCapableClient = { clientCapability: "bounded_progress_v1" as const };
 
+async function markGroupVisibilityReady(t: ReturnType<typeof convexTest>) {
+  await t.run(async (ctx) => {
+    const existing = (await ctx.db.query("sync_materialization_state").collect()).find(
+      (state) => state.key === "group_visibility_v1"
+    );
+    if (existing) return;
+    await ctx.db.insert("sync_materialization_state", {
+      key: "group_visibility_v1",
+      status: "ready",
+      processed: 0,
+      updated_at: Date.now()
+    });
+  });
+}
+
 test("legacy self deletion callers fail before creating durable progress", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
@@ -48,6 +63,77 @@ test("legacy self deletion callers fail before creating durable progress", async
   }));
   expect(state.account?.status).toBeUndefined();
   expect(state.progress).toBeNull();
+});
+
+test("legacy fenced deletion scans foreign groups that have no visibility row", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      alias_member_ids: ["owner_alias"],
+      status: "deleting",
+      created_at: Date.now()
+    });
+    const friendId = await ctx.db.insert("accounts", {
+      id: "friend_auth",
+      email: "friend@test.com",
+      display_name: "Friend",
+      member_id: "friend_member",
+      created_at: Date.now()
+    });
+    await ctx.db.insert("groups", {
+      id: "legacy_unmaterialized_shared_group",
+      name: "Shared",
+      members: [
+        {
+          id: "owner_alias",
+          name: "Owner Private Name",
+          profile_image_url: "https://example.com/private.png",
+          profile_avatar_color: "#ABCDEF",
+          is_current_user: true
+        },
+        { id: "friend_member", name: "Friend" }
+      ],
+      owner_email: "friend@test.com",
+      owner_account_id: "friend_auth",
+      owner_id: friendId,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("account_deletion_progress", {
+      auth_subject: "owner_auth",
+      account_id: ownerId,
+      account_auth_id: "owner_auth",
+      account_email: "owner@test.com",
+      member_ids: ["owner_member"],
+      request_id: "owner_auth",
+      tombstone_email: `deleted+${ownerId}@payback.invalid`,
+      phase: "finalize",
+      fence_activated: true,
+      friendships_unlinked: 0,
+      processed_count: 1,
+      started_at: Date.now(),
+      updated_at: Date.now()
+    });
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {
+    result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  }
+  expect(result.success).toBe(true);
+
+  const group = await t.run((ctx) =>
+    ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (query) => query.eq("id", "legacy_unmaterialized_shared_group"))
+      .unique()
+  );
+  expect(group?.members[0]).toEqual({ id: "owner_alias", name: "Deleted User" });
 });
 
 test("legacy post-preflight deletion progress restarts preflight before destructive work", async () => {
@@ -98,6 +184,7 @@ test("legacy post-preflight deletion progress restarts preflight before destruct
     });
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   const result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
 
@@ -148,6 +235,7 @@ test("fenced deletion retries reject progress that no longer belongs to the acco
     });
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   for (let attempt = 0; result.phase !== "activate_deletion_fence" && attempt < 40; attempt += 1) {
@@ -213,6 +301,7 @@ test("deletion fences writes then re-preflights work created before the fence", 
     });
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   for (let attempt = 0; result.phase !== "activate_deletion_fence" && attempt < 40; attempt += 1) {
@@ -288,6 +377,106 @@ test("deletion fences writes then re-preflights work created before the fence", 
   ).rejects.toThrow("being deleted");
 });
 
+test("deletion refreshes aliases created during preflight before activating the fence", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: Date.now()
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: Date.now()
+    });
+  });
+  await markGroupVisibilityReady(t);
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  for (let attempt = 0; result.phase !== "activate_deletion_fence" && attempt < 40; attempt += 1) {
+    result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  }
+  expect(result.phase).toBe("activate_deletion_fence");
+
+  await t.run(async (ctx) => {
+    const ownerAccount = await ctx.db
+      .query("accounts")
+      .withIndex("by_auth_id", (query) => query.eq("id", "owner_auth"))
+      .unique();
+    if (!ownerAccount) throw new Error("missing owner");
+    const friendId = await ctx.db.insert("accounts", {
+      id: "friend_auth",
+      email: "friend@test.com",
+      display_name: "Friend",
+      member_id: "friend_member",
+      created_at: Date.now()
+    });
+    await ctx.db.patch(ownerAccount._id, { alias_member_ids: ["late_owner_alias"] });
+    await ctx.db.insert("member_aliases", {
+      canonical_member_id: "owner_member",
+      alias_member_id: "late_owner_alias",
+      account_email: "owner@test.com",
+      materialization_source: "account_alias",
+      created_at: Date.now()
+    });
+    const groupId = await ctx.db.insert("groups", {
+      id: "late_alias_shared_group",
+      name: "Late alias",
+      members: [
+        {
+          id: "late_owner_alias",
+          name: "Owner Private Name",
+          profile_image_url: "https://example.com/private.png"
+        },
+        { id: "friend_member", name: "Friend" }
+      ],
+      owner_email: "friend@test.com",
+      owner_account_id: "friend_auth",
+      owner_id: friendId,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("group_visibility", {
+      account_id: ownerAccount._id,
+      group_id: groupId,
+      group_updated_at: Date.now(),
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("group_visibility", {
+      account_id: friendId,
+      group_id: groupId,
+      group_updated_at: Date.now(),
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+  });
+
+  result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {
+    result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  }
+  expect(result.success).toBe(true);
+
+  const state = await t.run(async (ctx) => ({
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (query) => query.eq("id", "late_alias_shared_group"))
+      .unique(),
+    receipt: await ctx.db
+      .query("account_deletion_receipts")
+      .withIndex("by_auth_subject", (query) => query.eq("auth_subject", "owner_auth"))
+      .unique()
+  }));
+  expect(state.group?.members[0]).toEqual({ id: "late_owner_alias", name: "Deleted User" });
+  expect(state.receipt).not.toBeNull();
+});
+
 test("counterparties cannot create expenses that reference a fenced account", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
@@ -328,6 +517,7 @@ test("counterparties cannot create expenses that reference a fenced account", as
     expect(ownerId).toBeDefined();
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   for (let attempt = 0; result.phase !== "activate_deletion_fence" && attempt < 40; attempt += 1) {
@@ -458,6 +648,7 @@ test("self deletion clears deprecated linked participant payloads from preserved
     expect(ownerId).toBeDefined();
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {
@@ -524,6 +715,7 @@ test("a fenced account cannot claim a new member alias", async () => {
     });
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   for (let attempt = 0; result.phase !== "activate_deletion_fence" && attempt < 40; attempt += 1) {
@@ -596,6 +788,7 @@ test("self deletion rejects conflicting group owner fields before destructive wr
     expect(ownerId).toBeDefined();
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   let conflict: unknown;
   for (let attempt = 0; attempt < 8 && conflict === undefined; attempt += 1) {
@@ -659,6 +852,7 @@ test("self deletion advances one bounded batch and withholds its receipt until c
     }
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   const first = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   expect(first).toMatchObject({
@@ -776,6 +970,7 @@ test("self deletion cascades every expense before deleting an owner-only group",
     });
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {
@@ -861,6 +1056,7 @@ test("self deletion preflights the aggregate identity workload for four 64-membe
     }
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   let failure: unknown;
   for (let attempt = 0; attempt < 20 && failure === undefined; attempt += 1) {
@@ -962,6 +1158,7 @@ test("self deletion rejects oversized expense visibility before unlinking friend
     expect(ownerId).toBeDefined();
   });
 
+  await markGroupVisibilityReady(t);
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   let failure: unknown;
   for (let attempt = 0; attempt < 20 && failure === undefined; attempt += 1) {

@@ -27,6 +27,8 @@ import {
   type ExpenseWriteOperation,
   MAX_EXPENSE_WRITE_OPERATIONS
 } from "./expenseWrites";
+import { isSyncMaterializationReady } from "./syncState";
+import { GROUP_VISIBILITY_MATERIALIZATION_KEY } from "./migrations/groupVisibility";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -1589,6 +1591,31 @@ const SELF_DELETE_MAX_VISIBILITY_ROWS_PER_EXPENSE = 128;
 type SelfDeletionProgress = Doc<"account_deletion_progress">;
 type SelfDeletionPhase = SelfDeletionProgress["phase"];
 
+async function collectSelfDeletionMemberIds(
+  ctx: MutationCtx,
+  account: Doc<"accounts">
+): Promise<string[]> {
+  const canonicalId = await resolveCanonicalMemberIdInternal(
+    ctx.db,
+    account.member_id ?? account.id
+  );
+  const memberIds = Array.from(
+    new Set(
+      [
+        canonicalId,
+        ...(await getAllEquivalentMemberIds(ctx.db, canonicalId)),
+        ...(account.alias_member_ids ?? [])
+      ]
+        .map(normalizeMemberId)
+        .filter(Boolean)
+    )
+  );
+  if (memberIds.length > MAX_LIVE_ACCOUNT_ALIASES + 1) {
+    throw new Error("Identity maintenance required: too many aliases for account deletion");
+  }
+  return memberIds;
+}
+
 const selfDeletionResponseValidator = v.object({
   success: v.boolean(),
   inProgress: v.boolean(),
@@ -1638,6 +1665,9 @@ async function updateSelfDeletionProgress(
       | "current_group_client_id"
       | "current_group_is_last"
       | "fence_activated"
+      | "member_ids"
+      | "group_visibility_ready_at_fence"
+      | "shared_group_scan_completed"
     >
   >,
   processedUnits: number
@@ -2168,6 +2198,10 @@ async function advanceSelfDeletion(
       ) {
         throw new Error("Account deletion fence does not match the authenticated account");
       }
+      if (!(await isSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY))) {
+        throw new Error("Account deletion is temporarily unavailable while data is prepared");
+      }
+      const memberIds = await collectSelfDeletionMemberIds(ctx, account);
       const now = Date.now();
       await ctx.db.patch(account._id, { status: "deleting", updated_at: now });
       return await updateSelfDeletionProgress(
@@ -2181,7 +2215,10 @@ async function advanceSelfDeletion(
           current_group_id: undefined,
           current_group_client_id: undefined,
           current_group_is_last: undefined,
-          fence_activated: true
+          fence_activated: true,
+          member_ids: memberIds,
+          group_visibility_ready_at_fence: true,
+          shared_group_scan_completed: undefined
         },
         1
       );
@@ -2339,7 +2376,9 @@ async function advanceSelfDeletion(
         return await updateSelfDeletionProgress(
           ctx,
           progress,
-          { phase: "link_requests_requester_id" },
+          {
+            phase: progress.group_visibility_ready_at_fence ? "shared_groups" : "shared_group_scan"
+          },
           1
         );
       }
@@ -2384,6 +2423,83 @@ async function advanceSelfDeletion(
         updated_at: deletedAt
       });
       return await updateSelfDeletionProgress(ctx, progress, {}, 1);
+    }
+    case "shared_groups": {
+      chargeFriendCleanupQueries(budget, 1);
+      const visibilityRows = await ctx.db
+        .query("group_visibility")
+        .withIndex("by_account_id_and_group_updated_at", (q) => q.eq("account_id", account._id))
+        .take(1);
+      accountFriendCleanupRows(budget, visibilityRows);
+      const visibilityRow = visibilityRows[0];
+      if (!visibilityRow) {
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "link_requests_requester_id" },
+          1
+        );
+      }
+
+      chargeFriendCleanupQueries(budget, 1);
+      const group = await ctx.db.get(visibilityRow.group_id);
+      accountFriendCleanupRows(budget, group ? [group] : []);
+      if (!group) {
+        await ctx.db.delete(visibilityRow._id);
+        return await updateSelfDeletionProgress(ctx, progress, {}, 1);
+      }
+      if (hasConsistentGroupOwner(group, account)) {
+        return await updateSelfDeletionProgress(ctx, progress, { phase: "owned_groups" }, 1);
+      }
+
+      await patchGroupWithVisibility(ctx, group._id, {
+        members: group.members.map((member) =>
+          deletedMemberIds.has(normalizeMemberId(member.id))
+            ? { id: member.id, name: "Deleted User" }
+            : member
+        ),
+        updated_at: deletedAt
+      });
+      return await updateSelfDeletionProgress(ctx, progress, {}, 1);
+    }
+    case "shared_group_scan": {
+      chargeFriendCleanupQueries(budget, 1);
+      const result = await ctx.db
+        .query("groups")
+        .order("asc")
+        .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE });
+      accountFriendCleanupRows(budget, result.page);
+      const matchingGroups = result.page.filter((group) =>
+        group.members.some((member) => deletedMemberIds.has(normalizeMemberId(member.id)))
+      );
+      const ownedGroup = matchingGroups.find((group) => hasConsistentGroupOwner(group, account));
+      if (ownedGroup) {
+        return await updateSelfDeletionProgress(ctx, progress, { phase: "owned_groups" }, 1);
+      }
+      const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
+      for (const group of matchingGroups) {
+        await groupVisibilityBatch.patch(group._id, {
+          members: group.members.map((member) =>
+            deletedMemberIds.has(normalizeMemberId(member.id))
+              ? { id: member.id, name: "Deleted User" }
+              : member
+          ),
+          updated_at: deletedAt
+        });
+      }
+      await groupVisibilityBatch.flush();
+      return await updateSelfDeletionProgress(
+        ctx,
+        progress,
+        result.isDone
+          ? {
+              phase: "link_requests_requester_id",
+              cursor: undefined,
+              shared_group_scan_completed: true
+            }
+          : { cursor: result.continueCursor },
+        result.page.length + (result.isDone ? 1 : 0)
+      );
     }
     case "owned_group_expenses_by_client_id":
     case "owned_group_expenses_by_reference": {
@@ -2605,6 +2721,22 @@ async function advanceSelfDeletion(
       }
       if (remainingGroups.length > 0) {
         return await updateSelfDeletionProgress(ctx, progress, { phase: "owned_groups" }, 1);
+      }
+
+      if (
+        progress.group_visibility_ready_at_fence === false &&
+        !progress.shared_group_scan_completed
+      ) {
+        return await updateSelfDeletionProgress(ctx, progress, { phase: "shared_group_scan" }, 1);
+      }
+      if (progress.group_visibility_ready_at_fence) {
+        const remainingSharedGroup = await ctx.db
+          .query("group_visibility")
+          .withIndex("by_account_id_and_group_updated_at", (q) => q.eq("account_id", account._id))
+          .first();
+        if (remainingSharedGroup) {
+          return await updateSelfDeletionProgress(ctx, progress, { phase: "shared_groups" }, 1);
+        }
       }
 
       const remainingExpenses = [
@@ -2862,25 +2994,23 @@ export const selfDeleteAccount = mutation({
         );
         return selfDeletionPendingResponse(progress);
       }
+      if (progress.fence_activated && progress.group_visibility_ready_at_fence === undefined) {
+        progress = await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          {
+            member_ids: await collectSelfDeletionMemberIds(ctx, user),
+            group_visibility_ready_at_fence: false,
+            shared_group_scan_completed: false
+          },
+          1
+        );
+      }
     } else {
       if (user.status === "deleting") {
         throw new Error("Account deletion progress is missing for a fenced account");
       }
-      const canonicalId = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id ?? user.id);
-      const memberIds = Array.from(
-        new Set(
-          [
-            canonicalId,
-            ...(await getAllEquivalentMemberIds(ctx.db, canonicalId)),
-            ...(user.alias_member_ids ?? [])
-          ]
-            .map(normalizeMemberId)
-            .filter(Boolean)
-        )
-      );
-      if (memberIds.length > MAX_LIVE_ACCOUNT_ALIASES + 1) {
-        throw new Error("Identity maintenance required: too many aliases for account deletion");
-      }
+      const memberIds = await collectSelfDeletionMemberIds(ctx, user);
       const now = Date.now();
       const progressId = await ctx.db.insert("account_deletion_progress", {
         auth_subject: identity.subject,

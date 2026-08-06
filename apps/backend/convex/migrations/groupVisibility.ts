@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { Doc } from "../_generated/dataModel";
 import { internalMutation, MutationCtx } from "../_generated/server";
 import { materializeGroupVisibilitySlice, MAX_GROUP_VISIBILITY_MEMBERS } from "../groupVisibility";
+import { assertIdentityMaterializationReady } from "../identity";
 
 export const GROUP_VISIBILITY_MATERIALIZATION_KEY = "group_visibility_v1";
 
@@ -110,6 +111,7 @@ export const run = internalMutation({
   args: { scheduleNext: v.optional(v.boolean()) },
   returns: migrationResultValidator,
   handler: async (ctx, args) => {
+    await assertIdentityMaterializationReady(ctx.db);
     let state = await getOrCreateState(ctx);
     if (state.status === "ready") {
       return {

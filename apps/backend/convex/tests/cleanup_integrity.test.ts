@@ -3116,7 +3116,7 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
   const t = convexTest(schema, modules);
 
   await t.run(async (ctx) => {
-    await ctx.db.insert("accounts", {
+    const friendDoc = await ctx.db.insert("accounts", {
       id: "friend_auth",
       email: "friend@test.com",
       display_name: "Friend",
@@ -3131,6 +3131,47 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
       created_at: Date.now(),
       member_id: "owner_member",
       alias_member_ids: ["owner_alias"]
+    });
+    await ctx.db.insert("sync_materialization_state", {
+      key: "group_visibility_v1",
+      status: "ready",
+      processed: 0,
+      updated_at: Date.now()
+    });
+
+    const foreignOwnedGroup = await ctx.db.insert("groups", {
+      id: "foreign_owned_shared_group",
+      name: "Foreign owned shared group",
+      is_direct: false,
+      members: [
+        {
+          id: "owner_alias",
+          name: "Owner Private Name",
+          profile_image_url: "https://example.com/private-owner.png",
+          profile_avatar_color: "#ABCDEF",
+          is_current_user: true
+        },
+        { id: "friend_member", name: "Friend" }
+      ],
+      owner_email: "friend@test.com",
+      owner_account_id: "friend_auth",
+      owner_id: friendDoc,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("group_visibility", {
+      account_id: ownerDoc,
+      group_id: foreignOwnedGroup,
+      group_updated_at: Date.now(),
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("group_visibility", {
+      account_id: friendDoc,
+      group_id: foreignOwnedGroup,
+      group_updated_at: Date.now(),
+      created_at: Date.now(),
+      updated_at: Date.now()
     });
 
     const ownedGroup = await ctx.db.insert("groups", {
@@ -3341,6 +3382,17 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
   expect(transferredGroup?.members.find((member) => member.id === "owner_member")?.name).toBe(
     "Deleted User"
   );
+
+  const foreignOwnedGroup = await t.run(async (ctx) =>
+    ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "foreign_owned_shared_group"))
+      .unique()
+  );
+  const deletedForeignMember = foreignOwnedGroup?.members.find(
+    (member) => member.id === "owner_alias"
+  );
+  expect(deletedForeignMember).toEqual({ id: "owner_alias", name: "Deleted User" });
 
   const sharedExpense = await t.run(async (ctx) =>
     ctx.db
