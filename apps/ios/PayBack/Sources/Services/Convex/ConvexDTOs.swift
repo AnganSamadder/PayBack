@@ -4,6 +4,7 @@ import Foundation
 struct ConvexClearAllProgressDTO: Decodable, Sendable {
     let inProgress: Bool
     let processed: Int
+    let cutoff: Double
 }
 
 enum ConvexClearAllError: Error {

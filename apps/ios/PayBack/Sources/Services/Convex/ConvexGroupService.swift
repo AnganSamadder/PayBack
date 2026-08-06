@@ -108,14 +108,18 @@ func deleteDebugGroups() async throws {
     }
 
     func clearAllData() async throws {
+        var cutoff: Double?
         while true {
             try Task.checkCancellation()
+            var args: [String: ConvexEncodable?] = [:]
+            args.updateValue(cutoff, forKey: "cutoff")
             let result: ConvexClearAllProgressDTO = try await client.mutation(
-                "groups:clearAllForUser",
-                with: [:]
+                "groups:clearAllForUserV2",
+                with: args
             )
             if !result.inProgress { return }
             guard result.processed > 0 else { throw ConvexClearAllError.stalled }
+            cutoff = result.cutoff
         }
     }
 

@@ -14,6 +14,11 @@ protocol GroupCloudService: Sendable {
     func deleteGroups(_ ids: [UUID]) async throws
     func deleteDebugGroups() async throws
     func leaveGroup(_ groupId: UUID) async throws
+    func clearAllData() async throws
+}
+
+extension GroupCloudService {
+    func clearAllData() async throws {}
 }
 
 struct NoopGroupCloudService: GroupCloudService {

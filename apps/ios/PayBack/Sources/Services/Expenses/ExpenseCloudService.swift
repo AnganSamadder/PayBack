@@ -22,6 +22,11 @@ protocol ExpenseCloudService: Sendable {
     func deleteExpense(_ id: UUID) async throws
     func deleteDebugExpenses() async throws
     func clearLegacyMockExpenses() async throws
+    func clearAllData() async throws
+}
+
+extension ExpenseCloudService {
+    func clearAllData() async throws {}
 }
 
 struct NoopExpenseCloudService: ExpenseCloudService {

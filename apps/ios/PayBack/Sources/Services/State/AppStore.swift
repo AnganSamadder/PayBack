@@ -77,6 +77,8 @@ final class AppStore: ObservableObject {
     @Published var logoutAlert: LogoutAlert?
     @Published private(set) var accountDeletionState: AccountDeletionState = .idle
     @Published private(set) var authenticationSessionRecoveryMessage: String?
+    @Published private(set) var isClearingAllData = false
+    @Published private(set) var clearAllDataErrorMessage: String?
     private var isAuthenticationSessionCheckInProgress = false
 
     var isAuthenticationSessionRecoveryBlocking: Bool {
@@ -792,6 +794,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// - Deletes groups where current user is the only member
     /// - Clears friend list (doesn't affect linked friends' own data)
     func clearAllUserData() {
+        guard !isClearingAllData else { return }
+        isClearingAllData = true
+        clearAllDataErrorMessage = nil
         #if DEBUG
         print("[AppStore] Clearing all data for user")
         #endif
@@ -818,29 +823,26 @@ func completeAuthentication(id: String, email: String, name: String?) {
         // Persist locally
         persistCurrentState()
 
-        // Sync deletions to cloud and restart sync after
+        // Restart sync only after every cloud cleanup confirms completion.
         Task {
-            #if !PAYBACK_CI_NO_CONVEX
-            // Use the new clearAllForUser mutations that delete everything server-side
-            if let convexExpenseService = expenseCloudService as? ConvexExpenseService {
-                try? await convexExpenseService.clearAllData()
+            do {
+                try await expenseCloudService.clearAllData()
+                try await groupCloudService.clearAllData()
+                try await accountService.clearFriends()
+                await MainActor.run {
+                    isClearingAllData = false
+                    #if !PAYBACK_CI_NO_CONVEX
+                    Dependencies.syncManager?.startSync()
+                    #endif
+                    Haptics.notify(.success)
+                }
+            } catch {
+                await MainActor.run {
+                    isClearingAllData = false
+                    clearAllDataErrorMessage = "Cloud cleanup did not finish. Your local data is clear, but sync remains paused. Please try Clear All My Data again."
+                }
+                return
             }
-            if let convexGroupService = groupCloudService as? ConvexGroupService {
-                try? await convexGroupService.clearAllData()
-            }
-            // Clear friends from Convex
-            if let convexAccountService = accountService as? ConvexAccountService {
-                try? await convexAccountService.clearFriends()
-            }
-
-            // Wait a moment for server to process
-            try? await Task.sleep(nanoseconds: 500_000_000)
-
-            // Restart sync after deletions are complete
-            await MainActor.run {
-                Dependencies.syncManager?.startSync()
-            }
-            #endif
 
             #if DEBUG
             await MainActor.run {
@@ -848,8 +850,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
             }
             #endif
         }
-
-        Haptics.notify(.success)
     }
 
     func applyDisplayName(_ name: String) {
@@ -880,6 +880,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 try? await groupCloudService.upsertGroup(group)
             }
         }
+    }
+
+    func dismissClearAllDataError() {
+        clearAllDataErrorMessage = nil
     }
 
     func updateUserProfile(color: String?, imageUrl: String?) {

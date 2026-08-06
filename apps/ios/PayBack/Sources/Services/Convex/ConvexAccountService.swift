@@ -224,7 +224,19 @@ actor ConvexAccountService: AccountService {
     }
 
     func clearFriends() async throws {
-        _ = try await client.mutation("friends:clearAllForUser", with: [:])
+        var cutoff: Double?
+        while true {
+            try Task.checkCancellation()
+            var args: [String: ConvexEncodable?] = [:]
+            args.updateValue(cutoff, forKey: "cutoff")
+            let result: ConvexClearAllProgressDTO = try await client.mutation(
+                "friends:clearAllForUserV2",
+                with: args
+            )
+            if !result.inProgress { break }
+            guard result.processed > 0 else { throw ConvexClearAllError.stalled }
+            cutoff = result.cutoff
+        }
         cachedFriends = []
     }
 

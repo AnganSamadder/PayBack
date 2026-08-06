@@ -15,6 +15,7 @@ actor MockAccountServiceForAppStore: AccountService {
     private var inProgressSelfDeletion = false
     private var mergeMemberIdCalls: [(source: UUID, target: UUID)] = []
     private var mergeUnlinkedFriendCalls: [(target: String, source: String)] = []
+    private var clearFriendsInvocationCount = 0
 
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -92,9 +93,21 @@ actor MockAccountServiceForAppStore: AccountService {
         friends[accountEmail.lowercased()] = currentFriends
     }
 
+    func clearFriends() async throws {
+        clearFriendsInvocationCount += 1
+        if shouldFail {
+            throw PayBackError.networkUnavailable
+        }
+        friends.removeAll()
+    }
+
     // Test helpers
     func addAccount(_ account: UserAccount) {
         accounts[account.email.lowercased()] = account
+    }
+
+    func currentClearFriendsInvocationCount() -> Int {
+        clearFriendsInvocationCount
     }
 
     func setShouldFail(_ fail: Bool) {
@@ -113,6 +126,7 @@ actor MockAccountServiceForAppStore: AccountService {
         inProgressSelfDeletion = false
         mergeMemberIdCalls.removeAll()
         mergeUnlinkedFriendCalls.removeAll()
+        clearFriendsInvocationCount = 0
     }
 
     func latestSyncedFriends(accountEmail: String) -> [AccountFriend]? {

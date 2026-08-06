@@ -83,6 +83,21 @@ struct ProfileView: View {
         } message: {
             Text(uploadError ?? "An unknown error occurred.")
         }
+        .alert(
+            "Clear Data Incomplete",
+            isPresented: Binding(
+                get: { store.clearAllDataErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { store.dismissClearAllDataError() }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                store.dismissClearAllDataError()
+            }
+        } message: {
+            Text(store.clearAllDataErrorMessage ?? "Cloud cleanup did not finish.")
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environmentObject(store)
@@ -330,7 +345,7 @@ struct ProfileView: View {
                     showClearDataConfirmation = true
                 }) {
                     HStack(spacing: 12) {
-                        Image(systemName: "trash")
+                        Image(systemName: store.isClearingAllData ? "hourglass" : "trash")
                             .font(.system(size: 16, weight: .medium))
                             .foregroundStyle(.red)
                             .frame(width: 32, height: 32)
@@ -340,7 +355,7 @@ struct ProfileView: View {
                             )
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Clear All My Data")
+                            Text(store.isClearingAllData ? "Clearing My Data…" : "Clear All My Data")
                                 .font(.system(.body, design: .rounded, weight: .medium))
                                 .foregroundStyle(.red)
 
@@ -357,6 +372,7 @@ struct ProfileView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .disabled(store.isClearingAllData)
             }
             .padding(16)
             .background(

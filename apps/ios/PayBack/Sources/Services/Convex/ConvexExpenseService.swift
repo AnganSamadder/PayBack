@@ -197,14 +197,18 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
     }
 
     func clearAllData() async throws {
+        var cutoff: Double?
         while true {
             try Task.checkCancellation()
+            var args: [String: ConvexEncodable?] = [:]
+            args.updateValue(cutoff, forKey: "cutoff")
             let result: ConvexClearAllProgressDTO = try await client.mutation(
-                "expenses:clearAllForUser",
-                with: [:]
+                "expenses:clearAllForUserV2",
+                with: args
             )
             if !result.inProgress { return }
             guard result.processed > 0 else { throw ConvexClearAllError.stalled }
+            cutoff = result.cutoff
         }
     }
 }
