@@ -56,6 +56,8 @@ async function seedGroupedIndividualFixture() {
       has_linked_account: true,
       linked_account_id: "alice_auth_id",
       linked_account_email: "alice@example.com",
+      linked_member_id: "alice_member",
+      link_state: "linked",
       status: "accepted",
       updated_at: now
     });
@@ -68,6 +70,7 @@ async function seedGroupedIndividualFixture() {
       has_linked_account: true,
       linked_account_id: "bob_auth_id",
       linked_account_email: "bob@example.com",
+      link_state: "linked",
       status: "accepted",
       updated_at: now
     });

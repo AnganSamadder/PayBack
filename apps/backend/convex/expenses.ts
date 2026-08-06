@@ -17,6 +17,7 @@ import {
   normalizeMemberIds
 } from "./identity";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
+import { resolveProvenFriendLink } from "./friendLinkProvenance";
 import {
   applyExpenseWriteBatch,
   deleteUserExpenseRowWithRevision,
@@ -828,13 +829,30 @@ export const create = mutation({
             continue;
           }
 
-          const matchingFriend = ownerFriendIdentityRows.find(
-            ({ friend, identityIds }: any) =>
-              isEligibleDirectFriendRecord(friend) && intersects(identityIds, memberEquivalentIds)
+          const registeredMemberAccount = await findAccountByMemberId(ctx.db, memberId);
+          assertAccountCanAcceptChanges(registeredMemberAccount);
+          const candidateFriendRows = ownerFriendIdentityRows.filter(({ identityIds }: any) =>
+            intersects(identityIds, memberEquivalentIds)
           );
+          let matchingFriend: (typeof ownerFriendIdentityRows)[number] | undefined;
+
+          if (registeredMemberAccount) {
+            for (const candidate of candidateFriendRows) {
+              const provenLink = await resolveProvenFriendLink(ctx, candidate.friend);
+              if (provenLink?.account._id === registeredMemberAccount._id) {
+                matchingFriend = candidate;
+                break;
+              }
+            }
+          } else {
+            matchingFriend = candidateFriendRows.find(({ friend }: any) =>
+              isEligibleDirectFriendRecord(friend)
+            );
+          }
 
           if (!matchingFriend) {
             if (
+              !registeredMemberAccount &&
               directCounterpartyRows.length === 1 &&
               intersects(directCounterpartyRows[0].identityIds, memberEquivalentIds)
             ) {
@@ -842,7 +860,7 @@ export const create = mutation({
             }
 
             const normalizedGroupMemberName = normalizePersonName(groupMember?.name);
-            if (normalizedGroupMemberName) {
+            if (!registeredMemberAccount && normalizedGroupMemberName) {
               const byNameMatches = ownerFriendIdentityRows.filter(
                 ({ friend }: any) =>
                   isEligibleDirectFriendRecord(friend) &&
