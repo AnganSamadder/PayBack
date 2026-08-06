@@ -151,6 +151,72 @@ test("bulk import rejects a group containing a deleting account before writes", 
   expect(await t.run(async (ctx) => ctx.db.query("groups").collect())).toEqual([]);
 });
 
+test("bulk import rejects writes into a deletion-fenced group", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    const ownerId = await seedAccount(ctx, {
+      id: "owner_auth",
+      email: "owner@test.com",
+      memberId: "owner_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("groups", {
+      id: "fenced_group",
+      name: "Fenced group",
+      members: [{ id: "owner_member", name: "Owner", is_current_user: true }],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      deletion_token: "pending-delete",
+      created_at: 1,
+      updated_at: 1
+    });
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, {
+      friends: [],
+      groups: [
+        {
+          id: "fenced_group",
+          name: "Resurrected group",
+          members: [{ id: "owner_member", name: "Owner", is_current_user: true }]
+        }
+      ],
+      expenses: [
+        {
+          id: "late_expense",
+          group_id: "fenced_group",
+          description: "Late expense",
+          date: 1,
+          total_amount: 10,
+          paid_by_member_id: "owner_member",
+          involved_member_ids: ["owner_member"],
+          splits: [
+            {
+              id: "late_split",
+              member_id: "owner_member",
+              amount: 10,
+              is_settled: false
+            }
+          ],
+          is_settled: false,
+          participant_member_ids: ["owner_member"],
+          participants: [{ member_id: "owner_member", name: "Owner" }]
+        }
+      ]
+    })
+  ).rejects.toThrow("Group deletion is in progress");
+
+  expect(await t.run((ctx) => ctx.db.query("expenses").collect())).toEqual([]);
+});
+
 test("deleting legacy account cannot bootstrap a new canonical member identity", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
