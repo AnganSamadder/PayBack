@@ -417,6 +417,7 @@ async function collectAttachedFriendCleanupExpenses(
       ctx.db
         .query("expenses")
         .withIndex("by_group_id", (q) => q.eq("group_id", group.id))
+        .filter((q) => q.eq(q.field("group_ref"), undefined))
         .order("asc")
         .paginate({ cursor, numItems: limit })
     ),

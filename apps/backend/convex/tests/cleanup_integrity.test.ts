@@ -2325,6 +2325,116 @@ test("cleanup.deleteUnlinkedFriend cleans owner-scoped group-ref and missing-gro
   }
 });
 
+test.each([
+  ["Linked", true] as const,
+  ["Unlinked", false] as const
+])(
+  "cleanup.delete%sFriend preserves an expense canonically attached to another group",
+  async (_, isLinked) => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "owner_auth",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: now,
+        member_id: "owner_member"
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@test.com",
+        member_id: "friend_member",
+        name: "Friend",
+        profile_avatar_color: "#123456",
+        has_linked_account: isLinked,
+        linked_account_id: isLinked ? "friend_auth" : undefined,
+        linked_account_email: isLinked ? "friend@test.com" : undefined,
+        updated_at: now
+      });
+      await ctx.db.insert("groups", {
+        id: "removed_direct_group",
+        name: "Removed direct group",
+        is_direct: true,
+        members: [
+          { id: "owner_member", name: "Owner", is_current_user: true },
+          { id: "friend_member", name: "Friend" }
+        ],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        created_at: now,
+        updated_at: now
+      });
+      const survivorGroupId = await ctx.db.insert("groups", {
+        id: "survivor_group",
+        name: "Survivor group",
+        members: [
+          { id: "owner_member", name: "Owner", is_current_user: true },
+          { id: "other_member", name: "Other" }
+        ],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("expenses", {
+        id: "canonical_survivor_expense",
+        group_id: "removed_direct_group",
+        group_ref: survivorGroupId,
+        description: "Canonical survivor",
+        date: now,
+        total_amount: 10,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member", "other_member"],
+        splits: [
+          { id: "owner_split", member_id: "owner_member", amount: 5, is_settled: false },
+          { id: "other_split", member_id: "other_member", amount: 5, is_settled: false }
+        ],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        participant_member_ids: ["owner_member", "other_member"],
+        participant_emails: ["owner@test.com"],
+        participants: [
+          { member_id: "owner_member", name: "Owner" },
+          { member_id: "other_member", name: "Other" }
+        ],
+        created_at: now,
+        updated_at: now
+      });
+    });
+
+    await markIdentityReady(t);
+    const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+    if (isLinked) {
+      await owner.mutation(api.cleanup.deleteLinkedFriend, { friendMemberId: "friend_member" });
+    } else {
+      await owner.mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" });
+    }
+
+    const state = await t.run(async (ctx) => ({
+      removedGroup: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "removed_direct_group"))
+        .unique(),
+      survivorGroup: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "survivor_group"))
+        .unique(),
+      survivorExpense: await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "canonical_survivor_expense"))
+        .unique()
+    }));
+    expect(state.removedGroup).toBeNull();
+    expect(state.survivorGroup).not.toBeNull();
+    expect(state.survivorExpense).not.toBeNull();
+    expect(state.survivorExpense?.group_ref).toBe(state.survivorGroup?._id);
+  }
+);
+
 test("cleanup.deleteUnlinkedFriend fails closed on a foreign group-ref expense", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
