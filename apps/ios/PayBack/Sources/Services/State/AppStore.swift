@@ -37,6 +37,11 @@ final class AppStore: ObservableObject {
         let dataEpoch: UUID
     }
 
+    private struct SettlementMutationContext {
+        let accountId: String?
+        let dataEpoch: UUID
+    }
+
     @Published var groups: [SpendingGroup]
     @Published var expenses: [Expense]
     @Published var currentUser: GroupMember
@@ -1794,6 +1799,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         guard !memberIds.isEmpty else { return }
 
+        let context = SettlementMutationContext(
+            accountId: session?.account.id,
+            dataEpoch: dataEpoch
+        )
         let originalExpense = expenses[idx]
         let optimisticExpense = applyingSettlementState(
             to: originalExpense,
@@ -1820,6 +1829,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 )
             }
 
+            guard isCurrentSettlementMutation(context) else { return }
+
             if let canonicalIndex = expenses.firstIndex(where: { $0.id == expenseId }) {
                 expenses[canonicalIndex] = canonicalExpense
             } else {
@@ -1829,6 +1840,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             // remote payload matches our local state — same pattern as pendingExpenseUpsertIds.
             persistCurrentState()
         } catch {
+            guard isCurrentSettlementMutation(context) else { return }
             pendingExpenseSettlementIds.remove(expenseId)
             // Only rollback if current state still matches our optimistic write.
             // A newer in-flight settlement may have already superseded this state.
@@ -1839,6 +1851,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
             persistCurrentState()
             throw error
         }
+    }
+
+    @MainActor
+    private func isCurrentSettlementMutation(_ context: SettlementMutationContext) -> Bool {
+        context.dataEpoch == dataEpoch && context.accountId == session?.account.id
     }
 
     @MainActor

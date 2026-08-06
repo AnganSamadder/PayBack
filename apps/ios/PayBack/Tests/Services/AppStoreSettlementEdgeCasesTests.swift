@@ -396,6 +396,80 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertFalse(updatedExpense.isSettled)
     }
 
+    func testSettlementSuccessAfterAccountSwitchDoesNotPersistPreviousAccountExpense() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        let expenseA = settlementExpense(description: "Account A dinner")
+        let expenseB = settlementExpense(description: "Account B dinner")
+        sut.session = UserSession(account: accountA)
+        sut.expenses = [expenseA]
+        await mockExpenseCloudService.addExpense(expenseA)
+        await mockExpenseCloudService.suspendNextSettlement()
+
+        let operation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(expenseA)
+        }
+        let successRequestStarted = await waitForSettlementInvocation()
+        XCTAssertTrue(successRequestStarted)
+
+        sut.session = UserSession(account: accountB)
+        sut.expenses = [expenseB]
+        mockPersistence.save(AppData(groups: [], expenses: [expenseB]))
+        await mockExpenseCloudService.resumeSettlement()
+        try await operation.value
+
+        XCTAssertEqual(sut.expenses, [expenseB])
+        XCTAssertEqual(mockPersistence.load().expenses, [expenseB])
+    }
+
+    func testSettlementFailureAfterAccountSwitchDoesNotSurfaceOrMutatePreviousAccountState() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        let expenseA = settlementExpense(description: "Account A dinner")
+        let expenseB = settlementExpense(description: "Account B dinner")
+        sut.session = UserSession(account: accountA)
+        sut.expenses = [expenseA]
+        await mockExpenseCloudService.addExpense(expenseA)
+        await mockExpenseCloudService.suspendNextSettlement()
+
+        let operation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(expenseA)
+        }
+        let failingRequestStarted = await waitForSettlementInvocation()
+        XCTAssertTrue(failingRequestStarted)
+
+        sut.session = UserSession(account: accountB)
+        sut.expenses = [expenseB]
+        mockPersistence.save(AppData(groups: [], expenses: [expenseB]))
+        await mockExpenseCloudService.setShouldFail(true)
+        await mockExpenseCloudService.resumeSettlement()
+        try await operation.value
+
+        XCTAssertEqual(sut.expenses, [expenseB])
+        XCTAssertEqual(mockPersistence.load().expenses, [expenseB])
+    }
+
+    private func settlementExpense(description: String) -> Expense {
+        Expense(
+            groupId: UUID(),
+            description: description,
+            totalAmount: 20,
+            paidByMemberId: UUID(),
+            involvedMemberIds: [sut.currentUser.id],
+            splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 20)]
+        )
+    }
+
+    private func waitForSettlementInvocation() async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockExpenseCloudService.currentSettlementInvocationCount() > 0 {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
+    }
+
     // MARK: - Can Settle Expense Tests
 
     func testCanSettleExpenseForAll_UserIsPayer_ReturnsTrue() async throws {

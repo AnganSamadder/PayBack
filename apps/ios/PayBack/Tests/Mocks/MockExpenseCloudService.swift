@@ -8,6 +8,9 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var shouldFail: Bool = false
     private var upsertDelaysNanoseconds: [UInt64] = []
     private var upsertInvocationCount = 0
+    private var settlementInvocationCount = 0
+    private var shouldSuspendSettlement = false
+    private var settlementContinuation: CheckedContinuation<Void, Never>?
     private var clearAllInvocationCount = 0
     private var shouldSuspendClearAll = false
     private var clearAllContinuation: CheckedContinuation<Void, Never>?
@@ -33,6 +36,12 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     }
 
     func setSettlementState(expenseId: UUID, memberIds: Set<UUID>, settled: Bool) async throws -> Expense {
+        settlementInvocationCount += 1
+        if shouldSuspendSettlement {
+            await withCheckedContinuation { continuation in
+                settlementContinuation = continuation
+            }
+        }
         if shouldFail {
             throw PayBackError.authSessionMissing
         }
@@ -106,6 +115,20 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         upsertInvocationCount
     }
 
+    func currentSettlementInvocationCount() -> Int {
+        settlementInvocationCount
+    }
+
+    func suspendNextSettlement() {
+        shouldSuspendSettlement = true
+    }
+
+    func resumeSettlement() {
+        shouldSuspendSettlement = false
+        settlementContinuation?.resume()
+        settlementContinuation = nil
+    }
+
     func currentClearAllInvocationCount() -> Int {
         clearAllInvocationCount
     }
@@ -126,6 +149,10 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         shouldFail = false
         upsertDelaysNanoseconds.removeAll()
         upsertInvocationCount = 0
+        settlementInvocationCount = 0
+        shouldSuspendSettlement = false
+        settlementContinuation?.resume()
+        settlementContinuation = nil
         clearAllInvocationCount = 0
         shouldSuspendClearAll = false
         clearAllContinuation?.resume()
