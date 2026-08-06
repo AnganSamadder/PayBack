@@ -425,9 +425,7 @@ export const accept = mutation({
       budget
     );
 
-    reserveMergeWriteValuesForLimit(budget, [
-      { ...request, status: "accepted" } as Value
-    ]);
+    reserveMergeWriteValuesForLimit(budget, [{ ...request, status: "accepted" } as Value]);
     await ctx.db.patch(request._id, { status: "accepted" });
     return await applyClaimForUser(ctx, claimPlan);
   }

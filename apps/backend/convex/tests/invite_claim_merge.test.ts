@@ -1,11 +1,7 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
-import {
-  accountLinkingRows,
-  createLinkingReadBudget,
-  reserveLinkingReadQuery
-} from "../aliases";
+import { accountLinkingRows, createLinkingReadBudget, reserveLinkingReadQuery } from "../aliases";
 import {
   assertMemberIdentityNotCleanupFenced,
   prepareMemberIdentityCleanupFenceDeletes
@@ -2516,9 +2512,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
       localFriend: await ctx.db
         .query("account_friends")
         .withIndex("by_account_email_and_member_id", (q) =>
-          q
-            .eq("account_email", "claimer@test.com")
-            .eq("member_id", "creator_local_duplicate")
+          q.eq("account_email", "claimer@test.com").eq("member_id", "creator_local_duplicate")
         )
         .unique(),
       creatorGroup: await ctx.db

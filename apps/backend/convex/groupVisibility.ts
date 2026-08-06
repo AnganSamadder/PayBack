@@ -587,9 +587,7 @@ export class GroupVisibilityWriteBatch {
     );
     nextGroup = {
       ...nextGroup,
-      ...(value.owner_email
-        ? { owner_email: value.owner_email.trim().toLowerCase() }
-        : {}),
+      ...(value.owner_email ? { owner_email: value.owner_email.trim().toLowerCase() } : {}),
       members: scrubInactiveAccountMembers(nextGroup.members, previousGroup.members, {
         byMemberId: this.memberAccountCache,
         byAccountId: this.accountByIdCache

@@ -41,10 +41,7 @@ export function preparedAccountSyncRevisionBatchMetrics(
 ): { writes: number; writeBytes: number } {
   return {
     writes: prepared.writes.length,
-    writeBytes: prepared.writes.reduce(
-      (total, write) => total + syncRevisionWriteBytes(write),
-      0
-    )
+    writeBytes: prepared.writes.reduce((total, write) => total + syncRevisionWriteBytes(write), 0)
   };
 }
 

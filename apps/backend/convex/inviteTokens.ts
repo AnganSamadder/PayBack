@@ -326,14 +326,10 @@ async function prepareBudgetedAliasInsert(
     return { aliasInsert: null, staleFenceDeletes: [] };
   }
 
-  const staleFenceDeletes = await prepareMemberIdentityCleanupFenceDeletes(
-    ctx,
-    normalizedAlias,
-    {
-      beforeQuery: (maximumRows) => reserveLinkingReadQuery(budget, maximumRows),
-      afterQuery: (rows) => accountLinkingRows(budget, rows)
-    }
-  );
+  const staleFenceDeletes = await prepareMemberIdentityCleanupFenceDeletes(ctx, normalizedAlias, {
+    beforeQuery: (maximumRows) => reserveLinkingReadQuery(budget, maximumRows),
+    afterQuery: (rows) => accountLinkingRows(budget, rows)
+  });
   reserveMergeWriteValuesForLimit(
     budget,
     staleFenceDeletes.map((fence) => fence as Value)
@@ -1092,10 +1088,7 @@ export async function prepareClaimForUser(
   );
   const syncRevisions = await prepareCanonicalReferenceSyncRevisions(
     ctx,
-    [
-      ...(selectedFriendMerge ? [selectedFriendMerge.referenceRewrite] : []),
-      referenceRewrite
-    ],
+    [...(selectedFriendMerge ? [selectedFriendMerge.referenceRewrite] : []), referenceRewrite],
     budget
   );
   const { aliasInsert, staleFenceDeletes } = await prepareBudgetedAliasInsert(

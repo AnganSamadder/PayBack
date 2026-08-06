@@ -446,10 +446,7 @@ export async function findBudgetedManualMergeAccount(
   return user;
 }
 
-async function getBudgetedManualMergeAccountOrThrow(
-  ctx: MutationCtx,
-  readBudget: MergeReadBudget
-) {
+async function getBudgetedManualMergeAccountOrThrow(ctx: MutationCtx, readBudget: MergeReadBudget) {
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) throw new Error("Unauthenticated");
   return await findBudgetedManualMergeAccount(ctx, identity, readBudget);
@@ -483,12 +480,8 @@ export function chargeLinkingQueries(budget: LinkingReadBudget, count: number) {
   accountMergeQueriesForLimit(budget, count);
 }
 
-export function reserveLinkingReadQuery(
-  budget: LinkingReadBudget,
-  requestedRows: number
-): number {
-  const remainingRows =
-    mergeCanonicalizationLimits.directScannedRows - budget.scannedRows + 1;
+export function reserveLinkingReadQuery(budget: LinkingReadBudget, requestedRows: number): number {
+  const remainingRows = mergeCanonicalizationLimits.directScannedRows - budget.scannedRows + 1;
   const remainingHardReadBytes =
     mergeReadSafetyLimits.hardReadSafetyBytes - budget.estimatedReadBytes;
   const byteReservedRows = Math.floor(
@@ -524,11 +517,7 @@ export function accountMergeQueriesForLimit(budget: MergeReadBudget, count: numb
   }
 }
 
-export function reserveMergeWritesForLimit(
-  budget: MergeReadBudget,
-  count: number,
-  bytes: number
-) {
+export function reserveMergeWritesForLimit(budget: MergeReadBudget, count: number, bytes: number) {
   budget.plannedWrites = (budget.plannedWrites ?? 0) + count;
   budget.estimatedWriteBytes = (budget.estimatedWriteBytes ?? 0) + bytes;
   if (
@@ -570,8 +559,7 @@ function accountMergeIdentityWorkForLimit(budget: MergeReadBudget, count: number
 export function assertMergeWorstCaseReadWithinLimit(budget: MergeReadBudget) {
   const lookupWork = budget.lookupWork ?? 0;
   if (
-    budget.scannedRows + lookupWork * 2 >
-      mergeCanonicalizationLimits.worstCaseScannedRows ||
+    budget.scannedRows + lookupWork * 2 > mergeCanonicalizationLimits.worstCaseScannedRows ||
     budget.estimatedReadBytes > mergeCanonicalizationLimits.estimatedReadBytes ||
     (budget.plannedWrites ?? 0) > mergeTransactionSafetyLimits.writes ||
     (budget.estimatedWriteBytes ?? 0) > mergeTransactionSafetyLimits.writeBytes
