@@ -1053,6 +1053,64 @@ final class AppStoreLinkingTests: XCTestCase {
         XCTAssertTrue(sut.friends.contains(where: { $0.memberId == target.memberId }))
     }
 
+    func testMergeFriend_RetriesCommittedMutationAfterAcknowledgementLoss() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let source = AccountFriend(memberId: UUID(), name: "Duplicate", status: "friend")
+        let target = AccountFriend(memberId: UUID(), name: "Canonical", status: "friend")
+        sut.friends = [source, target]
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [source, target])
+        await mockAccountService.throwAfterNextMergeCommit()
+
+        try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+
+        let callCount = await mockAccountService.mergeUnlinkedFriendsCallCount()
+        XCTAssertEqual(callCount, 2)
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == source.memberId }))
+        XCTAssertTrue(sut.friends.contains(where: { $0.memberId == target.memberId }))
+    }
+
+    func testMergeFriend_AccountSwitchDuringRetryStopsSecondMutation() async throws {
+        let accountA = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        let accountB = UserAccount(id: "test-456", email: "other@example.com", displayName: "Other User")
+        sut.session = UserSession(account: accountA)
+
+        let source = AccountFriend(memberId: UUID(), name: "Duplicate", status: "friend")
+        let target = AccountFriend(memberId: UUID(), name: "Canonical", status: "friend")
+        let accountBFriend = AccountFriend(memberId: UUID(), name: "Other Friend", status: "friend")
+        sut.friends = [source, target]
+        try await mockAccountService.syncFriends(accountEmail: accountA.email, friends: [source, target])
+        await mockAccountService.throwAfterNextMergeCommit()
+
+        let mergeTask = Task { @MainActor in
+            try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+        }
+        XCTAssertTrue(await waitForMergeUnlinkedFriendCall())
+        sut.session = UserSession(account: accountB)
+        sut.friends = [accountBFriend]
+
+        do {
+            try await mergeTask.value
+            XCTFail("Expected the retry to stop when the initiating account changed")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        let callCount = await mockAccountService.mergeUnlinkedFriendsCallCount()
+        XCTAssertEqual(callCount, 1)
+        XCTAssertEqual(sut.session?.account, accountB)
+        XCTAssertEqual(sut.friends.map(\.memberId), [accountBFriend.memberId])
+    }
+
+    private func waitForMergeUnlinkedFriendCall() async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockAccountService.mergeUnlinkedFriendsCallCount() > 0 { return true }
+            await Task.yield()
+        }
+        return false
+    }
+
     func testMergeFriend_DoesNotApplyRemoteFriendsAfterAccountSwitch() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.session = UserSession(account: account)

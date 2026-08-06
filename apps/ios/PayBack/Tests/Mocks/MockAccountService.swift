@@ -18,6 +18,7 @@ actor MockAccountServiceForAppStore: AccountService {
     private var inProgressSelfDeletion = false
     private var mergeMemberIdCalls: [(source: UUID, target: UUID)] = []
     private var mergeUnlinkedFriendCalls: [(target: String, source: String)] = []
+    private var shouldThrowAfterNextMergeCommit = false
     private var clearFriendsInvocationCount = 0
     private var linkedFriendDeleteInvocationCount = 0
     private var unlinkedFriendDeleteInvocationCount = 0
@@ -169,6 +170,7 @@ actor MockAccountServiceForAppStore: AccountService {
         inProgressSelfDeletion = false
         mergeMemberIdCalls.removeAll()
         mergeUnlinkedFriendCalls.removeAll()
+        shouldThrowAfterNextMergeCommit = false
         clearFriendsInvocationCount = 0
         linkedFriendDeleteInvocationCount = 0
         unlinkedFriendDeleteInvocationCount = 0
@@ -391,10 +393,22 @@ actor MockAccountServiceForAppStore: AccountService {
             friendList.removeAll { $0.memberId == sourceId }
             friends[email] = friendList
         }
+        if shouldThrowAfterNextMergeCommit {
+            shouldThrowAfterNextMergeCommit = false
+            throw PayBackError.networkUnavailable
+        }
     }
 
     func latestMergeUnlinkedFriendsCall() -> (target: String, source: String)? {
         mergeUnlinkedFriendCalls.last
+    }
+
+    func throwAfterNextMergeCommit() {
+        shouldThrowAfterNextMergeCommit = true
+    }
+
+    func mergeUnlinkedFriendsCallCount() -> Int {
+        mergeUnlinkedFriendCalls.count
     }
 
     func validateAccountIds(_ ids: [String]) async throws -> Set<String> {

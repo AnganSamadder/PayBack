@@ -4269,11 +4269,13 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         let mergeIds = (source: source.memberId.uuidString, target: target.memberId.uuidString)
 
-        try ensureCurrentMergingSession()
-        try await accountService.mergeUnlinkedFriends(
-            friendId1: mergeIds.target,
-            friendId2: mergeIds.source
-        )
+        try await retryPolicy.execute {
+            try ensureCurrentMergingSession()
+            try await accountService.mergeUnlinkedFriends(
+                friendId1: mergeIds.target,
+                friendId2: mergeIds.source
+            )
+        }
         try ensureCurrentMergingSession()
 
         // Keep the local source until the backend acknowledges the transaction and
