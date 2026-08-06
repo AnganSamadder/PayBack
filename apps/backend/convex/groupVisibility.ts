@@ -609,6 +609,20 @@ export class GroupVisibilityWriteBatch {
   }
 }
 
+export async function deleteGroupVisibilityRowWithRevision(
+  ctx: MutationCtx,
+  row: Doc<"group_visibility">
+): Promise<boolean> {
+  const existing = await ctx.db.get(row._id);
+  if (!existing) return false;
+  if (existing.account_id !== row.account_id || existing.group_id !== row.group_id) {
+    throw new Error("Group visibility row changed during cleanup");
+  }
+  await ctx.db.delete(row._id);
+  await bumpAccountSyncRevisions(ctx, [row.account_id], "groups");
+  return true;
+}
+
 async function getBoundedGroupVisibilityRows(ctx: MutationCtx, groupId: Id<"groups">) {
   const rows = await ctx.db
     .query("group_visibility")

@@ -2,6 +2,7 @@ import { getConvexSize, type Value } from "convex/values";
 import type { PaginationResult } from "convex/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx } from "./_generated/server";
+import { bumpAccountSyncRevisions } from "./syncState";
 
 export const MAX_EXPENSE_VIEWERS = 65;
 export const MAX_EXPENSE_VISIBILITY_ROWS = 128;
@@ -663,4 +664,23 @@ export async function applyExpenseWriteBatch(
 
   await applyRevisionWrites(ctx, revisionWrites);
   return { operations: operationResults, revisionsBumped: revisionWrites.length };
+}
+
+export async function deleteUserExpenseRowWithRevision(
+  ctx: MutationCtx,
+  row: Doc<"user_expenses">,
+  accountId: Id<"accounts">
+): Promise<boolean> {
+  const existing = await ctx.db.get(row._id);
+  if (!existing) return false;
+  if (
+    existing.user_id !== row.user_id ||
+    existing.expense_id !== row.expense_id ||
+    (existing.account_ref !== undefined && existing.account_ref !== accountId)
+  ) {
+    throw new Error("Expense visibility row changed during cleanup");
+  }
+  await ctx.db.delete(row._id);
+  await bumpAccountSyncRevisions(ctx, [accountId], "expenses");
+  return true;
 }

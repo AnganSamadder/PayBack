@@ -158,7 +158,12 @@ async function findBoundedLegacyFriend(
   }
 }
 
-async function deleteFriendBatch(ctx: MutationCtx, accountEmail: string, cutoff: number) {
+async function deleteFriendBatch(
+  ctx: MutationCtx,
+  accountEmail: string,
+  cutoff: number,
+  scheduleContinuation: boolean
+) {
   const friends = await ctx.db
     .query("account_friends")
     .withIndex("by_account_email_and_updated_at", (q) =>
@@ -168,12 +173,17 @@ async function deleteFriendBatch(ctx: MutationCtx, accountEmail: string, cutoff:
     .take(FRIEND_CLEAR_BATCH_SIZE);
 
   await Promise.all(friends.map((friend) => ctx.db.delete(friend._id)));
-  if (friends.length === FRIEND_CLEAR_BATCH_SIZE) {
+  if (scheduleContinuation && friends.length === FRIEND_CLEAR_BATCH_SIZE) {
     await ctx.scheduler.runAfter(0, internal.friends.clearAllForUserBatch, {
       accountEmail,
       cutoff
     });
   }
+  return {
+    inProgress: friends.length === FRIEND_CLEAR_BATCH_SIZE,
+    processed: friends.length,
+    cutoff
+  };
 }
 
 export const list = query({
@@ -582,15 +592,34 @@ export const clearAllForUser = mutation({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Unauthenticated");
 
-    await deleteFriendBatch(ctx, identity.email!.trim().toLowerCase(), Date.now());
+    await deleteFriendBatch(ctx, identity.email!.trim().toLowerCase(), Date.now(), true);
     return null;
+  }
+});
+
+export const clearAllForUserV2 = mutation({
+  args: { cutoff: v.optional(v.number()) },
+  returns: v.object({
+    inProgress: v.boolean(),
+    processed: v.number(),
+    cutoff: v.number()
+  }),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity?.email) throw new Error("Unauthenticated");
+    return await deleteFriendBatch(
+      ctx,
+      identity.email.trim().toLowerCase(),
+      args.cutoff ?? Date.now(),
+      false
+    );
   }
 });
 
 export const clearAllForUserBatch = internalMutation({
   args: { accountEmail: v.string(), cutoff: v.number() },
   handler: async (ctx, args) => {
-    await deleteFriendBatch(ctx, args.accountEmail.trim().toLowerCase(), args.cutoff);
+    await deleteFriendBatch(ctx, args.accountEmail.trim().toLowerCase(), args.cutoff, true);
     return null;
   }
 });

@@ -435,9 +435,11 @@ describe("runtime expense writes", () => {
     }
 
     const owner = t.withIdentity(identity("runtime-owner@test.com", "runtime_owner_auth"));
-    let result = await owner.mutation(api.expenses.clearAllForUser, {});
-    for (let attempt = 0; result.inProgress && attempt < 40; attempt += 1) {
-      result = await owner.mutation(api.expenses.clearAllForUser, {});
+    let result = await owner.mutation(api.expenses.clearAllForUserV2, {});
+    for (let attempt = 0; result.inProgress && attempt < 520; attempt += 1) {
+      result = await owner.mutation(api.expenses.clearAllForUserV2, {
+        cutoff: result.cutoff
+      });
     }
     expect(result.inProgress).toBe(false);
 

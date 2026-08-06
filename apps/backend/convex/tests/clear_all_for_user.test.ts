@@ -111,9 +111,11 @@ describe("clearAllForUser", () => {
     });
 
     const ownerBCtx = t.withIdentity(identityFor("owner-b@example.com", "owner_b_auth"));
-    let result = await ownerBCtx.mutation(api.groups.clearAllForUser, {});
+    let result = await ownerBCtx.mutation(api.groups.clearAllForUserV2, {});
     for (let attempt = 0; result.inProgress && attempt < 10; attempt += 1) {
-      result = await ownerBCtx.mutation(api.groups.clearAllForUser, {});
+      result = await ownerBCtx.mutation(api.groups.clearAllForUserV2, {
+        cutoff: result.cutoff
+      });
     }
     expect(result.inProgress).toBe(false);
 
@@ -204,9 +206,9 @@ describe("clearAllForUser", () => {
     }
 
     const owner = t.withIdentity(identityFor("bounded-owner@example.com", "bounded_owner_auth"));
-    let result = await owner.mutation(api.groups.clearAllForUser, {});
+    let result = await owner.mutation(api.groups.clearAllForUserV2, {});
     for (let attempt = 0; result.inProgress && attempt < 10; attempt += 1) {
-      result = await owner.mutation(api.groups.clearAllForUser, {});
+      result = await owner.mutation(api.groups.clearAllForUserV2, { cutoff: result.cutoff });
     }
     expect(result.inProgress).toBe(false);
 
@@ -365,7 +367,12 @@ describe("clearAllForUser", () => {
     });
 
     const viewerCtx = t.withIdentity(identityFor("viewer@example.com", "viewer_auth"));
-    await viewerCtx.mutation(api.expenses.clearAllForUser, {});
+    let result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {});
+    while (result.inProgress) {
+      result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {
+        cutoff: result.cutoff
+      });
+    }
 
     const expenses = await t.run(async (ctx) => await ctx.db.query("expenses").collect());
     expect(expenses.find((expense) => expense.id === "expense_owned_by_viewer")).toBeUndefined();
@@ -502,7 +509,12 @@ describe("clearAllForUser", () => {
     const viewerCtx = t.withIdentity(
       identityFor("grouped-viewer@example.com", "grouped_viewer_auth")
     );
-    await viewerCtx.mutation(api.expenses.clearAllForUser, {});
+    let result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {});
+    while (result.inProgress) {
+      result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {
+        cutoff: result.cutoff
+      });
+    }
 
     const expenses = await t.run(async (ctx) => await ctx.db.query("expenses").collect());
     expect(

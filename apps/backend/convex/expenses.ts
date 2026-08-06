@@ -1,4 +1,5 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
@@ -17,6 +18,7 @@ import {
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import {
   applyExpenseWriteBatch,
+  deleteUserExpenseRowWithRevision,
   type ExpenseWriteOperation,
   MAX_EXPENSE_VIEWERS,
   MAX_EXPENSE_WRITE_OPERATIONS
@@ -1328,95 +1330,119 @@ export const deleteExpenses = mutation({
 });
 
 // Clear ALL expenses for the current user
-const CLEAR_ALL_EXPENSE_BATCH_SIZE = 32;
 const clearAllProgressValidator = v.object({
   inProgress: v.boolean(),
-  processed: v.number()
+  processed: v.number(),
+  cutoff: v.number()
 });
 
+type ClearAllProgress = {
+  inProgress: boolean;
+  processed: number;
+  cutoff: number;
+};
+
+function assertConsistentExpenseOwner(expense: Doc<"expenses">, user: Doc<"accounts">): void {
+  if (
+    expense.owner_id !== user._id ||
+    expense.owner_account_id !== user.id ||
+    expense.owner_email.trim().toLowerCase() !== user.email.trim().toLowerCase()
+  ) {
+    throw new Error(`Expense ${expense.id} has conflicting ownership metadata`);
+  }
+}
+
+async function processClearAllExpenseStep(
+  ctx: any,
+  user: Doc<"accounts">,
+  cutoff: number
+): Promise<ClearAllProgress> {
+  const ownedExpense = await ctx.db
+    .query("expenses")
+    .withIndex("by_owner_id", (q: any) => q.eq("owner_id", user._id))
+    .filter((q: any) => q.lte(q.field("created_at"), cutoff))
+    .first();
+  if (ownedExpense) {
+    assertConsistentExpenseOwner(ownedExpense, user);
+    await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense: ownedExpense }]);
+    return { inProgress: true, processed: 1, cutoff };
+  }
+
+  const visibilityRow = await ctx.db
+    .query("user_expenses")
+    .withIndex("by_user_id", (q: any) => q.eq("user_id", user.id))
+    .filter((q: any) => q.lte(q.field("updated_at"), cutoff))
+    .first();
+  if (!visibilityRow) return { inProgress: false, processed: 0, cutoff };
+
+  let expense = visibilityRow.expense_ref ? await ctx.db.get(visibilityRow.expense_ref) : null;
+  if (!expense) {
+    const matches = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (query: any) => query.eq("id", visibilityRow.expense_id))
+      .take(2);
+    if (matches.length > 1) throw new Error(`Expense ${visibilityRow.expense_id} is not unique`);
+    expense = matches[0] ?? null;
+  }
+  if (!expense) {
+    await deleteUserExpenseRowWithRevision(ctx, visibilityRow, user._id);
+    return { inProgress: true, processed: 1, cutoff };
+  }
+
+  if (expense.owner_id === user._id) assertConsistentExpenseOwner(expense, user);
+  await applyExpenseWriteBatch(ctx, [
+    {
+      kind: "visibility",
+      expense,
+      viewerAccountIds: await resolveExpenseViewerAccountIds(ctx, expense, new Set([user.id]))
+    }
+  ]);
+  return { inProgress: true, processed: 1, cutoff };
+}
+
+async function scheduleExpenseClearContinuation(
+  ctx: any,
+  user: Doc<"accounts">,
+  result: ClearAllProgress
+): Promise<void> {
+  if (!result.inProgress) return;
+  await ctx.scheduler.runAfter(0, internal.expenses.clearAllForUserBatch, {
+    accountId: user._id,
+    cutoff: result.cutoff
+  });
+}
+
+// Compatibility endpoint for deployed clients that decode a null mutation result.
 export const clearAllForUser = mutation({
   args: {},
-  returns: clearAllProgressValidator,
+  returns: v.null(),
   handler: async (ctx) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    const result = await processClearAllExpenseStep(ctx, user, Date.now());
+    await scheduleExpenseClearContinuation(ctx, user, result);
+    return null;
+  }
+});
 
-    const ownedExpenseByDocumentId = new Map<string, Doc<"expenses">>();
-    let hasMoreOwnedExpenses = false;
-    const addOwnedExpenses = (expenses: Doc<"expenses">[]) => {
-      for (const expense of expenses) {
-        if (ownedExpenseByDocumentId.size >= CLEAR_ALL_EXPENSE_BATCH_SIZE) {
-          hasMoreOwnedExpenses = true;
-          break;
-        }
-        ownedExpenseByDocumentId.set(String(expense._id), expense);
-      }
-    };
-    addOwnedExpenses(
-      await ctx.db
-        .query("expenses")
-        .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-        .take(CLEAR_ALL_EXPENSE_BATCH_SIZE + 1)
-    );
-    addOwnedExpenses(
-      await ctx.db
-        .query("expenses")
-        .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
-        .take(CLEAR_ALL_EXPENSE_BATCH_SIZE + 1)
-    );
-    addOwnedExpenses(
-      await ctx.db
-        .query("expenses")
-        .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
-        .take(CLEAR_ALL_EXPENSE_BATCH_SIZE + 1)
-    );
+export const clearAllForUserV2 = mutation({
+  args: { cutoff: v.optional(v.number()) },
+  returns: clearAllProgressValidator,
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    return await processClearAllExpenseStep(ctx, user, args.cutoff ?? Date.now());
+  }
+});
 
-    const viewerExpenseRows = await ctx.db
-      .query("user_expenses")
-      .withIndex("by_user_id", (q) => q.eq("user_id", user.id))
-      .take(CLEAR_ALL_EXPENSE_BATCH_SIZE);
-
-    const sharedExpenses = new Map<string, Doc<"expenses">>();
-    const orphanVisibilityRows: Doc<"user_expenses">[] = [];
-    for (const row of viewerExpenseRows) {
-      let expense = row.expense_ref ? await ctx.db.get(row.expense_ref) : null;
-      if (!expense) {
-        const matches = await ctx.db
-          .query("expenses")
-          .withIndex("by_client_id", (query) => query.eq("id", row.expense_id))
-          .take(2);
-        if (matches.length > 1) throw new Error(`Expense ${row.expense_id} is not unique`);
-        expense = matches[0] ?? null;
-      }
-      if (!expense) {
-        orphanVisibilityRows.push(row);
-        continue;
-      }
-      if (!ownedExpenseByDocumentId.has(String(expense._id))) {
-        sharedExpenses.set(String(expense._id), expense);
-      }
-    }
-
-    const operations: ExpenseWriteOperation[] = Array.from(ownedExpenseByDocumentId.values()).map(
-      (expense) => ({
-        kind: "delete" as const,
-        expense
-      })
-    );
-    for (const expense of sharedExpenses.values()) {
-      operations.push({
-        kind: "visibility" as const,
-        expense,
-        viewerAccountIds: await resolveExpenseViewerAccountIds(ctx, expense, new Set([user.id]))
-      });
-    }
-    await applyExpenseWriteBatch(ctx, operations);
-    for (const row of orphanVisibilityRows) await ctx.db.delete(row._id);
-
-    return {
-      inProgress: hasMoreOwnedExpenses || viewerExpenseRows.length === CLEAR_ALL_EXPENSE_BATCH_SIZE,
-      processed: operations.length + orphanVisibilityRows.length
-    };
+export const clearAllForUserBatch = internalMutation({
+  args: { accountId: v.id("accounts"), cutoff: v.number() },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.accountId);
+    if (!user) return null;
+    const result = await processClearAllExpenseStep(ctx, user, args.cutoff);
+    await scheduleExpenseClearContinuation(ctx, user, result);
+    return null;
   }
 });
 

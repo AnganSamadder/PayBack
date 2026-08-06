@@ -1,4 +1,5 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { Doc } from "./_generated/dataModel";
 import { getConvexSize, type Value, v } from "convex/values";
@@ -7,6 +8,7 @@ import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./a
 import { normalizeMemberId } from "./identity";
 import { assertAccountCanAcceptChanges, isAccountDeletionFenced } from "./helpers";
 import {
+  deleteGroupVisibilityRowWithRevision,
   deleteGroupWithVisibility,
   GroupVisibilityWriteBatch,
   insertGroupWithVisibility,
@@ -44,11 +46,7 @@ async function getCurrentUser(ctx: any) {
 }
 
 function isGroupOwner(group: any, user: any): boolean {
-  return (
-    group.owner_id === user._id ||
-    group.owner_account_id === user.id ||
-    group.owner_email === user.email
-  );
+  return group.owner_id === user._id;
 }
 
 async function deleteGroupWithExpenses(
@@ -105,6 +103,64 @@ async function deleteGroupWithExpenses(
   } else {
     await deleteGroupWithVisibility(ctx, group._id);
   }
+}
+
+async function processGroupCascadeStep(ctx: any, group: Doc<"groups">): Promise<boolean> {
+  const byGroupRef = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_ref", (query: any) => query.eq("group_ref", group._id))
+    .first();
+  if (byGroupRef) {
+    await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense: byGroupRef }]);
+    return false;
+  }
+
+  const byGroupId = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_id", (query: any) => query.eq("group_id", group.id))
+    .first();
+  if (byGroupId) {
+    await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense: byGroupId }]);
+    return false;
+  }
+
+  await deleteGroupWithVisibility(ctx, group._id);
+  return true;
+}
+
+async function scheduleGroupCascade(
+  ctx: any,
+  group: Doc<"groups">,
+  ownerAccountId: Doc<"accounts">["_id"]
+): Promise<void> {
+  await ctx.scheduler.runAfter(0, internal.groups.deleteGroupCascadeBatch, {
+    groupId: group._id,
+    ownerAccountId
+  });
+}
+
+const MAX_SYNCHRONOUS_GROUP_CASCADE_EXPENSES = 8;
+const MAX_SYNCHRONOUS_GROUP_CASCADES = 8;
+
+async function boundedGroupExpenseCount(
+  ctx: any,
+  group: Doc<"groups">,
+  limit: number
+): Promise<number | null> {
+  const expenses = new Set<string>();
+  const byGroupRef = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_ref", (query: any) => query.eq("group_ref", group._id))
+    .take(limit + 1);
+  if (byGroupRef.length > limit) return null;
+  for (const expense of byGroupRef) expenses.add(String(expense._id));
+
+  const byGroupId = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_id", (query: any) => query.eq("group_id", group.id))
+    .take(limit + 1);
+  for (const expense of byGroupId) expenses.add(String(expense._id));
+  return expenses.size <= limit ? expenses.size : null;
 }
 
 const MAX_GROUP_MEMBERS = 64;
@@ -454,7 +510,15 @@ export const deleteGroup = mutation({
       throw new Error("Not authorized to delete this group");
     }
 
-    await deleteGroupWithExpenses(ctx, group);
+    if (
+      (await boundedGroupExpenseCount(ctx, group, MAX_SYNCHRONOUS_GROUP_CASCADE_EXPENSES)) !== null
+    ) {
+      await deleteGroupWithExpenses(ctx, group);
+    } else {
+      if (!(await processGroupCascadeStep(ctx, group))) {
+        await scheduleGroupCascade(ctx, group, user._id);
+      }
+    }
   }
 });
 
@@ -469,7 +533,8 @@ export const deleteGroups = mutation({
     }
     const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     const expenseOperations: ExpenseWriteOperation[] = [];
-
+    let synchronousGroups = 0;
+    let synchronousExpenses = 0;
     for (const id of new Set(args.ids)) {
       const group = await ctx.db
         .query("groups")
@@ -483,76 +548,157 @@ export const deleteGroups = mutation({
         continue;
       }
 
+      const remainingExpenseCapacity = MAX_SYNCHRONOUS_GROUP_CASCADE_EXPENSES - synchronousExpenses;
+      const expenseCount =
+        synchronousGroups < MAX_SYNCHRONOUS_GROUP_CASCADES && remainingExpenseCapacity >= 0
+          ? await boundedGroupExpenseCount(ctx, group, remainingExpenseCapacity)
+          : null;
+      if (expenseCount === null) {
+        await scheduleGroupCascade(ctx, group, user._id);
+        continue;
+      }
       await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch, expenseOperations);
+      synchronousGroups += 1;
+      synchronousExpenses += expenseCount;
     }
     await applyExpenseWriteBatch(ctx, expenseOperations);
     await groupVisibilityBatch.flush();
   }
 });
 
-// Clear all groups in bounded, retryable units.
-const clearAllProgressValidator = v.object({
-  inProgress: v.boolean(),
-  processed: v.number()
+export const deleteGroupCascadeBatch = internalMutation({
+  args: { groupId: v.id("groups"), ownerAccountId: v.id("accounts") },
+  handler: async (ctx, args) => {
+    const group = await ctx.db.get(args.groupId);
+    if (!group) return null;
+    if (group.owner_id !== args.ownerAccountId) {
+      throw new Error("Group ownership changed during deletion");
+    }
+    if (!(await processGroupCascadeStep(ctx, group))) {
+      await scheduleGroupCascade(ctx, group, args.ownerAccountId);
+    }
+    return null;
+  }
 });
 
+// Clear all groups in durable, bounded units.
+const clearAllProgressValidator = v.object({
+  inProgress: v.boolean(),
+  processed: v.number(),
+  cutoff: v.number()
+});
+
+type ClearAllProgress = {
+  inProgress: boolean;
+  processed: number;
+  cutoff: number;
+};
+
+async function clearAllMembershipIds(ctx: any, user: Doc<"accounts">): Promise<Set<string>> {
+  const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+    ctx.db,
+    user.member_id ?? user.id
+  );
+  const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+  return new Set([
+    normalizeMemberId(canonicalMemberId),
+    ...equivalentIds.map(normalizeMemberId),
+    ...(user.alias_member_ids ?? []).map(normalizeMemberId)
+  ]);
+}
+
+async function processClearAllGroupStep(
+  ctx: any,
+  user: Doc<"accounts">,
+  cutoff: number
+): Promise<ClearAllProgress> {
+  const ownedGroup = await ctx.db
+    .query("groups")
+    .withIndex("by_owner_id", (q: any) => q.eq("owner_id", user._id))
+    .filter((q: any) => q.lte(q.field("created_at"), cutoff))
+    .first();
+  if (ownedGroup) {
+    await processGroupCascadeStep(ctx, ownedGroup);
+    return { inProgress: true, processed: 1, cutoff };
+  }
+
+  const visibilityRow = await ctx.db
+    .query("group_visibility")
+    .withIndex("by_account_id_and_group_updated_at", (q: any) => q.eq("account_id", user._id))
+    .filter((q: any) => q.lte(q.field("created_at"), cutoff))
+    .first();
+  if (!visibilityRow) return { inProgress: false, processed: 0, cutoff };
+
+  const group = await ctx.db.get(visibilityRow.group_id);
+  if (!group) {
+    await deleteGroupVisibilityRowWithRevision(ctx, visibilityRow);
+    return { inProgress: true, processed: 1, cutoff };
+  }
+  if (group.owner_id === user._id) {
+    return { inProgress: false, processed: 0, cutoff };
+  }
+
+  const membershipIds = await clearAllMembershipIds(ctx, user);
+  const remainingMembers = group.members.filter(
+    (member) => !membershipIds.has(normalizeMemberId(member.id))
+  );
+  if (remainingMembers.length === group.members.length) {
+    await deleteGroupVisibilityRowWithRevision(ctx, visibilityRow);
+    return { inProgress: true, processed: 1, cutoff };
+  }
+
+  await patchGroupWithVisibility(ctx, group._id, {
+    members: remainingMembers,
+    updated_at: Date.now()
+  });
+  return { inProgress: true, processed: 1, cutoff };
+}
+
+async function scheduleGroupClearContinuation(
+  ctx: any,
+  user: Doc<"accounts">,
+  result: ClearAllProgress
+): Promise<void> {
+  if (!result.inProgress) return;
+  await ctx.scheduler.runAfter(0, internal.groups.clearAllForUserBatch, {
+    accountId: user._id,
+    cutoff: result.cutoff
+  });
+}
+
+// Compatibility endpoint for deployed clients that decode a null mutation result.
 export const clearAllForUser = mutation({
   args: {},
-  returns: clearAllProgressValidator,
+  returns: v.null(),
   handler: async (ctx) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
     await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
+    const result = await processClearAllGroupStep(ctx, user, Date.now());
+    await scheduleGroupClearContinuation(ctx, user, result);
+    return null;
+  }
+});
 
-    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-      ctx.db,
-      user.member_id ?? user.id
-    );
-    const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-    const membershipIds = new Set([
-      normalizeMemberId(canonicalMemberId),
-      ...equivalentIds.map(normalizeMemberId),
-      ...(user.alias_member_ids ?? []).map(normalizeMemberId)
-    ]);
+export const clearAllForUserV2 = mutation({
+  args: { cutoff: v.optional(v.number()) },
+  returns: clearAllProgressValidator,
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
+    return await processClearAllGroupStep(ctx, user, args.cutoff ?? Date.now());
+  }
+});
 
-    const ownedGroup = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-      .first();
-    if (ownedGroup) {
-      await deleteGroupWithExpenses(ctx, ownedGroup);
-      return { inProgress: true, processed: 1 };
-    }
-
-    const visibilityRow = await ctx.db
-      .query("group_visibility")
-      .withIndex("by_account_id_and_group_updated_at", (q) => q.eq("account_id", user._id))
-      .first();
-    if (!visibilityRow) return { inProgress: false, processed: 0 };
-
-    const group = await ctx.db.get(visibilityRow.group_id);
-    if (!group) {
-      await ctx.db.delete(visibilityRow._id);
-      return { inProgress: true, processed: 1 };
-    }
-
-    const remainingMembers = group.members.filter(
-      (member) => !membershipIds.has(normalizeMemberId(member.id))
-    );
-    if (remainingMembers.length === group.members.length) {
-      await ctx.db.delete(visibilityRow._id);
-      return { inProgress: true, processed: 1 };
-    }
-    if (remainingMembers.length === 0) {
-      await deleteGroupWithExpenses(ctx, group);
-      return { inProgress: true, processed: 1 };
-    }
-
-    await patchGroupWithVisibility(ctx, group._id, {
-      members: remainingMembers,
-      updated_at: Date.now()
-    });
-    return { inProgress: true, processed: 1 };
+export const clearAllForUserBatch = internalMutation({
+  args: { accountId: v.id("accounts"), cutoff: v.number() },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.accountId);
+    if (!user) return null;
+    const result = await processClearAllGroupStep(ctx, user, args.cutoff);
+    await scheduleGroupClearContinuation(ctx, user, result);
+    return null;
   }
 });
 
@@ -626,8 +772,15 @@ export const leaveGroup = mutation({
       (m: any) => !membershipIds.has(normalizeMemberId(m.id))
     );
 
-    if (normalizedNewMembers.length === 0) {
-      await deleteGroupWithExpenses(ctx, group);
+    if (normalizedNewMembers.length === 0 && isGroupOwner(group, user)) {
+      if (
+        (await boundedGroupExpenseCount(ctx, group, MAX_SYNCHRONOUS_GROUP_CASCADE_EXPENSES)) !==
+        null
+      ) {
+        await deleteGroupWithExpenses(ctx, group);
+      } else if (!(await processGroupCascadeStep(ctx, group))) {
+        await scheduleGroupCascade(ctx, group, user._id);
+      }
     } else {
       await patchGroupWithVisibility(ctx, group._id, {
         members: normalizedNewMembers,
