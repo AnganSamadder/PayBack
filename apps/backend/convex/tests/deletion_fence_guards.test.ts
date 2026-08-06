@@ -403,9 +403,10 @@ test("expense read surfaces hide only expenses canonically attached to fenced gr
     groupId: activeGroupId
   });
   expect(activeExpensesPaginated.items.map((expense) => expense.id)).toEqual(visibleExpenseIds);
-  expect(
-    await owner.query(api.expenses.listByGroupPaginated, { groupId: fencedGroupId })
-  ).toEqual({ items: [], nextCursor: null });
+  expect(await owner.query(api.expenses.listByGroupPaginated, { groupId: fencedGroupId })).toEqual({
+    items: [],
+    nextCursor: null
+  });
 });
 
 test("settlement writes reject expenses canonically attached to a fenced group", async () => {

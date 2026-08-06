@@ -2325,10 +2325,7 @@ test("cleanup.deleteUnlinkedFriend cleans owner-scoped group-ref and missing-gro
   }
 });
 
-test.each([
-  ["Linked", true] as const,
-  ["Unlinked", false] as const
-])(
+test.each([["Linked", true] as const, ["Unlinked", false] as const])(
   "cleanup.delete%sFriend preserves an expense canonically attached to another group",
   async (_, isLinked) => {
     const t = convexTest(schema, modules);
