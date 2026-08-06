@@ -5,6 +5,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
   assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
   isAccountDeletionFenced,
   resolveActiveExpenseParticipantAccounts
 } from "./helpers";
@@ -67,17 +68,7 @@ async function resolveExpenseViewerAccountIds(
 }
 
 async function getCurrentUser(ctx: any) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) {
-    throw new Error("Unauthenticated");
-  }
-  const user = await ctx.db
-    .query("accounts")
-    .withIndex("by_email", (q) => q.eq("email", identity.email!))
-    .unique();
-  assertAccountCanAcceptChanges(user);
-
-  return { identity, user };
+  return await getCurrentUserOrThrow(ctx);
 }
 
 function isEligibleDirectFriendRecord(friend: any): boolean {
@@ -604,7 +595,9 @@ export const create = mutation({
     const buildOwnerFriendIdentityRows = async () => {
       const ownerFriendRows = await ctx.db
         .query("account_friends")
-        .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+        .withIndex("by_account_email", (q) =>
+          q.eq("account_email", user.email.trim().toLowerCase())
+        )
         .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
       if (ownerFriendRows.length > MAX_EXPENSE_WRITE_OPERATIONS) {
         throw new Error(
@@ -1012,7 +1005,7 @@ export const create = mutation({
       involved_member_ids: normalizedInvolved,
       splits: normalizedSplits,
       is_settled: isSettled,
-      owner_email: user.email,
+      owner_email: user.email.trim().toLowerCase(),
       owner_account_id: user.id,
       owner_id: user._id,
       participant_member_ids: normalizedParticipantMemberIds,

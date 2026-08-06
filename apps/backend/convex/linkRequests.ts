@@ -1,9 +1,13 @@
 import { query, mutation, type MutationCtx } from "./_generated/server";
 import { getConvexSize, type Value, v } from "convex/values";
 import { accountLinkingRows, chargeLinkingQueries, createLinkingReadBudget } from "./aliases";
-import { normalizeMemberId } from "./identity";
+import { findAccountsByEmailIdentity, normalizeMemberId } from "./identity";
 import { isGhostFriendIdentity } from "./friendLinkProvenance";
-import { assertAccountCanAcceptChanges } from "./helpers";
+import {
+  assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
+  resolveAuthenticatedAccount
+} from "./helpers";
 import {
   applyClaimForUser,
   assertBudgetedIdentityMaterializationReady,
@@ -130,16 +134,7 @@ async function collectCompatibilityLinkRequests<T extends { _id: unknown; create
 }
 
 async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequestArgs) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) throw new Error("Unauthenticated");
-
-  const user = await ctx.db
-    .query("accounts")
-    .withIndex("by_email", (q) => q.eq("email", identity.email!))
-    .unique();
-
-  if (!user) throw new Error("User not found");
-  assertAccountCanAcceptChanges(user);
+  const { user } = await getCurrentUserOrThrow(ctx);
 
   const recipientEmail = args.recipient_email.trim().toLowerCase();
   const targetMemberId = normalizeMemberId(args.target_member_id);
@@ -154,11 +149,11 @@ async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequ
     throw new Error("Friend name is required");
   }
 
-  const recipient = await ctx.db
-    .query("accounts")
-    .withIndex("by_email", (q) => q.eq("email", recipientEmail))
-    .unique();
-  assertAccountCanAcceptChanges(recipient);
+  const recipientMatches = await findAccountsByEmailIdentity(ctx.db, recipientEmail);
+  if (recipientMatches.length > 1) {
+    throw new Error("Recipient account identity requires maintenance");
+  }
+  assertAccountCanAcceptChanges(recipientMatches[0] ?? null);
 
   const existing = await ctx.db
     .query("link_requests")
@@ -240,7 +235,9 @@ export const listIncoming = query({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
 
-    const recipientEmail = identity.email!.trim().toLowerCase();
+    const { user } = await resolveAuthenticatedAccount(ctx);
+    if (!user) return [];
+    const recipientEmail = user.email.trim().toLowerCase();
     const now = Date.now();
     return await collectCompatibilityLinkRequests(
       (cursor, limit) =>
@@ -271,7 +268,9 @@ export const listIncomingPage = query({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return { page: [], continueCursor: "", isDone: true };
 
-    const recipientEmail = identity.email!.trim().toLowerCase();
+    const { user } = await resolveAuthenticatedAccount(ctx);
+    if (!user) return { page: [], continueCursor: "", isDone: true };
+    const recipientEmail = user.email.trim().toLowerCase();
     return await ctx.db
       .query("link_requests")
       .withIndex("by_recipient_email_and_created_at", (q) =>
@@ -291,11 +290,7 @@ export const listOutgoing = query({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
 
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
-
+    const { user } = await resolveAuthenticatedAccount(ctx);
     if (!user) return [];
 
     const now = Date.now();
@@ -326,10 +321,7 @@ export const listOutgoingPage = query({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return { page: [], continueCursor: "", isDone: true };
 
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!.trim().toLowerCase()))
-      .unique();
+    const { user } = await resolveAuthenticatedAccount(ctx);
     if (!user) return { page: [], continueCursor: "", isDone: true };
 
     return await ctx.db
@@ -367,18 +359,10 @@ export const accept = mutation({
   args: { id: v.string() },
   handler: async (ctx, args) => {
     const budget = createLinkingReadBudget();
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
 
     chargeLinkingQueries(budget, 1);
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
-    accountLinkingRows(budget, user ? [user] : []);
-
-    if (!user) throw new Error("User not found");
-    assertAccountCanAcceptChanges(user);
+    const { user } = await getCurrentUserOrThrow(ctx);
+    accountLinkingRows(budget, [user]);
 
     chargeLinkingQueries(budget, 1);
     const request = await ctx.db
@@ -390,7 +374,7 @@ export const accept = mutation({
     if (!request) throw new Error("Request not found");
 
     // Verify recipient
-    if (request.recipient_email.toLowerCase() !== identity.email!.toLowerCase()) {
+    if (request.recipient_email.trim().toLowerCase() !== user.email.trim().toLowerCase()) {
       throw new Error("Not authorized to accept this request");
     }
 
@@ -430,7 +414,7 @@ export const accept = mutation({
       {
         targetMemberId: request.target_member_id,
         targetFriendId,
-        creatorEmail: request.requester_email,
+        creatorEmail: request.requester_email.trim().toLowerCase(),
         creatorId: request.requester_id
       },
       budget
@@ -449,8 +433,7 @@ export const accept = mutation({
 export const decline = mutation({
   args: { id: v.string() },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    const { user } = await getCurrentUserOrThrow(ctx);
 
     const request = await ctx.db
       .query("link_requests")
@@ -460,7 +443,7 @@ export const decline = mutation({
     if (!request) throw new Error("Request not found");
 
     // Verify recipient
-    if (request.recipient_email.toLowerCase() !== identity.email!.toLowerCase()) {
+    if (request.recipient_email.trim().toLowerCase() !== user.email.trim().toLowerCase()) {
       throw new Error("Not authorized to decline this request");
     }
 
@@ -480,15 +463,7 @@ export const decline = mutation({
 export const cancel = mutation({
   args: { id: v.string() },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
-
-    if (!user) throw new Error("User not found");
+    const { user } = await getCurrentUserOrThrow(ctx);
 
     const request = await ctx.db
       .query("link_requests")

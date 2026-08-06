@@ -9,7 +9,12 @@ import {
   normalizeMemberId,
   normalizeMemberIds
 } from "./identity";
-import { assertAccountCanAcceptChanges, isAccountDeletionFenced } from "./helpers";
+import {
+  assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
+  isAccountDeletionFenced,
+  resolveAuthenticatedAccount
+} from "./helpers";
 import {
   isGhostFriendIdentity,
   ProvenFriendLink,
@@ -200,18 +205,16 @@ export const list = query({
     };
 
     chargeFriendListQueries(budget, 1);
-    const user = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
+    const { user } = await resolveAuthenticatedAccount(ctx);
     accountFriendListRows(budget, user ? [user] : []);
 
     if (!user) return [];
+    const accountEmail = user.email.trim().toLowerCase();
 
     const friends = await collectFriendListRows(budget, async (cursor, limit) =>
       ctx.db
         .query("account_friends")
-        .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
+        .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
         .order("asc")
         .paginate({ cursor, numItems: limit })
     );
@@ -453,15 +456,8 @@ export const upsert = mutation({
     status: v.optional(v.string())
   },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-    const accountEmail = identity.email!.trim().toLowerCase();
-    const caller = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", accountEmail))
-      .unique();
-    if (!caller) throw new Error("User not found");
-    assertAccountCanAcceptChanges(caller);
+    const { user: caller } = await getCurrentUserOrThrow(ctx);
+    const accountEmail = caller.email.trim().toLowerCase();
     const normalizedMemberId = normalizeMemberId(args.member_id);
 
     let targetAccount = args.linked_account_id
@@ -589,10 +585,9 @@ export const upsert = mutation({
 export const clearAllForUser = mutation({
   args: {},
   handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    const { user } = await getCurrentUserOrThrow(ctx);
 
-    await deleteFriendBatch(ctx, identity.email!.trim().toLowerCase(), Date.now(), true);
+    await deleteFriendBatch(ctx, user.email.trim().toLowerCase(), Date.now(), true);
     return null;
   }
 });
@@ -605,11 +600,10 @@ export const clearAllForUserV2 = mutation({
     cutoff: v.number()
   }),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity?.email) throw new Error("Unauthenticated");
+    const { user } = await getCurrentUserOrThrow(ctx);
     return await deleteFriendBatch(
       ctx,
-      identity.email.trim().toLowerCase(),
+      user.email.trim().toLowerCase(),
       args.cutoff ?? Date.now(),
       false
     );

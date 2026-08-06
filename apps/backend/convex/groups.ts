@@ -6,7 +6,11 @@ import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { normalizeMemberId } from "./identity";
-import { assertAccountCanAcceptChanges, isAccountDeletionFenced } from "./helpers";
+import {
+  assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
+  isAccountDeletionFenced
+} from "./helpers";
 import {
   deleteGroupVisibilityRowWithRevision,
   deleteGroupWithVisibility,
@@ -32,17 +36,7 @@ import { GROUP_VISIBILITY_MATERIALIZATION_KEY } from "./migrations/groupVisibili
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) {
-    throw new Error("Unauthenticated");
-  }
-  const user = await ctx.db
-    .query("accounts")
-    .withIndex("by_email", (q: any) => q.eq("email", identity.email!))
-    .unique();
-  assertAccountCanAcceptChanges(user);
-
-  return { identity, user };
+  return await getCurrentUserOrThrow(ctx);
 }
 
 function isGroupOwner(group: any, user: any): boolean {
@@ -342,7 +336,7 @@ export const create = mutation({
       id: args.id || crypto.randomUUID(),
       name: args.name,
       members,
-      owner_email: user.email,
+      owner_email: user.email.trim().toLowerCase(),
       owner_account_id: user.id,
       owner_id: user._id,
       is_direct: args.is_direct ?? false,

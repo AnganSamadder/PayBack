@@ -14,6 +14,7 @@ import {
   type LinkingReadBudget
 } from "./aliases";
 import {
+  assertMemberIdentityNotCleanupFenced,
   deterministicLinkingError,
   IDENTITY_MATERIALIZATION_KEY,
   LINKING_CONTRACT_VERSION,
@@ -24,7 +25,11 @@ import {
   normalizeMemberIds
 } from "./identity";
 import { isGhostFriendIdentity } from "./friendLinkProvenance";
-import { assertAccountCanAcceptChanges, isAccountDeletionFenced } from "./helpers";
+import {
+  assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
+  isAccountDeletionFenced
+} from "./helpers";
 
 // Helper to get current authenticated user
 async function getCurrentUser(ctx: any, budget?: LinkingReadBudget) {
@@ -33,12 +38,8 @@ async function getCurrentUser(ctx: any, budget?: LinkingReadBudget) {
     throw new Error("Unauthenticated");
   }
   if (budget) chargeLinkingQueries(budget, 1);
-  const user = await ctx.db
-    .query("accounts")
-    .withIndex("by_email", (q) => q.eq("email", identity.email!))
-    .unique();
+  const { user } = await getCurrentUserOrThrow(ctx);
   if (budget) accountLinkingRows(budget, user ? [user] : []);
-  assertAccountCanAcceptChanges(user);
 
   return { identity, user };
 }
@@ -295,6 +296,11 @@ async function prepareBudgetedAliasInsert(
   }
   if (!normalizedAlias || normalizedAlias === canonicalMemberId) return null;
 
+  await assertMemberIdentityNotCleanupFenced(ctx, normalizedAlias, (rows) => {
+    chargeLinkingQueries(budget, 1);
+    accountLinkingRows(budget, rows);
+  });
+
   chargeLinkingQueries(budget, 1);
   const canonicalShadows = await ctx.db
     .query("accounts")
@@ -396,7 +402,7 @@ export const create = mutation({
     const tokenId = await ctx.db.insert("invite_tokens", {
       id: args.id,
       creator_id: user.id,
-      creator_email: user.email,
+      creator_email: user.email.trim().toLowerCase(),
       target_member_id: normalizedTargetMemberId,
       target_friend_id: targetFriend._id,
       target_member_name: args.target_member_name,
@@ -770,7 +776,7 @@ export async function prepareClaimForUser(
           has_linked_account: true,
           link_state: "linked",
           linked_account_id: user.id,
-          linked_account_email: user.email,
+          linked_account_email: user.email.trim().toLowerCase(),
           linked_member_id: userCanonicalMemberId,
           name: user.display_name ?? user.email ?? "Unknown",
           updated_at: now
@@ -789,7 +795,7 @@ export async function prepareClaimForUser(
         has_linked_account: true,
         link_state: "linked",
         linked_account_id: user.id,
-        linked_account_email: user.email,
+        linked_account_email: user.email.trim().toLowerCase(),
         linked_member_id: userCanonicalMemberId,
         name: user.display_name ?? user.email ?? "Unknown",
         first_name: user.first_name,
@@ -807,7 +813,7 @@ export async function prepareClaimForUser(
         has_linked_account: true,
         link_state: "linked",
         linked_account_id: user.id,
-        linked_account_email: user.email,
+        linked_account_email: user.email.trim().toLowerCase(),
         linked_member_id: userCanonicalMemberId,
         name: user.display_name ?? user.email ?? "Unknown",
         first_name: user.first_name,
@@ -843,7 +849,7 @@ export async function prepareClaimForUser(
             has_linked_account: true,
             link_state: "linked",
             linked_account_id: creatorAccount.id,
-            linked_account_email: creatorAccount.email,
+            linked_account_email: creatorAccount.email.trim().toLowerCase(),
             linked_member_id: creatorMemberId,
             name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
             first_name: creatorAccount.first_name,
@@ -860,7 +866,7 @@ export async function prepareClaimForUser(
             has_linked_account: true,
             link_state: "linked",
             linked_account_id: creatorAccount.id,
-            linked_account_email: creatorAccount.email,
+            linked_account_email: creatorAccount.email.trim().toLowerCase(),
             linked_member_id: creatorMemberId,
             name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
             first_name: creatorAccount.first_name,
@@ -874,7 +880,7 @@ export async function prepareClaimForUser(
       friendWrites.push({
         kind: "insert",
         value: {
-          account_email: user.email,
+          account_email: user.email.trim().toLowerCase(),
           member_id: creatorMemberId,
           name: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
           first_name: creatorAccount.first_name,
@@ -882,7 +888,7 @@ export async function prepareClaimForUser(
           has_linked_account: true,
           link_state: "linked",
           linked_account_id: creatorAccount.id,
-          linked_account_email: creatorAccount.email,
+          linked_account_email: creatorAccount.email.trim().toLowerCase(),
           linked_member_id: creatorMemberId,
           profile_image_url: creatorAccount.profile_image_url,
           profile_avatar_color: creatorAccount.profile_avatar_color ?? getRandomAvatarColor(),
@@ -906,7 +912,7 @@ export async function prepareClaimForUser(
       alias_member_ids: updatedAliases,
       linked_member_id: userCanonicalMemberId,
       linked_account_id: user.id,
-      linked_account_email: user.email
+      linked_account_email: user.email.trim().toLowerCase()
     }
   };
 }

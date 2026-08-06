@@ -9,19 +9,28 @@ import {
   MAX_EXPENSE_WRITE_OPERATIONS
 } from "./expenseWrites";
 
-export async function getCurrentUserOrThrow(ctx: QueryCtx | MutationCtx) {
+export async function resolveAuthenticatedAccount(ctx: QueryCtx | MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) {
     throw new Error("Unauthenticated");
   }
-  const user = await ctx.db
+  const users = await ctx.db
     .query("accounts")
-    .withIndex("by_email", (q) => q.eq("email", identity.email!))
-    .unique();
+    .withIndex("by_auth_id", (q) => q.eq("id", identity.subject))
+    .take(2);
 
-  if (!user) {
-    throw new Error("User not found");
+  if (users.length > 1) throw new Error("Authenticated account identity is ambiguous");
+  const user = users[0];
+  const identityEmail = identity.email?.trim().toLowerCase();
+  if (!identityEmail || (user && user.email.trim().toLowerCase() !== identityEmail)) {
+    throw new Error("Authenticated identity does not match the account email");
   }
+  return { user: user ?? null, identity };
+}
+
+export async function getCurrentUserOrThrow(ctx: QueryCtx | MutationCtx) {
+  const { user, identity } = await resolveAuthenticatedAccount(ctx);
+  if (!user) throw new Error("User not found");
   assertAccountCanAcceptChanges(user);
 
   return { user, identity };

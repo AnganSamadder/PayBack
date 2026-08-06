@@ -7,6 +7,7 @@ import { resolveActiveExpenseParticipantAccounts } from "./helpers";
 import { applyExpenseWriteBatch, type ExpenseWriteOperation } from "./expenseWrites";
 import {
   assertIdentityMaterializationReady,
+  assertMemberIdentityNotCleanupFenced,
   applyPreflightedAccountAliasMaterialization,
   ensureAccountAliasMaterialization,
   findAccountByAuthIdOrDocId,
@@ -457,6 +458,7 @@ export const fixLinkedMemberIds = internalMutation({
         );
 
         if (matchingMember) {
+          await assertMemberIdentityNotCleanupFenced(ctx, matchingMember.id);
           await ctx.db.patch(account._id, {
             member_id: matchingMember.id,
             updated_at: Date.now()
@@ -669,6 +671,7 @@ export const setLinkedMemberId = internalMutation({
 
     const previousId = user.member_id;
 
+    await assertMemberIdentityNotCleanupFenced(ctx, args.linked_member_id);
     await ctx.db.patch(user._id, {
       member_id: args.linked_member_id,
       updated_at: Date.now()
@@ -789,7 +792,7 @@ export const backfillParticipantEmailsAdvanced = internalMutation({
               ...p,
               name: account.display_name,
               linked_account_id: account.id,
-              linked_account_email: account.email
+              linked_account_email: account.email.trim().toLowerCase()
             };
           }
           return p;

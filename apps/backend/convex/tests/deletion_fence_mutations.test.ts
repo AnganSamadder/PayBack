@@ -30,6 +30,7 @@ async function seedAccount(
   return await ctx.db.insert("accounts", {
     id: values.id,
     email: values.email,
+    normalized_email: values.email.trim().toLowerCase(),
     display_name: values.id,
     member_id: values.memberId,
     alias_member_ids: values.aliases,
@@ -201,42 +202,45 @@ test("invite preview and claim reject a deleting creator", async () => {
   expect(token?.claimed_by).toBeUndefined();
 });
 
-test("link request creation rejects a deleting recipient", async () => {
-  const t = convexTest(schema, modules);
-  await t.run(async (ctx) => {
-    await seedAccount(ctx, {
-      id: "owner_auth",
-      email: "owner@test.com",
-      memberId: "owner_member"
+test.each(["deleting", "deleted"] as const)(
+  "link request creation rejects a mixed-case legacy recipient that is %s",
+  async (status) => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await seedAccount(ctx, {
+        id: "owner_auth",
+        email: "owner@test.com",
+        memberId: "owner_member"
+      });
+      await seedAccount(ctx, {
+        id: "recipient_auth",
+        email: "Recipient@Test.COM",
+        memberId: "recipient_member",
+        status
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@test.com",
+        member_id: "target_member",
+        name: "Target",
+        profile_avatar_color: "#123456",
+        has_linked_account: false,
+        link_state: "unlinked",
+        updated_at: Date.now()
+      });
     });
-    await seedAccount(ctx, {
-      id: "recipient_auth",
-      email: "recipient@test.com",
-      memberId: "recipient_member",
-      status: "deleting"
-    });
-    await ctx.db.insert("account_friends", {
-      account_email: "owner@test.com",
-      member_id: "target_member",
-      name: "Target",
-      profile_avatar_color: "#123456",
-      has_linked_account: false,
-      link_state: "unlinked",
-      updated_at: Date.now()
-    });
-  });
 
-  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
-  await expect(
-    owner.mutation(api.linkRequests.createV2, {
-      id: "deleting_recipient_request",
-      recipient_email: "recipient@test.com",
-      target_member_id: "target_member",
-      target_member_name: "Target"
-    })
-  ).rejects.toThrow("deleted");
-  expect(await t.run(async (ctx) => ctx.db.query("link_requests").collect())).toEqual([]);
-});
+    const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+    await expect(
+      owner.mutation(api.linkRequests.createV2, {
+        id: `${status}_recipient_request`,
+        recipient_email: "recipient@test.com",
+        target_member_id: "target_member",
+        target_member_name: "Target"
+      })
+    ).rejects.toThrow("deleted");
+    expect(await t.run(async (ctx) => ctx.db.query("link_requests").collect())).toEqual([]);
+  }
+);
 
 test("group create rejects a new deleted alias identity", async () => {
   const t = convexTest(schema, modules);
