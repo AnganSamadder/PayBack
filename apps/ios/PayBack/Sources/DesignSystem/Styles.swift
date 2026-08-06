@@ -552,6 +552,7 @@ struct SmartCurrencyField: View {
     var font: Font = .system(size: 34, weight: .bold, design: .rounded)
     var alignment: Alignment = .trailing
 
+    var onNext: (() -> Void)? = nil
     var externalFocus: Binding<Bool>? = nil
 
     @State private var inputBuffer: String = ""
@@ -566,6 +567,28 @@ struct SmartCurrencyField: View {
                 .opacity(0.01)
                 .onChange(of: inputBuffer) { _, newVal in
                     handleInput(newVal)
+                }
+                .toolbar {
+                    if internalFocus {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            if let onNext {
+                                Button("Done") {
+                                    internalFocus = false
+                                }
+
+                                Spacer()
+
+                                Button("Next", action: onNext)
+                                    .fontWeight(.semibold)
+                            } else {
+                                Spacer()
+
+                                Button("Done") {
+                                    internalFocus = false
+                                }
+                            }
+                        }
+                    }
                 }
 
             // Visible display

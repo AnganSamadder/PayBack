@@ -131,7 +131,6 @@ struct AddExpenseView: View {
                 .offset(y: dragOffset)
                 .ignoresSafeArea()
                 .compositingGroup()
-                .dismissKeyboardOnTap()
                 .onAppear {
                     resolveInitialPayerIfNeeded()
                 }
@@ -934,6 +933,7 @@ private struct SubexpenseRow: View {
                     amount: $subexpense.amount,
                     currency: currency,
                     font: .system(size: 18, weight: .medium, design: .rounded),
+                    onNext: onNext,
                     externalFocus: Binding(
                         get: { focusedId == subexpense.id },
                         set: { isFocused in
@@ -965,22 +965,6 @@ private struct SubexpenseRow: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color(uiColor: .secondarySystemBackground))
             )
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                if isAmountFocused {
-                    Button("Done") {
-                        focusedId = nil
-                    }
-
-                    Spacer()
-
-                    Button("Next") {
-                        onNext()
-                    }
-                    .fontWeight(.semibold)
-                }
-            }
         }
         .onChange(of: focusedId) { oldValue, newValue in
             if oldValue == subexpense.id, newValue != subexpense.id {
@@ -1450,7 +1434,6 @@ private struct SplitDetailView: View {
                 .accessibilityLabel("Done")
             }
         }
-        .dismissKeyboardOnTap()
     }
 
     private var participants: [GroupMember] {
