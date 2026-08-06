@@ -10,6 +10,25 @@ import XCTest
 ///
 /// Related Requirements: R2
 final class SettlementLogicTests: XCTestCase {
+    func testGroupSettleModalKeepsFailedBatchVisibleWithActionableError() throws {
+        let payBackDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = payBackDirectory
+            .appendingPathComponent("Sources/Features/Groups/GroupDetailView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let settlementFunction = try XCTUnwrap(
+            source.components(separatedBy: "private func settleSelectedExpenses() async {").last?
+                .components(separatedBy: "// MARK: - AddGroupMemberSheet").first
+        )
+
+        XCTAssertTrue(source.contains(".alert(\"Unable to Settle Expenses\""))
+        XCTAssertTrue(settlementFunction.contains("settlementErrorMessage ="))
+        XCTAssertTrue(settlementFunction.contains("return"))
+        XCTAssertFalse(settlementFunction.contains("Continue settling remaining expenses"))
+    }
+
     func testTotalToSettleUsesCurrentUsersUnsettledShareInsteadOfExpenseTotal() {
         let me = UUID()
         let other = UUID()

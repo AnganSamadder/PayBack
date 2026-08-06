@@ -875,6 +875,8 @@ private struct SettleModal: View {
 
     @State private var selectedExpenseIds: Set<UUID> = []
     @State private var showConfirmationPage = false
+    @State private var settlementErrorMessage: String?
+    @State private var isSettling = false
 
     var body: some View {
         NavigationStack {
@@ -913,6 +915,7 @@ private struct SettleModal: View {
                         dismiss()
                     }
                     .foregroundStyle(AppTheme.navigationHeaderAccent)
+                    .disabled(isSettling)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -922,6 +925,7 @@ private struct SettleModal: View {
                         }
                         .foregroundStyle(AppTheme.brand)
                         .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .disabled(isSettling)
                     }
                 }
             }
@@ -935,6 +939,18 @@ private struct SettleModal: View {
                     onCancel: { showConfirmationPage = false }
                 )
                 .environmentObject(store)
+            }
+            .alert("Unable to Settle Expenses", isPresented: Binding(
+                get: { settlementErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { settlementErrorMessage = nil }
+                }
+            )) {
+                Button("OK", role: .cancel) {
+                    settlementErrorMessage = nil
+                }
+            } message: {
+                Text(settlementErrorMessage ?? "Please try again.")
             }
         }
     }
@@ -1132,18 +1148,41 @@ private struct SettleModal: View {
 
     @MainActor
     private func settleSelectedExpenses() async {
-        for expenseId in selectedExpenseIds {
-            guard let expense = unsettledExpenses.first(where: { $0.id == expenseId }),
-                  store.canSettleExpenseForSelf(expense) else { continue }
+        guard !isSettling else { return }
+        let expensesToSettle = selectedExpenses.sorted { $0.id.uuidString < $1.id.uuidString }
+        guard !expensesToSettle.isEmpty else {
+            showConfirmationPage = false
+            return
+        }
+
+        isSettling = true
+        var settledCount = 0
+        for expense in expensesToSettle {
+            guard store.canSettleExpenseForSelf(expense) else {
+                isSettling = false
+                showConfirmationPage = false
+                settlementErrorMessage = "One or more expenses changed before they could be settled. Review the remaining selections and try again."
+                return
+            }
             do {
                 try await store.settleExpenseForCurrentUser(expense)
+                settledCount += 1
+                selectedExpenseIds.remove(expense.id)
             } catch {
-                #if DEBUG
-                print("⚠️ Settlement failed for expense \(expenseId): \(error.localizedDescription)")
-                #endif
-                // Continue settling remaining expenses even if one fails
+                isSettling = false
+                showConfirmationPage = false
+                let reason = error.userFacingMessage(
+                    fallback: "The cloud update failed. Check your connection and try again."
+                )
+                if settledCount == 0 {
+                    settlementErrorMessage = "No expenses were settled. \(reason)"
+                } else {
+                    settlementErrorMessage = "Settled \(settledCount) of \(expensesToSettle.count) expenses. The remaining expenses are still selected. \(reason)"
+                }
+                return
             }
         }
+        isSettling = false
         selectedExpenseIds.removeAll()
         dismiss()
     }
