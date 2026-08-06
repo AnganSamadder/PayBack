@@ -760,6 +760,7 @@ export const create = mutation({
         callerEquivalentIds
       );
       group = groupAccess.group;
+      if (group.deletion_token) throw new Error("Group deletion is in progress");
       callerEquivalentIds = groupAccess.callerEquivalentIds;
       assertAccountCanAcceptChanges(await ctx.db.get(group.owner_id as Id<"accounts">));
       contextKind =

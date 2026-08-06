@@ -284,6 +284,7 @@ export default defineSchema({
     owner_account_id: v.string(),
     owner_id: v.id("accounts"),
     is_direct: v.optional(v.boolean()),
+    deletion_token: v.optional(v.string()),
     created_at: v.number(),
     updated_at: v.number(),
     is_payback_generated_mock_data: v.optional(v.boolean())
