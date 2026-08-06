@@ -29,9 +29,15 @@ import {
   resolveAuthenticatedAccount
 } from "./helpers";
 import { GroupVisibilityWriteBatch } from "./groupVisibility";
-import { applyExpenseWriteBatch, MAX_EXPENSE_WRITE_OPERATIONS } from "./expenseWrites";
+import {
+  applyExpenseWriteBatch,
+  MAX_EXPENSE_VIEWERS,
+  MAX_EXPENSE_WRITE_OPERATIONS
+} from "./expenseWrites";
 import { inferOrphanCleanupMetadata, processOrphanCleanupStep } from "./orphanCleanup";
 import { beginHardDeleteAccount } from "./cleanup";
+import { requireSyncMaterializationReady } from "./syncState";
+import { GROUP_VISIBILITY_MATERIALIZATION_KEY } from "./migrations/groupVisibility";
 import {
   ensureCleanupEmailMaterializationScheduled,
   isCleanupEmailMaterializationReady,
@@ -1353,10 +1359,14 @@ export const updateProfile = mutation({
   args: {
     profile_avatar_color: v.optional(v.string()),
     profile_image_url: v.optional(v.string()),
-    storage_id: v.optional(v.id("_storage"))
+    storage_id: v.optional(v.id("_storage")),
+    expected_account_id: v.optional(v.string())
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    if (args.expected_account_id && args.expected_account_id !== user.id) {
+      throw new Error("Profile upload account changed before completion");
+    }
 
     const patches: any = { updated_at: Date.now() };
     if (args.profile_avatar_color !== undefined)
@@ -1459,6 +1469,13 @@ export const resolveLinkedAccountsForMemberIds = query({
   args: { memberIds: v.array(v.string()) },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    if (args.memberIds.length > MAX_EXPENSE_VIEWERS) {
+      throw new Error(
+        `Linked account resolution supports at most ${MAX_EXPENSE_VIEWERS} member IDs`
+      );
+    }
+    await assertIdentityMaterializationReady(ctx.db);
+    await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
     const accountEmail = user.normalized_email ?? user.email.trim().toLowerCase();
 
     // Build the caller's authorized member-id surface from:
@@ -1472,25 +1489,20 @@ export const resolveLinkedAccountsForMemberIds = query({
       authorizedMemberIds.add(normalizeMemberId(id));
     }
 
-    const ownerGroupsByAccount = await ctx.db
+    const ownerGroups = await ctx.db
       .query("groups")
-      .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
+      .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
       .collect();
-    const ownerGroupsByEmail = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", accountEmail))
+    const visibilityRows = await ctx.db
+      .query("group_visibility")
+      .withIndex("by_account_id_and_group_updated_at", (q) => q.eq("account_id", user._id))
       .collect();
-    const ownerGroupIdSet = new Set(ownerGroupsByAccount.map((group) => String(group._id)));
-    ownerGroupsByEmail.forEach((group) => ownerGroupIdSet.add(String(group._id)));
-
-    const allGroups = await ctx.db.query("groups").collect();
-    const visibleGroups = allGroups.filter((group) => {
-      if (ownerGroupIdSet.has(String(group._id))) return true;
-      return group.members.some((member: any) =>
-        authorizedMemberIds.has(normalizeMemberId(member.id))
-      );
-    });
-    for (const group of visibleGroups) {
+    const visibleGroups = new Map(ownerGroups.map((group) => [String(group._id), group]));
+    for (const visibilityRow of visibilityRows) {
+      const group = await ctx.db.get(visibilityRow.group_id);
+      if (group && !group.deletion_token) visibleGroups.set(String(group._id), group);
+    }
+    for (const group of visibleGroups.values()) {
       for (const member of group.members) {
         authorizedMemberIds.add(normalizeMemberId(member.id));
       }
@@ -1529,20 +1541,9 @@ export const resolveLinkedAccountsForMemberIds = query({
       email: string;
     }> = [];
 
-    const allAccounts = await ctx.db.query("accounts").collect();
-    const accountByCanonical = new Map<string, (typeof allAccounts)[number]>();
-    const accountByAlias = new Map<string, (typeof allAccounts)[number]>();
-    for (const account of allAccounts) {
-      if (account.member_id) {
-        accountByCanonical.set(normalizeMemberId(account.member_id), account);
-      }
-      for (const alias of account.alias_member_ids || []) {
-        accountByAlias.set(normalizeMemberId(alias), account);
-      }
-    }
-
     for (const memberId of args.memberIds) {
       const normalizedRequested = normalizeMemberId(memberId);
+      if (!normalizedRequested) continue;
       const canonicalId = normalizeMemberId(
         await resolveCanonicalMemberIdInternal(ctx.db, normalizedRequested)
       );
@@ -1556,7 +1557,7 @@ export const resolveLinkedAccountsForMemberIds = query({
         continue;
       }
 
-      const match = accountByCanonical.get(canonicalId) ?? accountByAlias.get(normalizedRequested);
+      const match = await findAccountByMemberId(ctx.db, normalizedRequested);
 
       if (match) {
         results.push({

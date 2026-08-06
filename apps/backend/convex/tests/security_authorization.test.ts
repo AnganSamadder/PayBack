@@ -614,6 +614,12 @@ describe("Security Authorization", () => {
         phase: "complete",
         updated_at: Date.now()
       });
+      await ctx.db.insert("sync_materialization_state", {
+        key: "group_visibility_v1",
+        status: "ready",
+        processed: 0,
+        updated_at: Date.now()
+      });
     });
 
     const callerCtx = t.withIdentity(identity("caller@test.com", "caller_id"));
@@ -1319,7 +1325,7 @@ describe("Security Authorization", () => {
     expect(victim).not.toBeNull();
   });
 
-  test("friend_requests uses auth account id for linked_account_id", async () => {
+  test("friend_requests acceptance uses auth account id for linked_account_id", async () => {
     const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
@@ -1341,6 +1347,10 @@ describe("Security Authorization", () => {
 
     const senderCtx = t.withIdentity(identity("sender@test.com", "sender_auth_id"));
     await senderCtx.mutation(api.friend_requests.send, { email: "recipient@test.com" });
+    const request = await t.run((ctx) => ctx.db.query("friend_requests").unique());
+    expect(request).not.toBeNull();
+    const recipientCtx = t.withIdentity(identity("recipient@test.com", "recipient_auth_id"));
+    await recipientCtx.mutation(api.friend_requests.accept, { requestId: request!._id });
 
     const senderFriendRows = await t.run(async (ctx) =>
       ctx.db

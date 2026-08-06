@@ -477,6 +477,70 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertFalse(sut.isSettlementPending(for: originalExpense.id))
     }
 
+    func testSettlementRealtimeAcknowledgementAcceptsConcurrentUntargetedChange() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let otherMemberId = UUID()
+        let originalExpense = settlementExpense(
+            description: "Dinner",
+            otherMemberId: otherMemberId,
+            settled: false
+        )
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.addExpense(originalExpense)
+
+        try await sut.settleExpenseForCurrentUser(originalExpense)
+
+        var concurrentRemoteExpense = sut.expenses[0]
+        concurrentRemoteExpense.splits = concurrentRemoteExpense.splits.map { split in
+            var updatedSplit = split
+            if split.memberId == otherMemberId {
+                updatedSplit.isSettled = true
+            }
+            return updatedSplit
+        }
+        concurrentRemoteExpense.isSettled = concurrentRemoteExpense.splits.allSatisfy(\.isSettled)
+
+        let merged = sut.mergedRemoteExpensesPreservingPendingWrites(
+            remoteExpenses: [concurrentRemoteExpense]
+        )
+
+        XCTAssertEqual(merged, [concurrentRemoteExpense])
+    }
+
+    func testUnsettlementRealtimeAcknowledgementAcceptsConcurrentUntargetedChange() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let otherMemberId = UUID()
+        let originalExpense = settlementExpense(
+            description: "Dinner",
+            otherMemberId: otherMemberId,
+            settled: true
+        )
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.addExpense(originalExpense)
+
+        try await sut.unsettleExpenseForCurrentUser(originalExpense)
+
+        var concurrentRemoteExpense = sut.expenses[0]
+        concurrentRemoteExpense.splits = concurrentRemoteExpense.splits.map { split in
+            var updatedSplit = split
+            if split.memberId == otherMemberId {
+                updatedSplit.isSettled = false
+            }
+            return updatedSplit
+        }
+        concurrentRemoteExpense.isSettled = concurrentRemoteExpense.splits.allSatisfy(\.isSettled)
+
+        let merged = sut.mergedRemoteExpensesPreservingPendingWrites(
+            remoteExpenses: [concurrentRemoteExpense]
+        )
+
+        XCTAssertEqual(merged, [concurrentRemoteExpense])
+    }
+
     func testOverlappingSettlementSuccessesKeepNewestResponse() async throws {
         sut.session = UserSession(
             account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
@@ -620,6 +684,25 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
                 ExpenseSplit(memberId: sut.currentUser.id, amount: 10),
                 ExpenseSplit(memberId: memberId, amount: 10)
             ]
+        )
+    }
+
+    private func settlementExpense(
+        description: String,
+        otherMemberId: UUID,
+        settled: Bool
+    ) -> Expense {
+        Expense(
+            groupId: UUID(),
+            description: description,
+            totalAmount: 20,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, otherMemberId],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 10, isSettled: settled),
+                ExpenseSplit(memberId: otherMemberId, amount: 10, isSettled: settled)
+            ],
+            isSettled: settled
         )
     }
 
