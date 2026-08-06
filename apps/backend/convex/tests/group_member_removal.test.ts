@@ -307,4 +307,85 @@ describe("groups.removeMemberAndExpenses", () => {
     expect(result.expense).toBeNull();
     expect(result.visibility).toHaveLength(0);
   });
+
+  test("preserves an expense whose canonical group reference points elsewhere", async () => {
+    const t = convexTest(schema, modules);
+    await seedGroupFixture(t);
+
+    await t.run(async (ctx) => {
+      const owner = await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (query) => query.eq("id", "owner_auth"))
+        .unique();
+      const sourceGroup = await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (query) => query.eq("id", "group_member_removal"))
+        .unique();
+      if (!owner || !sourceGroup) throw new Error("Fixture is incomplete");
+
+      const canonicalGroupId = await ctx.db.insert("groups", {
+        id: "canonical_group",
+        name: "Canonical group",
+        members: [
+          { id: "owner_member", name: "Owner" },
+          { id: "member_alias", name: "Member" }
+        ],
+        owner_email: owner.email,
+        owner_account_id: owner.id,
+        owner_id: owner._id,
+        created_at: 1,
+        updated_at: 1
+      });
+      await ctx.db.insert("expenses", {
+        id: "canonical_group_expense",
+        group_id: sourceGroup.id,
+        group_ref: canonicalGroupId,
+        description: "Canonical group expense",
+        date: 1,
+        total_amount: 20,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member", "member_alias"],
+        splits: [
+          {
+            id: "canonical_owner_split",
+            member_id: "owner_member",
+            amount: 10,
+            is_settled: false
+          },
+          {
+            id: "canonical_member_split",
+            member_id: "member_alias",
+            amount: 10,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: owner.email,
+        owner_account_id: owner.id,
+        owner_id: owner._id,
+        participant_member_ids: ["owner_member", "member_alias"],
+        participant_emails: [owner.email],
+        participants: [
+          { member_id: "owner_member", name: "Owner" },
+          { member_id: "member_alias", name: "Member" }
+        ],
+        created_at: 1,
+        updated_at: 1
+      });
+    });
+
+    const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+    await owner.mutation(api.groups.removeMemberAndExpenses, {
+      id: "group_member_removal",
+      memberId: "member_alias"
+    });
+
+    const expense = await t.run((ctx) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (query) => query.eq("id", "canonical_group_expense"))
+        .unique()
+    );
+    expect(expense).not.toBeNull();
+  });
 });

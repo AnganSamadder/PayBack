@@ -1836,6 +1836,7 @@ async function advanceSelfDeletion(
               .withIndex("by_group_id", (q) =>
                 q.eq("group_id", progress.current_group_client_id as string)
               )
+              .filter((q) => q.eq(q.field("group_ref"), undefined))
               .order("asc")
               .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE })
           : await ctx.db
@@ -2238,6 +2239,7 @@ async function advanceSelfDeletion(
           ? await ctx.db
               .query("expenses")
               .withIndex("by_group_id", (q) => q.eq("group_id", groupClientId))
+              .filter((q) => q.eq(q.field("group_ref"), undefined))
               .take(SELF_DELETE_BATCH_SIZE)
           : await ctx.db
               .query("expenses")
@@ -2287,6 +2289,7 @@ async function advanceSelfDeletion(
       const remainingByClientId = await ctx.db
         .query("expenses")
         .withIndex("by_group_id", (q) => q.eq("group_id", groupClientId))
+        .filter((q) => q.eq(q.field("group_ref"), undefined))
         .first();
       if (remainingByClientId) {
         return await updateSelfDeletionProgress(

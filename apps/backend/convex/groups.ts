@@ -75,6 +75,7 @@ async function collectGroupExpenses(ctx: any, group: Doc<"groups">): Promise<Doc
   const byGroupId = await ctx.db
     .query("expenses")
     .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
+    .filter((q: any) => q.eq(q.field("group_ref"), undefined))
     .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
   if (byGroupId.length > MAX_EXPENSE_WRITE_OPERATIONS) {
     throw new Error(`Group mutation supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`);
@@ -129,6 +130,7 @@ async function processGroupCascadeStep(ctx: any, group: Doc<"groups">): Promise<
   const byGroupId = await ctx.db
     .query("expenses")
     .withIndex("by_group_id", (query: any) => query.eq("group_id", group.id))
+    .filter((query: any) => query.eq(query.field("group_ref"), undefined))
     .first();
   if (byGroupId) {
     await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense: byGroupId }]);
@@ -171,6 +173,7 @@ async function boundedGroupExpenseCount(
   const byGroupId = await ctx.db
     .query("expenses")
     .withIndex("by_group_id", (query: any) => query.eq("group_id", group.id))
+    .filter((query: any) => query.eq(query.field("group_ref"), undefined))
     .take(limit + 1);
   for (const expense of byGroupId) expenses.add(String(expense._id));
   return expenses.size <= limit ? expenses.size : null;
