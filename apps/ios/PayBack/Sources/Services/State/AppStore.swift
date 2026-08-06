@@ -3695,7 +3695,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             guard self.isCurrentGroupMutation(context) else {
                 throw CancellationError()
             }
-            try await self.linkRequestService.createLinkRequest(
+            return try await self.linkRequestService.createLinkRequest(
                 requestId: requestId,
                 recipientEmail: normalizedEmail,
                 targetMemberId: friend.id,
@@ -3725,7 +3725,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             guard self.isCurrentGroupMutation(context) else {
                 throw CancellationError()
             }
-            try await self.linkRequestService.fetchIncomingRequests()
+            return try await self.linkRequestService.fetchIncomingRequests()
         }
         guard isCurrentGroupMutation(context) else { return }
 
@@ -3733,7 +3733,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             guard self.isCurrentGroupMutation(context) else {
                 throw CancellationError()
             }
-            try await self.linkRequestService.fetchOutgoingRequests()
+            return try await self.linkRequestService.fetchOutgoingRequests()
         }
         guard isCurrentGroupMutation(context) else { return }
 
@@ -3753,7 +3753,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             guard self.isCurrentGroupMutation(context) else {
                 throw CancellationError()
             }
-            try await self.linkRequestService.fetchPreviousRequests()
+            return try await self.linkRequestService.fetchPreviousRequests()
         }
         guard isCurrentGroupMutation(context) else { return }
 
@@ -3787,7 +3787,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             guard self.isCurrentGroupMutation(context) else {
                 throw CancellationError()
             }
-            try await self.linkRequestService.acceptLinkRequest(request.id)
+            return try await self.linkRequestService.acceptLinkRequest(request.id)
         }
         guard isCurrentGroupMutation(context) else { return }
 
