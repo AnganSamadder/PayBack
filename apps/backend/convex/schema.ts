@@ -284,6 +284,7 @@ export default defineSchema({
     owner_account_id: v.string(),
     owner_id: v.id("accounts"),
     is_direct: v.optional(v.boolean()),
+    deletion_token: v.optional(v.string()),
     created_at: v.number(),
     updated_at: v.number(),
     is_payback_generated_mock_data: v.optional(v.boolean())
@@ -410,6 +411,12 @@ export default defineSchema({
     .index("by_requester_id", ["requester_id"])
     .index("by_requester_id_and_created_at", ["requester_id", "created_at"])
     .index("by_requester_id_status_and_expiry", ["requester_id", "status", "expires_at"])
+    .index("by_requester_target_status_and_expiry", [
+      "requester_id",
+      "target_member_id",
+      "status",
+      "expires_at"
+    ])
     .index("by_requester_id_and_recipient_email", ["requester_id", "recipient_email"])
     .index("by_requester_recipient_status_and_expiry", [
       "requester_id",
@@ -437,6 +444,12 @@ export default defineSchema({
     .index("by_creator_email", ["creator_email"])
     .index("by_claimed_by", ["claimed_by"])
     .index("by_creator_id_and_claimed_by", ["creator_id", "claimed_by"])
+    .index("by_creator_target_claimed_and_expiry", [
+      "creator_id",
+      "target_member_id",
+      "claimed_by",
+      "expires_at"
+    ])
     .index("by_client_id", ["id"]),
 
   janitor_state: defineTable({

@@ -40,6 +40,7 @@ import {
   getCurrentUserOrThrow,
   isAccountDeletionFenced
 } from "./helpers";
+import { checkRateLimit } from "./rateLimit";
 
 // Helper to get current authenticated user
 async function getCurrentUser(ctx: any, budget?: LinkingReadBudget) {
@@ -434,6 +435,21 @@ export const create = mutation({
 
     // Create token with 30-day expiry
     const now = Date.now();
+    await checkRateLimit(ctx, user.id, "inviteTokens:create", 10);
+    const activeTargetTokens = await ctx.db
+      .query("invite_tokens")
+      .withIndex("by_creator_target_claimed_and_expiry", (q) =>
+        q
+          .eq("creator_id", user.id)
+          .eq("target_member_id", normalizedTargetMemberId)
+          .eq("claimed_by", undefined)
+          .gt("expires_at", now)
+      )
+      .take(2);
+    if (activeTargetTokens.length > 0) {
+      throw new Error("An active invite already exists for this friend");
+    }
+
     const expiresAt = now + 30 * 24 * 60 * 60 * 1000; // 30 days
 
     const tokenId = await ctx.db.insert("invite_tokens", {

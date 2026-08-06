@@ -13,6 +13,8 @@ struct GroupDetailView: View {
     @State private var showAddMemberSheet = false
     @State private var showUnsettledAlert = false
     @State private var showLeaveConfirmation = false
+    @State private var isUpdatingGroup = false
+    @State private var groupOperationErrorMessage: String?
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
@@ -74,9 +76,20 @@ struct GroupDetailView: View {
                     .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
                 }
                 .background(Color.clear)
-            } else {
+                .allowsHitTesting(!isUpdatingGroup)
+            } else if !isUpdatingGroup {
                 // Group was deleted, go back
                 Color.clear.onAppear { handleBack() }
+            }
+
+            if isUpdatingGroup {
+                ZStack {
+                    Color.black.opacity(0.08)
+                        .ignoresSafeArea()
+                    ProgressView("Updating group…")
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
             }
         }
         .navigationTitle("Group Details")
@@ -109,8 +122,20 @@ struct GroupDetailView: View {
             presenting: memberToDelete
         ) { member in
             Button("Remove \"\(member.name)\"", role: .destructive) {
+                guard !isUpdatingGroup else { return }
                 Haptics.notify(.warning)
-                store.removeMemberFromGroup(groupId: groupId, memberId: member.id)
+                isUpdatingGroup = true
+                Task {
+                    do {
+                        try await store.removeMemberFromGroup(groupId: groupId, memberId: member.id)
+                        isUpdatingGroup = false
+                    } catch {
+                        isUpdatingGroup = false
+                        groupOperationErrorMessage = error.userFacingMessage(
+                            fallback: "The member could not be removed from the cloud. Your local data was restored. Check your connection and try again."
+                        )
+                    }
+                }
                 memberToDelete = nil
             }
             Button("Cancel", role: .cancel) {
@@ -126,13 +151,38 @@ struct GroupDetailView: View {
         }
         .alert("Leave Group?", isPresented: $showLeaveConfirmation) {
             Button("Leave", role: .destructive) {
-                store.leaveGroup(groupId)
-                // Back navigation is triggered automatically when group becomes nil
-                // (see the else branch: Color.clear.onAppear { handleBack() })
+                guard !isUpdatingGroup else { return }
+                isUpdatingGroup = true
+                Task {
+                    do {
+                        try await store.leaveGroup(groupId)
+                        isUpdatingGroup = false
+                    } catch {
+                        isUpdatingGroup = false
+                        groupOperationErrorMessage = error.userFacingMessage(
+                            fallback: "The group could not be left in the cloud. Your local data was restored. Check your connection and try again."
+                        )
+                    }
+                }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Are you sure you want to leave this group?")
+        }
+        .alert(
+            "Unable to Update Group",
+            isPresented: Binding(
+                get: { groupOperationErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { groupOperationErrorMessage = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                groupOperationErrorMessage = nil
+            }
+        } message: {
+            Text(groupOperationErrorMessage ?? "Please try again.")
         }
     }
 
@@ -835,6 +885,8 @@ private struct SettleModal: View {
 
     @State private var selectedExpenseIds: Set<UUID> = []
     @State private var showConfirmationPage = false
+    @State private var settlementErrorMessage: String?
+    @State private var isSettling = false
 
     var body: some View {
         NavigationStack {
@@ -873,6 +925,7 @@ private struct SettleModal: View {
                         dismiss()
                     }
                     .foregroundStyle(AppTheme.navigationHeaderAccent)
+                    .disabled(isSettling)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -882,6 +935,7 @@ private struct SettleModal: View {
                         }
                         .foregroundStyle(AppTheme.brand)
                         .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .disabled(isSettling)
                     }
                 }
             }
@@ -896,6 +950,18 @@ private struct SettleModal: View {
                 )
                 .environmentObject(store)
             }
+            .alert("Unable to Settle Expenses", isPresented: Binding(
+                get: { settlementErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { settlementErrorMessage = nil }
+                }
+            )) {
+                Button("OK", role: .cancel) {
+                    settlementErrorMessage = nil
+                }
+            } message: {
+                Text(settlementErrorMessage ?? "Please try again.")
+            }
         }
     }
 
@@ -905,19 +971,6 @@ private struct SettleModal: View {
             // Show expenses where ANY of the current user's equivalent splits are still unsettled.
             let mySplits = expense.splits.filter { store.isMe($0.memberId) }
             return mySplits.contains { !$0.isSettled }
-        }
-
-        print("📊 Expense Analysis:")
-        print("   - Total expenses in group: \(allExpenses.count)")
-        print("   - Unsettled expenses: \(filtered.count)")
-
-        for expense in allExpenses {
-            let mySplits = expense.splits.filter { store.isMe($0.memberId) }
-            let currentUserSettled = !mySplits.contains { !$0.isSettled }
-            print("   - Expense: \(expense.description)")
-            print("     * Fully settled: \(expense.isSettled)")
-            print("     * Current user settled: \(currentUserSettled)")
-            print("     * Can settle: \(store.canSettleExpenseForSelf(expense))")
         }
 
         return filtered
@@ -1092,18 +1145,41 @@ private struct SettleModal: View {
 
     @MainActor
     private func settleSelectedExpenses() async {
-        for expenseId in selectedExpenseIds {
-            guard let expense = unsettledExpenses.first(where: { $0.id == expenseId }),
-                  store.canSettleExpenseForSelf(expense) else { continue }
+        guard !isSettling else { return }
+        let expensesToSettle = selectedExpenses.sorted { $0.id.uuidString < $1.id.uuidString }
+        guard !expensesToSettle.isEmpty else {
+            showConfirmationPage = false
+            return
+        }
+
+        isSettling = true
+        var settledCount = 0
+        for expense in expensesToSettle {
+            guard store.canSettleExpenseForSelf(expense) else {
+                isSettling = false
+                showConfirmationPage = false
+                settlementErrorMessage = "One or more expenses changed before they could be settled. Review the remaining selections and try again."
+                return
+            }
             do {
                 try await store.settleExpenseForCurrentUser(expense)
+                settledCount += 1
+                selectedExpenseIds.remove(expense.id)
             } catch {
-                #if DEBUG
-                print("⚠️ Settlement failed for expense \(expenseId): \(error.localizedDescription)")
-                #endif
-                // Continue settling remaining expenses even if one fails
+                isSettling = false
+                showConfirmationPage = false
+                let reason = error.userFacingMessage(
+                    fallback: "The cloud update failed. Check your connection and try again."
+                )
+                if settledCount == 0 {
+                    settlementErrorMessage = "No expenses were settled. \(reason)"
+                } else {
+                    settlementErrorMessage = "Settled \(settledCount) of \(expensesToSettle.count) expenses. The remaining expenses are still selected. \(reason)"
+                }
+                return
             }
         }
+        isSettling = false
         selectedExpenseIds.removeAll()
         dismiss()
     }

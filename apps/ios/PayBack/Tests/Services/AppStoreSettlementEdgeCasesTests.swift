@@ -396,6 +396,284 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertFalse(updatedExpense.isSettled)
     }
 
+    func testSettlementSuccessAfterAccountSwitchDoesNotPersistPreviousAccountExpense() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        let expenseA = settlementExpense(description: "Account A dinner")
+        let expenseB = settlementExpense(description: "Account B dinner")
+        sut.session = UserSession(account: accountA)
+        sut.expenses = [expenseA]
+        await mockExpenseCloudService.addExpense(expenseA)
+        await mockExpenseCloudService.suspendNextSettlement()
+
+        let operation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(expenseA)
+        }
+        let successRequestStarted = await waitForSettlementInvocation()
+        XCTAssertTrue(successRequestStarted)
+
+        sut.session = UserSession(account: accountB)
+        sut.expenses = [expenseB]
+        mockPersistence.save(AppData(groups: [], expenses: [expenseB]))
+        await mockExpenseCloudService.resumeSettlement()
+        try await operation.value
+
+        XCTAssertEqual(sut.expenses, [expenseB])
+        XCTAssertEqual(mockPersistence.load().expenses, [expenseB])
+    }
+
+    func testSettlementFailureAfterAccountSwitchDoesNotSurfaceOrMutatePreviousAccountState() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        let expenseA = settlementExpense(description: "Account A dinner")
+        let expenseB = settlementExpense(description: "Account B dinner")
+        sut.session = UserSession(account: accountA)
+        sut.expenses = [expenseA]
+        await mockExpenseCloudService.addExpense(expenseA)
+        await mockExpenseCloudService.suspendNextSettlement()
+
+        let operation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(expenseA)
+        }
+        let failingRequestStarted = await waitForSettlementInvocation()
+        XCTAssertTrue(failingRequestStarted)
+
+        sut.session = UserSession(account: accountB)
+        sut.expenses = [expenseB]
+        mockPersistence.save(AppData(groups: [], expenses: [expenseB]))
+        await mockExpenseCloudService.setShouldFail(true)
+        await mockExpenseCloudService.resumeSettlement()
+        try await operation.value
+
+        XCTAssertEqual(sut.expenses, [expenseB])
+        XCTAssertEqual(mockPersistence.load().expenses, [expenseB])
+    }
+
+    func testRealtimeConfirmationBeforeSettlementResponseDoesNotLeavePendingState() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let originalExpense = settlementExpense(description: "Dinner")
+        let settledExpense = settlementExpense(originalExpense, settled: true)
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.addExpense(originalExpense)
+        await mockExpenseCloudService.suspendNextSettlement()
+
+        let operation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(originalExpense)
+        }
+        let requestStarted = await waitForSettlementInvocation()
+        XCTAssertTrue(requestStarted)
+
+        sut.expenses = sut.mergedRemoteExpensesPreservingPendingWrites(
+            remoteExpenses: [settledExpense]
+        )
+        XCTAssertTrue(sut.isSettlementPending(for: originalExpense.id))
+
+        await mockExpenseCloudService.resumeSettlement()
+        try await operation.value
+
+        XCTAssertEqual(sut.expenses, [settledExpense])
+        XCTAssertFalse(sut.isSettlementPending(for: originalExpense.id))
+    }
+
+    func testOverlappingSettlementSuccessesKeepNewestResponse() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let originalExpense = settlementExpense(description: "Dinner")
+        let settledExpense = settlementExpense(originalExpense, settled: true)
+        let unsettledExpense = settlementExpense(originalExpense, settled: false)
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.enqueueSettlementSuccess(
+            settledExpense,
+            delayNanoseconds: 250_000_000
+        )
+        await mockExpenseCloudService.enqueueSettlementSuccess(unsettledExpense)
+
+        let olderOperation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(originalExpense)
+        }
+        let olderRequestStarted = await waitForSettlementInvocation(count: 1)
+        XCTAssertTrue(olderRequestStarted)
+
+        let newerOperation = Task { @MainActor in
+            try await sut.unsettleExpenseForCurrentUser(originalExpense)
+        }
+        let newerRequestStarted = await waitForSettlementInvocation(count: 2)
+        XCTAssertTrue(newerRequestStarted)
+
+        try await newerOperation.value
+        try await olderOperation.value
+
+        XCTAssertEqual(sut.expenses, [unsettledExpense])
+        XCTAssertFalse(sut.isSettlementPending(for: originalExpense.id))
+    }
+
+    func testOlderSettlementFailureDoesNotUndoOrSurfaceAfterNewerSuccess() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let originalExpense = settlementExpense(description: "Dinner")
+        let unsettledExpense = settlementExpense(originalExpense, settled: false)
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.enqueueSettlementFailure(
+            .authSessionMissing,
+            delayNanoseconds: 250_000_000
+        )
+        await mockExpenseCloudService.enqueueSettlementSuccess(unsettledExpense)
+
+        let olderOperation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(originalExpense)
+        }
+        let olderRequestStarted = await waitForSettlementInvocation(count: 1)
+        XCTAssertTrue(olderRequestStarted)
+
+        let newerOperation = Task { @MainActor in
+            try await sut.unsettleExpenseForCurrentUser(originalExpense)
+        }
+        let newerRequestStarted = await waitForSettlementInvocation(count: 2)
+        XCTAssertTrue(newerRequestStarted)
+
+        try await newerOperation.value
+        try await olderOperation.value
+
+        XCTAssertEqual(sut.expenses, [unsettledExpense])
+        XCTAssertFalse(sut.isSettlementPending(for: originalExpense.id))
+    }
+
+    func testSettlementRetrySupersededByNewerMutationDoesNotInvokeBackendAgain() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let originalExpense = settlementExpense(description: "Dinner")
+        let unsettledExpense = settlementExpense(originalExpense, settled: false)
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.enqueueSettlementFailure(.networkUnavailable)
+        await mockExpenseCloudService.enqueueSettlementSuccess(unsettledExpense)
+
+        let olderOperation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(originalExpense)
+        }
+        let olderRequestStarted = await waitForSettlementInvocation(count: 1)
+        XCTAssertTrue(olderRequestStarted)
+
+        let newerOperation = Task { @MainActor in
+            try await sut.unsettleExpenseForCurrentUser(originalExpense)
+        }
+        let newerRequestStarted = await waitForSettlementInvocation(count: 2)
+        XCTAssertTrue(newerRequestStarted)
+
+        try await newerOperation.value
+        try await olderOperation.value
+
+        let invocationCount = await mockExpenseCloudService.currentSettlementInvocationCount()
+        XCTAssertEqual(invocationCount, 2)
+        XCTAssertEqual(sut.expenses, [unsettledExpense])
+    }
+
+    func testSettlementRetryAfterAccountSwitchDoesNotInvokeBackendAgain() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        let expenseA = settlementExpense(description: "Account A dinner")
+        let expenseB = settlementExpense(description: "Account B dinner")
+        sut.session = UserSession(account: accountA)
+        sut.expenses = [expenseA]
+        await mockExpenseCloudService.enqueueSettlementFailure(.networkUnavailable)
+
+        let operation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(expenseA)
+        }
+        let firstRequestStarted = await waitForSettlementInvocation(count: 1)
+        XCTAssertTrue(firstRequestStarted)
+
+        sut.session = UserSession(account: accountB)
+        sut.expenses = [expenseB]
+        mockPersistence.save(AppData(groups: [], expenses: [expenseB]))
+        try await operation.value
+
+        let invocationCount = await mockExpenseCloudService.currentSettlementInvocationCount()
+        XCTAssertEqual(invocationCount, 1)
+        XCTAssertEqual(sut.expenses, [expenseB])
+        XCTAssertEqual(mockPersistence.load().expenses, [expenseB])
+    }
+
+    private func settlementExpense(description: String) -> Expense {
+        Expense(
+            groupId: UUID(),
+            description: description,
+            totalAmount: 20,
+            paidByMemberId: UUID(),
+            involvedMemberIds: [sut.currentUser.id],
+            splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 20)]
+        )
+    }
+
+    private func settlementExpense(description: String, groupId: UUID, memberId: UUID) -> Expense {
+        Expense(
+            groupId: groupId,
+            description: description,
+            totalAmount: 20,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id, memberId],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 10),
+                ExpenseSplit(memberId: memberId, amount: 10)
+            ]
+        )
+    }
+
+    private func settlementExpense(_ expense: Expense, settled: Bool) -> Expense {
+        var updatedExpense = expense
+        updatedExpense.splits = expense.splits.map { split in
+            var updatedSplit = split
+            updatedSplit.isSettled = settled
+            return updatedSplit
+        }
+        updatedExpense.isSettled = updatedExpense.splits.allSatisfy(\.isSettled)
+        return updatedExpense
+    }
+
+    private func waitForSettlementInvocation(count expectedCount: Int = 1) async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockExpenseCloudService.currentSettlementInvocationCount() >= expectedCount {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
+    }
+
+    private func waitForLinkedFriendDeleteInvocation() async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockAccountService.currentLinkedFriendDeleteInvocationCount() > 0 {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
+    }
+
+    private func waitForUnlinkedFriendDeleteInvocation() async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockAccountService.currentUnlinkedFriendDeleteInvocationCount() > 0 {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
+    }
+
+    private func waitForGroupDeleteInvocation() async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockGroupCloudService.currentDeleteInvocationCount() > 0 {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
+    }
+
     // MARK: - Can Settle Expense Tests
 
     func testCanSettleExpenseForAll_UserIsPayer_ReturnsTrue() async throws {
@@ -506,6 +784,316 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertEqual(sut.friends, originalFriends)
     }
 
+    func testDeleteLinkedFriend_RemovesDirectGroupUsingImportedIdentityPointer() async throws {
+        let account = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        sut.session = UserSession(account: account)
+        let friendId = UUID()
+        let importedMemberId = UUID()
+        let friend = AccountFriend(
+            memberId: friendId,
+            name: "Alice",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "alice@example.com"
+        )
+        let group = SpendingGroup(
+            name: "Alice",
+            members: [
+                sut.currentUser,
+                GroupMember(id: importedMemberId, name: "Alice", accountFriendMemberId: friendId)
+            ],
+            isDirect: true
+        )
+        let expense = settlementExpense(
+            description: "Dinner",
+            groupId: group.id,
+            memberId: importedMemberId
+        )
+        sut.friends = [friend]
+        sut.groups = [group]
+        sut.expenses = [expense]
+
+        try await sut.deleteLinkedFriend(memberId: friendId)
+
+        XCTAssertTrue(sut.friends.isEmpty)
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertTrue(sut.expenses.isEmpty)
+    }
+
+    func testDeleteUnlinkedFriend_RemovesImportedIdentityFromSharedGroup() async throws {
+        let account = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        sut.session = UserSession(account: account)
+        let friendId = UUID()
+        let importedMemberId = UUID()
+        let otherMemberId = UUID()
+        let friend = AccountFriend(memberId: friendId, name: "Alice")
+        let group = SpendingGroup(
+            name: "Trip",
+            members: [
+                sut.currentUser,
+                GroupMember(id: importedMemberId, name: "Alice", accountFriendMemberId: friendId),
+                GroupMember(id: otherMemberId, name: "Bob")
+            ]
+        )
+        let expense = settlementExpense(
+            description: "Dinner",
+            groupId: group.id,
+            memberId: importedMemberId
+        )
+        sut.friends = [friend]
+        sut.groups = [group]
+        sut.expenses = [expense]
+
+        _ = try await sut.deleteUnlinkedFriend(memberId: friendId)
+
+        XCTAssertTrue(sut.friends.isEmpty)
+        XCTAssertEqual(sut.groups.count, 1)
+        XCTAssertFalse(sut.groups[0].members.contains(where: { $0.id == importedMemberId }))
+        XCTAssertTrue(sut.expenses.isEmpty)
+    }
+
+    func testLinkedFriendDeletionInFlightRejectsOverlappingDeletion() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let friendId = UUID()
+        sut.friends = [
+            AccountFriend(
+                memberId: friendId,
+                name: "Alice",
+                hasLinkedAccount: true,
+                linkedAccountId: "linked-account",
+                linkedAccountEmail: "alice@example.com"
+            )
+        ]
+        await mockAccountService.suspendNextLinkedFriendDelete()
+
+        let firstDeletion = Task { @MainActor in
+            try await sut.deleteLinkedFriend(memberId: friendId)
+        }
+        let firstDeleteStarted = await waitForLinkedFriendDeleteInvocation()
+        XCTAssertTrue(firstDeleteStarted)
+
+        await XCTAssertThrowsErrorAsync(try await sut.deleteLinkedFriend(memberId: friendId))
+        let linkedDeleteCount = await mockAccountService.currentLinkedFriendDeleteInvocationCount()
+        XCTAssertEqual(linkedDeleteCount, 1)
+
+        await mockAccountService.resumeLinkedFriendDelete()
+        try await firstDeletion.value
+        XCTAssertTrue(sut.friends.isEmpty)
+    }
+
+    func testFriendDeletionInFlightRejectsGroupDeletion() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let friendId = UUID()
+        let friend = AccountFriend(
+            memberId: friendId,
+            name: "Alice",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "alice@example.com"
+        )
+        let group = SpendingGroup(name: "Trip", members: [sut.currentUser, GroupMember(id: friendId, name: "Alice")])
+        sut.friends = [friend]
+        sut.groups = [group]
+        await mockAccountService.suspendNextLinkedFriendDelete()
+
+        let friendDeletion = Task { @MainActor in
+            try await sut.deleteLinkedFriend(memberId: friendId)
+        }
+        let friendDeleteStarted = await waitForLinkedFriendDeleteInvocation()
+        XCTAssertTrue(friendDeleteStarted)
+
+        await XCTAssertThrowsErrorAsync(try await sut.deleteGroups(ids: [group.id]))
+        let groupDeleteCount = await mockGroupCloudService.currentDeleteInvocationCount()
+        XCTAssertEqual(groupDeleteCount, 0)
+
+        await mockAccountService.resumeLinkedFriendDelete()
+        try await friendDeletion.value
+    }
+
+    func testGroupDeletionInFlightRejectsLinkedFriendDeletion() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let friendId = UUID()
+        let friend = AccountFriend(
+            memberId: friendId,
+            name: "Alice",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "alice@example.com"
+        )
+        let group = SpendingGroup(name: "Trip", members: [sut.currentUser, GroupMember(id: friendId, name: "Alice")])
+        sut.friends = [friend]
+        sut.groups = [group]
+        await mockGroupCloudService.setOperationDelays(delete: 250_000_000)
+
+        let groupDeletion = Task { @MainActor in
+            try await sut.deleteGroups(ids: [group.id])
+        }
+        let groupDeleteStarted = await waitForGroupDeleteInvocation()
+        XCTAssertTrue(groupDeleteStarted)
+
+        await XCTAssertThrowsErrorAsync(try await sut.deleteLinkedFriend(memberId: friendId))
+        let linkedDeleteCount = await mockAccountService.currentLinkedFriendDeleteInvocationCount()
+        XCTAssertEqual(linkedDeleteCount, 0)
+
+        try await groupDeletion.value
+    }
+
+    func testStaleFriendSnapshotCannotRestorePendingLinkedDeletion() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let friendId = UUID()
+        let friend = AccountFriend(
+            memberId: friendId,
+            name: "Alice",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "alice@example.com"
+        )
+        sut.friends = [friend]
+        await mockAccountService.suspendNextLinkedFriendDelete()
+
+        let deletion = Task { @MainActor in
+            try await sut.deleteLinkedFriend(memberId: friendId)
+        }
+        let deleteStarted = await waitForLinkedFriendDeleteInvocation()
+        XCTAssertTrue(deleteStarted)
+
+        sut.processFriendsUpdate([friend])
+        XCTAssertTrue(sut.friends.isEmpty)
+
+        await mockAccountService.resumeLinkedFriendDelete()
+        try await deletion.value
+        sut.processFriendsUpdate([friend])
+        XCTAssertTrue(sut.friends.isEmpty)
+        let syncedFriends = await mockAccountService.latestSyncedFriends(accountEmail: "a@example.com")
+        XCTAssertNil(syncedFriends)
+    }
+
+    func testLinkedFriendDeletion_OldSessionSuccessDoesNotSyncNewSession() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let friendId = UUID()
+        sut.friends = [
+            AccountFriend(
+                memberId: friendId,
+                name: "Old Friend",
+                hasLinkedAccount: true,
+                linkedAccountId: "linked-account",
+                linkedAccountEmail: "linked@example.com"
+            )
+        ]
+        await mockAccountService.suspendNextLinkedFriendDelete()
+
+        let deletion = Task { @MainActor in
+            try await sut.deleteLinkedFriend(memberId: friendId)
+        }
+        let deleteStarted = await waitForLinkedFriendDeleteInvocation()
+        XCTAssertTrue(deleteStarted)
+
+        sut.session = UserSession(
+            account: UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        )
+        sut.friends = [AccountFriend(memberId: UUID(), name: "New Friend")]
+        await mockAccountService.resumeLinkedFriendDelete()
+        try await deletion.value
+
+        let syncedFriends = await mockAccountService.latestSyncedFriends(accountEmail: "b@example.com")
+        XCTAssertNil(syncedFriends)
+    }
+
+    func testDeleteLinkedFriend_OldSessionFailureDoesNotRestoreDataIntoNewSession() async throws {
+        let oldAccount = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        sut.session = UserSession(account: oldAccount)
+        let friendId = UUID()
+        let oldFriend = AccountFriend(
+            memberId: friendId,
+            name: "Old Friend",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "linked@example.com"
+        )
+        let oldGroup = SpendingGroup(
+            name: "Old Friend",
+            members: [sut.currentUser, GroupMember(id: friendId, name: "Old Friend")],
+            isDirect: true
+        )
+        let oldExpense = settlementExpense(description: "Old expense", groupId: oldGroup.id, memberId: friendId)
+        sut.friends = [oldFriend]
+        sut.groups = [oldGroup]
+        sut.expenses = [oldExpense]
+        await mockAccountService.suspendNextLinkedFriendDelete()
+
+        let deletion = Task { @MainActor in
+            try await sut.deleteLinkedFriend(memberId: friendId)
+        }
+        let linkedDeleteStarted = await waitForLinkedFriendDeleteInvocation()
+        XCTAssertTrue(linkedDeleteStarted)
+
+        sut.session = nil
+        let newAccount = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        let newFriend = AccountFriend(memberId: UUID(), name: "New Friend")
+        let newGroup = SpendingGroup(name: "New Group", members: [sut.currentUser])
+        let newExpense = settlementExpense(description: "New expense", groupId: newGroup.id, memberId: sut.currentUser.id)
+        sut.session = UserSession(account: newAccount)
+        sut.friends = [newFriend]
+        sut.groups = [newGroup]
+        sut.expenses = [newExpense]
+        await mockAccountService.setShouldFail(true)
+        await mockAccountService.resumeLinkedFriendDelete()
+
+        await XCTAssertThrowsErrorAsync(try await deletion.value)
+        XCTAssertEqual(sut.friends, [newFriend])
+        XCTAssertEqual(sut.groups, [newGroup])
+        XCTAssertEqual(sut.expenses, [newExpense])
+    }
+
+    func testDeleteUnlinkedFriend_OldSessionFailureDoesNotRestoreDataIntoNewSession() async throws {
+        let oldAccount = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        sut.session = UserSession(account: oldAccount)
+        let friendId = UUID()
+        let oldFriend = AccountFriend(memberId: friendId, name: "Old Friend")
+        let oldGroup = SpendingGroup(
+            name: "Old Group",
+            members: [sut.currentUser, GroupMember(id: friendId, name: "Old Friend")]
+        )
+        let oldExpense = settlementExpense(description: "Old expense", groupId: oldGroup.id, memberId: friendId)
+        sut.friends = [oldFriend]
+        sut.groups = [oldGroup]
+        sut.expenses = [oldExpense]
+        await mockAccountService.suspendNextUnlinkedFriendDelete()
+
+        let deletion = Task { @MainActor in
+            try await sut.deleteUnlinkedFriend(memberId: friendId)
+        }
+        let unlinkedDeleteStarted = await waitForUnlinkedFriendDeleteInvocation()
+        XCTAssertTrue(unlinkedDeleteStarted)
+
+        sut.session = nil
+        let newAccount = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        let newFriend = AccountFriend(memberId: UUID(), name: "New Friend")
+        let newGroup = SpendingGroup(name: "New Group", members: [sut.currentUser])
+        let newExpense = settlementExpense(description: "New expense", groupId: newGroup.id, memberId: sut.currentUser.id)
+        sut.session = UserSession(account: newAccount)
+        sut.friends = [newFriend]
+        sut.groups = [newGroup]
+        sut.expenses = [newExpense]
+        await mockAccountService.setShouldFail(true)
+        await mockAccountService.resumeUnlinkedFriendDelete()
+
+        await XCTAssertThrowsErrorAsync(try await deletion.value)
+        XCTAssertEqual(sut.friends, [newFriend])
+        XCTAssertEqual(sut.groups, [newGroup])
+        XCTAssertEqual(sut.expenses, [newExpense])
+    }
+
     func testCanSettleExpenseForAll_UserIsNotPayer_ReturnsFalse() async throws {
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let group = sut.groups[0]
@@ -568,7 +1156,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         let group = sut.groups[0]
         let aliceId = group.members.first(where: { $0.name == "Alice" })!.id
 
-        sut.removeMemberFromGroup(groupId: group.id, memberId: aliceId)
+        try await sut.removeMemberFromGroup(groupId: group.id, memberId: aliceId)
 
         // Group should be deleted (only current user left)
         XCTAssertTrue(sut.groups.isEmpty)
@@ -579,7 +1167,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         let group = sut.groups[0]
         let aliceId = group.members.first(where: { $0.name == "Alice" })!.id
 
-        sut.removeMemberFromGroup(groupId: group.id, memberId: aliceId)
+        try await sut.removeMemberFromGroup(groupId: group.id, memberId: aliceId)
 
         // Group should remain with Bob
         XCTAssertEqual(sut.groups.count, 1)
@@ -591,7 +1179,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let originalCount = sut.groups[0].members.count
 
-        sut.removeMemberFromGroup(groupId: UUID(), memberId: UUID())
+        try await sut.removeMemberFromGroup(groupId: UUID(), memberId: UUID())
 
         XCTAssertEqual(sut.groups[0].members.count, originalCount)
     }

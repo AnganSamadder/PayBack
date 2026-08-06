@@ -417,6 +417,7 @@ async function collectAttachedFriendCleanupExpenses(
       ctx.db
         .query("expenses")
         .withIndex("by_group_id", (q) => q.eq("group_id", group.id))
+        .filter((q) => q.eq(q.field("group_ref"), undefined))
         .order("asc")
         .paginate({ cursor, numItems: limit })
     ),
@@ -1836,6 +1837,7 @@ async function advanceSelfDeletion(
               .withIndex("by_group_id", (q) =>
                 q.eq("group_id", progress.current_group_client_id as string)
               )
+              .filter((q) => q.eq(q.field("group_ref"), undefined))
               .order("asc")
               .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE })
           : await ctx.db
@@ -2097,7 +2099,7 @@ async function advanceSelfDeletion(
       if (!hasConsistentGroupOwner(group, account)) {
         throw new Error("Cannot delete records with a conflicting owner identity");
       }
-      if (progress.deletion_mode === "hard") {
+      if (progress.deletion_mode === "hard" || group.deletion_token) {
         return await updateSelfDeletionProgress(
           ctx,
           progress,
@@ -2238,6 +2240,7 @@ async function advanceSelfDeletion(
           ? await ctx.db
               .query("expenses")
               .withIndex("by_group_id", (q) => q.eq("group_id", groupClientId))
+              .filter((q) => q.eq(q.field("group_ref"), undefined))
               .take(SELF_DELETE_BATCH_SIZE)
           : await ctx.db
               .query("expenses")
@@ -2287,6 +2290,7 @@ async function advanceSelfDeletion(
       const remainingByClientId = await ctx.db
         .query("expenses")
         .withIndex("by_group_id", (q) => q.eq("group_id", groupClientId))
+        .filter((q) => q.eq(q.field("group_ref"), undefined))
         .first();
       if (remainingByClientId) {
         return await updateSelfDeletionProgress(

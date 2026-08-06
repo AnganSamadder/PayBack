@@ -694,6 +694,9 @@ export const bulkImport = mutation({
         ])
       ).values()
     );
+    const fencedGroupClientIds = new Set(
+      existingGroups.filter((group) => group.deletion_token).map((group) => group.id)
+    );
 
     const groupRefMap = new Map<string, (typeof existingGroups)[0]["_id"]>();
     for (const existingGroup of existingGroups) {
@@ -714,6 +717,7 @@ export const bulkImport = mutation({
         if (!isGroupOwnedByAccount(existing, user)) {
           throw new Error(`Group ${group.id} belongs to another account`);
         }
+        if (existing.deletion_token) throw new Error("Group deletion is in progress");
         groupRefMap.set(group.id, existing._id);
       }
       existingImportedGroups.set(group.id, existing);
@@ -778,6 +782,9 @@ export const bulkImport = mutation({
     const expenseOperations: ExpenseWriteOperation[] = [];
     for (const expense of importedExpenses) {
       if (existingImportedExpenses.get(expense.id)) continue;
+      if (fencedGroupClientIds.has(expense.group_id)) {
+        throw new Error("Group deletion is in progress");
+      }
 
       const groupRef = groupRefMap.get(expense.group_id);
       if (!groupRef) {

@@ -84,7 +84,7 @@ describe("identity materialization rollout", () => {
       });
 
       await expect(
-        t.query(api.aliases.resolveCanonicalMemberId, { memberId: "legacy_linked" })
+        t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "legacy_linked" })
       ).resolves.toBe("linked_canonical");
       await expect(runMigrationToCompletion(t, 10)).resolves.toMatchObject({ status: "ready" });
 
@@ -163,7 +163,7 @@ describe("identity materialization rollout", () => {
       t.run((ctx) => resolveCanonicalMemberIdInternal(ctx.db, "Direct_Canonical"))
     ).resolves.toBe("direct_canonical");
     await expect(
-      t.query(api.aliases.resolveCanonicalMemberId, { memberId: "Direct_Canonical" })
+      t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "Direct_Canonical" })
     ).resolves.toBe("direct_canonical");
   });
 

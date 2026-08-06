@@ -611,6 +611,13 @@ All group deletions (`deleteGroup`, `deleteGroups`, clear/leave flows removing w
 - In authenticated sessions, self-friend detection must be ID/link based only.
 - Name-equality fallback is allowed only for no-session/local contexts.
 
+### 9.7 Group member removal atomicity
+
+- Removing a member and deleting that member's affected group expenses must run in one authenticated Convex mutation.
+- The mutation must verify group ownership, resolve member aliases, and reconcile expense visibility in the same transaction.
+- iOS must await that single mutation; never sequence a group upsert followed by separate expense deletions.
+- Optimistic rollback must be account/data-epoch fenced and must not overwrite a concurrently updated group snapshot.
+
 ## 10) Convex Environment Routing (iOS Build Pipeline)
 
 Goal: route iOS builds automatically:
@@ -674,6 +681,21 @@ Required fields:
 3. Signup password: `.textContentType(.newPassword)`.
 4. Signup confirm password: `.textContentType(.password)` and submit label `.join`.
 5. Verification code: `.textContentType(.oneTimeCode)` with keyboard-dismiss affordance.
+
+### 11.3 Native password reset continuity
+
+Password reset must remain inside the Clerk native sign-in attempt:
+
+1. Start with identifier-first sign-in, then send `reset_password_email_code`.
+2. Verify only a prepared reset-code factor and require Clerk status `needs_new_password`.
+3. Set the new password only from `needs_new_password`, sign out other sessions, and require `complete` for automatic authentication.
+4. Hand the completed Clerk session through `AppStore.completeAuthenticationAndWait` so Convex and local session state are ready before showing authenticated UI.
+5. Keep reset email, code, and password drafts in `AuthCoordinator` while their Clerk checkpoint remains valid.
+6. Password-reset initiation and resend must show the same generic notice whether Clerk accepts or rejects the identifier; do not reveal account existence through request-stage UI.
+7. After Clerk reaches `needs_new_password`, never navigate backward to code verification. An explicit back-to-sign-in action must abandon the verified attempt and clear code/password secrets.
+8. Serialize reset requests with the shared busy state and always clear busy state on success, error, or cancellation.
+9. Show stage-specific generic errors; never expose raw provider details or PII.
+10. If Clerk accepts the password but returns `needs_second_factor` or `needs_client_trust`, return to login with an accurate success/recovery message; never label the accepted password update as failed.
 
 ## 12) Add Expense UX Continuity (iOS, provenance: 2026-02-20)
 

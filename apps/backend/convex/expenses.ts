@@ -168,6 +168,19 @@ async function requireGroupByClientIdWithAccess(
   return { group, callerEquivalentIds };
 }
 
+async function isExpenseAttachedToDeletingGroup(
+  ctx: any,
+  expense: Doc<"expenses">
+): Promise<boolean> {
+  const group = expense.group_ref
+    ? await ctx.db.get(expense.group_ref)
+    : await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (query: any) => query.eq("id", expense.group_id))
+        .unique();
+  return group?.deletion_token !== undefined;
+}
+
 function normalizeLinkedAccountId(value: string | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -280,7 +293,7 @@ function requireMatchingMemberSets(values: {
 
 type ExpenseParticipant = Doc<"expenses">["participants"][number];
 
-function expenseMemberIds(expense: Doc<"expenses">) {
+export function expenseMemberIds(expense: Doc<"expenses">) {
   return normalizeMemberIds([
     expense.paid_by_member_id,
     ...expense.involved_member_ids,
@@ -760,6 +773,7 @@ export const create = mutation({
         callerEquivalentIds
       );
       group = groupAccess.group;
+      if (group.deletion_token) throw new Error("Group deletion is in progress");
       callerEquivalentIds = groupAccess.callerEquivalentIds;
       assertAccountCanAcceptChanges(await ctx.db.get(group.owner_id as Id<"accounts">));
       contextKind =
@@ -1105,6 +1119,10 @@ export const setSettlementState = mutation({
       }
     }
 
+    if (await isExpenseAttachedToDeletingGroup(ctx, expense)) {
+      throw new Error("Group deletion is in progress");
+    }
+
     const nextSplits = expense.splits.map((split: any) => {
       const normalizedMemberId = normalizeMemberId(split.member_id);
       if (!requestedMemberIds.has(normalizedMemberId)) {
@@ -1143,6 +1161,7 @@ export const listByGroup = query({
     if (!user) return [];
 
     const { group } = await requireGroupByClientIdWithAccess(ctx, user, args.group_id);
+    if (group.deletion_token) return [];
 
     const expenses = await ctx.db
       .query("expenses")
@@ -1170,6 +1189,9 @@ export const listByGroupPaginated = query({
       return { items: [], nextCursor: null };
     }
     await requireGroupAccess(ctx, user, group);
+    if (group.deletion_token) {
+      return { items: [], nextCursor: null };
+    }
 
     const result = await ctx.db
       .query("expenses")
@@ -1208,7 +1230,13 @@ export const list = query({
       })
     );
 
-    return expenses.filter((e) => e !== null);
+    const visibleExpenses = await Promise.all(
+      expenses.map(async (expense) => {
+        if (!expense || (await isExpenseAttachedToDeletingGroup(ctx, expense))) return null;
+        return expense;
+      })
+    );
+    return visibleExpenses.filter((expense) => expense !== null);
   }
 });
 
@@ -1244,6 +1272,7 @@ export const listV2 = query({
       if (!expense || expense.id !== visibility.expense_id) {
         throw syncV2NotReadyError("expense visibility is inconsistent");
       }
+      if (await isExpenseAttachedToDeletingGroup(ctx, expense)) continue;
       page.push(expense);
     }
     return {
@@ -1364,7 +1393,7 @@ async function processClearAllExpenseStep(
   const visibilityRow = await ctx.db
     .query("user_expenses")
     .withIndex("by_user_id", (q: any) => q.eq("user_id", user.id))
-    .filter((q: any) => q.lte(q.field("updated_at"), cutoff))
+    .filter((q: any) => q.lt(q.field("_creationTime"), cutoff + 1))
     .first();
   if (!visibilityRow) return { inProgress: false, processed: 0, cutoff };
 

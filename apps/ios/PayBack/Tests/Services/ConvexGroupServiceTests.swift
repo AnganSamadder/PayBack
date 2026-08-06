@@ -239,6 +239,27 @@ final class ConvexGroupServiceTests: XCTestCase {
         try await service.deleteGroups([UUID(), UUID()])
     }
 
+    func testNoopGroupCloudService_RemoveMemberFromGroup_DoesNotThrow() async throws {
+        let service = NoopGroupCloudService()
+
+        try await service.removeMemberFromGroup(UUID(), memberId: UUID())
+    }
+
+    func testConvexGroupService_UsesAtomicMemberRemovalMutation() throws {
+        let payBackDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: payBackDirectory
+                .appendingPathComponent("Sources/Services/Convex/ConvexGroupService.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("groups:removeMemberAndExpenses"))
+        XCTAssertTrue(source.contains("\"memberId\": memberId.uuidString"))
+    }
+
     func testNoopGroupCloudService_DeleteDebugGroups_DoesNotThrow() async throws {
         let service = NoopGroupCloudService()
 

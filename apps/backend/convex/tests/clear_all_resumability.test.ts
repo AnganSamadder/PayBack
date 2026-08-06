@@ -212,6 +212,101 @@ describe("durable clear-all processing", () => {
     expect(await t.run((ctx) => ctx.db.get(fixture))).not.toBeNull();
   });
 
+  test("expense clear removes preexisting visibility after another participant updates it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      const t = convexTest(schema, modules);
+      await t.run(async (ctx) => {
+        const ownerId = await ctx.db.insert("accounts", {
+          id: "owner_auth",
+          email: "owner@example.com",
+          normalized_email: "owner@example.com",
+          display_name: "Owner",
+          member_id: "owner_member",
+          created_at: 1
+        });
+        const viewerId = await ctx.db.insert("accounts", {
+          id: "viewer_auth",
+          email: "viewer@example.com",
+          normalized_email: "viewer@example.com",
+          display_name: "Viewer",
+          member_id: "viewer_member",
+          created_at: 1
+        });
+        for (let index = 0; index < 2; index += 1) {
+          const expenseId = await ctx.db.insert(
+            "expenses",
+            expenseInput(ownerId, `shared_expense_${index}`, {
+              involved_member_ids: ["owner_member", "viewer_member"],
+              splits: [
+                {
+                  id: `owner_split_${index}`,
+                  member_id: "owner_member",
+                  amount: 0.5,
+                  is_settled: false
+                },
+                {
+                  id: `viewer_split_${index}`,
+                  member_id: "viewer_member",
+                  amount: 0.5,
+                  is_settled: false
+                }
+              ],
+              participant_member_ids: ["owner_member", "viewer_member"],
+              participant_emails: ["owner@example.com", "viewer@example.com"],
+              participants: [
+                { member_id: "owner_member", name: "Owner" },
+                { member_id: "viewer_member", name: "Viewer" }
+              ]
+            })
+          );
+          await ctx.db.insert("user_expenses", {
+            user_id: "viewer_auth",
+            account_ref: viewerId,
+            expense_id: `shared_expense_${index}`,
+            expense_ref: expenseId,
+            updated_at: 1
+          });
+        }
+      });
+
+      const viewer = t.withIdentity(identity("viewer@example.com", "viewer_auth"));
+      const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
+      let result = await viewer.mutation(api.expenses.clearAllForUserV2, {});
+      const remainingExpenseId = await t.run(async (ctx) => {
+        const row = await ctx.db
+          .query("user_expenses")
+          .withIndex("by_user_id", (query) => query.eq("user_id", "viewer_auth"))
+          .unique();
+        return row?.expense_id;
+      });
+      expect(remainingExpenseId).toBeDefined();
+
+      vi.setSystemTime(result.cutoff + 1_000);
+      await owner.mutation(api.expenses.setSettlementState, {
+        expenseId: remainingExpenseId!,
+        memberIds: ["viewer_member"],
+        settled: true
+      });
+      while (result.inProgress) {
+        result = await viewer.mutation(api.expenses.clearAllForUserV2, {
+          cutoff: result.cutoff
+        });
+      }
+
+      const viewerRows = await t.run((ctx) =>
+        ctx.db
+          .query("user_expenses")
+          .withIndex("by_user_id", (query) => query.eq("user_id", "viewer_auth"))
+          .collect()
+      );
+      expect(viewerRows).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("an owned group with more than 512 expenses drains before deletion", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {

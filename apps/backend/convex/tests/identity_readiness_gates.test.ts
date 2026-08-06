@@ -441,9 +441,9 @@ describe("identity pending-read compatibility", () => {
           viewer.query(api.users.viewer, {}),
           viewer.query(api.groups.list, {}),
           viewer.query(api.expenses.listByGroup, { group_id: `pending_${phase}_group` }),
-          t.query(api.aliases.resolveCanonicalMemberId, { memberId: "legacy_alias" }),
-          t.query(api.aliases.resolveCanonicalMemberId, { memberId: "account_array_alias" }),
-          t.query(api.aliases.getAliasesForMember, { canonicalMemberId: "canonical_member" })
+          t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "legacy_alias" }),
+          t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "account_array_alias" }),
+          t.query(internal.aliases.getAliasesForMember, { canonicalMemberId: "canonical_member" })
         ]);
 
       expect(account?.member_id).toBe("canonical_member");
@@ -491,7 +491,7 @@ describe("identity pending-read compatibility", () => {
     });
 
     await expect(
-      t.query(api.aliases.resolveCanonicalMemberId, { memberId: "shared_alias" })
+      t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "shared_alias" })
     ).rejects.toThrow("conflicting account alias");
   });
 
@@ -544,7 +544,7 @@ describe("identity pending-read compatibility", () => {
       });
 
       await expect(
-        t.query(api.aliases.getAliasesForMember, { canonicalMemberId: "canonical_member" })
+        t.query(internal.aliases.getAliasesForMember, { canonicalMemberId: "canonical_member" })
       ).rejects.toThrow("conflicting account alias");
     }
   );
@@ -583,7 +583,7 @@ describe("identity pending-read compatibility", () => {
     });
 
     await expect(
-      t.query(api.aliases.getAliasesForMember, { canonicalMemberId: "canonical_member" })
+      t.query(internal.aliases.getAliasesForMember, { canonicalMemberId: "canonical_member" })
     ).rejects.toThrow("shadows a canonical account");
   });
 
@@ -608,7 +608,7 @@ describe("identity pending-read compatibility", () => {
     });
 
     await expect(
-      t.query(api.aliases.resolveCanonicalMemberId, { memberId: "missing_member" })
+      t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "missing_member" })
     ).rejects.toThrow("pending compatibility accounts lookup exceeds 512 rows");
   });
 
@@ -630,7 +630,7 @@ describe("identity pending-read compatibility", () => {
     });
 
     await expect(
-      t.query(api.aliases.resolveCanonicalMemberId, { memberId: "forged_alias" })
+      t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "forged_alias" })
     ).resolves.toBe("forged_alias");
   });
 });

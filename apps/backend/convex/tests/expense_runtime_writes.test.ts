@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
-import { api } from "../_generated/api";
+import { describe, expect, test, vi } from "vitest";
+import { api, internal } from "../_generated/api";
 import { Id } from "../_generated/dataModel";
 import schema from "../schema";
 import { modules } from "../test.setup";
@@ -288,6 +288,145 @@ describe("runtime expense writes", () => {
     expect(
       Object.fromEntries(result.revisions.map((row) => [row.account_id, row.expenses_revision]))
     ).toEqual({ [fixture.ownerId]: 1, [fixture.memberId]: 1 });
+  });
+
+  test("resumable group deletion fences writes until the cascade completes", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const fixture = await seedExpenseBatch(t, true);
+      await t.run(async (ctx) => {
+        for (let index = 2; index < 9; index += 1) {
+          await ctx.db.insert("expenses", {
+            id: `runtime_expense_${index}`,
+            group_id: "runtime_group",
+            group_ref: fixture.groupId,
+            description: `Expense ${index}`,
+            date: 1,
+            total_amount: 20,
+            paid_by_member_id: "runtime_owner_member",
+            involved_member_ids: ["runtime_owner_member", "runtime_member_member"],
+            splits: [
+              {
+                id: `owner_split_${index}`,
+                member_id: "runtime_owner_member",
+                amount: 10,
+                is_settled: false
+              },
+              {
+                id: `member_split_${index}`,
+                member_id: "runtime_member_member",
+                amount: 10,
+                is_settled: false
+              }
+            ],
+            is_settled: false,
+            owner_email: "runtime-owner@test.com",
+            owner_account_id: "runtime_owner_auth",
+            owner_id: fixture.ownerId,
+            participant_member_ids: ["runtime_owner_member", "runtime_member_member"],
+            participant_emails: ["runtime-owner@test.com", "runtime-member@test.com"],
+            participants: [
+              { member_id: "runtime_owner_member", name: "Owner" },
+              { member_id: "runtime_member_member", name: "Member" }
+            ],
+            created_at: 1,
+            updated_at: 1
+          });
+        }
+      });
+      const owner = t.withIdentity(identity("runtime-owner@test.com", "runtime_owner_auth"));
+
+      await owner.mutation(api.groups.deleteGroup, { id: "runtime_group" });
+
+      const canonicalExpenseId = await t.run(async (ctx) => {
+        const canonicalGroupId = await ctx.db.insert("groups", {
+          id: "canonical_runtime_group",
+          name: "Canonical runtime group",
+          members: [
+            { id: "runtime_owner_member", name: "Owner" },
+            { id: "runtime_member_member", name: "Member" }
+          ],
+          owner_email: "runtime-owner@test.com",
+          owner_account_id: "runtime_owner_auth",
+          owner_id: fixture.ownerId,
+          created_at: 1,
+          updated_at: 1
+        });
+        return await ctx.db.insert("expenses", {
+          id: "canonical_runtime_expense",
+          group_id: "runtime_group",
+          group_ref: canonicalGroupId,
+          description: "Canonical runtime expense",
+          date: 1,
+          total_amount: 20,
+          paid_by_member_id: "runtime_owner_member",
+          involved_member_ids: ["runtime_owner_member", "runtime_member_member"],
+          splits: [
+            {
+              id: "canonical_owner_split",
+              member_id: "runtime_owner_member",
+              amount: 10,
+              is_settled: false
+            },
+            {
+              id: "canonical_member_split",
+              member_id: "runtime_member_member",
+              amount: 10,
+              is_settled: false
+            }
+          ],
+          is_settled: false,
+          owner_email: "runtime-owner@test.com",
+          owner_account_id: "runtime_owner_auth",
+          owner_id: fixture.ownerId,
+          participant_member_ids: ["runtime_owner_member", "runtime_member_member"],
+          participant_emails: ["runtime-owner@test.com", "runtime-member@test.com"],
+          participants: [
+            { member_id: "runtime_owner_member", name: "Owner" },
+            { member_id: "runtime_member_member", name: "Member" }
+          ],
+          created_at: 1,
+          updated_at: 1
+        });
+      });
+
+      await expect(
+        owner.mutation(api.groups.create, {
+          id: "runtime_group",
+          name: "Resurrected",
+          members: [
+            { id: "runtime_owner_member", name: "Owner" },
+            { id: "runtime_member_member", name: "Member" }
+          ]
+        })
+      ).rejects.toThrow("Group deletion is in progress");
+      await expect(owner.mutation(api.expenses.create, runtimeExpenseArgs())).rejects.toThrow(
+        "Group deletion is in progress"
+      );
+
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(await t.run((ctx) => ctx.db.get(fixture.groupId))).toBeNull();
+      expect(await t.run((ctx) => ctx.db.get(canonicalExpenseId))).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a stale group cascade worker cannot delete an unfenced group", async () => {
+    const t = convexTest(schema, modules);
+    const fixture = await seedExpenseBatch(t, true);
+
+    await expect(
+      t.mutation(internal.groups.deleteGroupCascadeBatch, {
+        groupId: fixture.groupId,
+        ownerAccountId: fixture.ownerId,
+        deletionToken: "stale-token"
+      })
+    ).resolves.toBeNull();
+
+    expect(await t.run((ctx) => ctx.db.get(fixture.groupId))).not.toBeNull();
+    expect(await t.run((ctx) => ctx.db.query("expenses").collect())).toHaveLength(2);
   });
 
   test("multi-group cascades batch expense and group revisions once per viewer", async () => {

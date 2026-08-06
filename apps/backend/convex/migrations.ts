@@ -463,7 +463,6 @@ export const fixLinkedMemberIds = internalMutation({
             member_id: matchingMember.id,
             updated_at: Date.now()
           });
-          console.log(`Fixed member_id for ${account.email}: ${matchingMember.id}`);
           fixed++;
           break;
         }
@@ -720,9 +719,6 @@ export const backfillParticipantEmails = internalMutation({
           })
         );
         updated++;
-        console.log(
-          `Backfilled participant_emails for expense ${expense.id}: ${emails.join(", ")}`
-        );
       }
     }
     await applyExpenseWriteBatch(ctx, operations);
@@ -806,7 +802,6 @@ export const backfillParticipantEmailsAdvanced = internalMutation({
           })
         );
         updated++;
-        console.log(`Updated expense ${expense.id} with emails: ${emailArray.join(", ")}`);
       }
     }
     await applyExpenseWriteBatch(ctx, operations);

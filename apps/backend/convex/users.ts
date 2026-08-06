@@ -1,6 +1,7 @@
 import {
   internalAction,
   internalMutation,
+  internalQuery,
   mutation,
   query,
   action,
@@ -38,10 +39,7 @@ import {
   runCleanupEmailMaterializationStep
 } from "./cleanupEmailMaterialization";
 
-const MAX_SAMPLE_IDS = 10;
 const MAX_ORPHAN_CLEANUP_GROUPS = 256;
-
-const sampleIds = (ids: string[]) => ids.slice(0, MAX_SAMPLE_IDS);
 
 function orphanCleanupLimitError(resource: "groups" | "expenses" | "visibility") {
   return new Error(`Orphan cleanup requires resumable ${resource} processing`);
@@ -377,21 +375,6 @@ export async function createAccountRecord(
   });
 }
 
-const logSelfHeal = (
-  base: { operationId: string; email: string; subject: string },
-  step: string,
-  data: Record<string, unknown>
-) => {
-  console.log(
-    JSON.stringify({
-      scope: "users.store.self_heal",
-      ...base,
-      step,
-      ...data
-    })
-  );
-};
-
 async function cleanupOrphanedDataForEmailLegacy(
   ctx: any,
   identity: { email: string; subject: string }
@@ -399,11 +382,6 @@ async function cleanupOrphanedDataForEmailLegacy(
   const { email, subject } = identity;
   const normalizedEmail = email.trim().toLowerCase();
   const operationId = crypto.randomUUID();
-  const baseLog = { operationId, email, subject };
-
-  logSelfHeal(baseLog, "start", {
-    message: "Cleaning orphaned data before account creation"
-  });
 
   const friends = await ctx.db
     .query("account_friends")
@@ -414,10 +392,6 @@ async function cleanupOrphanedDataForEmailLegacy(
     await ctx.db.delete(friend._id);
     friendIds.push(friend._id);
   }
-  logSelfHeal(baseLog, "delete_account_friends", {
-    deletedCount: friendIds.length,
-    sampleIds: sampleIds(friendIds)
-  });
 
   const groupsByEmail = await ctx.db
     .query("groups")
@@ -453,45 +427,44 @@ async function cleanupOrphanedDataForEmailLegacy(
 
   const groupIds: string[] = [];
   const groupExpenseIds: string[] = [];
-  const deletedExpenseIds = new Set<string>();
   const expensesToDelete = new Map<string, Doc<"expenses">>();
   const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
   for (const group of groupsById.values()) {
-    const remainingExpenseCapacity = MAX_EXPENSE_WRITE_OPERATIONS - expensesToDelete.size;
-    const groupExpenses = await ctx.db
+    const referencedExpenses = await ctx.db
+      .query("expenses")
+      .withIndex("by_group_ref", (q: any) => q.eq("group_ref", group._id))
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    const legacyExpenses = await ctx.db
       .query("expenses")
       .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-      .take(remainingExpenseCapacity + 1);
-    if (groupExpenses.length > remainingExpenseCapacity) {
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    if (
+      referencedExpenses.length > MAX_EXPENSE_WRITE_OPERATIONS ||
+      legacyExpenses.length > MAX_EXPENSE_WRITE_OPERATIONS
+    ) {
       throw orphanCleanupLimitError("expenses");
     }
 
-    for (const expense of groupExpenses) {
-      if (
-        expense.owner_account_id !== subject ||
-        expense.owner_email.trim().toLowerCase() !== normalizedEmail ||
-        (await ctx.db.get(expense.owner_id))
-      ) {
-        throw new Error("Cannot clean an expense with conflicting live ownership");
-      }
-      if (deletedExpenseIds.has(expense._id)) continue;
-      expensesToDelete.set(String(expense._id), expense);
-      deletedExpenseIds.add(expense._id);
+    const attachedExpenses = [
+      ...referencedExpenses,
+      ...legacyExpenses.filter(
+        (expense: Doc<"expenses">) => !expense.group_ref || expense.group_ref === group._id
+      )
+    ];
+    for (const expense of attachedExpenses) {
+      const expenseKey = String(expense._id);
+      if (expensesToDelete.has(expenseKey)) continue;
+      expensesToDelete.set(expenseKey, expense);
       groupExpenseIds.push(expense._id);
+      if (expensesToDelete.size > MAX_EXPENSE_WRITE_OPERATIONS) {
+        throw orphanCleanupLimitError("expenses");
+      }
     }
 
     await groupVisibilityBatch.delete(group._id);
     groupIds.push(group._id);
   }
   await groupVisibilityBatch.flush();
-  logSelfHeal(baseLog, "delete_groups", {
-    deletedCount: groupIds.length,
-    sampleIds: sampleIds(groupIds)
-  });
-  logSelfHeal(baseLog, "delete_group_expenses", {
-    deletedCount: groupExpenseIds.length,
-    sampleIds: sampleIds(groupExpenseIds)
-  });
 
   const expensesByEmail = await ctx.db
     .query("expenses")
@@ -524,17 +497,12 @@ async function cleanupOrphanedDataForEmailLegacy(
     ) {
       throw new Error("Cannot clean an expense with conflicting live ownership");
     }
-    if (deletedExpenseIds.has(expense._id)) continue;
+    if (expensesToDelete.has(String(expense._id))) continue;
     expensesToDelete.set(String(expense._id), expense);
-    deletedExpenseIds.add(expense._id);
     ownedExpenseIds.push(expense._id);
   }
   await deleteOrphanCleanupExpenses(ctx, expensesToDelete);
   await deleteBoundedOrphanVisibility(ctx, subject);
-  logSelfHeal(baseLog, "delete_owned_expenses", {
-    deletedCount: ownedExpenseIds.length,
-    sampleIds: sampleIds(ownedExpenseIds)
-  });
 
   const linkedById =
     subject.length > 0
@@ -596,42 +564,25 @@ async function cleanupOrphanedDataForEmailLegacy(
     });
     unlinkedIds.push(friend._id);
   }
-  logSelfHeal(baseLog, "unlink_from_others", {
-    unlinkedCount: unlinkedIds.length,
-    sampleIds: sampleIds(unlinkedIds)
-  });
 
   const incomingRequests = await ctx.db
     .query("link_requests")
     .withIndex("by_recipient_email", (q: any) => q.eq("recipient_email", email))
     .collect();
   const deletedRequestIds = new Set<string>();
-  const requestIds: string[] = [];
-  let incomingCount = 0;
   for (const req of incomingRequests) {
     await ctx.db.delete(req._id);
     deletedRequestIds.add(req._id);
-    requestIds.push(req._id);
-    incomingCount++;
   }
   const outgoingRequests = await ctx.db
     .query("link_requests")
     .withIndex("by_requester_email", (q: any) => q.eq("requester_email", email))
     .collect();
-  let outgoingCount = 0;
   for (const req of outgoingRequests) {
     if (deletedRequestIds.has(req._id)) continue;
     await ctx.db.delete(req._id);
     deletedRequestIds.add(req._id);
-    requestIds.push(req._id);
-    outgoingCount++;
   }
-  logSelfHeal(baseLog, "delete_link_requests", {
-    deletedCount: deletedRequestIds.size,
-    incomingCount,
-    outgoingCount,
-    sampleIds: sampleIds(requestIds)
-  });
 
   const allInvites = await ctx.db
     .query("invite_tokens")
@@ -642,21 +593,6 @@ async function cleanupOrphanedDataForEmailLegacy(
     await ctx.db.delete(invite._id);
     inviteIds.push(invite._id);
   }
-  logSelfHeal(baseLog, "delete_invite_tokens", {
-    deletedCount: inviteIds.length,
-    sampleIds: sampleIds(inviteIds)
-  });
-
-  logSelfHeal(baseLog, "complete", {
-    friendsDeleted: friendIds.length,
-    groupsDeleted: groupIds.length,
-    groupExpensesDeleted: groupExpenseIds.length,
-    expensesDeleted: ownedExpenseIds.length,
-    requestsDeleted: deletedRequestIds.size,
-    invitesDeleted: inviteIds.length,
-    unlinkedFriends: unlinkedIds.length
-  });
-
   return {
     operationId,
     friendsDeleted: friendIds.length,
@@ -1398,9 +1334,15 @@ export const updateLinkedMemberId = mutation({
 export const generateUploadUrl = action({
   args: {},
   handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    await ctx.runQuery(internal.users.requireActiveAccountForUpload, {});
     return await ctx.storage.generateUploadUrl();
+  }
+});
+
+export const requireActiveAccountForUpload = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    await getCurrentUserOrThrow(ctx);
   }
 });
 

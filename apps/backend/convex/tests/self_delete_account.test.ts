@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { expect, test, vi } from "vitest";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
 import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
@@ -1130,6 +1130,172 @@ test("self deletion cascades every expense before deleting an owner-only group",
       .collect()
   }));
   expect(remaining).toEqual({ group: null, expense: null, visibility: [] });
+});
+
+test("self deletion preserves an expense canonically attached to another group", async () => {
+  const t = convexTest(schema, modules);
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: Date.now()
+    });
+    const otherId = await ctx.db.insert("accounts", {
+      id: "other_auth",
+      email: "other@test.com",
+      display_name: "Other",
+      member_id: "other_member",
+      created_at: Date.now()
+    });
+    await ctx.db.insert("groups", {
+      id: "owner_only_group",
+      name: "Owner only",
+      members: [{ id: "owner_member", name: "Owner" }],
+      owner_id: ownerId,
+      owner_account_id: "owner_auth",
+      owner_email: "owner@test.com",
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    const canonicalGroupId = await ctx.db.insert("groups", {
+      id: "canonical_group",
+      name: "Canonical group",
+      members: [{ id: "other_member", name: "Other" }],
+      owner_id: otherId,
+      owner_account_id: "other_auth",
+      owner_email: "other@test.com",
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("expenses", {
+      id: "canonical_group_expense",
+      group_id: "owner_only_group",
+      group_ref: canonicalGroupId,
+      description: "Canonical group expense",
+      date: Date.now(),
+      total_amount: 10,
+      paid_by_member_id: "other_member",
+      involved_member_ids: ["other_member"],
+      splits: [{ id: "split", member_id: "other_member", amount: 10, is_settled: false }],
+      is_settled: false,
+      owner_id: otherId,
+      owner_account_id: "other_auth",
+      owner_email: "other@test.com",
+      participant_member_ids: ["other_member"],
+      participant_emails: ["other@test.com"],
+      participants: [{ member_id: "other_member", name: "Other" }],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+  });
+
+  await markGroupVisibilityReady(t);
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {
+    result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  }
+  expect(result.success).toBe(true);
+
+  const remaining = await t.run(async (ctx) => ({
+    sourceGroup: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "owner_only_group"))
+      .unique(),
+    canonicalGroup: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "canonical_group"))
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "canonical_group_expense"))
+      .unique()
+  }));
+  expect(remaining.sourceGroup).toBeNull();
+  expect(remaining.canonicalGroup).not.toBeNull();
+  expect(remaining.expense).not.toBeNull();
+});
+
+test("self deletion completes a preexisting fenced group deletion", async () => {
+  const t = convexTest(schema, modules);
+  const fixture = await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: Date.now()
+    });
+    const otherId = await ctx.db.insert("accounts", {
+      id: "other_auth",
+      email: "other@test.com",
+      display_name: "Other",
+      member_id: "other_member",
+      created_at: Date.now()
+    });
+    const groupId = await ctx.db.insert("groups", {
+      id: "fenced_group",
+      name: "Fenced group",
+      members: [
+        { id: "owner_member", name: "Owner" },
+        { id: "other_member", name: "Other" }
+      ],
+      owner_id: ownerId,
+      owner_account_id: "owner_auth",
+      owner_email: "owner@test.com",
+      deletion_token: "pending-delete",
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    const expenseId = await ctx.db.insert("expenses", {
+      id: "fenced_group_expense",
+      group_id: "fenced_group",
+      group_ref: groupId,
+      description: "Fenced group expense",
+      date: Date.now(),
+      total_amount: 10,
+      paid_by_member_id: "other_member",
+      involved_member_ids: ["owner_member", "other_member"],
+      splits: [
+        { id: "owner_split", member_id: "owner_member", amount: 5, is_settled: false },
+        { id: "other_split", member_id: "other_member", amount: 5, is_settled: false }
+      ],
+      is_settled: false,
+      owner_id: otherId,
+      owner_account_id: "other_auth",
+      owner_email: "other@test.com",
+      participant_member_ids: ["owner_member", "other_member"],
+      participant_emails: ["owner@test.com", "other@test.com"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "other_member", name: "Other" }
+      ],
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    return { ownerId, groupId, expenseId };
+  });
+
+  await markGroupVisibilityReady(t);
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  let result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {
+    result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
+  }
+  expect(result.success).toBe(true);
+
+  await expect(
+    t.mutation(internal.groups.deleteGroupCascadeBatch, {
+      groupId: fixture.groupId,
+      ownerAccountId: fixture.ownerId,
+      deletionToken: "pending-delete"
+    })
+  ).resolves.toBeNull();
+  expect(await t.run((ctx) => ctx.db.get(fixture.groupId))).toBeNull();
+  expect(await t.run((ctx) => ctx.db.get(fixture.expenseId))).toBeNull();
 });
 
 test("self deletion preflights the aggregate identity workload for four 64-member expenses", async () => {

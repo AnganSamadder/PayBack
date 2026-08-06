@@ -10,6 +10,7 @@ import {
   resolveAuthenticatedAccount
 } from "./helpers";
 import { findAccountsByEmailIdentity } from "./identity";
+import { checkRateLimit } from "./rateLimit";
 
 /**
  * Sends a friend request to a user by email.
@@ -20,11 +21,13 @@ export const send = mutation({
     const recipientEmail = args.email.trim().toLowerCase();
     const { user: sender } = await getCurrentUserOrThrow(ctx);
     const senderEmail = sender.email.trim().toLowerCase();
+    await checkRateLimit(ctx, sender.id, "friend_requests:send", 10);
 
     const recipients = await findAccountsByEmailIdentity(ctx.db, recipientEmail);
-    if (recipients.length > 1) throw new Error("Recipient account identity is ambiguous");
+    if (recipients.length !== 1) {
+      return { success: true };
+    }
     const recipient = recipients[0];
-    if (!recipient) throw new Error("Recipient account not found");
     assertAccountCanAcceptChanges(recipient);
 
     if (sender._id === recipient._id) throw new Error("Cannot add yourself");

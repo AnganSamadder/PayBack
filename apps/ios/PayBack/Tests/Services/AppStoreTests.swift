@@ -1727,6 +1727,66 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(friendCalls, 0)
     }
 
+    func testClearAllUserData_stopsBeforeNextServiceAfterAccountSwitch() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        sut.session = UserSession(account: accountA)
+        await mockExpenseCloudService.suspendNextClearAll()
+
+        sut.clearAllUserData()
+
+        for _ in 0..<100 {
+            if await mockExpenseCloudService.currentClearAllInvocationCount() == 1 { break }
+            await Task.yield()
+        }
+        let startedExpenseCalls = await mockExpenseCloudService.currentClearAllInvocationCount()
+        XCTAssertEqual(startedExpenseCalls, 1)
+
+        await sut.signOut()
+        sut.session = UserSession(account: accountB)
+        await mockExpenseCloudService.resumeClearAll()
+
+        for _ in 0..<100 {
+            await Task.yield()
+        }
+
+        let groupCalls = await mockGroupCloudService.currentClearAllInvocationCount()
+        let friendCalls = await mockAccountService.currentClearFriendsInvocationCount()
+        XCTAssertEqual(groupCalls, 0)
+        XCTAssertEqual(friendCalls, 0)
+        XCTAssertFalse(sut.isClearingAllData)
+        XCTAssertNil(sut.clearAllDataErrorMessage)
+    }
+
+    func testClearAllUserData_stopsFriendClearAfterAccountSwitchDuringGroupClear() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        sut.session = UserSession(account: accountA)
+        await mockGroupCloudService.suspendNextClearAll()
+
+        sut.clearAllUserData()
+
+        for _ in 0..<100 {
+            if await mockGroupCloudService.currentClearAllInvocationCount() == 1 { break }
+            await Task.yield()
+        }
+        let startedGroupCalls = await mockGroupCloudService.currentClearAllInvocationCount()
+        XCTAssertEqual(startedGroupCalls, 1)
+
+        await sut.signOut()
+        sut.session = UserSession(account: accountB)
+        await mockGroupCloudService.resumeClearAll()
+
+        for _ in 0..<100 {
+            await Task.yield()
+        }
+
+        let friendCalls = await mockAccountService.currentClearFriendsInvocationCount()
+        XCTAssertEqual(friendCalls, 0)
+        XCTAssertFalse(sut.isClearingAllData)
+        XCTAssertNil(sut.clearAllDataErrorMessage)
+    }
+
 
 }
 

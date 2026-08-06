@@ -103,6 +103,14 @@ func upsertDebugGroup(_ group: SpendingGroup) async throws {
         _ = try await client.mutation("groups:deleteGroups", with: args)
     }
 
+    func removeMemberFromGroup(_ groupId: UUID, memberId: UUID) async throws {
+        let args: [String: ConvexEncodable?] = [
+            "id": groupId.uuidString,
+            "memberId": memberId.uuidString
+        ]
+        _ = try await client.mutation("groups:removeMemberAndExpenses", with: args)
+    }
+
 func deleteDebugGroups() async throws {
         _ = try await client.mutation("groups:clearDebugDataForUser", with: [:])
     }
