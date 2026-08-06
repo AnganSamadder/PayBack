@@ -1820,9 +1820,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         acknowledge expectation: SettlementRealtimeExpectation
     ) -> Bool {
         expectation.memberIds.allSatisfy { expectedMemberId in
-            expense.splits.contains { split in
-                areSamePerson(split.memberId, expectedMemberId) && split.isSettled == expectation.settled
-            }
+            expense.splits.first(where: { $0.memberId == expectedMemberId })?.isSettled == expectation.settled
         }
     }
 

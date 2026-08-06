@@ -46,6 +46,19 @@ import {
 } from "./cleanupEmailMaterialization";
 
 const MAX_ORPHAN_CLEANUP_GROUPS = 256;
+const MAX_LINKED_ACCOUNT_SURFACE_GROUPS = 64;
+const MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS = 64;
+const MAX_LINKED_ACCOUNT_SURFACE_FRIENDS = 128;
+const MAX_LINKED_ACCOUNT_SURFACE_LOOKUPS = 512;
+const MAX_LINKED_ACCOUNT_SURFACE_ENCODED_BYTES = 1_000_000;
+
+function linkedAccountSurfaceLimitError(resource: string) {
+  return new Error(`Linked account caller-visible identity surface exceeds the ${resource} limit`);
+}
+
+function encodedSize(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value) ?? "").length;
+}
 
 function orphanCleanupLimitError(resource: "groups" | "expenses" | "visibility") {
   return new Error(`Orphan cleanup requires resumable ${resource} processing`);
@@ -1483,6 +1496,20 @@ export const resolveLinkedAccountsForMemberIds = query({
     // - owned/shared groups
     // - direct friends + linked friend accounts
     const authorizedMemberIds = new Set<string>();
+    let surfaceEncodedBytes = 0;
+    let surfaceLookups = 3;
+    const consumeSurfaceRows = (rows: readonly unknown[], resource: string) => {
+      surfaceEncodedBytes += encodedSize(rows);
+      if (surfaceEncodedBytes > MAX_LINKED_ACCOUNT_SURFACE_ENCODED_BYTES) {
+        throw linkedAccountSurfaceLimitError(`${resource} encoded-byte`);
+      }
+    };
+    const reserveSurfaceLookups = (count: number) => {
+      surfaceLookups += count;
+      if (surfaceLookups > MAX_LINKED_ACCOUNT_SURFACE_LOOKUPS) {
+        throw linkedAccountSurfaceLimitError("query");
+      }
+    };
     const ownCanonical = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id ?? user.id);
     const ownEquivalent = await getAllEquivalentMemberIds(ctx.db, ownCanonical);
     for (const id of [ownCanonical, ...ownEquivalent, ...(user.alias_member_ids || [])]) {
@@ -1492,15 +1519,27 @@ export const resolveLinkedAccountsForMemberIds = query({
     const ownerGroups = await ctx.db
       .query("groups")
       .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-      .collect();
+      .take(MAX_LINKED_ACCOUNT_SURFACE_GROUPS + 1);
+    if (ownerGroups.length > MAX_LINKED_ACCOUNT_SURFACE_GROUPS) {
+      throw linkedAccountSurfaceLimitError("owned-group row");
+    }
+    consumeSurfaceRows(ownerGroups, "owned-group");
     const visibilityRows = await ctx.db
       .query("group_visibility")
       .withIndex("by_account_id_and_group_updated_at", (q) => q.eq("account_id", user._id))
-      .collect();
+      .take(MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS + 1);
+    if (visibilityRows.length > MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS) {
+      throw linkedAccountSurfaceLimitError("visibility row");
+    }
+    consumeSurfaceRows(visibilityRows, "visibility");
     const visibleGroups = new Map(ownerGroups.map((group) => [String(group._id), group]));
     for (const visibilityRow of visibilityRows) {
+      reserveSurfaceLookups(1);
       const group = await ctx.db.get(visibilityRow.group_id);
-      if (group && !group.deletion_token) visibleGroups.set(String(group._id), group);
+      if (group && !group.deletion_token) {
+        consumeSurfaceRows([group], "visible-group");
+        visibleGroups.set(String(group._id), group);
+      }
     }
     for (const group of visibleGroups.values()) {
       for (const member of group.members) {
@@ -1511,7 +1550,11 @@ export const resolveLinkedAccountsForMemberIds = query({
     const myFriends = await ctx.db
       .query("account_friends")
       .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
-      .collect();
+      .take(MAX_LINKED_ACCOUNT_SURFACE_FRIENDS + 1);
+    if (myFriends.length > MAX_LINKED_ACCOUNT_SURFACE_FRIENDS) {
+      throw linkedAccountSurfaceLimitError("friend row");
+    }
+    consumeSurfaceRows(myFriends, "friend");
     for (const friend of myFriends) {
       authorizedMemberIds.add(normalizeMemberId(friend.member_id));
       if (friend.linked_member_id) {
@@ -1519,14 +1562,17 @@ export const resolveLinkedAccountsForMemberIds = query({
       }
       let linkedAccount: any | null = null;
       if (friend.linked_account_id) {
+        reserveSurfaceLookups(2);
         linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id);
       }
       if (!linkedAccount && friend.linked_account_email) {
+        reserveSurfaceLookups(1);
         linkedAccount = await ctx.db
           .query("accounts")
           .withIndex("by_email", (q) => q.eq("email", friend.linked_account_email!))
           .unique();
       }
+      if (linkedAccount) consumeSurfaceRows([linkedAccount], "linked-account");
       if (linkedAccount?.member_id) {
         authorizedMemberIds.add(normalizeMemberId(linkedAccount.member_id));
       }
