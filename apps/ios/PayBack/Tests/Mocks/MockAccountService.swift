@@ -20,8 +20,12 @@ actor MockAccountServiceForAppStore: AccountService {
     private var unlinkedFriendDeleteInvocationCount = 0
     private var shouldSuspendLinkedFriendDelete = false
     private var shouldSuspendUnlinkedFriendDelete = false
+    private var shouldSuspendProfileImageUpload = false
     private var linkedFriendDeleteContinuation: CheckedContinuation<Void, Never>?
     private var unlinkedFriendDeleteContinuation: CheckedContinuation<Void, Never>?
+    private var profileImageUploadContinuation: CheckedContinuation<Void, Never>?
+    private var profileImageUploadInvocationCount = 0
+    private var profileImageUploadExpectedAccountIds: [String] = []
 
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -137,10 +141,15 @@ actor MockAccountServiceForAppStore: AccountService {
         unlinkedFriendDeleteInvocationCount = 0
         shouldSuspendLinkedFriendDelete = false
         shouldSuspendUnlinkedFriendDelete = false
+        shouldSuspendProfileImageUpload = false
         linkedFriendDeleteContinuation?.resume()
         unlinkedFriendDeleteContinuation?.resume()
+        profileImageUploadContinuation?.resume()
         linkedFriendDeleteContinuation = nil
         unlinkedFriendDeleteContinuation = nil
+        profileImageUploadContinuation = nil
+        profileImageUploadInvocationCount = 0
+        profileImageUploadExpectedAccountIds.removeAll()
     }
 
     func latestSyncedFriends(accountEmail: String) -> [AccountFriend]? {
@@ -161,8 +170,37 @@ actor MockAccountServiceForAppStore: AccountService {
     }
 
     func uploadProfileImage(_ data: Data) async throws -> String {
+        profileImageUploadInvocationCount += 1
+        if shouldSuspendProfileImageUpload {
+            await withCheckedContinuation { continuation in
+                profileImageUploadContinuation = continuation
+            }
+        }
         if shouldFail { throw PayBackError.networkUnavailable }
         return "https://example.com/mock.jpg"
+    }
+
+    func uploadProfileImage(_ data: Data, expectedAccountId: String) async throws -> String {
+        profileImageUploadExpectedAccountIds.append(expectedAccountId)
+        return try await uploadProfileImage(data)
+    }
+
+    func suspendNextProfileImageUpload() {
+        shouldSuspendProfileImageUpload = true
+    }
+
+    func resumeProfileImageUpload() {
+        shouldSuspendProfileImageUpload = false
+        profileImageUploadContinuation?.resume()
+        profileImageUploadContinuation = nil
+    }
+
+    func currentProfileImageUploadInvocationCount() -> Int {
+        profileImageUploadInvocationCount
+    }
+
+    func receivedProfileImageUploadExpectedAccountIds() -> [String] {
+        profileImageUploadExpectedAccountIds
     }
 
     func checkAuthentication() async throws -> Bool {

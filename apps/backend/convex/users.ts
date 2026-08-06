@@ -1359,10 +1359,14 @@ export const updateProfile = mutation({
   args: {
     profile_avatar_color: v.optional(v.string()),
     profile_image_url: v.optional(v.string()),
-    storage_id: v.optional(v.id("_storage"))
+    storage_id: v.optional(v.id("_storage")),
+    expected_account_id: v.optional(v.string())
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    if (args.expected_account_id && args.expected_account_id !== user.id) {
+      throw new Error("Profile upload account changed before completion");
+    }
 
     const patches: any = { updated_at: Date.now() };
     if (args.profile_avatar_color !== undefined)

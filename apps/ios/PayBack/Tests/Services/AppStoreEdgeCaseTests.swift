@@ -684,6 +684,31 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertEqual(sut.expenses.count, 0)
     }
 
+    // MARK: - Profile Image Edge Cases
+
+    func testProfileImageUpload_AfterAccountSwitch_DoesNotMutateNewAccount() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        var accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        accountB.profileImageUrl = "https://example.com/account-b.jpg"
+        sut.session = UserSession(account: accountA)
+        await mockAccountService.suspendNextProfileImageUpload()
+
+        let operation = Task { @MainActor in
+            try await sut.uploadProfileImage(Data([0x01]))
+        }
+        XCTAssertTrue(await waitForProfileImageUploadInvocation())
+
+        sut.session = UserSession(account: accountB)
+        sut.currentUser.profileImageUrl = accountB.profileImageUrl
+        await mockAccountService.resumeProfileImageUpload()
+        try await operation.value
+
+        XCTAssertEqual(sut.session?.account, accountB)
+        XCTAssertEqual(sut.currentUser.profileImageUrl, accountB.profileImageUrl)
+        let expectedAccountIds = await mockAccountService.receivedProfileImageUploadExpectedAccountIds()
+        XCTAssertEqual(expectedAccountIds, [accountA.id])
+    }
+
     // MARK: - Send Link Request Edge Cases
 
     func testSendLinkRequest_WithCurrentUserMemberId_ThrowsError() async throws {
@@ -1029,6 +1054,14 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     private func waitForCreateInvocation() async -> Bool {
         for _ in 0..<1_000 {
             if await mockLinkRequestService.currentCreateInvocationCount() > 0 { return true }
+            await Task.yield()
+        }
+        return false
+    }
+
+    private func waitForProfileImageUploadInvocation() async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockAccountService.currentProfileImageUploadInvocationCount() > 0 { return true }
             await Task.yield()
         }
         return false

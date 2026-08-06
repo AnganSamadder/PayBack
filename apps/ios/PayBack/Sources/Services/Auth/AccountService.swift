@@ -17,6 +17,7 @@ protocol AccountService: Actor {
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String?
     func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws
     func uploadProfileImage(_ data: Data) async throws -> String
+    func uploadProfileImage(_ data: Data, expectedAccountId: String) async throws -> String
     func clearFriends() async throws
 
     /// Checks if the user is authenticated on the backend
@@ -68,6 +69,10 @@ protocol AccountService: Actor {
 
 extension AccountService {
     func clearFriends() async throws {}
+
+    func uploadProfileImage(_ data: Data, expectedAccountId: String) async throws -> String {
+        try await uploadProfileImage(data)
+    }
 
     func hasCompletedSelfDeletion() async throws -> Bool { false }
 

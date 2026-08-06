@@ -1022,16 +1022,29 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
     }
 
+    @MainActor
     func uploadProfileImage(_ data: Data) async throws {
-        let url = try await accountService.uploadProfileImage(data)
+        guard let expectedAccountId = session?.account.id else {
+            throw PayBackError.authSessionMissing
+        }
+        let context = groupMutationContext()
 
-        await MainActor.run {
+        do {
+            let url = try await accountService.uploadProfileImage(
+                data,
+                expectedAccountId: expectedAccountId
+            )
+            guard isCurrentGroupMutation(context) else { return }
+
             currentUser.profileImageUrl = url
             if var account = session?.account {
                 account.profileImageUrl = url
                 session = UserSession(account: account)
             }
             persistCurrentState()
+        } catch {
+            guard isCurrentGroupMutation(context) else { return }
+            throw error
         }
     }
 

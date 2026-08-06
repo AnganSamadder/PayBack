@@ -269,6 +269,10 @@ actor ConvexAccountService: AccountService {
     }
 
     func uploadProfileImage(_ data: Data) async throws -> String {
+        try await uploadProfileImage(data, expectedAccountId: "")
+    }
+
+    func uploadProfileImage(_ data: Data, expectedAccountId: String) async throws -> String {
         let urlString: String = try await client.action("users:generateUploadUrl", with: [:])
         guard let uploadUrl = URL(string: urlString) else {
              throw PayBackError.underlying(message: "Failed to generate upload URL")
@@ -284,11 +288,20 @@ actor ConvexAccountService: AccountService {
         }
 
         let uploadResponse = try JSONDecoder().decode(UploadResponse.self, from: responseData)
-        return try await updateProfileWithStorageId(uploadResponse.storageId)
+        return try await updateProfileWithStorageId(
+            uploadResponse.storageId,
+            expectedAccountId: expectedAccountId
+        )
     }
 
-    private func updateProfileWithStorageId(_ storageId: String) async throws -> String {
-         let args: [String: ConvexEncodable?] = ["storage_id": storageId]
+    private func updateProfileWithStorageId(
+        _ storageId: String,
+        expectedAccountId: String
+    ) async throws -> String {
+         let args: [String: ConvexEncodable?] = [
+            "storage_id": storageId,
+            "expected_account_id": expectedAccountId.isEmpty ? nil : expectedAccountId
+         ]
          _ = try await client.mutation("users:updateProfile", with: args)
          let baseUrl = ConvexConfig.deploymentUrl
          return "\(baseUrl)/api/storage/\(storageId)"
