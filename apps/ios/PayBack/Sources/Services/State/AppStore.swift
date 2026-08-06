@@ -42,6 +42,11 @@ final class AppStore: ObservableObject {
         let groupIds: Set<UUID>
     }
 
+    private struct FriendDeletionToken {
+        let id: UUID
+        let identityMemberIds: Set<UUID>
+    }
+
     private struct SettlementMutationContext {
         let accountId: String?
         let dataEpoch: UUID
@@ -89,6 +94,11 @@ final class AppStore: ObservableObject {
     private var pendingExpenseDeleteIds: Set<UUID> = []
     /// Destructive group operations are serialized per group so optimistic rollback snapshots cannot interleave.
     private var activeGroupMutationTokensByGroupId: [UUID: UUID] = [:]
+    /// Friend deletion mutates the same friend/group/expense graph as group operations.
+    /// A global gate makes those destructive paths mutually exclusive in either start order.
+    private var activeFriendDeletionTokenId: UUID?
+    /// Successful deletes remain tombstoned until realtime confirms the identity is absent.
+    private var pendingFriendDeletionIdentityIdsByToken: [UUID: Set<UUID>] = [:]
     /// Realtime payloads should not replace local state until the current session has completed
     /// an explicit remote hydration. This prevents empty startup snapshots from clobbering
     /// locally restored or test-seeded state.
@@ -446,7 +456,15 @@ final class AppStore: ObservableObject {
     }
 
     /// Dedupes friends using alias logic and updates state
-    private func processFriendsUpdate(_ remoteFriends: [AccountFriend]) {
+    func processFriendsUpdate(_ remoteFriends: [AccountFriend]) {
+        let pendingDeletionIdentitySets = Array(pendingFriendDeletionIdentityIdsByToken.values)
+        let visibleRemoteFriends = remoteFriends.filter { friend in
+            !pendingDeletionIdentitySets.contains(where: { accountFriend(friend, matchesAny: $0) })
+        }
+        pendingFriendDeletionIdentityIdsByToken = pendingFriendDeletionIdentityIdsByToken.filter { _, identityIds in
+            remoteFriends.contains(where: { accountFriend($0, matchesAny: identityIds) })
+        }
+
         // Advanced Deduplication & Alias Mapping
         var masterFriends: [AccountFriend] = []
         var aliasMap: [UUID: UUID] = [:] // Alias -> Master
@@ -454,7 +472,7 @@ final class AppStore: ObservableObject {
 
         // First pass: Identify masters (friends with linked accounts or aliases)
         // Prefer linked accounts as masters.
-        let sortedFriends = remoteFriends.sorted(by: { f1, f2 in
+        let sortedFriends = visibleRemoteFriends.sorted(by: { f1, f2 in
             if f1.hasLinkedAccount != f2.hasLinkedAccount {
                 return f1.hasLinkedAccount // Prefer linked
             }
@@ -498,6 +516,18 @@ final class AppStore: ObservableObject {
             print("[AppStore] Synced \(masterFriends.count) friends from Convex (deduped from \(remoteFriends.count))")
         }
         #endif
+    }
+
+    private func accountFriend(_ friend: AccountFriend, matchesAny identityIds: Set<UUID>) -> Bool {
+        ([friend.memberId] + (friend.aliasMemberIds ?? [])).contains { candidateId in
+            identityIds.contains { candidateId == $0 || areSamePerson(candidateId, $0) }
+        }
+    }
+
+    private func groupMember(_ member: GroupMember, matchesAny identityIds: Set<UUID>) -> Bool {
+        ([member.id] + (member.accountFriendMemberId.map { [$0] } ?? [])).contains { candidateId in
+            identityIds.contains { candidateId == $0 || areSamePerson(candidateId, $0) }
+        }
     }
 
     // MARK: - Session management
@@ -816,6 +846,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
         latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
         activeGroupMutationTokensByGroupId.removeAll()
+        activeFriendDeletionTokenId = nil
+        pendingFriendDeletionIdentityIdsByToken.removeAll()
         dataEpoch = UUID()
 
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
@@ -862,6 +894,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
         pendingExpenseSettlementIds.removeAll()
         latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
+        activeGroupMutationTokensByGroupId.removeAll()
+        activeFriendDeletionTokenId = nil
+        pendingFriendDeletionIdentityIdsByToken.removeAll()
 
         // Persist locally
         persistCurrentState()
@@ -1218,7 +1253,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     private func beginGroupMutation(groupIds: Set<UUID>) throws -> GroupMutationToken {
-        guard groupIds.allSatisfy({ activeGroupMutationTokensByGroupId[$0] == nil }) else {
+        guard activeFriendDeletionTokenId == nil,
+              groupIds.allSatisfy({ activeGroupMutationTokensByGroupId[$0] == nil }) else {
             throw PayBackError.underlying(message: "A group update is already in progress.")
         }
 
@@ -1233,6 +1269,28 @@ func completeAuthentication(id: String, email: String, name: String?) {
     private func endGroupMutation(_ token: GroupMutationToken) {
         for groupId in token.groupIds where activeGroupMutationTokensByGroupId[groupId] == token.id {
             activeGroupMutationTokensByGroupId.removeValue(forKey: groupId)
+        }
+    }
+
+    @MainActor
+    private func beginFriendDeletion(identityMemberIds: Set<UUID>) throws -> FriendDeletionToken {
+        guard activeFriendDeletionTokenId == nil, activeGroupMutationTokensByGroupId.isEmpty else {
+            throw PayBackError.underlying(message: "Another friend or group update is already in progress.")
+        }
+
+        let token = FriendDeletionToken(id: UUID(), identityMemberIds: identityMemberIds)
+        activeFriendDeletionTokenId = token.id
+        pendingFriendDeletionIdentityIdsByToken[token.id] = identityMemberIds
+        return token
+    }
+
+    @MainActor
+    private func endFriendDeletion(_ token: FriendDeletionToken, keepRealtimeTombstone: Bool) {
+        if activeFriendDeletionTokenId == token.id {
+            activeFriendDeletionTokenId = nil
+        }
+        if !keepRealtimeTombstone {
+            pendingFriendDeletionIdentityIdsByToken.removeValue(forKey: token.id)
         }
     }
 
@@ -1330,37 +1388,47 @@ func completeAuthentication(id: String, email: String, name: String?) {
         print("🔵 deleteLinkedFriend called for: \(memberId)")
 
         let mutationContext = groupMutationContext()
-        // Capture only what we'll remove so rollback doesn't clobber concurrent realtime updates.
-        let removedFriend = friends.first { $0.memberId == memberId }
-        let directGroup = groups.first(where: {
-            ($0.isDirect ?? false) && $0.members.contains(where: { $0.id == memberId })
-        })
-        let removedGroupExpenses = directGroup.map { g in expenses.filter { $0.groupId == g.id } } ?? []
-
-        friends.removeAll { $0.memberId == memberId }
-        if let g = directGroup {
-            print("🟢 Deleting direct group: \(g.id)")
-            expenses.removeAll { $0.groupId == g.id }
-            groups.removeAll { $0.id == g.id }
+        let identityMemberIds = accountFriendIdentityMemberIds(for: [memberId])
+        let deletionToken = try beginFriendDeletion(identityMemberIds: identityMemberIds)
+        var shouldKeepRealtimeTombstone = false
+        defer {
+            endFriendDeletion(deletionToken, keepRealtimeTombstone: shouldKeepRealtimeTombstone)
         }
+        // Capture only what we'll remove so rollback doesn't clobber concurrent realtime updates.
+        let removedFriends = friends.filter { accountFriend($0, matchesAny: identityMemberIds) }
+        let directGroups = groups.filter { group in
+            (group.isDirect ?? false) && group.members.contains(where: {
+                groupMember($0, matchesAny: identityMemberIds)
+            })
+        }
+        let directGroupIds = Set(directGroups.map(\.id))
+        let removedGroupExpenses = expenses.filter { directGroupIds.contains($0.groupId) }
+
+        friends.removeAll { accountFriend($0, matchesAny: identityMemberIds) }
+        for group in directGroups {
+            print("🟢 Deleting direct group: \(group.id)")
+        }
+        expenses.removeAll { directGroupIds.contains($0.groupId) }
+        groups.removeAll { directGroupIds.contains($0.id) }
         persistCurrentState()
 
         do {
             try await accountService.deleteLinkedFriend(memberId: memberId)
+            guard isCurrentGroupMutation(mutationContext) else { return }
+            shouldKeepRealtimeTombstone = true
             print("✅ Backend deleteLinkedFriend success")
-            scheduleFriendSync()
         } catch {
             guard isCurrentGroupMutation(mutationContext) else { throw error }
             // Surgical rollback: restore only the specific items removed, preserving
             // any concurrent realtime updates that arrived while the request was in flight.
-            if let friend = removedFriend, !friends.contains(where: { $0.memberId == memberId }) {
+            for friend in removedFriends where !friends.contains(where: { $0.memberId == friend.memberId }) {
                 friends.append(friend)
             }
-            if let g = directGroup, !groups.contains(where: { $0.id == g.id }) {
-                groups.append(g)
-                for expense in removedGroupExpenses where !expenses.contains(where: { $0.id == expense.id }) {
-                    expenses.append(expense)
-                }
+            for group in directGroups where !groups.contains(where: { $0.id == group.id }) {
+                groups.append(group)
+            }
+            for expense in removedGroupExpenses where !expenses.contains(where: { $0.id == expense.id }) {
+                expenses.append(expense)
             }
             persistCurrentState()
             print("🔴 Backend deleteLinkedFriend failed: \(error)")
@@ -1373,48 +1441,66 @@ func completeAuthentication(id: String, email: String, name: String?) {
         print("🔵 deleteUnlinkedFriend called for: \(memberId)")
 
         let mutationContext = groupMutationContext()
+        let identityMemberIds = accountFriendIdentityMemberIds(for: [memberId])
+        let deletionToken = try beginFriendDeletion(identityMemberIds: identityMemberIds)
+        var shouldKeepRealtimeTombstone = false
+        defer {
+            endFriendDeletion(deletionToken, keepRealtimeTombstone: shouldKeepRealtimeTombstone)
+        }
         // Capture what will change for surgical rollback.
         struct GroupDeleteRecord {
             let original: SpendingGroup
             let removedExpenses: [Expense]
+            let removedMembers: [GroupMember]
             let wasDeleted: Bool
         }
-        let removedFriend = friends.first { $0.memberId == memberId }
-        let groupsWithFriend = groups.filter { $0.members.contains(where: { $0.id == memberId }) }
+        let removedFriends = friends.filter { accountFriend($0, matchesAny: identityMemberIds) }
+        let groupsWithFriend = groups.filter { group in
+            group.members.contains(where: { groupMember($0, matchesAny: identityMemberIds) })
+        }
         let groupRecords: [GroupDeleteRecord] = groupsWithFriend.map { group in
             let removed = expenses.filter { expense in
                 expense.groupId == group.id && (
-                    expense.paidByMemberId == memberId ||
-                    expense.involvedMemberIds.contains(memberId)
+                    identityMemberIds.contains(where: { areSamePerson(expense.paidByMemberId, $0) }) ||
+                    expense.involvedMemberIds.contains(where: { involvedId in
+                        identityMemberIds.contains(where: { areSamePerson(involvedId, $0) })
+                    })
                 )
             }
+            let removedMembers = group.members.filter { groupMember($0, matchesAny: identityMemberIds) }
             var updated = group
-            updated.members.removeAll { $0.id == memberId }
+            updated.members.removeAll { groupMember($0, matchesAny: identityMemberIds) }
             let remaining = updated.members.filter { !isCurrentUser($0) }
-            return GroupDeleteRecord(original: group, removedExpenses: removed, wasDeleted: remaining.isEmpty)
+            return GroupDeleteRecord(
+                original: group,
+                removedExpenses: removed,
+                removedMembers: removedMembers,
+                wasDeleted: remaining.isEmpty
+            )
         }
 
-        friends.removeAll { $0.memberId == memberId }
+        friends.removeAll { accountFriend($0, matchesAny: identityMemberIds) }
         for record in groupRecords {
             for expense in record.removedExpenses { expenses.removeAll { $0.id == expense.id } }
             if record.wasDeleted {
                 expenses.removeAll { $0.groupId == record.original.id }
                 groups.removeAll { $0.id == record.original.id }
             } else if let idx = groups.firstIndex(where: { $0.id == record.original.id }) {
-                groups[idx].members.removeAll { $0.id == memberId }
+                groups[idx].members.removeAll { groupMember($0, matchesAny: identityMemberIds) }
             }
         }
         persistCurrentState()
 
         do {
             let result = try await accountService.deleteUnlinkedFriend(memberId: memberId)
+            guard isCurrentGroupMutation(mutationContext) else { return result }
+            shouldKeepRealtimeTombstone = true
             print("✅ Backend deleteUnlinkedFriend success")
-            scheduleFriendSync()
             return result
         } catch {
             guard isCurrentGroupMutation(mutationContext) else { throw error }
             // Surgical rollback: restore only the specific items removed.
-            if let friend = removedFriend, !friends.contains(where: { $0.memberId == memberId }) {
+            for friend in removedFriends where !friends.contains(where: { $0.memberId == friend.memberId }) {
                 friends.append(friend)
             }
             for record in groupRecords {
@@ -1426,10 +1512,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
                         expenses.append(expense)
                     }
                 } else {
-                    if let idx = groups.firstIndex(where: { $0.id == record.original.id }),
-                       !groups[idx].members.contains(where: { $0.id == memberId }),
-                       let originalMember = record.original.members.first(where: { $0.id == memberId }) {
-                        groups[idx].members.append(originalMember)
+                    if let idx = groups.firstIndex(where: { $0.id == record.original.id }) {
+                        for member in record.removedMembers where !groups[idx].members.contains(where: { $0.id == member.id }) {
+                            groups[idx].members.append(member)
+                        }
                     }
                     for expense in record.removedExpenses where !expenses.contains(where: { $0.id == expense.id }) {
                         expenses.append(expense)

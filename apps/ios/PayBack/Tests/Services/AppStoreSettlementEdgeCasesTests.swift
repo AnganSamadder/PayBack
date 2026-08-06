@@ -664,6 +664,16 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         return false
     }
 
+    private func waitForGroupDeleteInvocation() async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockGroupCloudService.currentDeleteInvocationCount() > 0 {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
+    }
+
     // MARK: - Can Settle Expense Tests
 
     func testCanSettleExpenseForAll_UserIsPayer_ReturnsTrue() async throws {
@@ -772,6 +782,231 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertEqual(sut.groups, originalGroups)
         XCTAssertEqual(sut.expenses, originalExpenses)
         XCTAssertEqual(sut.friends, originalFriends)
+    }
+
+    func testDeleteLinkedFriend_RemovesDirectGroupUsingImportedIdentityPointer() async throws {
+        let account = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        sut.session = UserSession(account: account)
+        let friendId = UUID()
+        let importedMemberId = UUID()
+        let friend = AccountFriend(
+            memberId: friendId,
+            name: "Alice",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "alice@example.com"
+        )
+        let group = SpendingGroup(
+            name: "Alice",
+            members: [
+                sut.currentUser,
+                GroupMember(id: importedMemberId, name: "Alice", accountFriendMemberId: friendId)
+            ],
+            isDirect: true
+        )
+        let expense = settlementExpense(
+            description: "Dinner",
+            groupId: group.id,
+            memberId: importedMemberId
+        )
+        sut.friends = [friend]
+        sut.groups = [group]
+        sut.expenses = [expense]
+
+        try await sut.deleteLinkedFriend(memberId: friendId)
+
+        XCTAssertTrue(sut.friends.isEmpty)
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertTrue(sut.expenses.isEmpty)
+    }
+
+    func testDeleteUnlinkedFriend_RemovesImportedIdentityFromSharedGroup() async throws {
+        let account = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        sut.session = UserSession(account: account)
+        let friendId = UUID()
+        let importedMemberId = UUID()
+        let otherMemberId = UUID()
+        let friend = AccountFriend(memberId: friendId, name: "Alice")
+        let group = SpendingGroup(
+            name: "Trip",
+            members: [
+                sut.currentUser,
+                GroupMember(id: importedMemberId, name: "Alice", accountFriendMemberId: friendId),
+                GroupMember(id: otherMemberId, name: "Bob")
+            ]
+        )
+        let expense = settlementExpense(
+            description: "Dinner",
+            groupId: group.id,
+            memberId: importedMemberId
+        )
+        sut.friends = [friend]
+        sut.groups = [group]
+        sut.expenses = [expense]
+
+        _ = try await sut.deleteUnlinkedFriend(memberId: friendId)
+
+        XCTAssertTrue(sut.friends.isEmpty)
+        XCTAssertEqual(sut.groups.count, 1)
+        XCTAssertFalse(sut.groups[0].members.contains(where: { $0.id == importedMemberId }))
+        XCTAssertTrue(sut.expenses.isEmpty)
+    }
+
+    func testLinkedFriendDeletionInFlightRejectsOverlappingDeletion() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let friendId = UUID()
+        sut.friends = [
+            AccountFriend(
+                memberId: friendId,
+                name: "Alice",
+                hasLinkedAccount: true,
+                linkedAccountId: "linked-account",
+                linkedAccountEmail: "alice@example.com"
+            )
+        ]
+        await mockAccountService.suspendNextLinkedFriendDelete()
+
+        let firstDeletion = Task { @MainActor in
+            try await sut.deleteLinkedFriend(memberId: friendId)
+        }
+        let firstDeleteStarted = await waitForLinkedFriendDeleteInvocation()
+        XCTAssertTrue(firstDeleteStarted)
+
+        await XCTAssertThrowsErrorAsync(try await sut.deleteLinkedFriend(memberId: friendId))
+        let linkedDeleteCount = await mockAccountService.currentLinkedFriendDeleteInvocationCount()
+        XCTAssertEqual(linkedDeleteCount, 1)
+
+        await mockAccountService.resumeLinkedFriendDelete()
+        try await firstDeletion.value
+        XCTAssertTrue(sut.friends.isEmpty)
+    }
+
+    func testFriendDeletionInFlightRejectsGroupDeletion() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let friendId = UUID()
+        let friend = AccountFriend(
+            memberId: friendId,
+            name: "Alice",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "alice@example.com"
+        )
+        let group = SpendingGroup(name: "Trip", members: [sut.currentUser, GroupMember(id: friendId, name: "Alice")])
+        sut.friends = [friend]
+        sut.groups = [group]
+        await mockAccountService.suspendNextLinkedFriendDelete()
+
+        let friendDeletion = Task { @MainActor in
+            try await sut.deleteLinkedFriend(memberId: friendId)
+        }
+        let friendDeleteStarted = await waitForLinkedFriendDeleteInvocation()
+        XCTAssertTrue(friendDeleteStarted)
+
+        await XCTAssertThrowsErrorAsync(try await sut.deleteGroups(ids: [group.id]))
+        let groupDeleteCount = await mockGroupCloudService.currentDeleteInvocationCount()
+        XCTAssertEqual(groupDeleteCount, 0)
+
+        await mockAccountService.resumeLinkedFriendDelete()
+        try await friendDeletion.value
+    }
+
+    func testGroupDeletionInFlightRejectsLinkedFriendDeletion() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let friendId = UUID()
+        let friend = AccountFriend(
+            memberId: friendId,
+            name: "Alice",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "alice@example.com"
+        )
+        let group = SpendingGroup(name: "Trip", members: [sut.currentUser, GroupMember(id: friendId, name: "Alice")])
+        sut.friends = [friend]
+        sut.groups = [group]
+        await mockGroupCloudService.setOperationDelays(delete: 250_000_000)
+
+        let groupDeletion = Task { @MainActor in
+            try await sut.deleteGroups(ids: [group.id])
+        }
+        let groupDeleteStarted = await waitForGroupDeleteInvocation()
+        XCTAssertTrue(groupDeleteStarted)
+
+        await XCTAssertThrowsErrorAsync(try await sut.deleteLinkedFriend(memberId: friendId))
+        let linkedDeleteCount = await mockAccountService.currentLinkedFriendDeleteInvocationCount()
+        XCTAssertEqual(linkedDeleteCount, 0)
+
+        try await groupDeletion.value
+    }
+
+    func testStaleFriendSnapshotCannotRestorePendingLinkedDeletion() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let friendId = UUID()
+        let friend = AccountFriend(
+            memberId: friendId,
+            name: "Alice",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "alice@example.com"
+        )
+        sut.friends = [friend]
+        await mockAccountService.suspendNextLinkedFriendDelete()
+
+        let deletion = Task { @MainActor in
+            try await sut.deleteLinkedFriend(memberId: friendId)
+        }
+        let deleteStarted = await waitForLinkedFriendDeleteInvocation()
+        XCTAssertTrue(deleteStarted)
+
+        sut.processFriendsUpdate([friend])
+        XCTAssertTrue(sut.friends.isEmpty)
+
+        await mockAccountService.resumeLinkedFriendDelete()
+        try await deletion.value
+        sut.processFriendsUpdate([friend])
+        XCTAssertTrue(sut.friends.isEmpty)
+        let syncedFriends = await mockAccountService.latestSyncedFriends(accountEmail: "a@example.com")
+        XCTAssertNil(syncedFriends)
+    }
+
+    func testLinkedFriendDeletion_OldSessionSuccessDoesNotSyncNewSession() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let friendId = UUID()
+        sut.friends = [
+            AccountFriend(
+                memberId: friendId,
+                name: "Old Friend",
+                hasLinkedAccount: true,
+                linkedAccountId: "linked-account",
+                linkedAccountEmail: "linked@example.com"
+            )
+        ]
+        await mockAccountService.suspendNextLinkedFriendDelete()
+
+        let deletion = Task { @MainActor in
+            try await sut.deleteLinkedFriend(memberId: friendId)
+        }
+        let deleteStarted = await waitForLinkedFriendDeleteInvocation()
+        XCTAssertTrue(deleteStarted)
+
+        sut.session = UserSession(
+            account: UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        )
+        sut.friends = [AccountFriend(memberId: UUID(), name: "New Friend")]
+        await mockAccountService.resumeLinkedFriendDelete()
+        try await deletion.value
+
+        let syncedFriends = await mockAccountService.latestSyncedFriends(accountEmail: "b@example.com")
+        XCTAssertNil(syncedFriends)
     }
 
     func testDeleteLinkedFriend_OldSessionFailureDoesNotRestoreDataIntoNewSession() async throws {
