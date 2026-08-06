@@ -4269,7 +4269,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         try await retryPolicy.execute {
             try ensureCurrentMergingSession()
-            try await accountService.mergeUnlinkedFriends(
+            try await self.accountService.mergeUnlinkedFriends(
                 friendId1: mergeIds.target,
                 friendId2: mergeIds.source
             )
