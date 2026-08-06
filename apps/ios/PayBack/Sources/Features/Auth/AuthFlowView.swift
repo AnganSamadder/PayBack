@@ -169,13 +169,13 @@ private struct AuthBackground: View {
             ZStack {
                 Circle()
                     .fill(Color.white.opacity(0.12))
+                    .frame(width: 420, height: 420)
                     .blur(radius: 90)
-                    .frame(width: 420)
                     .offset(x: -160, y: -220)
                 Circle()
                     .fill(Color.white.opacity(0.1))
+                    .frame(width: 380, height: 380)
                     .blur(radius: 80)
-                    .frame(width: 380)
                     .offset(x: 180, y: 260)
             }
         )
