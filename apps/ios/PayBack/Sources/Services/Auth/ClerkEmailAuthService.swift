@@ -45,6 +45,23 @@ enum ClerkEmailSignUpDisposition: Sendable, Equatable {
     case incomplete
 }
 
+enum ClerkPasswordResetCheckpoint: Sendable {
+    case requestCode
+    case verifyCode
+    case setPassword
+}
+
+enum ClerkPasswordResetStatusDisposition: Sendable, Equatable {
+    case expected
+    case requiresSignIn
+    case invalid
+}
+
+enum ClerkPasswordResetCompletion: Sendable, Equatable {
+    case authenticated(ClerkEmailUser)
+    case requiresSignIn
+}
+
 @MainActor
 protocol ClerkEmailAuthClient: Sendable {
     var sessionState: ClerkEmailSessionState { get }
@@ -52,6 +69,10 @@ protocol ClerkEmailAuthClient: Sendable {
     func signIn(email: String, password: String) async throws -> ClerkEmailAttempt
     func signUp(email: String, password: String, firstName: String, lastName: String?) async throws -> ClerkEmailSignUpAttempt
     func verifyCode(_ code: String) async throws -> ClerkEmailAttempt
+    func beginPasswordReset(email: String) async throws
+    func verifyPasswordResetCode(_ code: String) async throws
+    func resendPasswordResetCode() async throws
+    func completePasswordReset(newPassword: String) async throws -> ClerkPasswordResetCompletion
     func resendConfirmationEmail() async throws
     func signOut() async throws
     func deleteCurrentUser() async throws
@@ -118,6 +139,74 @@ struct LiveClerkEmailAuthClient: ClerkEmailAuthClient {
         return .complete(activeUser(fallbackEmail: result.emailAddress))
     }
 
+    func beginPasswordReset(email: String) async throws {
+        let signIn = try await Clerk.shared.auth.signIn(email)
+        guard signIn.status == .needsFirstFactor,
+              let emailFactor = signIn.supportedFirstFactors?.first(where: {
+                  $0.strategy == .resetPasswordEmailCode
+              }) else {
+            throw PayBackError.authSessionMissing
+        }
+
+        let prepared = try await signIn.sendResetPasswordEmailCode(
+            emailAddressId: emailFactor.emailAddressId
+        )
+        guard Self.passwordResetDisposition(prepared.status, after: .requestCode) == .expected,
+              prepared.firstFactorVerification?.strategy == .resetPasswordEmailCode else {
+            throw PayBackError.authSessionMissing
+        }
+    }
+
+    func verifyPasswordResetCode(_ code: String) async throws {
+        guard let signIn = Clerk.shared.auth.currentSignIn,
+              signIn.status == .needsFirstFactor,
+              signIn.firstFactorVerification?.strategy == .resetPasswordEmailCode else {
+            throw PayBackError.authSessionMissing
+        }
+
+        let verified = try await signIn.verifyCode(code)
+        guard Self.passwordResetDisposition(verified.status, after: .verifyCode) == .expected else {
+            throw PayBackError.authSessionMissing
+        }
+    }
+
+    func resendPasswordResetCode() async throws {
+        guard let signIn = Clerk.shared.auth.currentSignIn,
+              signIn.status == .needsFirstFactor,
+              signIn.firstFactorVerification?.strategy == .resetPasswordEmailCode else {
+            throw PayBackError.authSessionMissing
+        }
+
+        let prepared = try await signIn.sendResetPasswordEmailCode()
+        guard Self.passwordResetDisposition(prepared.status, after: .requestCode) == .expected,
+              prepared.firstFactorVerification?.strategy == .resetPasswordEmailCode else {
+            throw PayBackError.authSessionMissing
+        }
+    }
+
+    func completePasswordReset(newPassword: String) async throws -> ClerkPasswordResetCompletion {
+        guard let signIn = Clerk.shared.auth.currentSignIn,
+              signIn.status == .needsNewPassword else {
+            throw PayBackError.authSessionMissing
+        }
+
+        let completed = try await signIn.resetPassword(
+            newPassword: newPassword,
+            signOutOfOtherSessions: true
+        )
+        switch Self.passwordResetDisposition(completed.status, after: .setPassword) {
+        case .expected:
+            guard let user = activeUser(fallbackEmail: completed.identifier ?? signIn.identifier) else {
+                throw PayBackError.authSessionMissing
+            }
+            return .authenticated(user)
+        case .requiresSignIn:
+            return .requiresSignIn
+        case .invalid:
+            throw PayBackError.authSessionMissing
+        }
+    }
+
     func resendConfirmationEmail() async throws {
         guard let signUp = Clerk.shared.auth.currentSignUp else { return }
         _ = try await signUp.sendEmailCode()
@@ -160,6 +249,27 @@ struct LiveClerkEmailAuthClient: ClerkEmailAuthClient {
             return primaryEmail
         }
         return fallbackEmail ?? ""
+    }
+
+    nonisolated static func passwordResetDisposition(
+        _ status: SignIn.Status,
+        after checkpoint: ClerkPasswordResetCheckpoint
+    ) -> ClerkPasswordResetStatusDisposition {
+        switch checkpoint {
+        case .requestCode:
+            return status == .needsFirstFactor ? .expected : .invalid
+        case .verifyCode:
+            return status == .needsNewPassword ? .expected : .invalid
+        case .setPassword:
+            switch status {
+            case .complete:
+                return .expected
+            case .needsSecondFactor, .needsClientTrust:
+                return .requiresSignIn
+            case .needsIdentifier, .needsFirstFactor, .needsNewPassword, .unknown:
+                return .invalid
+            }
+        }
     }
 
     nonisolated static func signUpDisposition(
@@ -261,7 +371,30 @@ final class ClerkEmailAuthService: EmailAuthService {
     }
 
     func sendPasswordReset(email: String) async throws {
-        throw PayBackError.underlying(message: "Password reset via Clerk requires additional configuration.")
+        switch client.sessionState {
+        case .active, .inactive:
+            try await client.signOut()
+        case .none:
+            break
+        }
+        try await client.beginPasswordReset(email: email)
+    }
+
+    func verifyPasswordResetCode(code: String) async throws {
+        try await client.verifyPasswordResetCode(code)
+    }
+
+    func resendPasswordResetCode() async throws {
+        try await client.resendPasswordResetCode()
+    }
+
+    func completePasswordReset(newPassword: String) async throws -> PasswordResetResult {
+        switch try await client.completePasswordReset(newPassword: newPassword) {
+        case .authenticated(let user):
+            return .authenticated(user.authResult())
+        case .requiresSignIn:
+            return .requiresSignIn
+        }
     }
 
     func resendConfirmationEmail(email: String) async throws {

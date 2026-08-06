@@ -6,6 +6,8 @@ final class AuthCoordinator: ObservableObject {
         case login
         case signup(presetEmail: String)
         case verification(email: String, displayName: String)
+        case passwordResetCode(email: String)
+        case passwordResetNewPassword(email: String)
         case authenticated(UserSession)
     }
 
@@ -22,6 +24,11 @@ final class AuthCoordinator: ObservableObject {
     @Published var signupLastName: String = ""
     @Published var signupPassword: String = ""
     @Published var signupConfirmPassword: String = ""
+    @Published var signupVerificationCode: String = ""
+    @Published var passwordResetEmail: String = ""
+    @Published var passwordResetCode: String = ""
+    @Published var passwordResetNewPassword: String = ""
+    @Published var passwordResetConfirmPassword: String = ""
 
     private let accountService: AccountService
     private let emailAuthService: EmailAuthService
@@ -69,6 +76,15 @@ final class AuthCoordinator: ObservableObject {
         route = .signup(presetEmail: signupEmail)
     }
 
+    func backToLoginFromPasswordReset() {
+        loginEmail = passwordResetEmail
+        route = .login
+    }
+
+    func backToPasswordResetCode() {
+        route = .passwordResetCode(email: passwordResetEmail)
+    }
+
     func login(emailInput: String, password: String) async {
         loginEmail = emailInput
         loginPassword = password
@@ -114,6 +130,7 @@ final class AuthCoordinator: ObservableObject {
                         .joined(separator: " ")
 
                     self.signupEmail = email
+                    self.signupVerificationCode = ""
                     self.route = .verification(email: email, displayName: self.pendingDisplayName)
 
                 case .complete(_):
@@ -145,9 +162,11 @@ final class AuthCoordinator: ObservableObject {
     }
 
     func verifyCode(_ code: String) async {
+        signupVerificationCode = code
         await runBusyTask {
             do {
                 let account = try await self.store.verifyCode(code, pendingDisplayName: self.pendingDisplayName)
+                self.signupVerificationCode = ""
                 self.route = .authenticated(UserSession(account: account))
             } catch {
                 self.handle(error: error)
@@ -158,7 +177,7 @@ final class AuthCoordinator: ObservableObject {
     func resendVerificationCode() async {
         guard case .verification(let email, _) = route else { return }
 
-        await runBusyTask(allowsConcurrent: true) {
+        await runBusyTask {
             do {
                 try await self.emailAuthService.resendConfirmationEmail(email: email)
                 self.infoMessage = "A new code has been sent to your email."
@@ -169,13 +188,80 @@ final class AuthCoordinator: ObservableObject {
     }
 
     func sendPasswordReset(emailInput: String) async {
-        await runBusyTask(allowsConcurrent: true) {
+        loginEmail = emailInput
+
+        await runBusyTask {
             do {
                 let normalizedEmail = try self.accountService.normalizedEmail(from: emailInput)
                 try await self.emailAuthService.sendPasswordReset(email: normalizedEmail)
-                self.infoMessage = "We sent a password reset email to \(normalizedEmail). Check your inbox."
+                self.loginEmail = normalizedEmail
+                self.passwordResetEmail = normalizedEmail
+                self.passwordResetCode = ""
+                self.passwordResetNewPassword = ""
+                self.passwordResetConfirmPassword = ""
+                self.route = .passwordResetCode(email: normalizedEmail)
             } catch {
-                self.handle(error: error)
+                self.handlePasswordReset(error: error, step: .requestCode)
+            }
+        }
+    }
+
+    func verifyPasswordResetCode(_ code: String) async {
+        guard case .passwordResetCode = route else { return }
+        passwordResetCode = code
+
+        await runBusyTask {
+            do {
+                try await self.emailAuthService.verifyPasswordResetCode(code: code)
+                self.route = .passwordResetNewPassword(email: self.passwordResetEmail)
+            } catch {
+                self.handlePasswordReset(error: error, step: .verifyCode)
+            }
+        }
+    }
+
+    func resendPasswordResetCode() async {
+        guard case .passwordResetCode = route else { return }
+
+        await runBusyTask {
+            do {
+                try await self.emailAuthService.resendPasswordResetCode()
+                self.infoMessage = "A new reset code has been sent."
+            } catch {
+                self.handlePasswordReset(error: error, step: .requestCode)
+            }
+        }
+    }
+
+    func completePasswordReset(newPassword: String) async {
+        guard case .passwordResetNewPassword = route else { return }
+        passwordResetNewPassword = newPassword
+
+        await runBusyTask {
+            do {
+                let result = try await self.emailAuthService.completePasswordReset(
+                    newPassword: newPassword
+                )
+                switch result {
+                case .authenticated(let authResult):
+                    do {
+                        try await self.store.completeAuthenticationAndWait(
+                            email: authResult.email,
+                            name: authResult.displayName
+                        )
+                        guard let session = self.store.session else {
+                            throw PayBackError.authSessionMissing
+                        }
+                        self.route = .authenticated(session)
+                    } catch {
+                        self.routeToLoginAfterAcceptedPassword()
+                    }
+                case .requiresSignIn:
+                    self.routeToLoginAfterAcceptedPassword()
+                }
+                self.clearPasswordResetSecrets()
+            } catch {
+                self.handlePasswordReset(error: error, step: .setPassword)
             }
         }
     }
@@ -183,7 +269,7 @@ final class AuthCoordinator: ObservableObject {
     func resendConfirmationEmail() async {
         guard let email = unconfirmedEmail else { return }
 
-        await runBusyTask(allowsConcurrent: true) {
+        await runBusyTask {
             do {
                 try await self.emailAuthService.resendConfirmationEmail(email: email)
                 self.unconfirmedEmail = nil
@@ -195,18 +281,52 @@ final class AuthCoordinator: ObservableObject {
         }
     }
 
-    private func runBusyTask(allowsConcurrent: Bool = false, _ operation: @escaping () async -> Void) async {
-        if isBusy && !allowsConcurrent { return }
-        if !allowsConcurrent {
-            isBusy = true
-        }
+    private func runBusyTask(_ operation: @escaping () async -> Void) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
         errorMessage = nil
         infoMessage = nil
         unconfirmedEmail = nil
         await operation()
-        if !allowsConcurrent {
-            isBusy = false
+    }
+
+    private enum PasswordResetStep {
+        case requestCode
+        case verifyCode
+        case setPassword
+
+        var errorMessage: String {
+            switch self {
+            case .requestCode:
+                return "We couldn't start password reset. Please try again."
+            case .verifyCode:
+                return "We couldn't verify that reset code. Request a new code and try again."
+            case .setPassword:
+                return "We couldn't update your password. Please try again."
+            }
         }
+    }
+
+    private func handlePasswordReset(error: Error, step: PasswordResetStep) {
+        if error is CancellationError { return }
+#if DEBUG
+        print("[AuthCoordinator] Password reset failed at \(step): \(type(of: error))")
+#endif
+        errorMessage = step.errorMessage
+    }
+
+    private func routeToLoginAfterAcceptedPassword() {
+        loginEmail = passwordResetEmail
+        infoMessage = "Your password was updated. Sign in with your new password to continue."
+        route = .login
+    }
+
+    private func clearPasswordResetSecrets() {
+        loginPassword = ""
+        passwordResetCode = ""
+        passwordResetNewPassword = ""
+        passwordResetConfirmPassword = ""
     }
 
     private func handle(error: Error) {

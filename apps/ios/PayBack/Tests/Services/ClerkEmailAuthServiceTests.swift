@@ -255,6 +255,57 @@ final class ClerkEmailAuthServiceTests: XCTestCase {
         XCTAssertEqual(client.deleteCallCount, 1)
     }
 
+    func testPasswordResetUsesNativeEmailSequence() async throws {
+        let client = StubClerkEmailAuthClient(sessionState: .inactive)
+        let service = ClerkEmailAuthService(client: client)
+
+        try await service.sendPasswordReset(email: requestedUser.email)
+        try await service.verifyPasswordResetCode(code: "123456")
+        let result = try await service.completePasswordReset(newPassword: "new-password")
+
+        XCTAssertEqual(client.passwordResetEmails, [requestedUser.email])
+        XCTAssertEqual(client.passwordResetCodes, ["123456"])
+        XCTAssertEqual(client.newPasswords, ["new-password"])
+        guard case .authenticated(let user) = result else {
+            return XCTFail("Expected an authenticated reset result")
+        }
+        XCTAssertEqual(user.uid, requestedUser.id)
+        XCTAssertEqual(user.email, requestedUser.email)
+    }
+
+    func testPasswordResetResendDelegatesToCurrentNativeAttempt() async throws {
+        let client = StubClerkEmailAuthClient()
+        let service = ClerkEmailAuthService(client: client)
+
+        try await service.resendPasswordResetCode()
+
+        XCTAssertEqual(client.passwordResetResendCallCount, 1)
+    }
+
+    func testPasswordResetReportsAcceptedPasswordWhenClerkNeedsAnotherSignInStep() async throws {
+        let client = StubClerkEmailAuthClient()
+        client.requiresSignInAfterPasswordReset = true
+        let service = ClerkEmailAuthService(client: client)
+
+        let result = try await service.completePasswordReset(newPassword: "new-password")
+
+        guard case .requiresSignIn = result else {
+            return XCTFail("Expected a safe sign-in recovery result")
+        }
+    }
+
+    func testPasswordResetStatusGuardsAcceptOnlyExpectedClerkTransitions() {
+        XCTAssertEqual(LiveClerkEmailAuthClient.passwordResetDisposition(.needsFirstFactor, after: .requestCode), .expected)
+        XCTAssertEqual(LiveClerkEmailAuthClient.passwordResetDisposition(.needsNewPassword, after: .requestCode), .invalid)
+
+        XCTAssertEqual(LiveClerkEmailAuthClient.passwordResetDisposition(.needsNewPassword, after: .verifyCode), .expected)
+        XCTAssertEqual(LiveClerkEmailAuthClient.passwordResetDisposition(.complete, after: .verifyCode), .invalid)
+
+        XCTAssertEqual(LiveClerkEmailAuthClient.passwordResetDisposition(.complete, after: .setPassword), .expected)
+        XCTAssertEqual(LiveClerkEmailAuthClient.passwordResetDisposition(.needsSecondFactor, after: .setPassword), .requiresSignIn)
+        XCTAssertEqual(LiveClerkEmailAuthClient.passwordResetDisposition(.needsClientTrust, after: .setPassword), .requiresSignIn)
+    }
+
     private func assertThrowsPayBackError<T>(
         _ expected: PayBackError,
         operation: () async throws -> T,
@@ -278,24 +329,37 @@ private final class StubClerkEmailAuthClient: ClerkEmailAuthClient {
     var signInAttempt: ClerkEmailAttempt
     var signUpAttempt: ClerkEmailSignUpAttempt
     var verificationAttempt: ClerkEmailAttempt
+    var passwordResetUser: ClerkEmailUser
     var resendError: Error?
     var signOutError: Error?
+    var requiresSignInAfterPasswordReset = false
 
     private(set) var signInCallCount = 0
     private(set) var signOutCallCount = 0
     private(set) var verifyCallCount = 0
     private(set) var deleteCallCount = 0
+    private(set) var passwordResetEmails: [String] = []
+    private(set) var passwordResetCodes: [String] = []
+    private(set) var newPasswords: [String] = []
+    private(set) var passwordResetResendCallCount = 0
 
     init(
         sessionState: ClerkEmailSessionState = .none,
         signInAttempt: ClerkEmailAttempt = .incomplete,
         signUpAttempt: ClerkEmailSignUpAttempt = .incomplete,
-        verificationAttempt: ClerkEmailAttempt = .incomplete
+        verificationAttempt: ClerkEmailAttempt = .incomplete,
+        passwordResetUser: ClerkEmailUser = ClerkEmailUser(
+            id: "user-123",
+            email: "person@example.com",
+            firstName: "Test",
+            lastName: "Person"
+        )
     ) {
         self.sessionState = sessionState
         self.signInAttempt = signInAttempt
         self.signUpAttempt = signUpAttempt
         self.verificationAttempt = verificationAttempt
+        self.passwordResetUser = passwordResetUser
     }
 
     func signIn(email: String, password: String) async throws -> ClerkEmailAttempt {
@@ -329,6 +393,27 @@ private final class StubClerkEmailAuthClient: ClerkEmailAuthClient {
 
     func deleteCurrentUser() async throws {
         deleteCallCount += 1
+    }
+
+    func beginPasswordReset(email: String) async throws {
+        passwordResetEmails.append(email)
+    }
+
+    func verifyPasswordResetCode(_ code: String) async throws {
+        passwordResetCodes.append(code)
+    }
+
+    func completePasswordReset(newPassword: String) async throws -> ClerkPasswordResetCompletion {
+        newPasswords.append(newPassword)
+        if requiresSignInAfterPasswordReset {
+            return .requiresSignIn
+        }
+        sessionState = .active(passwordResetUser)
+        return .authenticated(passwordResetUser)
+    }
+
+    func resendPasswordResetCode() async throws {
+        passwordResetResendCallCount += 1
     }
 }
 

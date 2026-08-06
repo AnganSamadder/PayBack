@@ -417,58 +417,210 @@ final class AuthCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.route, .login)
     }
 
-    // MARK: - SendPasswordReset Tests
+    // MARK: - Password Reset Tests
 
-    func testSendPasswordReset_Success() async {
-        let testEmail = "reset@example.com"
-
-        await coordinator.sendPasswordReset(emailInput: testEmail)
+    func testSendPasswordReset_NormalizesEmailAndOpensCodeRoute() async {
+        await coordinator.sendPasswordReset(emailInput: "  RESET@EXAMPLE.COM  ")
 
         XCTAssertFalse(coordinator.isBusy)
         XCTAssertNil(coordinator.errorMessage)
-        XCTAssertNotNil(coordinator.infoMessage)
-        XCTAssertTrue(coordinator.infoMessage!.contains("reset@example.com"))
-        XCTAssertTrue(mockEmailAuthService.sendPasswordResetCalled)
-    }
-
-    func testSendPasswordReset_NormalizesEmail() async {
-        let testEmail = "  RESET@EXAMPLE.COM  "
-
-        await coordinator.sendPasswordReset(emailInput: testEmail)
-
-        XCTAssertTrue(mockEmailAuthService.sendPasswordResetCalled)
         XCTAssertEqual(mockEmailAuthService.lastPasswordResetEmail, "reset@example.com")
+        XCTAssertEqual(coordinator.passwordResetEmail, "reset@example.com")
+        XCTAssertEqual(coordinator.loginEmail, "reset@example.com")
+        XCTAssertEqual(coordinator.route, .passwordResetCode(email: "reset@example.com"))
     }
 
-    func testSendPasswordReset_Failure() async {
+    func testSendPasswordReset_FailureUsesGenericMessage() async {
         mockEmailAuthService.shouldThrowOnPasswordReset = true
-        mockEmailAuthService.errorToThrow = PayBackError.authInvalidCredentials(message: "Invalid credentials")
+        mockEmailAuthService.errorToThrow = NSError(
+            domain: "Clerk",
+            code: 401,
+            userInfo: [NSLocalizedDescriptionKey: "No account exists for secret@example.com"]
+        )
 
         await coordinator.sendPasswordReset(emailInput: "test@example.com")
 
         XCTAssertFalse(coordinator.isBusy)
-        XCTAssertNotNil(coordinator.errorMessage)
+        XCTAssertEqual(coordinator.errorMessage, "We couldn't start password reset. Please try again.")
+        XCTAssertFalse(coordinator.errorMessage?.contains("secret@example.com") == true)
         XCTAssertNil(coordinator.infoMessage)
+        XCTAssertEqual(coordinator.route, .login)
     }
 
-    func testSendPasswordReset_AllowsConcurrentCalls() async {
+    func testSendPasswordReset_SerializesConcurrentCalls() async {
         mockEmailAuthService.passwordResetDelay = 0.2
 
         let expectation1 = expectation(description: "First reset")
         let expectation2 = expectation(description: "Second reset")
 
-        Task {
+        let firstTask = Task {
             await coordinator.sendPasswordReset(emailInput: "test1@example.com")
             expectation1.fulfill()
         }
 
-        Task {
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        let secondTask = Task {
             await coordinator.sendPasswordReset(emailInput: "test2@example.com")
             expectation2.fulfill()
         }
 
         await fulfillment(of: [expectation1, expectation2], timeout: 1.0)
-        XCTAssertEqual(mockEmailAuthService.passwordResetCallCount, 2)
+        _ = await (firstTask.value, secondTask.value)
+        XCTAssertEqual(mockEmailAuthService.passwordResetCallCount, 1)
+        XCTAssertFalse(coordinator.isBusy)
+    }
+
+    func testSendPasswordReset_CancellationClearsBusyStateWithoutError() async {
+        mockEmailAuthService.passwordResetDelay = 1
+        let task = Task {
+            await coordinator.sendPasswordReset(emailInput: "reset@example.com")
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(coordinator.isBusy)
+
+        task.cancel()
+        await task.value
+
+        XCTAssertFalse(coordinator.isBusy)
+        XCTAssertNil(coordinator.errorMessage)
+        XCTAssertEqual(coordinator.route, .login)
+    }
+
+    func testVerifyPasswordResetCode_PreservesDraftAndOpensNewPasswordRoute() async {
+        await coordinator.sendPasswordReset(emailInput: "reset@example.com")
+        coordinator.passwordResetCode = "123456"
+
+        await coordinator.verifyPasswordResetCode(coordinator.passwordResetCode)
+
+        XCTAssertEqual(mockEmailAuthService.passwordResetCodes, ["123456"])
+        XCTAssertEqual(coordinator.passwordResetCode, "123456")
+        XCTAssertEqual(coordinator.route, .passwordResetNewPassword(email: "reset@example.com"))
+    }
+
+    func testVerifyPasswordResetCode_FailureUsesGenericMessage() async {
+        await coordinator.sendPasswordReset(emailInput: "reset@example.com")
+        mockEmailAuthService.shouldThrowOnVerifyCode = true
+        mockEmailAuthService.errorToThrow = NSError(
+            domain: "Clerk",
+            code: 400,
+            userInfo: [NSLocalizedDescriptionKey: "Detailed provider error"]
+        )
+
+        await coordinator.verifyPasswordResetCode("000000")
+
+        XCTAssertEqual(
+            coordinator.errorMessage,
+            "We couldn't verify that reset code. Request a new code and try again."
+        )
+        XCTAssertEqual(coordinator.route, .passwordResetCode(email: "reset@example.com"))
+    }
+
+    func testPasswordResetBackNavigationPreservesDrafts() async {
+        await coordinator.sendPasswordReset(emailInput: "reset@example.com")
+        coordinator.passwordResetCode = "123456"
+        await coordinator.verifyPasswordResetCode("123456")
+        coordinator.passwordResetNewPassword = "NewPassword123!"
+        coordinator.passwordResetConfirmPassword = "NewPassword123!"
+
+        coordinator.backToPasswordResetCode()
+
+        XCTAssertEqual(coordinator.route, .passwordResetCode(email: "reset@example.com"))
+        XCTAssertEqual(coordinator.passwordResetCode, "123456")
+        XCTAssertEqual(coordinator.passwordResetNewPassword, "NewPassword123!")
+        XCTAssertEqual(coordinator.passwordResetConfirmPassword, "NewPassword123!")
+
+        coordinator.backToLoginFromPasswordReset()
+
+        XCTAssertEqual(coordinator.route, .login)
+        XCTAssertEqual(coordinator.loginEmail, "reset@example.com")
+        XCTAssertEqual(coordinator.passwordResetCode, "123456")
+    }
+
+    func testCompletePasswordReset_HandsActiveClerkSessionToAppStore() async {
+        let account = UserAccount(id: "account-123", email: "reset@example.com", displayName: "Reset User")
+        mockEmailAuthService.passwordResetResult = EmailAuthSignInResult(
+            uid: "clerk-123",
+            email: account.email,
+            firstName: "Reset",
+            lastName: "User"
+        )
+        await mockAccountService.setExistingAccount(account)
+        await coordinator.sendPasswordReset(emailInput: account.email)
+        await coordinator.verifyPasswordResetCode("123456")
+
+        await coordinator.completePasswordReset(newPassword: "NewPassword123!")
+
+        XCTAssertEqual(mockEmailAuthService.newPasswords, ["NewPassword123!"])
+        XCTAssertEqual(mockStore.session?.account.id, account.id)
+        guard case .authenticated(let session) = coordinator.route else {
+            return XCTFail("Expected authenticated route")
+        }
+        XCTAssertEqual(session.account.id, account.id)
+        XCTAssertEqual(coordinator.passwordResetCode, "")
+        XCTAssertEqual(coordinator.passwordResetNewPassword, "")
+        XCTAssertEqual(coordinator.passwordResetConfirmPassword, "")
+    }
+
+    func testCompletePasswordReset_FailureUsesGenericMessageAndKeepsDraft() async {
+        await coordinator.sendPasswordReset(emailInput: "reset@example.com")
+        await coordinator.verifyPasswordResetCode("123456")
+        coordinator.passwordResetNewPassword = "NewPassword123!"
+        mockEmailAuthService.shouldThrowOnPasswordReset = true
+        mockEmailAuthService.errorToThrow = NSError(
+            domain: "Clerk",
+            code: 422,
+            userInfo: [NSLocalizedDescriptionKey: "Provider password policy details"]
+        )
+
+        await coordinator.completePasswordReset(newPassword: coordinator.passwordResetNewPassword)
+
+        XCTAssertEqual(coordinator.errorMessage, "We couldn't update your password. Please try again.")
+        XCTAssertEqual(coordinator.passwordResetNewPassword, "NewPassword123!")
+        XCTAssertEqual(coordinator.route, .passwordResetNewPassword(email: "reset@example.com"))
+    }
+
+    func testCompletePasswordReset_AcceptedPasswordWithAdditionalStepReturnsToLogin() async {
+        await coordinator.sendPasswordReset(emailInput: "reset@example.com")
+        await coordinator.verifyPasswordResetCode("123456")
+        coordinator.passwordResetCode = "123456"
+        coordinator.passwordResetNewPassword = "NewPassword123!"
+        coordinator.passwordResetConfirmPassword = "NewPassword123!"
+        mockEmailAuthService.passwordResetRequiresSignIn = true
+
+        await coordinator.completePasswordReset(newPassword: "NewPassword123!")
+
+        XCTAssertEqual(coordinator.route, .login)
+        XCTAssertEqual(coordinator.loginEmail, "reset@example.com")
+        XCTAssertEqual(
+            coordinator.infoMessage,
+            "Your password was updated. Sign in with your new password to continue."
+        )
+        XCTAssertNil(coordinator.errorMessage)
+        XCTAssertEqual(coordinator.passwordResetCode, "")
+        XCTAssertEqual(coordinator.passwordResetNewPassword, "")
+        XCTAssertEqual(coordinator.passwordResetConfirmPassword, "")
+    }
+
+    func testCompletePasswordReset_ConvexHandoffFailureDoesNotReportPasswordFailure() async {
+        mockEmailAuthService.passwordResetResult = EmailAuthSignInResult(
+            uid: "clerk-123",
+            email: "reset@example.com",
+            firstName: "Reset",
+            lastName: "User"
+        )
+        await mockAccountService.setShouldThrowOnLookup(true, error: PayBackError.networkUnavailable)
+        await coordinator.sendPasswordReset(emailInput: "reset@example.com")
+        await coordinator.verifyPasswordResetCode("123456")
+
+        await coordinator.completePasswordReset(newPassword: "NewPassword123!")
+
+        XCTAssertEqual(coordinator.route, .login)
+        XCTAssertNil(coordinator.errorMessage)
+        XCTAssertEqual(
+            coordinator.infoMessage,
+            "Your password was updated. Sign in with your new password to continue."
+        )
     }
 
     // MARK: - Error Handling Tests
@@ -777,6 +929,8 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     var signInResult: EmailAuthSignInResult?
     var signUpResult: SignUpResult?
     var verifyCodeResult: EmailAuthSignInResult?
+    var passwordResetResult: EmailAuthSignInResult?
+    var passwordResetRequiresSignIn = false
     var shouldThrowOnSignIn = false
     var shouldThrowOnSignUp = false
     var shouldThrowOnVerifyCode = false
@@ -800,6 +954,9 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     private var _lastSignUpLastName: String?
     private var _lastVerifyCode: String?
     private var _lastPasswordResetEmail: String?
+    private var _passwordResetCodes: [String] = []
+    private var _newPasswords: [String] = []
+    private var _passwordResetResendCallCount = 0
     private var _signInCallCount = 0
     private var _passwordResetCallCount = 0
 
@@ -852,6 +1009,15 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     }
     var passwordResetCallCount: Int {
         lock.withLock { _passwordResetCallCount }
+    }
+    var passwordResetCodes: [String] {
+        lock.withLock { _passwordResetCodes }
+    }
+    var newPasswords: [String] {
+        lock.withLock { _newPasswords }
+    }
+    var passwordResetResendCallCount: Int {
+        lock.withLock { _passwordResetResendCallCount }
     }
 
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
@@ -920,12 +1086,46 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
         }
 
         if passwordResetDelay > 0 {
-            try? await Task.sleep(nanoseconds: UInt64(passwordResetDelay * 1_000_000_000))
+            try await Task.sleep(nanoseconds: UInt64(passwordResetDelay * 1_000_000_000))
         }
 
         if shouldThrowOnPasswordReset {
             throw errorToThrow
         }
+    }
+
+    func verifyPasswordResetCode(code: String) async throws {
+        lock.withLock {
+            _passwordResetCodes.append(code)
+        }
+        if shouldThrowOnVerifyCode {
+            throw errorToThrow
+        }
+    }
+
+    func resendPasswordResetCode() async throws {
+        lock.withLock {
+            _passwordResetResendCallCount += 1
+        }
+        if shouldThrowOnPasswordReset {
+            throw errorToThrow
+        }
+    }
+
+    func completePasswordReset(newPassword: String) async throws -> PasswordResetResult {
+        lock.withLock {
+            _newPasswords.append(newPassword)
+        }
+        if shouldThrowOnPasswordReset {
+            throw errorToThrow
+        }
+        if passwordResetRequiresSignIn {
+            return .requiresSignIn
+        }
+        guard let passwordResetResult else {
+            throw PayBackError.authSessionMissing
+        }
+        return .authenticated(passwordResetResult)
     }
 
     func signOut() async throws {
