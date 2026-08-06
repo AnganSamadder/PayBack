@@ -3813,7 +3813,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         guard isCurrentGroupMutation(context) else { return }
 
-        await applyLinkAcceptResult(result)
+        applyLinkAcceptResult(result)
         guard isCurrentGroupMutation(context) else { return }
         await reconcileAfterNetworkRecovery()
         guard isCurrentGroupMutation(context) else { return }
