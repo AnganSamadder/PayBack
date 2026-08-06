@@ -511,6 +511,295 @@ final class AppStoreLinkingTests: XCTestCase {
         XCTAssertTrue(sut.friends.contains(where: { $0.memberId == canonicalFriend.memberId }))
     }
 
+    func testClaimInviteToken_ReconcilesCommittedMergeAfterCallerCancellation() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let tokenId = UUID()
+        let targetMemberId = UUID()
+        let creatorMemberId = UUID()
+        let claimerCanonicalMemberId = await mockInviteLinkService.claimerCanonicalMemberId()
+        let mergeFriend = AccountFriend(memberId: UUID(), name: "Chuck", hasLinkedAccount: false)
+        let canonicalFriend = AccountFriend(
+            memberId: creatorMemberId,
+            name: "Creator",
+            hasLinkedAccount: true,
+            linkedAccountId: "creator-account",
+            linkedAccountEmail: "creator@example.com"
+        )
+
+        sut.friends = [mergeFriend]
+        try await mockAccountService.syncFriends(
+            accountEmail: account.email,
+            friends: [canonicalFriend]
+        )
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: targetMemberId,
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.suspendClaimAfterCommit(tokenId)
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId, mergingLocalFriend: mergeFriend)
+        }
+        await mockInviteLinkService.waitUntilClaimCommitted(tokenId)
+        claimTask.cancel()
+        await mockInviteLinkService.resumeClaimAfterCommit(tokenId)
+
+        try await claimTask.value
+
+        XCTAssertEqual(sut.session?.account.linkedMemberId, claimerCanonicalMemberId)
+        XCTAssertTrue(sut.session?.account.equivalentMemberIds.contains(targetMemberId) == true)
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == mergeFriend.memberId }))
+        XCTAssertTrue(sut.friends.contains(where: { $0.memberId == canonicalFriend.memberId }))
+    }
+
+    func testClaimInviteToken_DoesNotRetryAfterAccountSwitch() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+
+        sut = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
+            retryPolicy: RetryPolicy(maxAttempts: 2, baseDelay: 0, maxDelay: 0),
+            skipClerkInit: true
+        )
+        sut.session = UserSession(account: account)
+
+        let tokenId = UUID()
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.suspendNextClaim(with: PayBackError.networkUnavailable)
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId)
+        }
+        await mockInviteLinkService.waitUntilClaimAttempted()
+        sut.session = UserSession(
+            account: UserAccount(id: "test-456", email: "other@example.com", displayName: "Other User")
+        )
+        await mockInviteLinkService.resumeSuspendedClaim()
+
+        do {
+            try await claimTask.value
+            XCTFail("Expected the claim to stop when the initiating account changed")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        let claimAttempts = await mockInviteLinkService.claimAttempts()
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertEqual(claimAttempts, 1)
+        XCTAssertNil(claimedTokenId)
+    }
+
+    func testClaimInviteToken_DoesNotRetryAfterSameAccountRelogin() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+
+        sut = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
+            retryPolicy: RetryPolicy(maxAttempts: 2, baseDelay: 0, maxDelay: 0),
+            skipClerkInit: true
+        )
+        sut.session = UserSession(account: account)
+
+        let tokenId = UUID()
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.suspendNextClaim(with: PayBackError.networkUnavailable)
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId)
+        }
+        await mockInviteLinkService.waitUntilClaimAttempted()
+        await sut.signOut()
+        sut.session = UserSession(account: account)
+        await mockInviteLinkService.resumeSuspendedClaim()
+
+        do {
+            try await claimTask.value
+            XCTFail("Expected the claim to stop at the old logical session boundary")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        let claimAttempts = await mockInviteLinkService.claimAttempts()
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertEqual(claimAttempts, 1)
+        XCTAssertNil(claimedTokenId)
+    }
+
+    func testClaimInviteToken_DoesNotRetryWhileSignOutIsSuspended() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        let emailAuthService = SuspendedSignOutEmailAuthService()
+
+        sut = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: emailAuthService,
+            retryPolicy: RetryPolicy(maxAttempts: 2, baseDelay: 0, maxDelay: 0),
+            skipClerkInit: true
+        )
+        sut.session = UserSession(account: account)
+
+        let tokenId = UUID()
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.suspendNextClaim(with: PayBackError.networkUnavailable)
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId)
+        }
+        await mockInviteLinkService.waitUntilClaimAttempted()
+        let signOutTask = Task {
+            await sut.signOut()
+        }
+        await emailAuthService.waitUntilSignOutStarted()
+        await mockInviteLinkService.resumeSuspendedClaim()
+
+        var claimError: PayBackError?
+        do {
+            try await claimTask.value
+        } catch let error as PayBackError {
+            claimError = error
+        }
+
+        await emailAuthService.resumeSignOut()
+        await signOutTask.value
+
+        XCTAssertEqual(claimError, .authSessionMissing)
+        let claimAttempts = await mockInviteLinkService.claimAttempts()
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertEqual(claimAttempts, 1)
+        XCTAssertNil(claimedTokenId)
+    }
+
+    func testClaimInviteToken_DoesNotRetryWhileMissingAccountRecoverySignOutIsSuspended() async throws {
+        let account = UserAccount(id: "missing-account", email: "missing@example.com", displayName: "Missing User")
+        let emailAuthService = SuspendedSignOutEmailAuthService()
+        let identity = AuthenticationSessionIdentity(
+            email: account.email,
+            displayName: account.displayName
+        )
+
+        sut = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: emailAuthService,
+            retryPolicy: RetryPolicy(maxAttempts: 2, baseDelay: 0, maxDelay: 0),
+            skipClerkInit: true,
+            authenticationSessionLoader: { identity }
+        )
+        sut.session = UserSession(account: account)
+
+        let tokenId = UUID()
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+        await mockInviteLinkService.suspendNextClaim(with: PayBackError.networkUnavailable)
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId)
+        }
+        await mockInviteLinkService.waitUntilClaimAttempted()
+        let recoveryTask = Task {
+            await sut.checkSession()
+        }
+        await emailAuthService.waitUntilSignOutStarted()
+        await mockInviteLinkService.resumeSuspendedClaim()
+
+        var claimError: PayBackError?
+        do {
+            try await claimTask.value
+        } catch let error as PayBackError {
+            claimError = error
+        }
+
+        await emailAuthService.resumeSignOut()
+        await recoveryTask.value
+
+        XCTAssertEqual(claimError, .authSessionMissing)
+        let claimAttempts = await mockInviteLinkService.claimAttempts()
+        let claimedTokenId = await mockInviteLinkService.claimedTokenId()
+        XCTAssertEqual(claimAttempts, 1)
+        XCTAssertNil(claimedTokenId)
+    }
+
+    func testClaimInviteToken_DoesNotApplyRemoteFriendsAfterAccountSwitch() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.session = UserSession(account: account)
+
+        let tokenId = UUID()
+        let oldAccountFriend = AccountFriend(memberId: UUID(), name: "Old Account Friend")
+        let newAccountFriend = AccountFriend(memberId: UUID(), name: "New Account Friend")
+        try await mockAccountService.syncFriends(
+            accountEmail: account.email,
+            friends: [oldAccountFriend]
+        )
+        await mockAccountService.suspendNextFriendFetch()
+        await mockInviteLinkService.addValidToken(
+            tokenId: tokenId,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            creatorEmail: "creator@example.com"
+        )
+
+        let claimTask = Task {
+            try await sut.claimInviteToken(tokenId)
+        }
+        await mockAccountService.waitUntilFriendFetchSuspends()
+        sut.session = UserSession(
+            account: UserAccount(id: "test-456", email: "other@example.com", displayName: "Other User")
+        )
+        sut.friends = [newAccountFriend]
+        await mockAccountService.resumeFriendFetch()
+
+        do {
+            try await claimTask.value
+            XCTFail("Expected the claim refresh to stop when the initiating account changed")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        XCTAssertEqual(sut.friends.map(\.memberId), [newAccountFriend.memberId])
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == oldAccountFriend.memberId }))
+    }
+
     func testClaimInviteToken_WithMergeFriend_KeepsFriendWhenClaimFails() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
@@ -686,6 +975,27 @@ final class AppStoreLinkingTests: XCTestCase {
         XCTAssertEqual(sut.mergeableUnlinkedFriends.map(\.memberId), [manual.memberId])
     }
 
+    func testMergeableUnlinkedFriendsExcludesCurrentUserEquivalentIdentity() async throws {
+        let equivalentMemberId = UUID()
+        let account = UserAccount(
+            id: "test-123",
+            email: "test@example.com",
+            displayName: "Example User",
+            equivalentMemberIds: [equivalentMemberId]
+        )
+        await mockAccountService.addAccount(account)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let staleSelfAlias = AccountFriend(
+            memberId: equivalentMemberId,
+            name: "Old Me",
+            status: "friend"
+        )
+        sut.friends = [staleSelfAlias]
+
+        XCTAssertTrue(sut.mergeableUnlinkedFriends.isEmpty)
+    }
+
     func testMergeFriend_PreservesLocalSourceWhenBackendRejects() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
@@ -741,6 +1051,71 @@ final class AppStoreLinkingTests: XCTestCase {
         try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
         XCTAssertFalse(sut.friends.contains(where: { $0.memberId == source.memberId }))
         XCTAssertTrue(sut.friends.contains(where: { $0.memberId == target.memberId }))
+    }
+
+    func testMergeFriend_DoesNotApplyRemoteFriendsAfterAccountSwitch() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.session = UserSession(account: account)
+
+        let source = AccountFriend(memberId: UUID(), name: "Duplicate", status: "friend")
+        let target = AccountFriend(memberId: UUID(), name: "Canonical", status: "friend")
+        let newAccountFriend = AccountFriend(memberId: UUID(), name: "New Account Friend", status: "friend")
+        sut.friends = [source, target]
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [source, target])
+        await mockAccountService.suspendNextFriendFetch()
+
+        let mergeTask = Task {
+            try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+        }
+        await mockAccountService.waitUntilFriendFetchSuspends()
+        sut.session = UserSession(
+            account: UserAccount(id: "test-456", email: "other@example.com", displayName: "Other User")
+        )
+        sut.friends = [newAccountFriend]
+        await mockAccountService.resumeFriendFetch()
+
+        do {
+            try await mergeTask.value
+            XCTFail("Expected the merge refresh to stop when the initiating account changed")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        XCTAssertEqual(sut.friends.map(\.memberId), [newAccountFriend.memberId])
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == source.memberId }))
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == target.memberId }))
+    }
+
+    func testMergeFriend_DoesNotApplyRemoteFriendsAfterSameAccountRelogin() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.session = UserSession(account: account)
+
+        let source = AccountFriend(memberId: UUID(), name: "Duplicate", status: "friend")
+        let target = AccountFriend(memberId: UUID(), name: "Canonical", status: "friend")
+        let newSessionFriend = AccountFriend(memberId: UUID(), name: "New Session Friend", status: "friend")
+        sut.friends = [source, target]
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [source, target])
+        await mockAccountService.suspendNextFriendFetch()
+
+        let mergeTask = Task {
+            try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+        }
+        await mockAccountService.waitUntilFriendFetchSuspends()
+        await sut.signOut()
+        sut.session = UserSession(account: account)
+        sut.friends = [newSessionFriend]
+        await mockAccountService.resumeFriendFetch()
+
+        do {
+            try await mergeTask.value
+            XCTFail("Expected the merge refresh to stop at the old logical session boundary")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        XCTAssertEqual(sut.friends.map(\.memberId), [newSessionFriend.memberId])
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == source.memberId }))
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == target.memberId }))
     }
 
     func testMergeFriend_RejectsLinkedTargetBeforeBackendSubmission() async throws {
@@ -1103,4 +1478,61 @@ final class AppStoreLinkingTests: XCTestCase {
         }
     }
 
+}
+
+private actor SuspendedSignOutEmailAuthService: EmailAuthService {
+    private var hasStartedSignOut = false
+    private var signOutStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var signOutContinuation: CheckedContinuation<Void, Never>?
+
+    func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func signUp(
+        email: String,
+        password: String,
+        firstName: String,
+        lastName: String?
+    ) async throws -> SignUpResult {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func verifyCode(code: String) async throws -> EmailAuthSignInResult {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func sendPasswordReset(email: String) async throws {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func resendConfirmationEmail(email: String) async throws {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func signOut() async throws {
+        hasStartedSignOut = true
+        let waiters = signOutStartWaiters
+        signOutStartWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        await withCheckedContinuation { continuation in
+            signOutContinuation = continuation
+        }
+    }
+
+    func deleteCurrentUser() async throws {
+        throw PayBackError.authInvalidCredentials(message: "Not implemented")
+    }
+
+    func waitUntilSignOutStarted() async {
+        guard !hasStartedSignOut else { return }
+        await withCheckedContinuation { continuation in
+            signOutStartWaiters.append(continuation)
+        }
+    }
+
+    func resumeSignOut() {
+        signOutContinuation?.resume()
+        signOutContinuation = nil
+    }
 }

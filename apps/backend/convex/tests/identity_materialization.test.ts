@@ -84,7 +84,7 @@ describe("identity materialization rollout", () => {
       });
 
       await expect(
-        t.query(api.aliases.resolveCanonicalMemberId, { memberId: "legacy_linked" })
+        t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "legacy_linked" })
       ).resolves.toBe("linked_canonical");
       await expect(runMigrationToCompletion(t, 10)).resolves.toMatchObject({ status: "ready" });
 
@@ -163,7 +163,7 @@ describe("identity materialization rollout", () => {
       t.run((ctx) => resolveCanonicalMemberIdInternal(ctx.db, "Direct_Canonical"))
     ).resolves.toBe("direct_canonical");
     await expect(
-      t.query(api.aliases.resolveCanonicalMemberId, { memberId: "Direct_Canonical" })
+      t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "Direct_Canonical" })
     ).resolves.toBe("direct_canonical");
   });
 
@@ -683,11 +683,12 @@ describe("identity materialization rollout", () => {
       });
     });
 
-    let result: Awaited<ReturnType<typeof runMigrationToCompletion>> | undefined;
+    let result: { status: "pending" | "ready"; lastError?: string } | undefined;
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      result = await t.mutation(internal.migrations.runIdentityMaterializationMigration, {
+      const step = await t.mutation(internal.migrations.runIdentityMaterializationMigration, {
         batchSize: 10
       });
+      result = { status: step.status, lastError: step.lastError };
       if (result.lastError || result.status === "ready") break;
     }
 

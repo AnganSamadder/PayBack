@@ -552,9 +552,8 @@ struct SmartCurrencyField: View {
     var font: Font = .system(size: 34, weight: .bold, design: .rounded)
     var alignment: Alignment = .trailing
 
-    // UUID-based focus (preferred for lists)
-    var focusedId: FocusState<UUID?>.Binding? = nil
-    var myId: UUID? = nil
+    var onNext: (() -> Void)? = nil
+    var externalFocus: Binding<Bool>? = nil
 
     @State private var inputBuffer: String = ""
     @FocusState private var internalFocus: Bool
@@ -562,44 +561,64 @@ struct SmartCurrencyField: View {
     var body: some View {
         ZStack(alignment: alignment) {
             // Invisible field capturing inputs
-            if let focusedId = focusedId, let myId = myId {
-                // Use UUID-based focus for lists
-                TextField("", text: $inputBuffer)
-                    .keyboardType(.numberPad)
-                    .focused(focusedId, equals: myId)
-                    .opacity(0.01)
-                    .onChange(of: inputBuffer) { _, newVal in
-                        handleInput(newVal)
-                    }
-            } else {
-                // Fallback to simple focus
-                TextField("", text: $inputBuffer)
-                    .keyboardType(.numberPad)
-                    .focused($internalFocus)
-                    .opacity(0.01)
-                    .onChange(of: inputBuffer) { _, newVal in
-                        handleInput(newVal)
-                    }
-            }
+            TextField("", text: $inputBuffer)
+                .keyboardType(.numberPad)
+                .focused($internalFocus)
+                .opacity(0)
+                .onChange(of: inputBuffer) { _, newVal in
+                    handleInput(newVal)
+                }
 
             // Visible display
-            Text(amount.formatted(.currency(code: currency)))
-                .font(font)
-                .foregroundStyle(amount == 0 ? Color.secondary.opacity(0.5) : AppTheme.brand)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    if let focusedId = focusedId, let myId = myId {
-                        focusedId.wrappedValue = myId
-                    } else {
+            HStack(spacing: 8) {
+                Text(amount.formatted(.currency(code: currency)))
+                    .font(font)
+                    .foregroundStyle(amount == 0 ? Color.secondary.opacity(0.5) : AppTheme.brand)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
                         internalFocus = true
                     }
+
+                if internalFocus {
+                    Button {
+                        internalFocus = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("Done")
+
+                    if let onNext {
+                        Button(action: onNext) {
+                            Image(systemName: "arrow.right.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                        .accessibilityLabel("Next")
+                    }
                 }
+            }
+            .foregroundStyle(AppTheme.brand)
         }
         .onAppear {
             // Reconstruct buffer if amount already exists
             if amount > 0 {
                 let cents = Int((amount * 100).rounded())
                 inputBuffer = String(cents)
+            }
+            internalFocus = externalFocus?.wrappedValue ?? false
+        }
+        .onChange(of: externalFocus?.wrappedValue) { _, newValue in
+            if let newValue, internalFocus != newValue {
+                internalFocus = newValue
+            }
+        }
+        .onChange(of: internalFocus) { _, newValue in
+            if externalFocus?.wrappedValue != newValue {
+                externalFocus?.wrappedValue = newValue
             }
         }
     }
@@ -619,4 +638,3 @@ struct SmartCurrencyField: View {
         }
     }
 }
-

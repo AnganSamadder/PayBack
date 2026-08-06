@@ -290,6 +290,7 @@ Rules:
 Run from repo root:
 
 ```bash
+# These are internal operator-only queries; Convex CLI admin access is required.
 bunx convex run aliases:resolveCanonicalMemberId '{"memberId":"<id>"}'
 bunx convex run aliases:getAliasesForMember '{"canonicalMemberId":"<canonical>"}'
 bunx convex run friends:list '{}'

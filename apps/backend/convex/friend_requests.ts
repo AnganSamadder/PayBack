@@ -4,6 +4,13 @@ import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { resolveCanonicalMemberIdInternal } from "./aliases";
+import {
+  assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
+  resolveAuthenticatedAccount
+} from "./helpers";
+import { findAccountsByEmailIdentity } from "./identity";
+import { checkRateLimit } from "./rateLimit";
 
 /**
  * Sends a friend request to a user by email.
@@ -11,20 +18,17 @@ import { resolveCanonicalMemberIdInternal } from "./aliases";
 export const send = mutation({
   args: { email: v.string() },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    const recipientEmail = args.email.trim().toLowerCase();
+    const { user: sender } = await getCurrentUserOrThrow(ctx);
+    const senderEmail = sender.email.trim().toLowerCase();
+    await checkRateLimit(ctx, sender.id, "friend_requests:send", 10);
 
-    const sender = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
-    if (!sender) throw new Error("Sender account not found");
-
-    const recipient = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", args.email))
-      .unique();
-    if (!recipient) throw new Error("Recipient account not found");
+    const recipients = await findAccountsByEmailIdentity(ctx.db, recipientEmail);
+    if (recipients.length !== 1) {
+      return { success: true };
+    }
+    const recipient = recipients[0];
+    assertAccountCanAcceptChanges(recipient);
 
     if (sender._id === recipient._id) throw new Error("Cannot add yourself");
 
@@ -32,7 +36,7 @@ export const send = mutation({
     const existing = await ctx.db
       .query("friend_requests")
       .withIndex("by_recipient_email_and_status", (q) =>
-        q.eq("recipient_email", args.email).eq("status", "pending")
+        q.eq("recipient_email", recipientEmail).eq("status", "pending")
       )
       .filter((q) => q.eq(q.field("sender_id"), sender._id))
       .first();
@@ -42,7 +46,7 @@ export const send = mutation({
     // Create request
     await ctx.db.insert("friend_requests", {
       sender_id: sender._id,
-      recipient_email: args.email,
+      recipient_email: recipientEmail,
       status: "pending",
       created_at: Date.now()
     });
@@ -56,7 +60,7 @@ export const send = mutation({
     const existingFriend = await ctx.db
       .query("account_friends")
       .withIndex("by_account_email_and_member_id", (q) =>
-        q.eq("account_email", sender.email).eq("member_id", recipientCanonicalId)
+        q.eq("account_email", senderEmail).eq("member_id", recipientCanonicalId)
       )
       .unique();
 
@@ -67,13 +71,13 @@ export const send = mutation({
       });
     } else {
       await ctx.db.insert("account_friends", {
-        account_email: sender.email,
+        account_email: sender.email.trim().toLowerCase(),
         member_id: recipientCanonicalId,
         name: recipient.display_name ?? recipient.email ?? "Unknown",
         status: "request_sent",
         has_linked_account: true,
         linked_account_id: recipient.id,
-        linked_account_email: recipient.email,
+        linked_account_email: recipient.email.trim().toLowerCase(),
         profile_image_url: recipient.profile_image_url,
         profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
         updated_at: Date.now()
@@ -90,22 +94,18 @@ export const send = mutation({
 export const accept = mutation({
   args: { requestId: v.id("friend_requests") },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    const { user: recipient } = await getCurrentUserOrThrow(ctx);
+    const recipientEmail = recipient.email.trim().toLowerCase();
 
     const request = await ctx.db.get(args.requestId);
     if (!request) throw new Error("Request not found");
-    if (request.recipient_email !== identity.email) throw new Error("Not authorized");
+    if (request.recipient_email.trim().toLowerCase() !== recipientEmail)
+      throw new Error("Not authorized");
     if (request.status !== "pending") throw new Error("Request not pending");
 
     const sender = await ctx.db.get(request.sender_id);
     if (!sender) throw new Error("Sender account not found");
-
-    const recipient = await ctx.db
-      .query("accounts")
-      .withIndex("by_email", (q) => q.eq("email", identity.email!))
-      .unique();
-    if (!recipient) throw new Error("Recipient account not found");
+    assertAccountCanAcceptChanges(sender);
 
     // 1. Update Request
     await ctx.db.patch(request._id, {
@@ -122,7 +122,7 @@ export const accept = mutation({
     const existingFriendForRecipient = await ctx.db
       .query("account_friends")
       .withIndex("by_account_email_and_member_id", (q) =>
-        q.eq("account_email", recipient.email).eq("member_id", senderCanonicalId)
+        q.eq("account_email", recipientEmail).eq("member_id", senderCanonicalId)
       )
       .unique();
 
@@ -131,18 +131,18 @@ export const accept = mutation({
         status: "friend",
         has_linked_account: true,
         linked_account_id: sender.id,
-        linked_account_email: sender.email,
+        linked_account_email: sender.email.trim().toLowerCase(),
         updated_at: Date.now()
       });
     } else {
       await ctx.db.insert("account_friends", {
-        account_email: recipient.email,
+        account_email: recipientEmail,
         member_id: senderCanonicalId,
         name: sender.display_name ?? sender.email ?? "Unknown",
         status: "friend",
         has_linked_account: true,
         linked_account_id: sender.id,
-        linked_account_email: sender.email,
+        linked_account_email: sender.email.trim().toLowerCase(),
         profile_image_url: sender.profile_image_url,
         profile_avatar_color: sender.profile_avatar_color ?? getRandomAvatarColor(),
         updated_at: Date.now()
@@ -158,7 +158,9 @@ export const accept = mutation({
     const existingFriendForSender = await ctx.db
       .query("account_friends")
       .withIndex("by_account_email_and_member_id", (q) =>
-        q.eq("account_email", sender.email).eq("member_id", recipientCanonicalId)
+        q
+          .eq("account_email", sender.email.trim().toLowerCase())
+          .eq("member_id", recipientCanonicalId)
       )
       .unique();
 
@@ -167,18 +169,18 @@ export const accept = mutation({
         status: "friend",
         has_linked_account: true,
         linked_account_id: recipient.id,
-        linked_account_email: recipient.email,
+        linked_account_email: recipientEmail,
         updated_at: Date.now()
       });
     } else {
       await ctx.db.insert("account_friends", {
-        account_email: sender.email,
+        account_email: sender.email.trim().toLowerCase(),
         member_id: recipientCanonicalId,
         name: recipient.display_name ?? recipient.email ?? "Unknown",
         status: "friend",
         has_linked_account: true,
         linked_account_id: recipient.id,
-        linked_account_email: recipient.email,
+        linked_account_email: recipientEmail,
         profile_image_url: recipient.profile_image_url,
         profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
         updated_at: Date.now()
@@ -195,12 +197,12 @@ export const accept = mutation({
 export const reject = mutation({
   args: { requestId: v.id("friend_requests") },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    const { user } = await getCurrentUserOrThrow(ctx);
 
     const request = await ctx.db.get(args.requestId);
     if (!request) throw new Error("Request not found");
-    if (request.recipient_email !== identity.email) throw new Error("Not authorized");
+    if (request.recipient_email.trim().toLowerCase() !== user.email.trim().toLowerCase())
+      throw new Error("Not authorized");
 
     await ctx.db.patch(request._id, {
       status: "rejected",
@@ -217,13 +219,15 @@ export const reject = mutation({
 export const listIncoming = query({
   args: {},
   handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) return [];
+    if (!(await ctx.auth.getUserIdentity())) return [];
+    const { user } = await resolveAuthenticatedAccount(ctx);
+    if (!user) return [];
+    const recipientEmail = user.email.trim().toLowerCase();
 
     const requests = await ctx.db
       .query("friend_requests")
       .withIndex("by_recipient_email_and_status", (q) =>
-        q.eq("recipient_email", identity.email!).eq("status", "pending")
+        q.eq("recipient_email", recipientEmail).eq("status", "pending")
       )
       .collect();
 

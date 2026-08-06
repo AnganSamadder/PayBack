@@ -38,6 +38,7 @@ FAIL_ON_WARNINGS="${FAIL_ON_WARNINGS:-1}"
 RUN_WEB_E2E="${RUN_WEB_E2E:-1}"
 PAYBACK_PARALLEL_TESTING="${PAYBACK_PARALLEL_TESTING:-YES}"
 PAYBACK_MAX_PARALLEL_TEST_WORKERS="${PAYBACK_MAX_PARALLEL_TEST_WORKERS:-}"
+TEST_SCHEME="PayBackTests"
 
 if [ "$PAYBACK_PARALLEL_TESTING" != "YES" ] && [ "$PAYBACK_PARALLEL_TESTING" != "NO" ]; then
 	echo "PAYBACK_PARALLEL_TESTING must be YES or NO" >&2
@@ -107,8 +108,32 @@ echo -e "${YELLOW}[2/10] Environment Snapshot...${NC}"
 HOST_ARCH=$(uname -m)
 echo "  Host architecture: $HOST_ARCH"
 xcodebuild -version | head -2 | sed 's/^/  /'
+XCODE_VERSION=$(xcodebuild -version | awk 'NR == 1 { print $2 }')
+XCODE_MAJOR=${XCODE_VERSION%%.*}
+if ! [[ "$XCODE_MAJOR" =~ ^[0-9]+$ ]] || [ "$XCODE_MAJOR" -lt 26 ]; then
+	echo -e "${RED}✗ Xcode 26 or newer is required (selected: ${XCODE_VERSION:-unknown})${NC}"
+	echo "  Clerk 1.3.6 requires the Swift 6.2 toolchain shipped with Xcode 26."
+	exit 1
+fi
+IOS_SDK_VERSION=$(xcodebuild -showsdks | grep -o 'iphoneos[0-9]*\.[0-9]*' | sed 's/iphoneos//' | sort -V | tail -1)
+
+# Mirrors the GitHub Actions job budgets. The local script does not enforce a wall-clock
+# timeout, but reporting the same value keeps parity drift visible in diagnostic output.
+if [ "$SANITIZER" = "none" ]; then
+	CI_JOB_TIMEOUT_MINUTES=75
+else
+	CI_JOB_TIMEOUT_MINUTES=90
+fi
+IOS_SDK_MAJOR=${IOS_SDK_VERSION%%.*}
+if ! [[ "$IOS_SDK_MAJOR" =~ ^[0-9]+$ ]]; then
+	echo -e "${RED}✗ Could not detect the selected Xcode's iOS SDK${NC}"
+	exit 1
+fi
+export PAYBACK_IOS_SDK_MAJOR="$IOS_SDK_MAJOR"
+echo "  iOS SDK: $IOS_SDK_VERSION"
 echo "  CI_FLAVOR: $CI_FLAVOR"
 echo "  SANITIZER: $SANITIZER"
+echo "  CI job timeout budget: ${CI_JOB_TIMEOUT_MINUTES} minutes"
 echo "  FAIL_ON_WARNINGS: $FAIL_ON_WARNINGS"
 echo "  Parallel testing: $EFFECTIVE_PARALLEL_TESTING"
 if [ "$EFFECTIVE_PARALLEL_TESTING" = "YES" ]; then
@@ -239,7 +264,7 @@ import os
 import subprocess
 import sys
 
-def parse_runtime(runtime: str):
+def parse_runtime(runtime: str, target_major: int):
   if ".iOS-" not in runtime:
     return (), ""
   version_raw = runtime.split(".iOS-")[-1].replace("-", ".")
@@ -247,6 +272,8 @@ def parse_runtime(runtime: str):
   for token in version_raw.split('.'):
     token = ''.join(ch for ch in token if ch.isdigit()) or '0'
     parts.append(int(token))
+  if parts and parts[0] != target_major:
+    return (), ""
   return tuple(parts), version_raw
 
 def get_device_priority(name: str):
@@ -294,8 +321,9 @@ except subprocess.CalledProcessError as exc:
 
 data = json.loads(result)
 candidates = []
+target_major = int(os.environ["PAYBACK_IOS_SDK_MAJOR"])
 for runtime, devices in data.get("devices", {}).items():
-  version_tuple, version_str = parse_runtime(runtime)
+  version_tuple, version_str = parse_runtime(runtime, target_major)
   if not version_tuple:
     continue
   for device in devices:
@@ -310,7 +338,10 @@ for runtime, devices in data.get("devices", {}).items():
     candidates.append((version_tuple, name, udid, version_str))
 
 if not candidates:
-  print("ERROR: No available iPhone simulator found", file=sys.stderr)
+  print(
+    f"ERROR: No available iPhone simulator found for iOS {target_major}",
+    file=sys.stderr,
+  )
   sys.exit(1)
 
 requested_udid = os.environ.get("PAYBACK_SIMULATOR_UDID", "").strip()
@@ -408,7 +439,8 @@ if [ "$XCODECLOUD_MODE" = true ]; then
 
 	BUILD_CMD="xcodebuild build-for-testing \
     -project PayBack.xcodeproj \
-    -scheme PayBack \
+    -scheme $TEST_SCHEME \
+    -configuration Debug \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $SANITIZER_FLAGS \
     $DERIVED_DATA_ARG \
@@ -447,7 +479,8 @@ if [ "$XCODECLOUD_MODE" = true ]; then
 
 	TEST_CMD="xcodebuild test-without-building \
     -project PayBack.xcodeproj \
-    -scheme PayBack \
+    -scheme $TEST_SCHEME \
+    -configuration Debug \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $DERIVED_DATA_ARG \
     $PARALLEL_FLAG \
@@ -460,7 +493,8 @@ else
 
 	TEST_CMD="xcodebuild test \
     -project PayBack.xcodeproj \
-    -scheme PayBack \
+    -scheme $TEST_SCHEME \
+    -configuration Debug \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $SANITIZER_FLAGS \
     $PARALLEL_FLAG \
@@ -512,6 +546,13 @@ else
 fi
 
 echo ""
+
+if "$PROJECT_ROOT/scripts/check-sanitizer-output.sh" "$SANITIZER" test_output.log; then
+	SANITIZER_FAILED=false
+else
+	SANITIZER_FAILED=true
+	TEST_SUCCESS=false
+fi
 
 # =============================================================================
 # Warning Analysis
@@ -788,7 +829,7 @@ echo ""
 # Final summary
 # =============================================================================
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ]; then
+if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ] && [ "$SANITIZER_FAILED" != true ]; then
 	echo -e "${GREEN}  ✓ ALL TESTS PASSED${NC}"
 	if [ "$XCODECLOUD_MODE" = true ]; then
 		echo -e "${GREEN}  ✓ XcodeCloud parity mode completed successfully${NC}"
@@ -800,6 +841,9 @@ else
 	if [ "$WARNINGS_FAILED" = true ]; then
 		echo -e "${RED}  ✗ WARNINGS DETECTED (FAIL_ON_WARNINGS=1)${NC}"
 	fi
+	if [ "$SANITIZER_FAILED" = true ]; then
+		echo -e "${RED}  ✗ SANITIZER DIAGNOSTICS DETECTED${NC}"
+	fi
 fi
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo ""
@@ -807,7 +851,7 @@ echo ""
 # Cleanup
 rm -f test_output.log build_output.log 2>/dev/null || true
 
-if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ]; then
+if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ] && [ "$SANITIZER_FAILED" != true ]; then
 	exit 0
 else
 	exit 1

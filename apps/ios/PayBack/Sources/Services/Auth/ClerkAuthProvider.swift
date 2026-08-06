@@ -2,7 +2,12 @@
 
 import Foundation
 import ConvexMobile
-import Clerk
+import ClerkKit
+
+struct ClerkSessionToken {
+    let sessionId: String
+    let jwt: String?
+}
 
 /// Clerk authentication provider for Convex.
 /// Conforms to Convex's AuthProvider protocol to enable authenticated Convex queries and mutations.
@@ -11,9 +16,25 @@ public struct ClerkAuthProvider: AuthProvider {
 
     /// JWT template name configured in Clerk Dashboard for Convex.
     private let jwtTemplate: String
+    private let sessionTokenLoader: @MainActor (String) async throws -> ClerkSessionToken?
 
     public init(jwtTemplate: String = "convex") {
         self.jwtTemplate = jwtTemplate
+        self.sessionTokenLoader = { template in
+            guard let session = Clerk.shared.session, session.status == .active else {
+                return nil
+            }
+            let jwt = try await session.getToken(.init(template: template))
+            return ClerkSessionToken(sessionId: session.id, jwt: jwt)
+        }
+    }
+
+    init(
+        jwtTemplate: String = "convex",
+        sessionTokenLoader: @escaping @MainActor (String) async throws -> ClerkSessionToken?
+    ) {
+        self.jwtTemplate = jwtTemplate
+        self.sessionTokenLoader = sessionTokenLoader
     }
 
     @MainActor
@@ -25,7 +46,7 @@ public struct ClerkAuthProvider: AuthProvider {
 
     @MainActor
     public func logout() async throws {
-        try await Clerk.shared.signOut()
+        try await Clerk.shared.auth.signOut()
     }
 
     @MainActor
@@ -40,17 +61,18 @@ public struct ClerkAuthProvider: AuthProvider {
 
     @MainActor
     private func getAuthResult() async throws -> ClerkAuthResult {
-        guard let session = Clerk.shared.session else {
+        guard let sessionToken = try await sessionTokenLoader(jwtTemplate) else {
             throw ClerkAuthError.noSession
         }
 
-        guard let tokenResource = try await session.getToken(.init(template: jwtTemplate)) else {
+        guard let jwt = sessionToken.jwt,
+              !jwt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ClerkAuthError.noToken
         }
 
         return ClerkAuthResult(
-            jwt: tokenResource.jwt,
-            userId: session.id
+            jwt: jwt,
+            userId: sessionToken.sessionId
         )
     }
 }

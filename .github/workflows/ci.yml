@@ -4,7 +4,6 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -22,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -30,7 +29,7 @@ jobs:
           bun-version: "1.3.9"
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -49,6 +48,9 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Test CI scripts
+        run: bash scripts/tests/check-sanitizer-output.test.sh
+
   # ──────────────────────────────────────────────────────────────
   # Tier 2a — Linux jobs (cheap, parallel)
   # ──────────────────────────────────────────────────────────────
@@ -60,7 +62,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -68,7 +70,7 @@ jobs:
           bun-version: "1.3.9"
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -89,7 +91,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -97,7 +99,7 @@ jobs:
           bun-version: "1.3.9"
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -118,7 +120,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -126,7 +128,7 @@ jobs:
           bun-version: "1.3.9"
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -147,7 +149,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -155,7 +157,7 @@ jobs:
           bun-version: "1.3.9"
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -178,21 +180,20 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   ios-build:
     name: iOS Build
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 45
     needs: [quality-gate]
     if: "!contains(github.event.pull_request.title, '[skip-ios]')"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Detect latest stable Xcode (not beta)
         id: detect-xcode
         run: |
-          # Get all stable Xcode versions (format: Xcode_16.1.app)
-          # Exclude RC, beta, and Xcode 26+ (iOS 26 ecosystem not yet stable for CI)
-          LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | grep -v "^Xcode_26\." | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
+          # Get all stable Xcode versions (format: Xcode_26.1.app).
+          LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
           if [ -z "$LATEST_STABLE" ]; then
             echo "ERROR: No stable Xcode version found in /Applications"
             echo "Available Xcode installations:"
@@ -232,7 +233,7 @@ jobs:
         run: xcrun simctl delete unavailable || true
 
       - name: Cache SPM
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/Library/Caches/org.swift.swiftpm
@@ -377,7 +378,7 @@ jobs:
 
   ios-tests:
     name: iOS Tests (${{ matrix.sanitizer }})
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: ${{ matrix.timeout }}
     needs: [quality-gate]
     if: "!contains(github.event.pull_request.title, '[skip-ios]')"
@@ -388,13 +389,13 @@ jobs:
         include:
           - sanitizer: none
             run_on_pr: true
-            timeout: 45
+            timeout: 75
           - sanitizer: thread
             run_on_pr: false
-            timeout: 60
+            timeout: 90
           - sanitizer: address
             run_on_pr: false
-            timeout: 60
+            timeout: 90
 
     steps:
       - name: Skip sanitizer jobs on PRs
@@ -405,13 +406,13 @@ jobs:
 
       - name: Checkout
         if: matrix.run_on_pr == true || github.event_name == 'push'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Detect latest stable Xcode (not beta)
         if: matrix.run_on_pr == true || github.event_name == 'push'
         id: detect-xcode
         run: |
-          LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | grep -v "^Xcode_26\." | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
+          LATEST_STABLE=$(ls /Applications | grep -E "^Xcode_[0-9]+\.[0-9]+\.app$" | sort -V | tail -1 | sed 's/Xcode_//;s/\.app//')
           if [ -z "$LATEST_STABLE" ]; then
             echo "ERROR: No stable Xcode version found in /Applications"
             echo "Available Xcode installations:"
@@ -457,7 +458,7 @@ jobs:
 
       - name: Cache SPM
         if: matrix.run_on_pr == true || github.event_name == 'push'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/Library/Caches/org.swift.swiftpm
@@ -631,6 +632,10 @@ jobs:
         env:
           NSUnbufferedIO: "YES"
           TSAN_OPTIONS: ${{ steps.test-flags.outputs.tsan_options }}
+
+      - name: Check Sanitizer Diagnostics
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: scripts/check-sanitizer-output.sh "${{ matrix.sanitizer }}" test-output.txt
 
       - name: Report Skipped Tests
         if: always() && (matrix.run_on_pr == true || github.event_name == 'push')

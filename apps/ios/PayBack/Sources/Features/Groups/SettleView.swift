@@ -76,7 +76,9 @@ struct SettleView: View {
     }
 
     private var unsettledExpenses: [Expense] {
-        store.expenses(in: group.id).filter { !$0.isSettled }
+        store.expenses(in: group.id).filter {
+            !$0.isSettled && !store.isSettlementPending(for: $0.id)
+        }
     }
 
     private var selectedTotal: Double {

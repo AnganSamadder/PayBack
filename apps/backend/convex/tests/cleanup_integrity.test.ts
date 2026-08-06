@@ -2325,6 +2325,113 @@ test("cleanup.deleteUnlinkedFriend cleans owner-scoped group-ref and missing-gro
   }
 });
 
+test.each([["Linked", true] as const, ["Unlinked", false] as const])(
+  "cleanup.delete%sFriend preserves an expense canonically attached to another group",
+  async (_, isLinked) => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "owner_auth",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: now,
+        member_id: "owner_member"
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@test.com",
+        member_id: "friend_member",
+        name: "Friend",
+        profile_avatar_color: "#123456",
+        has_linked_account: isLinked,
+        linked_account_id: isLinked ? "friend_auth" : undefined,
+        linked_account_email: isLinked ? "friend@test.com" : undefined,
+        updated_at: now
+      });
+      await ctx.db.insert("groups", {
+        id: "removed_direct_group",
+        name: "Removed direct group",
+        is_direct: true,
+        members: [
+          { id: "owner_member", name: "Owner", is_current_user: true },
+          { id: "friend_member", name: "Friend" }
+        ],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        created_at: now,
+        updated_at: now
+      });
+      const survivorGroupId = await ctx.db.insert("groups", {
+        id: "survivor_group",
+        name: "Survivor group",
+        members: [
+          { id: "owner_member", name: "Owner", is_current_user: true },
+          { id: "other_member", name: "Other" }
+        ],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("expenses", {
+        id: "canonical_survivor_expense",
+        group_id: "removed_direct_group",
+        group_ref: survivorGroupId,
+        description: "Canonical survivor",
+        date: now,
+        total_amount: 10,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member", "other_member"],
+        splits: [
+          { id: "owner_split", member_id: "owner_member", amount: 5, is_settled: false },
+          { id: "other_split", member_id: "other_member", amount: 5, is_settled: false }
+        ],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        participant_member_ids: ["owner_member", "other_member"],
+        participant_emails: ["owner@test.com"],
+        participants: [
+          { member_id: "owner_member", name: "Owner" },
+          { member_id: "other_member", name: "Other" }
+        ],
+        created_at: now,
+        updated_at: now
+      });
+    });
+
+    await markIdentityReady(t);
+    const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+    if (isLinked) {
+      await owner.mutation(api.cleanup.deleteLinkedFriend, { friendMemberId: "friend_member" });
+    } else {
+      await owner.mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" });
+    }
+
+    const state = await t.run(async (ctx) => ({
+      removedGroup: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "removed_direct_group"))
+        .unique(),
+      survivorGroup: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "survivor_group"))
+        .unique(),
+      survivorExpense: await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "canonical_survivor_expense"))
+        .unique()
+    }));
+    expect(state.removedGroup).toBeNull();
+    expect(state.survivorGroup).not.toBeNull();
+    expect(state.survivorExpense).not.toBeNull();
+    expect(state.survivorExpense?.group_ref).toBe(state.survivorGroup?._id);
+  }
+);
+
 test("cleanup.deleteUnlinkedFriend fails closed on a foreign group-ref expense", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
@@ -3116,7 +3223,7 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
   const t = convexTest(schema, modules);
 
   await t.run(async (ctx) => {
-    await ctx.db.insert("accounts", {
+    const friendDoc = await ctx.db.insert("accounts", {
       id: "friend_auth",
       email: "friend@test.com",
       display_name: "Friend",
@@ -3131,6 +3238,55 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
       created_at: Date.now(),
       member_id: "owner_member",
       alias_member_ids: ["owner_alias"]
+    });
+    await ctx.db.insert("sync_materialization_state", {
+      key: "group_visibility_v1",
+      status: "ready",
+      processed: 0,
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("cleanup_email_materialization_state", {
+      key: "cleanup_email_canonicalization_v1",
+      status: "ready",
+      phase: "complete",
+      processed: 0,
+      retry_count: 0,
+      updated_at: Date.now()
+    });
+
+    const foreignOwnedGroup = await ctx.db.insert("groups", {
+      id: "foreign_owned_shared_group",
+      name: "Foreign owned shared group",
+      is_direct: false,
+      members: [
+        {
+          id: "owner_alias",
+          name: "Owner Private Name",
+          profile_image_url: "https://example.com/private-owner.png",
+          profile_avatar_color: "#ABCDEF",
+          is_current_user: true
+        },
+        { id: "friend_member", name: "Friend" }
+      ],
+      owner_email: "friend@test.com",
+      owner_account_id: "friend_auth",
+      owner_id: friendDoc,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("group_visibility", {
+      account_id: ownerDoc,
+      group_id: foreignOwnedGroup,
+      group_updated_at: Date.now(),
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    await ctx.db.insert("group_visibility", {
+      account_id: friendDoc,
+      group_id: foreignOwnedGroup,
+      group_updated_at: Date.now(),
+      created_at: Date.now(),
+      updated_at: Date.now()
     });
 
     const ownedGroup = await ctx.db.insert("groups", {
@@ -3254,15 +3410,28 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
   });
 
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
-  await expect(ownerCtx.query(api.cleanup.selfDeletionStatus, {})).resolves.toEqual({
-    completed: false
+  await expect(ownerCtx.query(api.cleanup.selfDeletionStatus, {})).resolves.toMatchObject({
+    completed: false,
+    inProgress: false
   });
-  const result = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {});
+  let result = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {
+    clientCapability: "bounded_progress_v1"
+  });
+  const progressTokens = new Set<string>();
+  for (let attempt = 0; !result.success && attempt < 100; attempt += 1) {
+    expect(result.inProgress).toBe(true);
+    expect(progressTokens.has(result.progressToken)).toBe(false);
+    progressTokens.add(result.progressToken);
+    result = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {
+      clientCapability: "bounded_progress_v1"
+    });
+  }
   expect(result.success).toBe(true);
   expect(result.state).toBe("deleted");
   expect(result.expensesPreserved).toBe(true);
-  await expect(ownerCtx.query(api.cleanup.selfDeletionStatus, {})).resolves.toEqual({
-    completed: true
+  await expect(ownerCtx.query(api.cleanup.selfDeletionStatus, {})).resolves.toMatchObject({
+    completed: true,
+    inProgress: false
   });
 
   const ownerAfter = await t.run(async (ctx) =>
@@ -3329,6 +3498,17 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
     "Deleted User"
   );
 
+  const foreignOwnedGroup = await t.run(async (ctx) =>
+    ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "foreign_owned_shared_group"))
+      .unique()
+  );
+  const deletedForeignMember = foreignOwnedGroup?.members.find(
+    (member) => member.id === "owner_alias"
+  );
+  expect(deletedForeignMember).toEqual({ id: "owner_alias", name: "Deleted User" });
+
   const sharedExpense = await t.run(async (ctx) =>
     ctx.db
       .query("expenses")
@@ -3390,7 +3570,9 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
   expect(friendGhosts[0].linked_account_id).toBeUndefined();
   expect(friendGhosts[0].linked_account_email).toBeUndefined();
 
-  const retry = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {});
+  const retry = await ownerCtx.mutation(api.cleanup.selfDeleteAccount, {
+    clientCapability: "bounded_progress_v1"
+  });
   expect(retry).toMatchObject({
     success: true,
     state: "already_deleted",

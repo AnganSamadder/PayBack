@@ -124,6 +124,65 @@ final class AppStoreBalanceTests: XCTestCase {
         XCTAssertEqual(sut.netBalance(forFriend: previewFriend), 10, accuracy: 0.01)
     }
 
+    func testNetBalanceForFriendSumsAllUnsettledEquivalentFriendSplits() {
+        let friendMemberId = UUID()
+        let friendAliasId = UUID()
+        sut.friends = [
+            AccountFriend(
+                memberId: friendMemberId,
+                name: "Friend",
+                aliasMemberIds: [friendAliasId]
+            )
+        ]
+        sut.expenses = [
+            Expense(
+                groupId: UUID(),
+                description: "Legacy dinner",
+                totalAmount: 45,
+                paidByMemberId: sut.currentUser.id,
+                involvedMemberIds: [sut.currentUser.id, friendMemberId, friendAliasId],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 20),
+                    ExpenseSplit(memberId: friendMemberId, amount: 10, isSettled: true),
+                    ExpenseSplit(memberId: friendAliasId, amount: 15, isSettled: false)
+                ]
+            )
+        ]
+
+        let previewFriend = GroupMember(id: friendMemberId, name: "Friend")
+
+        XCTAssertEqual(sut.netBalance(forFriend: previewFriend), 15, accuracy: 0.01)
+    }
+
+    func testNetBalanceForFriendSumsAllUnsettledEquivalentCurrentUserSplits() {
+        let currentUserAliasId = UUID()
+        let friendMemberId = UUID()
+        sut.session = UserSession(account: UserAccount(
+            id: "current-account",
+            email: "current@example.com",
+            displayName: "Current User",
+            equivalentMemberIds: [currentUserAliasId]
+        ))
+        sut.expenses = [
+            Expense(
+                groupId: UUID(),
+                description: "Imported lunch",
+                totalAmount: 42,
+                paidByMemberId: friendMemberId,
+                involvedMemberIds: [sut.currentUser.id, currentUserAliasId, friendMemberId],
+                splits: [
+                    ExpenseSplit(memberId: sut.currentUser.id, amount: 10, isSettled: true),
+                    ExpenseSplit(memberId: currentUserAliasId, amount: 12, isSettled: false),
+                    ExpenseSplit(memberId: friendMemberId, amount: 20)
+                ]
+            )
+        ]
+
+        let previewFriend = GroupMember(id: friendMemberId, name: "Friend")
+
+        XCTAssertEqual(sut.netBalance(forFriend: previewFriend), -12, accuracy: 0.01)
+    }
+
     func testNetBalance_NoExpenses_ReturnsZero() {
         // Given
         let group = SpendingGroup(name: "Test Group", members: [sut.currentUser])
@@ -470,5 +529,48 @@ final class AppStoreBalanceTests: XCTestCase {
 
         let overall = sut.overallNetBalance()
         XCTAssertEqual(overall, -50, "Overall balance should also reflect equivalentId debts")
+    }
+
+    func testBalances_SumMultipleCurrentUserEquivalentSplits() {
+        let primaryId = sut.currentUser.id
+        let equivalentId = UUID()
+        let friendId = UUID()
+        sut.session = UserSession(
+            account: UserAccount(
+                id: primaryId.uuidString,
+                email: "test@example.com",
+                displayName: "Test User",
+                equivalentMemberIds: [equivalentId]
+            )
+        )
+
+        let group = SpendingGroup(
+            id: UUID(),
+            name: "Imported Group",
+            members: [
+                GroupMember(id: primaryId, name: "Me", isCurrentUser: true),
+                GroupMember(id: equivalentId, name: "Me (Imported)"),
+                GroupMember(id: friendId, name: "Friend")
+            ],
+            isDirect: false
+        )
+        sut.groups = [group]
+        sut.addExpense(
+            Expense(
+                groupId: group.id,
+                description: "Merged identities",
+                totalAmount: 60,
+                paidByMemberId: friendId,
+                involvedMemberIds: [primaryId, equivalentId, friendId],
+                splits: [
+                    ExpenseSplit(memberId: primaryId, amount: 10, isSettled: false),
+                    ExpenseSplit(memberId: equivalentId, amount: 20, isSettled: false),
+                    ExpenseSplit(memberId: friendId, amount: 30, isSettled: false)
+                ]
+            )
+        )
+
+        XCTAssertEqual(sut.netBalance(for: group), -30, accuracy: 0.01)
+        XCTAssertEqual(sut.overallNetBalance(), -30, accuracy: 0.01)
     }
 }

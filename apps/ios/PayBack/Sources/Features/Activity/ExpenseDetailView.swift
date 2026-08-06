@@ -23,6 +23,10 @@ struct ExpenseDetailView: View {
         store.resolvedContextKind(for: expense) == .direct
     }
 
+    private var isSettlementPending: Bool {
+        store.isSettlementPending(for: expense.id)
+    }
+
     // At least one debtor has settled — show unsettle option
     private var anyDebtorSettled: Bool {
         debtSplits.contains { $0.isSettled }
@@ -60,7 +64,7 @@ struct ExpenseDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 if store.canDeleteExpense(expense) {
                     Menu {
-                        if iAmPayer {
+                        if iAmPayer && !isSettlementPending {
                             if !expense.isSettled {
                                 Button {
                                     settleMode = .settle
@@ -232,7 +236,19 @@ struct ExpenseDetailView: View {
 
     @ViewBuilder
     private var actionButtonsSection: some View {
-        if iAmPayer {
+        if isSettlementPending {
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("Updating settlement…")
+                    .font(.system(.subheadline, design: .rounded, weight: .medium))
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(AppTheme.card)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .padding(.horizontal, 16)
+        } else if iAmPayer {
             payerActionButtons
         } else {
             nonPayerActionButtons
@@ -475,7 +491,9 @@ struct SettleExpenseSheet: View {
         !selectableSplits.isEmpty && selectableSplits.allSatisfy { selectedMemberIds.contains($0.memberId) }
     }
 
-    private var isConfirmEnabled: Bool { !selectedMemberIds.isEmpty }
+    private var isConfirmEnabled: Bool {
+        !selectedMemberIds.isEmpty && !store.isSettlementPending(for: expense.id)
+    }
 
     private var accentColor: Color {
         switch mode {

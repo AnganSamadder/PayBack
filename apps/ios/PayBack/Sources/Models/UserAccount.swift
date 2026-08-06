@@ -13,6 +13,7 @@ struct UserAccount: Identifiable, Codable, Hashable, Sendable {
     var profileColorHex: String?
     var preferNicknames: Bool
     var preferWholeNames: Bool
+    var status: String?
 
     var fullName: String {
         if let last = lastName, !last.isEmpty {
@@ -33,7 +34,8 @@ struct UserAccount: Identifiable, Codable, Hashable, Sendable {
         profileImageUrl: String? = nil,
         profileColorHex: String? = nil,
         preferNicknames: Bool = false,
-        preferWholeNames: Bool = false
+        preferWholeNames: Bool = false,
+        status: String? = nil
     ) {
         self.id = id
         self.email = email
@@ -47,6 +49,7 @@ struct UserAccount: Identifiable, Codable, Hashable, Sendable {
         self.profileColorHex = profileColorHex
         self.preferNicknames = preferNicknames
         self.preferWholeNames = preferWholeNames
+        self.status = status
     }
 
     enum CodingKeys: String, CodingKey {
@@ -63,6 +66,7 @@ struct UserAccount: Identifiable, Codable, Hashable, Sendable {
         case profileColorHex
         case preferNicknames = "prefer_nicknames"
         case preferWholeNames = "prefer_whole_names"
+        case status
     }
 }
 

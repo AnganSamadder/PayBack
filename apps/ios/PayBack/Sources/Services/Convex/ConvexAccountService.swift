@@ -12,7 +12,7 @@ actor ConvexAccountService: AccountService {
         self.client = client
     }
 
-    private struct UserViewerDTO: Decodable {
+    struct UserViewerDTO: Decodable {
         let id: String
         let email: String
         let display_name: String
@@ -26,24 +26,30 @@ actor ConvexAccountService: AccountService {
         let alias_member_ids: [String]?
         let prefer_nicknames: Bool?
         let prefer_whole_names: Bool?
+        let status: String?
+
+        var userAccount: UserAccount {
+            UserAccount(
+                id: id,
+                email: email,
+                displayName: display_name,
+                firstName: first_name,
+                lastName: last_name,
+                linkedMemberId: (member_id ?? linked_member_id).flatMap { UUID(uuidString: $0) },
+                equivalentMemberIds: (alias_member_ids ?? equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
+                profileImageUrl: profile_image_url,
+                profileColorHex: profile_avatar_color,
+                preferNicknames: prefer_nicknames ?? false,
+                preferWholeNames: prefer_whole_names ?? false,
+                status: status
+            )
+        }
     }
 
     func lookupAccount() async throws -> UserAccount? {
         for try await value in client.subscribe(to: "users:viewer", yielding: UserViewerDTO?.self).values {
              guard let dto = value else { return nil }
-             return UserAccount(
-                 id: dto.id,
-                 email: dto.email,
-                 displayName: dto.display_name,
-                 firstName: dto.first_name,
-                 lastName: dto.last_name,
-                 linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
-                 equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
-                 profileImageUrl: dto.profile_image_url,
-                 profileColorHex: dto.profile_avatar_color,
-                 preferNicknames: dto.prefer_nicknames ?? false,
-                 preferWholeNames: dto.prefer_whole_names ?? false
-             )
+             return dto.userAccount
         }
         return nil
     }
@@ -63,29 +69,24 @@ actor ConvexAccountService: AccountService {
         for try await value in client.subscribe(to: "users:viewer", yielding: UserViewerDTO?.self).values {
              guard let dto = value else { return nil }
              guard dto.email.lowercased() == requestedEmail else { return nil }
-             return UserAccount(
-                 id: dto.id,
-                 email: dto.email,
-                 displayName: dto.display_name,
-                 firstName: dto.first_name,
-                 lastName: dto.last_name,
-                  linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
-                 equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
-                  profileImageUrl: dto.profile_image_url,
-                  profileColorHex: dto.profile_avatar_color,
-                 preferNicknames: dto.prefer_nicknames ?? false,
-                 preferWholeNames: dto.prefer_whole_names ?? false
-              )
+             return dto.userAccount
         }
         return nil
     }
 
     func createAccount(email: String, displayName: String) async throws -> UserAccount {
-        _ = try await client.mutation("users:store", with: [:])
-        guard let account = try await lookupAccount(byEmail: email) else {
-            throw PayBackError.accountNotFound(email: email)
-        }
-        return account
+        try await AccountPreparationRunner.run(
+            email: email,
+            store: {
+                try await self.client.mutation(
+                    "users:store",
+                    with: ["clientCapability": "resumable_orphan_cleanup_v1"]
+                ) as String
+            },
+            lookup: {
+                try await self.lookupAccount(byEmail: email)
+            }
+        )
     }
 
     // MARK: - Friend Sync
@@ -230,7 +231,19 @@ actor ConvexAccountService: AccountService {
     }
 
     func clearFriends() async throws {
-        _ = try await client.mutation("friends:clearAllForUser", with: [:])
+        var cutoff: Double?
+        while true {
+            try Task.checkCancellation()
+            var args: [String: ConvexEncodable?] = [:]
+            args.updateValue(cutoff, forKey: "cutoff")
+            let result: ConvexClearAllProgressDTO = try await client.mutation(
+                "friends:clearAllForUserV2",
+                with: args
+            )
+            if !result.inProgress { break }
+            guard result.processed > 0 else { throw ConvexClearAllError.stalled }
+            cutoff = result.cutoff
+        }
         cachedFriends = []
     }
 
@@ -325,27 +338,35 @@ actor ConvexAccountService: AccountService {
     }
 
     func selfDeleteAccount() async throws {
-        let receipt: ConvexSelfDeletionReceiptDTO = try await client.mutation(
-            "cleanup:selfDeleteAccount",
-            with: [:]
-        )
-        guard receipt.success, receipt.expensesPreserved else {
-            throw PayBackError.underlying(message: "Account deletion was not acknowledged.")
+        _ = try await SelfDeletionProgressDriver.run {
+            let receipt: ConvexSelfDeletionReceiptDTO = try await client.mutation(
+                "cleanup:selfDeleteAccount",
+                with: ["clientCapability": SelfDeletionProgressDriver.clientCapability]
+            )
+            return receipt
         }
     }
 
     private struct SelfDeletionStatusDTO: Decodable {
         let completed: Bool
+        let inProgress: Bool?
     }
 
     func hasCompletedSelfDeletion() async throws -> Bool {
+        try await selfDeletionStatus().completed
+    }
+
+    func selfDeletionStatus() async throws -> AccountSelfDeletionStatus {
         for try await status in client.subscribe(
             to: "cleanup:selfDeletionStatus",
             yielding: SelfDeletionStatusDTO.self
         ).values {
-            return status.completed
+            return AccountSelfDeletionStatus(
+                completed: status.completed,
+                inProgress: status.inProgress ?? false
+            )
         }
-        return false
+        return AccountSelfDeletionStatus(completed: false, inProgress: false)
     }
 
     /// Monitors the current user's session status in real-time
@@ -363,20 +384,7 @@ actor ConvexAccountService: AccountService {
                             continue
                         }
 
-                        let account = UserAccount(
-                            id: dto.id,
-                            email: dto.email,
-                            displayName: dto.display_name,
-                            firstName: dto.first_name,
-                            lastName: dto.last_name,
-                            linkedMemberId: (dto.member_id ?? dto.linked_member_id).flatMap { UUID(uuidString: $0) },
-                            equivalentMemberIds: (dto.alias_member_ids ?? dto.equivalent_member_ids ?? []).compactMap { UUID(uuidString: $0) },
-                            profileImageUrl: dto.profile_image_url,
-                            profileColorHex: dto.profile_avatar_color,
-                            preferNicknames: dto.prefer_nicknames ?? false,
-                            preferWholeNames: dto.prefer_whole_names ?? false
-                        )
-                        continuation.yield(account)
+                        continuation.yield(dto.userAccount)
                     }
                 } catch {
                     print("Monitor Session Error: \(error)")

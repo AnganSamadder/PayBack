@@ -348,32 +348,7 @@ private struct FriendsList: View {
     }
 
     private func calculateBalanceForSorting(for friend: GroupMember) -> Double {
-        // Use the same calculation as BalanceView for consistency and performance
-        var totalBalance: Double = 0
-
-        for group in store.groups {
-            if group.members.contains(where: { isFriend($0.id, for: friend) }) {
-                let groupExpenses = store.expenses(in: group.id)
-
-                for exp in groupExpenses {
-                    if isMe(exp.paidByMemberId) {
-                        // Current user paid, check if friend owes anything
-                        if let friendSplit = exp.splits.first(where: { isFriend($0.memberId, for: friend) }),
-                           !friendSplit.isSettled {
-                            totalBalance += friendSplit.amount
-                        }
-                    } else if isFriend(exp.paidByMemberId, for: friend) {
-                        // Friend paid, check if current user owes anything
-                        if let userSplit = exp.splits.first(where: { isMe($0.memberId) }),
-                           !userSplit.isSettled {
-                            totalBalance -= userSplit.amount
-                        }
-                    }
-                }
-            }
-        }
-
-        return totalBalance
+        store.netBalance(forFriend: friend)
     }
 
     private func friendDisplayName(_ friend: GroupMember) -> String {
@@ -406,40 +381,12 @@ private struct BalanceView: View {
     let friend: GroupMember
 
     var body: some View {
-        let balance = calculateBalance(with: friend)
+        let balance = store.netBalance(forFriend: friend)
         let formattedBalance = formatBalance(balance)
 
         Text(formattedBalance)
             .font(.system(.headline, design: .rounded, weight: .semibold))
             .foregroundStyle(balanceColor(for: balance))
-    }
-
-    private func calculateBalance(with friend: GroupMember) -> Double {
-        var totalBalance: Double = 0
-
-        for group in store.groups {
-            guard group.members.contains(where: { isFriend($0.id, for: friend) }) else { continue }
-
-            let groupExpenses = store.expenses(in: group.id)
-
-            for expense in groupExpenses {
-                if isMe(expense.paidByMemberId) {
-                    // Current user paid - friend owes current user
-                    if let friendSplit = expense.splits.first(where: { isFriend($0.memberId, for: friend) }),
-                       !friendSplit.isSettled {
-                        totalBalance += friendSplit.amount
-                    }
-                } else if isFriend(expense.paidByMemberId, for: friend) {
-                    // Friend paid - current user owes friend
-                    if let userSplit = expense.splits.first(where: { isMe($0.memberId) }),
-                       !userSplit.isSettled {
-                        totalBalance -= userSplit.amount
-                    }
-                }
-            }
-        }
-
-        return totalBalance
     }
 
     private func formatBalance(_ balance: Double) -> String {
@@ -451,12 +398,6 @@ private struct BalanceView: View {
         let formatted = abs(balance).formatted(.currency(code: currencyCode))
 
         return balance >= 0 ? formatted : "-\(formatted)"
-    }
-
-    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
-
-    private func isFriend(_ memberId: UUID, for friend: GroupMember) -> Bool {
-        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
     }
 
     private func balanceColor(for balance: Double) -> Color {

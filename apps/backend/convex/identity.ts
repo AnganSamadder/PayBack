@@ -8,7 +8,13 @@ export const MAX_LIVE_ALIAS_DELTA = 16;
 export const MAX_ALIAS_ROWS_PER_MEMBER_ID = 8;
 
 const MAX_PENDING_IDENTITY_ROWS = 512;
+const MAX_CLEANUP_FENCES_PER_MEMBER_ID = 8;
 const ACCOUNT_ALIAS_PREFLIGHT = Symbol("accountAliasPreflight");
+
+export type CleanupFenceReadTracker = {
+  beforeQuery: (maximumRows: number) => number;
+  afterQuery: (rows: readonly unknown[]) => void;
+};
 
 export const LINKING_ERROR_CODES = {
   aliasConflict: "ALIAS_CONFLICT",
@@ -30,6 +36,113 @@ export function normalizeMemberIds(memberIds: string[] | undefined | null): stri
     }
   }
   return Array.from(seen);
+}
+
+async function assertMemberIdentityNotCleanupFencedWithPolicy(
+  ctx: MutationCtx,
+  rawMemberId: string,
+  readTracker: CleanupFenceReadTracker | undefined,
+  staleFencePolicy: "delete" | "defer"
+): Promise<Doc<"orphan_cleanup_member_fences">[]> {
+  const memberId = normalizeMemberId(rawMemberId);
+  if (!memberId) return [];
+
+  let fences: Doc<"orphan_cleanup_member_fences">[];
+  if (!readTracker) {
+    fences = await ctx.db
+      .query("orphan_cleanup_member_fences")
+      .withIndex("by_member_id", (query) => query.eq("member_id", memberId))
+      .take(MAX_CLEANUP_FENCES_PER_MEMBER_ID + 1);
+  } else {
+    fences = [];
+    let cursor: string | null = null;
+    while (fences.length < MAX_CLEANUP_FENCES_PER_MEMBER_ID + 1) {
+      const maximumRows = MAX_CLEANUP_FENCES_PER_MEMBER_ID + 1 - fences.length;
+      const numItems = readTracker.beforeQuery(maximumRows);
+      const result = await ctx.db
+        .query("orphan_cleanup_member_fences")
+        .withIndex("by_member_id", (query) => query.eq("member_id", memberId))
+        .paginate({ cursor, numItems });
+      readTracker.afterQuery(result.page);
+      fences.push(...result.page);
+      if (result.isDone) break;
+      cursor = result.continueCursor;
+    }
+  }
+  if (fences.length > MAX_CLEANUP_FENCES_PER_MEMBER_ID) {
+    throw new Error("Identity maintenance required: duplicate orphan cleanup fences");
+  }
+
+  const staleFences: Doc<"orphan_cleanup_member_fences">[] = [];
+  const jobs = new Map<string, Doc<"orphan_cleanup_jobs"> | null>();
+  for (const fence of fences) {
+    const jobKey = String(fence.job_id);
+    let job = jobs.get(jobKey);
+    if (job === undefined) {
+      readTracker?.beforeQuery(1);
+      job = await ctx.db.get(fence.job_id);
+      readTracker?.afterQuery(job ? [job] : []);
+      if (readTracker) jobs.set(jobKey, job);
+    }
+    if (job?.status === "pending" && fence.generation === (job.member_fence_generation ?? 0)) {
+      throw new Error("Member identity is temporarily locked for account cleanup");
+    }
+    staleFences.push(fence);
+  }
+  if (staleFencePolicy === "delete") {
+    for (const fence of staleFences) await ctx.db.delete(fence._id);
+  }
+  return staleFences;
+}
+
+export async function assertMemberIdentityNotCleanupFenced(
+  ctx: MutationCtx,
+  rawMemberId: string,
+  readTracker?: CleanupFenceReadTracker
+): Promise<void> {
+  await assertMemberIdentityNotCleanupFencedWithPolicy(ctx, rawMemberId, readTracker, "delete");
+}
+
+export async function prepareMemberIdentityCleanupFenceDeletes(
+  ctx: MutationCtx,
+  rawMemberId: string,
+  readTracker?: CleanupFenceReadTracker
+): Promise<Doc<"orphan_cleanup_member_fences">[]> {
+  return await assertMemberIdentityNotCleanupFencedWithPolicy(
+    ctx,
+    rawMemberId,
+    readTracker,
+    "defer"
+  );
+}
+
+export async function findAccountsByEmailIdentity(db: DatabaseReader, email: string) {
+  const rawEmail = email.trim();
+  const normalizedEmail = rawEmail.toLowerCase();
+  if (!normalizedEmail) return [];
+
+  const [rawMatches, normalizedExactMatches, normalizedIndexMatches] = await Promise.all([
+    db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", rawEmail))
+      .take(2),
+    rawEmail === normalizedEmail
+      ? Promise.resolve([])
+      : db
+          .query("accounts")
+          .withIndex("by_email", (q) => q.eq("email", normalizedEmail))
+          .take(2),
+    db
+      .query("accounts")
+      .withIndex("by_normalized_email", (q) => q.eq("normalized_email", normalizedEmail))
+      .take(2)
+  ]);
+
+  const matches = new Map<string, Doc<"accounts">>();
+  for (const account of [...rawMatches, ...normalizedExactMatches, ...normalizedIndexMatches]) {
+    matches.set(String(account._id), account);
+  }
+  return Array.from(matches.values());
 }
 
 export function deterministicLinkingError(code: string, details: string): Error {
@@ -362,6 +475,8 @@ async function preflightAccountAliasMaterializationWithLookup(
       alreadyMaterialized: true
     };
   }
+
+  await assertMemberIdentityNotCleanupFenced(ctx, normalizedAlias);
 
   if (normalizedCanonicalIndexesOnly) {
     await assertAliasDoesNotShadowNormalizedCanonicalAccount(ctx.db, aliasMemberId);

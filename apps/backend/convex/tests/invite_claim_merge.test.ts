@@ -1,6 +1,12 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
+import { accountLinkingRows, createLinkingReadBudget, reserveLinkingReadQuery } from "../aliases";
+import {
+  assertMemberIdentityNotCleanupFenced,
+  prepareMemberIdentityCleanupFenceDeletes
+} from "../identity";
+import { prepareClaimForUser } from "../inviteTokens";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
@@ -64,7 +70,258 @@ async function insertBoundInvite(
   });
 }
 
+async function insertLargeRewriteSurface(
+  ctx: any,
+  options: {
+    ownerId: any;
+    ownerAuthId: string;
+    ownerEmail: string;
+    ownerMemberId: string;
+    sourceMemberId: string;
+    prefix: string;
+    payloadBytes: number;
+    now: number;
+  }
+) {
+  const largePayload = "x".repeat(options.payloadBytes);
+  const groupId = await ctx.db.insert("groups", {
+    id: `${options.prefix}_group`,
+    name: largePayload,
+    members: [
+      { id: options.ownerMemberId, name: "Owner", is_current_user: true },
+      { id: options.sourceMemberId, name: "Merge source" }
+    ],
+    owner_email: options.ownerEmail,
+    owner_account_id: options.ownerAuthId,
+    owner_id: options.ownerId,
+    created_at: options.now,
+    updated_at: options.now
+  });
+  await ctx.db.insert("expenses", {
+    id: `${options.prefix}_expense`,
+    group_id: `${options.prefix}_group`,
+    group_ref: groupId,
+    description: "Large merge expense",
+    notes: largePayload,
+    date: options.now,
+    total_amount: 20,
+    paid_by_member_id: options.sourceMemberId,
+    involved_member_ids: [options.ownerMemberId, options.sourceMemberId],
+    splits: [
+      {
+        id: `${options.prefix}_owner_split`,
+        member_id: options.ownerMemberId,
+        amount: 10,
+        is_settled: false
+      },
+      {
+        id: `${options.prefix}_source_split`,
+        member_id: options.sourceMemberId,
+        amount: 10,
+        is_settled: false
+      }
+    ],
+    is_settled: false,
+    owner_email: options.ownerEmail,
+    owner_account_id: options.ownerAuthId,
+    owner_id: options.ownerId,
+    participant_member_ids: [options.ownerMemberId, options.sourceMemberId],
+    participant_emails: [options.ownerEmail],
+    participants: [
+      { member_id: options.ownerMemberId, name: "Owner" },
+      { member_id: options.sourceMemberId, name: "Merge source" }
+    ],
+    created_at: options.now,
+    updated_at: options.now
+  });
+}
+
 describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
+  test.each([
+    ["query", { queryWork: 4096 }],
+    ["read byte", { estimatedReadBytes: 10 * 1024 * 1024 - 1 }]
+  ] as const)("rejects cleanup fence %s exhaustion before an unbudgeted read", async (_, seed) => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const fenceId = await t.run(async (ctx) => {
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "budgeted-fence@test.com",
+        subject: "budgeted_fence_auth",
+        member_ids: ["budgeted_fence_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: now,
+        updated_at: now
+      });
+      return await ctx.db.insert("orphan_cleanup_member_fences", {
+        job_id: jobId,
+        member_id: "budgeted_fence_member",
+        generation: 0,
+        created_at: now
+      });
+    });
+    const budget = Object.assign(createLinkingReadBudget(), seed);
+
+    await expect(
+      t.run((ctx) => {
+        const readFailingDb = new Proxy(ctx.db, {
+          get(target, property) {
+            if (property === "get" || property === "query") {
+              throw new Error(`Cleanup fence performed unbudgeted ${String(property)}`);
+            }
+            const value = Reflect.get(target, property);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+        });
+        return prepareMemberIdentityCleanupFenceDeletes(
+          { ...ctx, db: readFailingDb } as typeof ctx,
+          "budgeted_fence_member",
+          {
+            beforeQuery: (maximumRows) => reserveLinkingReadQuery(budget, maximumRows),
+            afterQuery: (rows) => accountLinkingRows(budget, rows)
+          }
+        );
+      })
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    expect(await t.run((ctx) => ctx.db.get(fenceId))).not.toBeNull();
+  });
+
+  test("uses the one safe cleanup-fence read slot remaining in the byte budget", async () => {
+    const t = convexTest(schema, modules);
+    const budget = createLinkingReadBudget();
+    budget.estimatedReadBytes = 8 * 1024 * 1024;
+    const reservedPageSizes: number[] = [];
+
+    const fences = await t.run((ctx) =>
+      prepareMemberIdentityCleanupFenceDeletes(ctx, "empty_budgeted_fence_member", {
+        beforeQuery: (maximumRows) => {
+          const pageSize = reserveLinkingReadQuery(budget, maximumRows);
+          reservedPageSizes.push(pageSize);
+          return pageSize;
+        },
+        afterQuery: (rows) => accountLinkingRows(budget, rows)
+      })
+    );
+
+    expect(fences).toEqual([]);
+    expect(reservedPageSizes).toEqual([1]);
+  });
+
+  test("pages nine cleanup fences before rejecting duplicate maintenance state", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "nine-fences@test.com",
+        subject: "nine_fences_auth",
+        member_ids: ["nine_fences_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: 1,
+        updated_at: 1
+      });
+      for (let index = 0; index < 9; index += 1) {
+        await ctx.db.insert("orphan_cleanup_member_fences", {
+          job_id: jobId,
+          member_id: "nine_fences_member",
+          generation: index,
+          created_at: index + 1
+        });
+      }
+    });
+    const budget = createLinkingReadBudget();
+    const pageSizes: number[] = [];
+
+    await expect(
+      t.run((ctx) =>
+        prepareMemberIdentityCleanupFenceDeletes(ctx, "nine_fences_member", {
+          beforeQuery: (maximumRows) => {
+            const pageSize = reserveLinkingReadQuery(budget, maximumRows);
+            pageSizes.push(pageSize);
+            return pageSize;
+          },
+          afterQuery: (rows) => accountLinkingRows(budget, rows)
+        })
+      )
+    ).rejects.toThrow("duplicate orphan cleanup fences");
+    expect(pageSizes).toEqual([5, 4]);
+  });
+
+  test("precharges one cached cleanup-job read for eight fences", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "cached-fences@test.com",
+        subject: "cached_fences_auth",
+        member_ids: ["cached_fences_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: 1,
+        updated_at: 1
+      });
+      for (let index = 0; index < 8; index += 1) {
+        await ctx.db.insert("orphan_cleanup_member_fences", {
+          job_id: jobId,
+          member_id: "cached_fences_member",
+          generation: index,
+          created_at: index + 1
+        });
+      }
+    });
+    const budget = createLinkingReadBudget();
+    const requestedRows: number[] = [];
+
+    const fences = await t.run((ctx) =>
+      prepareMemberIdentityCleanupFenceDeletes(ctx, "cached_fences_member", {
+        beforeQuery: (maximumRows) => {
+          requestedRows.push(maximumRows);
+          return reserveLinkingReadQuery(budget, maximumRows);
+        },
+        afterQuery: (rows) => accountLinkingRows(budget, rows)
+      })
+    );
+
+    expect(fences).toHaveLength(8);
+    expect(requestedRows).toEqual([9, 4, 1]);
+    expect(budget.queryWork).toBe(3);
+  });
+
+  test("keeps untracked cleanup-fence deletion behavior for non-merge callers", async () => {
+    const t = convexTest(schema, modules);
+    const fenceId = await t.run(async (ctx) => {
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "untracked-fence@test.com",
+        subject: "untracked_fence_auth",
+        member_ids: ["untracked_fence_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: 1,
+        updated_at: 1
+      });
+      return await ctx.db.insert("orphan_cleanup_member_fences", {
+        job_id: jobId,
+        member_id: "untracked_fence_member",
+        generation: 0,
+        created_at: 1
+      });
+    });
+
+    await t.run((ctx) => assertMemberIdentityNotCleanupFenced(ctx, "untracked_fence_member"));
+    expect(await t.run((ctx) => ctx.db.get(fenceId))).toBeNull();
+  });
+
   test("accepts a claimed-token alias whose audit email is the creator", async () => {
     const t = convexTest(schema, modules);
     const now = Date.now();
@@ -1966,4 +2223,342 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     );
     expect(token?.claimed_by).toBeUndefined();
   });
+
+  test("rejects aggregate group and expense rewrite work before claiming the invite", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      const creatorId = await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "aggregate_rewrite_invite",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      await insertLargeRewriteSurface(ctx, {
+        ownerId: creatorId,
+        ownerAuthId: "creator_auth",
+        ownerEmail: "creator@test.com",
+        ownerMemberId: "creator_member",
+        sourceMemberId: "claimer_legacy_member",
+        prefix: "aggregate_rewrite",
+        payloadBytes: 850 * 1024,
+        now
+      });
+      const staleJobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "stale-aggregate@example.com",
+        subject: "stale_aggregate_auth",
+        member_ids: ["claimer_legacy_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("orphan_cleanup_member_fences", {
+        job_id: staleJobId,
+        member_id: "claimer_legacy_member",
+        generation: 0,
+        created_at: now
+      });
+    });
+
+    const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await expect(
+      claimer.mutation(api.inviteTokens.claim, { id: "aggregate_rewrite_invite" })
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    const state = await t.run(async (ctx) => ({
+      token: await ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "aggregate_rewrite_invite"))
+        .unique(),
+      group: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "aggregate_rewrite_group"))
+        .unique(),
+      expense: await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "aggregate_rewrite_expense"))
+        .unique(),
+      claimant: await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", "claimer_auth"))
+        .unique(),
+      targetFriend: await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", "creator@test.com").eq("member_id", "claimer_legacy_member")
+        )
+        .unique(),
+      aliases: await ctx.db.query("member_aliases").collect(),
+      groupVisibility: await ctx.db.query("group_visibility").collect(),
+      expenseVisibility: await ctx.db.query("user_expenses").collect(),
+      syncStates: await ctx.db.query("account_sync_state").collect(),
+      staleFences: await ctx.db
+        .query("orphan_cleanup_member_fences")
+        .withIndex("by_member_id", (q) => q.eq("member_id", "claimer_legacy_member"))
+        .collect()
+    }));
+    expect(state.token?.claimed_by).toBeUndefined();
+    expect(state.claimant?.alias_member_ids).toBeUndefined();
+    expect(state.targetFriend).toMatchObject({
+      has_linked_account: false,
+      link_state: "unlinked"
+    });
+    expect(state.aliases).toEqual([]);
+    expect(state.group?.members.map((member) => member.id)).toContain("claimer_legacy_member");
+    expect(state.expense?.participant_member_ids).toContain("claimer_legacy_member");
+    expect(state.groupVisibility).toEqual([]);
+    expect(state.expenseVisibility).toEqual([]);
+    expect(state.syncStates).toEqual([]);
+    expect(state.staleFences).toHaveLength(1);
+  }, 30_000);
+
+  test("keeps a deferred stale fence when the aggregate write reservation is exhausted", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const fixture = await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "fence_limit_creator_auth",
+        email: "fence-limit-creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "fence_limit_creator_member"
+      });
+      const claimantId = await ctx.db.insert("accounts", {
+        id: "fence_limit_claimant_auth",
+        email: "fence-limit-claimant@test.com",
+        display_name: "Claimant",
+        created_at: now,
+        member_id: "fence_limit_claimant_member"
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: now
+      });
+      const targetFriendId = await ctx.db.insert("account_friends", {
+        account_email: "fence-limit-creator@test.com",
+        member_id: "fence_limit_legacy_member",
+        name: "Claimant",
+        profile_avatar_color: "#123456",
+        has_linked_account: false,
+        link_state: "unlinked",
+        status: "friend",
+        updated_at: now
+      });
+      await ctx.db.insert("invite_tokens", {
+        id: "fence_limit_invite",
+        creator_id: "fence_limit_creator_auth",
+        creator_email: "fence-limit-creator@test.com",
+        target_member_id: "fence_limit_legacy_member",
+        target_friend_id: targetFriendId,
+        target_member_name: "Claimant",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "fence-limit-orphan@test.com",
+        subject: "fence_limit_orphan_auth",
+        member_ids: ["fence_limit_legacy_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: now,
+        updated_at: now
+      });
+      const fenceId = await ctx.db.insert("orphan_cleanup_member_fences", {
+        job_id: jobId,
+        member_id: "fence_limit_legacy_member",
+        generation: 0,
+        created_at: now
+      });
+      const claimant = await ctx.db.get(claimantId);
+      if (!claimant) throw new Error("Expected claimant");
+      return { claimant, targetFriendId, fenceId };
+    });
+    const budget = createLinkingReadBudget();
+    budget.estimatedWriteBytes = 12 * 1024 * 1024 - 1;
+
+    await expect(
+      t.run((ctx) =>
+        prepareClaimForUser(
+          ctx,
+          fixture.claimant,
+          {
+            targetMemberId: "fence_limit_legacy_member",
+            targetFriendId: fixture.targetFriendId,
+            creatorEmail: "fence-limit-creator@test.com",
+            creatorId: "fence_limit_creator_auth"
+          },
+          budget
+        )
+      )
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    const state = await t.run(async (ctx) => ({
+      fence: await ctx.db.get(fixture.fenceId),
+      token: await ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "fence_limit_invite"))
+        .unique(),
+      claimant: await ctx.db.get(fixture.claimant._id),
+      targetFriend: await ctx.db.get(fixture.targetFriendId),
+      aliases: await ctx.db.query("member_aliases").collect()
+    }));
+    expect(state.fence).not.toBeNull();
+    expect(state.token?.claimed_by).toBeUndefined();
+    expect(state.claimant?.alias_member_ids).toBeUndefined();
+    expect(state.targetFriend).toMatchObject({ has_linked_account: false });
+    expect(state.aliases).toEqual([]);
+  });
+
+  test("applies two prepared invite rewrites with one combined sync revision per account", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      const creatorId = await ctx.db.insert("accounts", {
+        id: "creator_auth",
+        email: "creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "creator_member"
+      });
+      const claimerId = await ctx.db.insert("accounts", {
+        id: "claimer_auth",
+        email: "claimer@test.com",
+        display_name: "Claimer",
+        created_at: now,
+        member_id: "claimer_member"
+      });
+      await insertBoundInvite(ctx, {
+        id: "aggregate_two_rewrite_invite",
+        creator_id: "creator_auth",
+        creator_email: "creator@test.com",
+        target_member_id: "claimer_legacy_member",
+        target_member_name: "Claimer",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "claimer@test.com",
+        member_id: "creator_local_duplicate",
+        name: "Creator duplicate",
+        profile_avatar_color: "#444444",
+        has_linked_account: false,
+        link_state: "unlinked",
+        status: "friend",
+        updated_at: now
+      });
+      await insertLargeRewriteSurface(ctx, {
+        ownerId: creatorId,
+        ownerAuthId: "creator_auth",
+        ownerEmail: "creator@test.com",
+        ownerMemberId: "creator_member",
+        sourceMemberId: "claimer_legacy_member",
+        prefix: "creator_aggregate",
+        payloadBytes: 360 * 1024,
+        now
+      });
+      await insertLargeRewriteSurface(ctx, {
+        ownerId: claimerId,
+        ownerAuthId: "claimer_auth",
+        ownerEmail: "claimer@test.com",
+        ownerMemberId: "claimer_member",
+        sourceMemberId: "creator_local_duplicate",
+        prefix: "claimer_aggregate",
+        payloadBytes: 360 * 1024,
+        now
+      });
+    });
+
+    const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
+    await expect(
+      claimer.mutation(api.inviteTokens.claim, {
+        id: "aggregate_two_rewrite_invite",
+        mergeLocalFriendMemberId: "creator_local_duplicate"
+      })
+    ).resolves.toMatchObject({ canonical_member_id: "claimer_member" });
+
+    const state = await t.run(async (ctx) => ({
+      token: await ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "aggregate_two_rewrite_invite"))
+        .unique(),
+      localFriend: await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", "claimer@test.com").eq("member_id", "creator_local_duplicate")
+        )
+        .unique(),
+      creatorGroup: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "creator_aggregate_group"))
+        .unique(),
+      claimerGroup: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "claimer_aggregate_group"))
+        .unique(),
+      creatorExpense: await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "creator_aggregate_expense"))
+        .unique(),
+      claimerExpense: await ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "claimer_aggregate_expense"))
+        .unique(),
+      claimant: await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", "claimer_auth"))
+        .unique(),
+      aliases: await ctx.db.query("member_aliases").collect(),
+      groupVisibility: await ctx.db.query("group_visibility").collect(),
+      expenseVisibility: await ctx.db.query("user_expenses").collect(),
+      syncStates: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(state.token?.claimed_by).toBe("claimer_auth");
+    expect(state.claimant?.alias_member_ids).toContain("claimer_legacy_member");
+    expect(state.aliases).toMatchObject([
+      { alias_member_id: "claimer_legacy_member", canonical_member_id: "claimer_member" }
+    ]);
+    expect(state.localFriend).toBeNull();
+    expect(state.creatorGroup?.members.map((member) => member.id)).toContain("claimer_member");
+    expect(state.claimerGroup?.members.map((member) => member.id)).toContain("creator_member");
+    expect(state.creatorExpense?.participant_member_ids).toContain("claimer_member");
+    expect(state.claimerExpense?.participant_member_ids).toContain("creator_member");
+    expect(state.groupVisibility).toHaveLength(4);
+    expect(state.expenseVisibility).toHaveLength(4);
+    expect(state.syncStates).toHaveLength(2);
+    expect(new Set(state.syncStates.map((syncState) => String(syncState.account_id))).size).toBe(2);
+    expect(state.syncStates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ groups_revision: 1, expenses_revision: 1 }),
+        expect.objectContaining({ groups_revision: 1, expenses_revision: 1 })
+      ])
+    );
+  }, 30_000);
 });

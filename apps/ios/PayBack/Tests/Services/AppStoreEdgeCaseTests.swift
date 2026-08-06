@@ -930,7 +930,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
     // MARK: - Account Deletion
 
-    func testSelfDeleteAccount_BackendFailureRestoresIdleState() async throws {
+    func testSelfDeleteAccount_BackendFailureBlocksAppUntilRetry() async throws {
         let authService = ControlledDeletionEmailAuthService()
         let deletionStore = makeDeletionStore(emailAuthService: authService)
         deletionStore.session = UserSession(
@@ -944,7 +944,8 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
         await XCTAssertThrowsError(try await deletionStore.selfDeleteAccount())
 
-        XCTAssertEqual(deletionStore.accountDeletionState, .idle)
+        XCTAssertEqual(deletionStore.accountDeletionState, .awaitingBackendDeletion)
+        XCTAssertTrue(deletionStore.isAccountDeletionBlocking)
         let deleteCalls = await authService.deleteCalls()
         XCTAssertEqual(deleteCalls, 0)
     }
@@ -1029,6 +1030,167 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertEqual(deletionStore.accountDeletionState, .idle)
     }
 
+    func testInterruptedBackendDeletionAfterRelaunchResumesBeforeDeletingAuthenticationIdentity() async throws {
+        let authService = ControlledDeletionEmailAuthService()
+        let deletionStore = makeDeletionStore(emailAuthService: authService)
+        await mockAccountService.setInProgressSelfDeletion(true)
+
+        let completed = try await deletionStore.completePendingAccountDeletionIfNeeded()
+
+        XCTAssertTrue(completed)
+        let backendCalls = await mockAccountService.selfDeleteCalls()
+        let authCalls = await authService.deleteCalls()
+        XCTAssertEqual(backendCalls, 1)
+        XCTAssertEqual(authCalls, 1)
+        XCTAssertNil(deletionStore.session)
+        XCTAssertEqual(deletionStore.accountDeletionState, .idle)
+    }
+
+    func testSessionRestoreResumesInterruptedBackendDeletionBeforeLoadingExistingAccount() async throws {
+        let identity = AuthenticationSessionIdentity(
+            email: "restored@example.com",
+            displayName: "Restored User"
+        )
+        await mockAccountService.addAccount(
+            UserAccount(
+                id: "restored-account",
+                email: identity.email,
+                displayName: identity.displayName
+            )
+        )
+        await mockAccountService.setInProgressSelfDeletion(true)
+        let authService = ControlledDeletionEmailAuthService()
+        let recoveryStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: authService,
+            skipClerkInit: true,
+            authenticationSessionLoader: { identity },
+            convexAuthenticator: {}
+        )
+
+        await recoveryStore.checkSession()
+
+        let backendCalls = await mockAccountService.selfDeleteCalls()
+        let authCalls = await authService.deleteCalls()
+        XCTAssertEqual(backendCalls, 1)
+        XCTAssertEqual(authCalls, 1)
+        XCTAssertNil(recoveryStore.session)
+        XCTAssertEqual(recoveryStore.accountDeletionState, .idle)
+        XCTAssertFalse(recoveryStore.isAuthenticationSessionRecoveryBlocking)
+    }
+
+    func testSessionRestoreDeletionFailureExposesRecoveryErrorToDeletionUI() async throws {
+        let identity = AuthenticationSessionIdentity(
+            email: "restored@example.com",
+            displayName: "Restored User"
+        )
+        await mockAccountService.setInProgressSelfDeletion(true)
+        await mockAccountService.setShouldFailSelfDelete(true)
+        let recoveryStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: ControlledDeletionEmailAuthService(),
+            skipClerkInit: true,
+            authenticationSessionLoader: { identity },
+            convexAuthenticator: {}
+        )
+
+        await recoveryStore.checkSession()
+
+        XCTAssertEqual(recoveryStore.accountDeletionState, .awaitingBackendDeletion)
+        XCTAssertTrue(recoveryStore.isAccountDeletionBlocking)
+        XCTAssertNotNil(recoveryStore.accountDeletionRecoveryErrorMessage)
+        XCTAssertEqual(
+            recoveryStore.accountDeletionRecoveryErrorMessage,
+            recoveryStore.authenticationSessionRecoveryMessage
+        )
+    }
+
+    func testRealtimeDeletingAccountEntersBackendDeletionRecovery() {
+        let recoveryStore = makeDeletionStore(emailAuthService: ControlledDeletionEmailAuthService())
+        let deletingAccount = UserAccount(
+            id: "owner_auth",
+            email: "owner@example.com",
+            displayName: "Owner",
+            status: "deleting"
+        )
+
+        recoveryStore.handleRealtimeAccountUpdate(deletingAccount)
+
+        XCTAssertEqual(recoveryStore.accountDeletionState, .awaitingBackendDeletion)
+        XCTAssertTrue(recoveryStore.isAccountDeletionBlocking)
+    }
+
+    func testRealtimeDeletingAccountInvalidatesInFlightRemoteLoad() async throws {
+        let recoveryStore = makeDeletionStore(emailAuthService: ControlledDeletionEmailAuthService())
+        let account = UserAccount(
+            id: "owner_auth",
+            email: "owner@example.com",
+            displayName: "Owner"
+        )
+        let staleRemoteGroup = SpendingGroup(name: "Stale remote group", members: [recoveryStore.currentUser])
+        await mockGroupCloudService.queueFetches(
+            groups: [[staleRemoteGroup]],
+            delaysNanoseconds: [500_000_000]
+        )
+        recoveryStore.handleRealtimeAccountUpdate(account)
+
+        let remoteLoad = Task { @MainActor in
+            await recoveryStore.loadRemoteData()
+        }
+        var didStartFetch = false
+        for _ in 0..<100 {
+            if await mockGroupCloudService.currentFetchInvocationCount() > 0 {
+                didStartFetch = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        guard didStartFetch else {
+            remoteLoad.cancel()
+            XCTFail("Remote load did not begin within one second")
+            return
+        }
+
+        var deletingAccount = account
+        deletingAccount.status = "deleting"
+        recoveryStore.handleRealtimeAccountUpdate(deletingAccount)
+        await remoteLoad.value
+
+        XCTAssertFalse(recoveryStore.groups.contains(where: { $0.id == staleRemoteGroup.id }))
+        XCTAssertEqual(recoveryStore.accountDeletionState, .awaitingBackendDeletion)
+    }
+
+    func testRealtimeDeletingAccountSuppressesSubsequentFriendSync() async throws {
+        let recoveryStore = makeDeletionStore(emailAuthService: ControlledDeletionEmailAuthService())
+        let account = UserAccount(
+            id: "owner_auth",
+            email: "owner@example.com",
+            displayName: "Owner"
+        )
+        recoveryStore.handleRealtimeAccountUpdate(account)
+
+        var deletingAccount = account
+        deletingAccount.status = "deleting"
+        recoveryStore.handleRealtimeAccountUpdate(deletingAccount)
+        recoveryStore.addImportedFriend(
+            AccountFriend(memberId: UUID(), name: "Alice", hasLinkedAccount: false)
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let syncedFriends = await mockAccountService.latestSyncedFriends(accountEmail: account.email)
+        XCTAssertNil(syncedFriends)
+    }
+
     func testMissingDeletionReceiptDoesNotDeleteAuthenticationIdentity() async throws {
         let authService = ControlledDeletionEmailAuthService()
         let deletionStore = makeDeletionStore(emailAuthService: authService)
@@ -1095,6 +1257,84 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
         XCTAssertFalse(recoveryStore.isAuthenticationSessionRecoveryBlocking)
         XCTAssertTrue(recoveryStore.canPresentAuthenticationFlow)
+    }
+
+    func testConvexAuthenticationFailureBlocksSessionRestoreUntilRetrySucceeds() async {
+        let identity = AuthenticationSessionIdentity(
+            email: "restored@example.com",
+            displayName: "Restored User"
+        )
+        let account = UserAccount(
+            id: "restored-account",
+            email: identity.email,
+            displayName: "Restored User"
+        )
+        await mockAccountService.addAccount(account)
+        let authenticator = SequencedConvexAuthenticator(
+            outcomes: [.failure(PayBackError.networkUnavailable), .success]
+        )
+        let recoveryStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true,
+            authenticationSessionLoader: { identity },
+            convexAuthenticator: { try await authenticator.authenticate() }
+        )
+
+        await recoveryStore.checkSession()
+
+        XCTAssertNil(recoveryStore.session)
+        XCTAssertTrue(recoveryStore.isAuthenticationSessionRecoveryBlocking)
+
+        await recoveryStore.checkSession()
+
+        XCTAssertEqual(recoveryStore.session?.account.id, account.id)
+        XCTAssertFalse(recoveryStore.isAuthenticationSessionRecoveryBlocking)
+        let calls = await authenticator.callCount()
+        XCTAssertEqual(calls, 2)
+    }
+
+    func testExplicitLoginDoesNotCreateAccountWhenConvexAuthenticationFails() async throws {
+        let email = "login@example.com"
+        let authService = ControlledDeletionEmailAuthService(
+            signInResult: EmailAuthSignInResult(
+                uid: "auth-user",
+                email: email,
+                firstName: "Login",
+                lastName: "User"
+            )
+        )
+        let authenticator = SequencedConvexAuthenticator(
+            outcomes: [.failure(PayBackError.networkUnavailable), .success]
+        )
+        let loginStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: authService,
+            skipClerkInit: true,
+            convexAuthenticator: { try await authenticator.authenticate() }
+        )
+
+        await XCTAssertThrowsError(try await loginStore.login(email: email, password: "password"))
+
+        XCTAssertNil(loginStore.session)
+        let accountAfterFailure = try await mockAccountService.lookupAccount(byEmail: email)
+        XCTAssertNil(accountAfterFailure)
+
+        let account = try await loginStore.login(email: email, password: "password")
+
+        XCTAssertEqual(loginStore.session?.account.id, account.id)
+        let accountAfterRetry = try await mockAccountService.lookupAccount(byEmail: email)
+        XCTAssertEqual(accountAfterRetry?.id, account.id)
     }
 
     func testMissingAccountSignOutFailureRemainsBlockedUntilRetrySucceeds() async {
@@ -1198,13 +1438,20 @@ private actor ControlledDeletionEmailAuthService: EmailAuthService {
     private var signOutFailuresRemaining: Int
     private var deleteCallCount = 0
     private var signOutCallCount = 0
+    private let signInResult: EmailAuthSignInResult?
 
-    init(deleteFailuresRemaining: Int = 0, signOutFailuresRemaining: Int = 0) {
+    init(
+        deleteFailuresRemaining: Int = 0,
+        signOutFailuresRemaining: Int = 0,
+        signInResult: EmailAuthSignInResult? = nil
+    ) {
         self.deleteFailuresRemaining = deleteFailuresRemaining
         self.signOutFailuresRemaining = signOutFailuresRemaining
+        self.signInResult = signInResult
     }
 
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
+        if let signInResult { return signInResult }
         throw PayBackError.authInvalidCredentials(message: "Not implemented")
     }
 
@@ -1222,6 +1469,18 @@ private actor ControlledDeletionEmailAuthService: EmailAuthService {
     }
 
     func sendPasswordReset(email: String) async throws {}
+
+    func verifyPasswordResetCode(code: String) async throws {
+        throw PayBackError.authSessionMissing
+    }
+
+    func resendPasswordResetCode() async throws {
+        throw PayBackError.authSessionMissing
+    }
+
+    func completePasswordReset(newPassword: String) async throws -> PasswordResetResult {
+        throw PayBackError.authSessionMissing
+    }
 
     func resendConfirmationEmail(email: String) async throws {}
 
@@ -1356,5 +1615,34 @@ private actor SequencedAuthenticationSessionLoader {
 
     func loadCalls() -> Int {
         callCount
+    }
+}
+
+private actor SequencedConvexAuthenticator {
+    enum Outcome {
+        case success
+        case failure(Error)
+    }
+
+    private var outcomes: [Outcome]
+    private var calls = 0
+
+    init(outcomes: [Outcome]) {
+        self.outcomes = outcomes
+    }
+
+    func authenticate() throws {
+        calls += 1
+        guard outcomes.isEmpty == false else { return }
+        switch outcomes.removeFirst() {
+        case .success:
+            return
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    func callCount() -> Int {
+        calls
     }
 }

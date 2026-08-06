@@ -1,13 +1,14 @@
 // swiftlint:disable file_length type_body_length line_length large_tuple cyclomatic_complexity function_body_length identifier_name inclusive_language blanket_disable_command
 import Foundation
 import Combine
-import Clerk
+import ClerkKit
 
 enum LogoutAlert: Identifiable { case accountDeleted; var id: Int { hashValue } }
 
 enum AccountDeletionState: Equatable {
     case idle
     case deletingBackendAccount
+    case awaitingBackendDeletion
     case deletingAuthenticationAccount
     case awaitingAuthenticationDeletion
 }
@@ -29,6 +30,28 @@ final class AppStore: ObservableObject {
         let expenses: [Expense]
         let dirtyGroups: [SpendingGroup]
         let dirtyExpenses: [Expense]
+    }
+
+    private struct GroupMutationContext {
+        let accountId: String?
+        let dataEpoch: UUID
+    }
+
+    private struct GroupMutationToken {
+        let id: UUID
+        let groupIds: Set<UUID>
+    }
+
+    private struct FriendDeletionToken {
+        let id: UUID
+        let identityMemberIds: Set<UUID>
+    }
+
+    private struct SettlementMutationContext {
+        let accountId: String?
+        let dataEpoch: UUID
+        let expenseId: UUID
+        let mutationId: UUID
     }
 
     @Published var groups: [SpendingGroup]
@@ -53,21 +76,34 @@ final class AppStore: ObservableObject {
     private let emailAuthService: EmailAuthService
     private let skipClerkInit: Bool
     private let authenticationSessionLoader: @Sendable () async throws -> AuthenticationSessionIdentity?
+    private let convexAuthenticator: @Sendable () async throws -> Void
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var remoteLoadTask: Task<Void, Never>?
+    private var clearAllDataTask: Task<Void, Never>?
     private var remoteLoadGeneration: UInt64 = 0
     /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseUpsertIds: Set<UUID> = []
-    /// Local settlement writes that have been sent to cloud but not yet observed in realtime snapshots.
+    /// Successful settlement writes not yet confirmed by a matching realtime snapshot.
+    /// This protects canonical mutation responses from stale subscription payloads without
+    /// keeping the settlement UI disabled after the server acknowledges the mutation.
     private var pendingExpenseSettlementIds: Set<UUID> = []
+    /// Only the latest in-flight settlement for an expense may reconcile its response.
+    private var latestSettlementMutationIdByExpense: [UUID: UUID] = [:]
     /// Local expense deletes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseDeleteIds: Set<UUID> = []
+    /// Destructive group operations are serialized per group so optimistic rollback snapshots cannot interleave.
+    private var activeGroupMutationTokensByGroupId: [UUID: UUID] = [:]
+    /// Friend deletion mutates the same friend/group/expense graph as group operations.
+    /// A global gate makes those destructive paths mutually exclusive in either start order.
+    private var activeFriendDeletionTokenId: UUID?
+    /// Successful deletes remain tombstoned until realtime confirms the identity is absent.
+    private var pendingFriendDeletionIdentityIdsByToken: [UUID: Set<UUID>] = [:]
     /// Realtime payloads should not replace local state until the current session has completed
     /// an explicit remote hydration. This prevents empty startup snapshots from clobbering
     /// locally restored or test-seeded state.
     private var hasCompletedInitialRemoteLoad = false
-    private let retryPolicy: RetryPolicy = .linkingDefault
+    private let retryPolicy: RetryPolicy
     private let stateReconciliation = LinkStateReconciliation()
     private let failureTracker = LinkFailureTracker()
 
@@ -75,6 +111,8 @@ final class AppStore: ObservableObject {
     @Published var logoutAlert: LogoutAlert?
     @Published private(set) var accountDeletionState: AccountDeletionState = .idle
     @Published private(set) var authenticationSessionRecoveryMessage: String?
+    @Published private(set) var isClearingAllData = false
+    @Published private(set) var clearAllDataErrorMessage: String?
     private var isAuthenticationSessionCheckInProgress = false
 
     var isAuthenticationSessionRecoveryBlocking: Bool {
@@ -86,8 +124,14 @@ final class AppStore: ObservableObject {
     }
 
     var isAccountDeletionBlocking: Bool {
-        accountDeletionState == .deletingAuthenticationAccount ||
+        accountDeletionState == .deletingBackendAccount ||
+            accountDeletionState == .awaitingBackendDeletion ||
+            accountDeletionState == .deletingAuthenticationAccount ||
             accountDeletionState == .awaitingAuthenticationDeletion
+    }
+
+    var accountDeletionRecoveryErrorMessage: String? {
+        isAccountDeletionBlocking ? authenticationSessionRecoveryMessage : nil
     }
 
     /// When true, suppresses all cloud writes (friend sync, group upsert, expense upsert).
@@ -104,8 +148,10 @@ final class AppStore: ObservableObject {
         linkRequestService: LinkRequestService = Dependencies.current.linkRequestService,
         inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService,
         emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
+        retryPolicy: RetryPolicy = .linkingDefault,
         skipClerkInit: Bool = false,
-        authenticationSessionLoader: (@Sendable () async throws -> AuthenticationSessionIdentity?)? = nil
+        authenticationSessionLoader: (@Sendable () async throws -> AuthenticationSessionIdentity?)? = nil,
+        convexAuthenticator: (@Sendable () async throws -> Void)? = nil
     ) {
         AppConfig.markTiming("AppStore init started")
 
@@ -116,21 +162,26 @@ final class AppStore: ObservableObject {
         self.linkRequestService = linkRequestService
         self.inviteLinkService = inviteLinkService
         self.emailAuthService = emailAuthService
+        self.retryPolicy = retryPolicy
         self.skipClerkInit = skipClerkInit
         self.authenticationSessionLoader = authenticationSessionLoader ?? {
-            let clerk = Clerk.shared
-            await MainActor.run {
-                clerk.configure(publishableKey: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA")
-            }
-            try await clerk.load()
+            let clerk = await Clerk.shared
+            try await clerk.refreshClient()
             return await MainActor.run {
-                guard let user = clerk.user else { return nil }
+                guard let session = clerk.session,
+                      session.status == .active,
+                      let user = session.user else { return nil }
                 let email = user.primaryEmailAddress?.emailAddress ?? ""
                 let displayName = [user.firstName, user.lastName]
                     .compactMap { $0 }
                     .joined(separator: " ")
                 return AuthenticationSessionIdentity(email: email, displayName: displayName)
             }
+        }
+        self.convexAuthenticator = convexAuthenticator ?? {
+            #if !PAYBACK_CI_NO_CONVEX
+            try await Dependencies.authenticateConvex()
+            #endif
         }
 
         // Load local data
@@ -161,10 +212,10 @@ final class AppStore: ObservableObject {
             subscribeToSyncManager()
         }
 
-        // 2. Kick off Auth Check (Concurrent, OFF-MAIN-THREAD to bypass UI blocking)
+        // 2. Kick off Auth Check (Concurrent)
         // Skip for tests to avoid Clerk API rate limiting
         if !skipClerkInit {
-            Task.detached(priority: .userInitiated) { [weak self] in
+            Task { @MainActor [weak self] in
                 await self?.checkSession()
             }
         }
@@ -227,7 +278,9 @@ final class AppStore: ObservableObject {
         guard shouldStart else { return }
 
         AppConfig.markTiming("AppStore.checkSession started")
+        #if DEBUG
         print("[AuthDebug] AppStore.checkSession started")
+        #endif
 
         do {
             let identity = try await authenticationSessionLoader()
@@ -240,15 +293,16 @@ final class AppStore: ObservableObject {
             }
 
             let email = identity.email
-            print("[AuthDebug] Authentication user found: \(email)")
+            try await convexAuthenticator()
 
-            #if !PAYBACK_CI_NO_CONVEX
-            await Dependencies.authenticateConvex()
-            #endif
+            try await waitForServerAuthentication()
+            if try await completePendingAccountDeletionIfNeeded() {
+                await finishAuthenticationSessionCheck(recoveryError: nil)
+                return
+            }
 
             let accountService = self.accountService
             let account: UserAccount? = try await RetryPolicy.startup.execute {
-                try await self.waitForServerAuthentication()
                 return try await accountService.lookupAccount(byEmail: email)
             }
 
@@ -260,9 +314,7 @@ final class AppStore: ObservableObject {
                 }
             } else {
                 AppConfig.markTiming("Account lookup complete (not found)")
-                if try await completePendingAccountDeletionIfNeeded() == false {
-                    try await signOutMissingAccountDuringSessionRecovery()
-                }
+                try await signOutMissingAccountDuringSessionRecovery()
             }
 
             await finishAuthenticationSessionCheck(recoveryError: nil)
@@ -406,7 +458,15 @@ final class AppStore: ObservableObject {
     }
 
     /// Dedupes friends using alias logic and updates state
-    private func processFriendsUpdate(_ remoteFriends: [AccountFriend]) {
+    func processFriendsUpdate(_ remoteFriends: [AccountFriend]) {
+        let pendingDeletionIdentitySets = Array(pendingFriendDeletionIdentityIdsByToken.values)
+        let visibleRemoteFriends = remoteFriends.filter { friend in
+            !pendingDeletionIdentitySets.contains(where: { accountFriend(friend, matchesAny: $0) })
+        }
+        pendingFriendDeletionIdentityIdsByToken = pendingFriendDeletionIdentityIdsByToken.filter { _, identityIds in
+            remoteFriends.contains(where: { accountFriend($0, matchesAny: identityIds) })
+        }
+
         // Advanced Deduplication & Alias Mapping
         var masterFriends: [AccountFriend] = []
         var aliasMap: [UUID: UUID] = [:] // Alias -> Master
@@ -414,7 +474,7 @@ final class AppStore: ObservableObject {
 
         // First pass: Identify masters (friends with linked accounts or aliases)
         // Prefer linked accounts as masters.
-        let sortedFriends = remoteFriends.sorted(by: { f1, f2 in
+        let sortedFriends = visibleRemoteFriends.sorted(by: { f1, f2 in
             if f1.hasLinkedAccount != f2.hasLinkedAccount {
                 return f1.hasLinkedAccount // Prefer linked
             }
@@ -460,6 +520,18 @@ final class AppStore: ObservableObject {
         #endif
     }
 
+    private func accountFriend(_ friend: AccountFriend, matchesAny identityIds: Set<UUID>) -> Bool {
+        ([friend.memberId] + (friend.aliasMemberIds ?? [])).contains { candidateId in
+            identityIds.contains { candidateId == $0 || areSamePerson(candidateId, $0) }
+        }
+    }
+
+    private func groupMember(_ member: GroupMember, matchesAny identityIds: Set<UUID>) -> Bool {
+        ([member.id] + (member.accountFriendMemberId.map { [$0] } ?? [])).contains { candidateId in
+            identityIds.contains { candidateId == $0 || areSamePerson(candidateId, $0) }
+        }
+    }
+
     // MARK: - Session management
 
     private var sessionMonitorTask: Task<Void, Never>?
@@ -469,28 +541,45 @@ final class AppStore: ObservableObject {
         sessionMonitorTask?.cancel()
         sessionMonitorTask = Task { @MainActor in
             for await account in accountService.monitorSession() {
-                if let account {
-                    let previousSession = self.session
-                    self.session = UserSession(account: account)
-
-                    if let linkedId = account.linkedMemberId, self.currentUser.id != linkedId {
-                        self.currentUser = GroupMember(
-                            id: linkedId,
-                            name: self.currentUser.name,
-                            profileImageUrl: self.currentUser.profileImageUrl,
-                            profileColorHex: self.currentUser.profileColorHex,
-                            isCurrentUser: true
-                        )
-                    }
-
-                    // Keep persisted session identity in sync with realtime account updates.
-                    if previousSession?.account != self.session?.account {
-                        self.persistCurrentState()
-                    }
-                } else if self.session != nil, self.accountDeletionState == .idle {
-                    self.handleForcedLogout(reason: "Account deleted")
-                }
+                self.handleRealtimeAccountUpdate(account)
             }
+        }
+    }
+
+    @MainActor
+    func handleRealtimeAccountUpdate(_ account: UserAccount?) {
+        if let account {
+            let previousSession = session
+            session = UserSession(account: account)
+
+            if account.status == "deleting" {
+                invalidateRemoteLoad()
+                friendSyncTask?.cancel()
+                friendSyncTask = nil
+                hasCompletedInitialRemoteLoad = false
+                #if !PAYBACK_CI_NO_CONVEX
+                Dependencies.syncManager?.stopSync()
+                #endif
+                accountDeletionState = .awaitingBackendDeletion
+                return
+            }
+
+            if let linkedId = account.linkedMemberId, currentUser.id != linkedId {
+                currentUser = GroupMember(
+                    id: linkedId,
+                    name: currentUser.name,
+                    profileImageUrl: currentUser.profileImageUrl,
+                    profileColorHex: currentUser.profileColorHex,
+                    isCurrentUser: true
+                )
+            }
+
+            // Keep persisted session identity in sync with realtime account updates.
+            if previousSession?.account != session?.account {
+                persistCurrentState()
+            }
+        } else if session != nil, accountDeletionState == .idle {
+            handleForcedLogout(reason: "Account deleted")
         }
     }
 
@@ -548,10 +637,8 @@ final class AppStore: ObservableObject {
 
     /// Shared helper to authenticate Convex, wait for server, and setup session
     private func performConvexAuthAndSetup(email: String, name: String?, allowCreation: Bool) async throws -> UserAccount {
-        #if !PAYBACK_CI_NO_CONVEX
         // 1. Authenticate Convex
-        await Dependencies.authenticateConvex()
-        #endif
+        try await convexAuthenticator()
 
         // 2. Robust Wait
         try await waitForServerAuthentication()
@@ -616,22 +703,32 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Polls the server until authentication is confirmed or timeout
     private func waitForServerAuthentication(timeout: TimeInterval = 10.0) async throws {
+        #if DEBUG
         print("[AuthDebug] Waiting for server authentication...")
+        #endif
         let start = Date()
         while Date().timeIntervalSince(start) < timeout {
              do {
                  let isAuth = try await accountService.checkAuthentication()
                  if isAuth {
+                     #if DEBUG
                      print("[AuthDebug] Server confirmed authentication")
+                     #endif
                      return
                  }
+                 #if DEBUG
                  print("[AuthDebug] Server not yet authenticated, retrying...")
+                 #endif
              } catch {
+                 #if DEBUG
                  print("[AuthDebug] Auth check error: \(error)")
+                 #endif
              }
              try await Task.sleep(nanoseconds: 200_000_000) // 200ms poll
         }
+        #if DEBUG
         print("[AuthDebug] Server authentication timed out")
+        #endif
         throw PayBackError.underlying(message: "Server authentication timed out")
     }
 
@@ -682,13 +779,17 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     private func signOutMissingAccountDuringSessionRecovery() async throws {
+        invalidateLogicalSessionForSignOut()
         try await emailAuthService.signOut()
-        await finishSignOut(signOutIdentity: false)
+        await finishSignOut(signOutIdentity: false, logicalSessionAlreadyInvalidated: true)
     }
 
     @MainActor
-    private func finishSignOut(signOutIdentity: Bool) async {
-        print("[AuthDebug] signOut called. Current User: \(currentUser.name) (\(currentUser.id))")
+    private func invalidateLogicalSessionForSignOut() {
+        // Rotate the logical session boundary before any suspension point. Irreversible
+        // retries must stop even while Clerk or Convex sign-out is still in flight.
+        cancelClearAllDataWork()
+        dataEpoch = UUID()
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
         invalidateRemoteLoad()
@@ -699,6 +800,19 @@ func completeAuthentication(id: String, email: String, name: String?) {
         #if !PAYBACK_CI_NO_CONVEX
         Dependencies.syncManager?.stopSync()
         #endif
+    }
+
+    @MainActor
+    private func finishSignOut(
+        signOutIdentity: Bool,
+        logicalSessionAlreadyInvalidated: Bool = false
+    ) async {
+        #if DEBUG
+        print("[AuthDebug] signOut called")
+        #endif
+        if !logicalSessionAlreadyInvalidated {
+            invalidateLogicalSessionForSignOut()
+        }
 
         // 1. Sign out from Clerk/Backend FIRST
         // This ensures the persistent session is cleared from Keychain before we update UI
@@ -713,7 +827,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             #if DEBUG
                 // Verify sign out (skip in tests when Clerk isn't configured).
                 if !skipClerkInit {
-                    try? await Clerk.shared.load()
+                    _ = try? await Clerk.shared.refreshClient()
                     if let user = Clerk.shared.user {
                         print("[AuthDebug] CRITICAL: Clerk still has user after signOut: \(user.id)")
                     } else {
@@ -745,8 +859,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
         friends = []
         pendingExpenseUpsertIds.removeAll()
         pendingExpenseSettlementIds.removeAll()
+        latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
-        dataEpoch = UUID()
+        activeGroupMutationTokensByGroupId.removeAll()
+        activeFriendDeletionTokenId = nil
+        pendingFriendDeletionIdentityIdsByToken.removeAll()
 
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
         // Without this, the next user logging in could inherit this user's member ID
@@ -764,17 +881,21 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// - Removes current user from shared groups (doesn't delete group if others remain)
     /// - Deletes groups where current user is the only member
     /// - Clears friend list (doesn't affect linked friends' own data)
+    @MainActor
     func clearAllUserData() {
+        guard !isClearingAllData else { return }
+        isClearingAllData = true
+        clearAllDataErrorMessage = nil
+        let initiatingAccountId = session?.account.id
+        let initiatingEpoch = dataEpoch
         #if DEBUG
         print("[AppStore] Clearing all data for user")
         #endif
 
         // 1. Stop real-time sync FIRST to prevent repopulation
-        Task { @MainActor in
-            #if !PAYBACK_CI_NO_CONVEX
-            Dependencies.syncManager?.stopSync()
-            #endif
-        }
+        #if !PAYBACK_CI_NO_CONVEX
+        Dependencies.syncManager?.stopSync()
+        #endif
 
         // Clear local data immediately
         let expenseCount = expenses.count
@@ -786,43 +907,66 @@ func completeAuthentication(id: String, email: String, name: String?) {
         friends = []
         pendingExpenseUpsertIds.removeAll()
         pendingExpenseSettlementIds.removeAll()
+        latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
+        activeGroupMutationTokensByGroupId.removeAll()
+        activeFriendDeletionTokenId = nil
+        pendingFriendDeletionIdentityIdsByToken.removeAll()
 
         // Persist locally
         persistCurrentState()
 
-        // Sync deletions to cloud and restart sync after
-        Task {
-            #if !PAYBACK_CI_NO_CONVEX
-            // Use the new clearAllForUser mutations that delete everything server-side
-            if let convexExpenseService = expenseCloudService as? ConvexExpenseService {
-                try? await convexExpenseService.clearAllData()
-            }
-            if let convexGroupService = groupCloudService as? ConvexGroupService {
-                try? await convexGroupService.clearAllData()
-            }
-            // Clear friends from Convex
-            if let convexAccountService = accountService as? ConvexAccountService {
-                try? await convexAccountService.clearFriends()
-            }
+        // Restart sync only after every cloud cleanup confirms completion.
+        clearAllDataTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try Task.checkCancellation()
+                guard isClearAllDataContextCurrent(accountId: initiatingAccountId, epoch: initiatingEpoch) else { return }
+                try await expenseCloudService.clearAllData()
 
-            // Wait a moment for server to process
-            try? await Task.sleep(nanoseconds: 500_000_000)
+                try Task.checkCancellation()
+                guard isClearAllDataContextCurrent(accountId: initiatingAccountId, epoch: initiatingEpoch) else { return }
+                try await groupCloudService.clearAllData()
 
-            // Restart sync after deletions are complete
-            await MainActor.run {
+                try Task.checkCancellation()
+                guard isClearAllDataContextCurrent(accountId: initiatingAccountId, epoch: initiatingEpoch) else { return }
+                try await accountService.clearFriends()
+
+                try Task.checkCancellation()
+                guard isClearAllDataContextCurrent(accountId: initiatingAccountId, epoch: initiatingEpoch) else { return }
+                isClearingAllData = false
+                clearAllDataTask = nil
+                #if !PAYBACK_CI_NO_CONVEX
                 Dependencies.syncManager?.startSync()
+                #endif
+                Haptics.notify(.success)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard isClearAllDataContextCurrent(accountId: initiatingAccountId, epoch: initiatingEpoch) else { return }
+                isClearingAllData = false
+                clearAllDataTask = nil
+                clearAllDataErrorMessage = "Cloud cleanup did not finish. Your local data is clear, but sync remains paused. Please try Clear All My Data again."
+                return
             }
-            #endif
 
             #if DEBUG
-            await MainActor.run {
-                print("[AppStore] Cleared \(expenseCount) expenses, \(groupCount) groups, \(friendCount) friends from local and cloud")
-            }
+            print("[AppStore] Cleared \(expenseCount) expenses, \(groupCount) groups, \(friendCount) friends from local and cloud")
             #endif
         }
+    }
 
-        Haptics.notify(.success)
+    @MainActor
+    private func cancelClearAllDataWork() {
+        clearAllDataTask?.cancel()
+        clearAllDataTask = nil
+        isClearingAllData = false
+        clearAllDataErrorMessage = nil
+    }
+
+    @MainActor
+    private func isClearAllDataContextCurrent(accountId: String?, epoch: UUID) -> Bool {
+        dataEpoch == epoch && session?.account.id == accountId
     }
 
     func applyDisplayName(_ name: String) {
@@ -853,6 +997,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 try? await groupCloudService.upsertGroup(group)
             }
         }
+    }
+
+    func dismissClearAllDataError() {
+        clearAllDataErrorMessage = nil
     }
 
     func updateUserProfile(color: String?, imageUrl: String?) {
@@ -964,37 +1112,64 @@ func completeAuthentication(id: String, email: String, name: String?) {
         scheduleFriendSync()
     }
 
-    func deleteGroups(at offsets: IndexSet) {
-        // Filter out invalid indices to prevent crashes
+    @MainActor
+    func deleteGroups(at offsets: IndexSet) async throws {
         let validOffsets = offsets.filter { $0 < groups.count }
         guard !validOffsets.isEmpty else { return }
 
-        let toDelete = validOffsets.map { groups[$0].id }
+        let groupIds = Set(validOffsets.map { groups[$0].id })
+        try await deleteGroups(ids: groupIds)
+    }
+
+    @MainActor
+    func deleteGroups(ids groupIds: Set<UUID>) async throws {
+        guard !groupIds.isEmpty else { return }
+
+        let removedGroups = groups.filter { groupIds.contains($0.id) }
+        guard !removedGroups.isEmpty else { return }
+
+        let context = groupMutationContext()
+        let toDelete = removedGroups.map(\.id)
+        let mutationToken = try beginGroupMutation(groupIds: Set(toDelete))
+        defer { endGroupMutation(mutationToken) }
         let relatedExpenses = expenses.filter { toDelete.contains($0.groupId) }
-        groups.remove(atOffsets: IndexSet(validOffsets))
+        groups.removeAll { groupIds.contains($0.id) }
         expenses.removeAll { toDelete.contains($0.groupId) }
         persistCurrentState()
-        Task {
-            if !toDelete.isEmpty {
-                try? await groupCloudService.deleteGroups(toDelete)
-            }
-            for expense in relatedExpenses {
-                try? await expenseCloudService.deleteExpense(expense.id)
-            }
+
+        do {
+            try await groupCloudService.deleteGroups(toDelete)
+        } catch {
+            guard isCurrentGroupMutation(context) else { return }
+            restoreGroups(removedGroups, expenses: relatedExpenses)
+            persistCurrentState()
+            throw error
         }
+
+        guard isCurrentGroupMutation(context) else { return }
         scheduleFriendSync()
     }
 
-    func leaveGroup(_ groupId: UUID) {
-        guard let index = groups.firstIndex(where: { $0.id == groupId }) else { return }
+    @MainActor
+    func leaveGroup(_ groupId: UUID) async throws {
+        guard let group = groups.first(where: { $0.id == groupId }) else { return }
 
-        groups.remove(at: index)
+        let mutationToken = try beginGroupMutation(groupIds: [groupId])
+        defer { endGroupMutation(mutationToken) }
+        let context = groupMutationContext()
+        let removedExpenses = expenses.filter { $0.groupId == groupId }
+        groups.removeAll { $0.id == groupId }
         expenses.removeAll { $0.groupId == groupId }
 
         persistCurrentState()
 
-        Task {
-            try? await groupCloudService.leaveGroup(groupId)
+        do {
+            try await groupCloudService.leaveGroup(groupId)
+        } catch {
+            guard isCurrentGroupMutation(context) else { return }
+            restoreGroups([group], expenses: removedExpenses)
+            persistCurrentState()
+            throw error
         }
     }
 
@@ -1003,11 +1178,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
     ///   - groupId: The ID of the group to remove the member from
     ///   - memberId: The ID of the member to remove
     /// - Note: This action cannot be undone. All expenses involving the member in this group will be deleted.
-    func removeMemberFromGroup(groupId: UUID, memberId: UUID) {
+    @MainActor
+    func removeMemberFromGroup(groupId: UUID, memberId: UUID) async throws {
         print("🔵 removeMemberFromGroup called - groupId: \(groupId), memberId: \(memberId)")
 
         // Don't allow removing the current user
-        guard memberId != currentUser.id else {
+        guard !isMe(memberId) else {
             print("🔴 Cannot remove current user")
             return
         }
@@ -1017,7 +1193,13 @@ func completeAuthentication(id: String, email: String, name: String?) {
             print("🔴 Group not found")
             return
         }
-        var group = groups[groupIndex]
+        let context = groupMutationContext()
+        let originalGroup = groups[groupIndex]
+        guard originalGroup.members.contains(where: { $0.id == memberId }) else { return }
+        let mutationToken = try beginGroupMutation(groupIds: [groupId])
+        defer { endGroupMutation(mutationToken) }
+        let allOriginalGroupExpenses = expenses.filter { $0.groupId == groupId }
+        var group = originalGroup
 
         let memberCountBefore = group.members.count
 
@@ -1030,8 +1212,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
         // Find and delete all expenses involving this member in this group
         let expensesToDelete = expenses.filter { expense in
             expense.groupId == groupId && (
-                expense.paidByMemberId == memberId ||
-                expense.involvedMemberIds.contains(memberId)
+                areSamePerson(expense.paidByMemberId, memberId) ||
+                expense.involvedMemberIds.contains(where: { areSamePerson($0, memberId) })
             )
         }
 
@@ -1043,34 +1225,130 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         // Check if group now has only the current user - if so, delete the entire group
         let remainingNonCurrentUserMembers = group.members.filter { !isCurrentUser($0) }
-        if remainingNonCurrentUserMembers.isEmpty {
+        let deletesEntireGroup = remainingNonCurrentUserMembers.isEmpty
+        if deletesEntireGroup {
             print("🟢 Group now has only current user - deleting entire group")
-            let allGroupExpenses = expenses.filter { $0.groupId == groupId }
             groups.removeAll { $0.id == groupId }
             expenses.removeAll { $0.groupId == groupId }
-            persistCurrentState()
-
-            Task { [groupId, allGroupExpenses] in
-                try? await groupCloudService.deleteGroups([groupId])
-                for expense in allGroupExpenses {
-                    try? await expenseCloudService.deleteExpense(expense.id)
-                }
-            }
         } else {
-            persistCurrentState()
-
             print("✅ Member removed and state persisted")
+        }
+        persistCurrentState()
 
-            // Sync to cloud
-            Task { [group, expensesToDelete] in
-                try? await groupCloudService.upsertGroup(group)
-                for expense in expensesToDelete {
-                    try? await expenseCloudService.deleteExpense(expense.id)
-                }
+        do {
+            try await groupCloudService.removeMemberFromGroup(groupId, memberId: memberId)
+        } catch {
+            guard isCurrentGroupMutation(context) else { return }
+            if deletesEntireGroup {
+                restoreGroups([originalGroup], expenses: allOriginalGroupExpenses)
+            } else {
+                restoreUpdatedGroup(
+                    originalGroup,
+                    replacing: group,
+                    expenses: allOriginalGroupExpenses
+                )
             }
+            persistCurrentState()
+            throw error
         }
 
+        guard isCurrentGroupMutation(context) else { return }
         scheduleFriendSync()
+    }
+
+    @MainActor
+    private func groupMutationContext() -> GroupMutationContext {
+        GroupMutationContext(accountId: session?.account.id, dataEpoch: dataEpoch)
+    }
+
+    @MainActor
+    private func isCurrentGroupMutation(_ context: GroupMutationContext) -> Bool {
+        context.dataEpoch == dataEpoch && context.accountId == session?.account.id
+    }
+
+    @MainActor
+    private func beginGroupMutation(groupIds: Set<UUID>) throws -> GroupMutationToken {
+        guard activeFriendDeletionTokenId == nil,
+              groupIds.allSatisfy({ activeGroupMutationTokensByGroupId[$0] == nil }) else {
+            throw PayBackError.underlying(message: "A group update is already in progress.")
+        }
+
+        let token = GroupMutationToken(id: UUID(), groupIds: groupIds)
+        for groupId in groupIds {
+            activeGroupMutationTokensByGroupId[groupId] = token.id
+        }
+        return token
+    }
+
+    @MainActor
+    private func endGroupMutation(_ token: GroupMutationToken) {
+        for groupId in token.groupIds where activeGroupMutationTokensByGroupId[groupId] == token.id {
+            activeGroupMutationTokensByGroupId.removeValue(forKey: groupId)
+        }
+    }
+
+    @MainActor
+    private func beginFriendDeletion(identityMemberIds: Set<UUID>) throws -> FriendDeletionToken {
+        guard activeFriendDeletionTokenId == nil, activeGroupMutationTokensByGroupId.isEmpty else {
+            throw PayBackError.underlying(message: "Another friend or group update is already in progress.")
+        }
+
+        let token = FriendDeletionToken(id: UUID(), identityMemberIds: identityMemberIds)
+        activeFriendDeletionTokenId = token.id
+        pendingFriendDeletionIdentityIdsByToken[token.id] = identityMemberIds
+        return token
+    }
+
+    @MainActor
+    private func endFriendDeletion(_ token: FriendDeletionToken, keepRealtimeTombstone: Bool) {
+        if activeFriendDeletionTokenId == token.id {
+            activeFriendDeletionTokenId = nil
+        }
+        if !keepRealtimeTombstone {
+            pendingFriendDeletionIdentityIdsByToken.removeValue(forKey: token.id)
+        }
+    }
+
+    @MainActor
+    private func restoreGroups(_ removedGroups: [SpendingGroup], expenses removedExpenses: [Expense]) {
+        for group in removedGroups where !groups.contains(where: { $0.id == group.id }) {
+            groups.append(group)
+        }
+        for expense in removedExpenses where !expenses.contains(where: { $0.id == expense.id }) {
+            expenses.append(expense)
+        }
+    }
+
+    @MainActor
+    private func restoreUpdatedGroup(
+        _ originalGroup: SpendingGroup,
+        replacing optimisticGroup: SpendingGroup,
+        expenses removedExpenses: [Expense]
+    ) {
+        if let groupIndex = groups.firstIndex(where: { $0.id == optimisticGroup.id }),
+           groupContentsMatch(groups[groupIndex], optimisticGroup) {
+            groups[groupIndex] = originalGroup
+        }
+        restoreGroups([], expenses: removedExpenses)
+    }
+
+    private func groupContentsMatch(_ lhs: SpendingGroup, _ rhs: SpendingGroup) -> Bool {
+        lhs.id == rhs.id &&
+            lhs.name == rhs.name &&
+            lhs.createdAt == rhs.createdAt &&
+            lhs.isDirect == rhs.isDirect &&
+            lhs.isDebug == rhs.isDebug &&
+            lhs.members.count == rhs.members.count &&
+            zip(lhs.members, rhs.members).allSatisfy(memberContentsMatch)
+    }
+
+    private func memberContentsMatch(_ lhs: GroupMember, _ rhs: GroupMember) -> Bool {
+        lhs.id == rhs.id &&
+            lhs.name == rhs.name &&
+            lhs.profileImageUrl == rhs.profileImageUrl &&
+            lhs.profileColorHex == rhs.profileColorHex &&
+            lhs.isCurrentUser == rhs.isCurrentUser &&
+            lhs.accountFriendMemberId == rhs.accountFriendMemberId
     }
 
     /// Adds new members to an existing group
@@ -1124,36 +1402,48 @@ func completeAuthentication(id: String, email: String, name: String?) {
     func deleteLinkedFriend(memberId: UUID) async throws {
         print("🔵 deleteLinkedFriend called for: \(memberId)")
 
-        // Capture only what we'll remove so rollback doesn't clobber concurrent realtime updates.
-        let removedFriend = friends.first { $0.memberId == memberId }
-        let directGroup = groups.first(where: {
-            ($0.isDirect ?? false) && $0.members.contains(where: { $0.id == memberId })
-        })
-        let removedGroupExpenses = directGroup.map { g in expenses.filter { $0.groupId == g.id } } ?? []
-
-        friends.removeAll { $0.memberId == memberId }
-        if let g = directGroup {
-            print("🟢 Deleting direct group: \(g.id)")
-            expenses.removeAll { $0.groupId == g.id }
-            groups.removeAll { $0.id == g.id }
+        let mutationContext = groupMutationContext()
+        let identityMemberIds = accountFriendIdentityMemberIds(for: [memberId])
+        let deletionToken = try beginFriendDeletion(identityMemberIds: identityMemberIds)
+        var shouldKeepRealtimeTombstone = false
+        defer {
+            endFriendDeletion(deletionToken, keepRealtimeTombstone: shouldKeepRealtimeTombstone)
         }
+        // Capture only what we'll remove so rollback doesn't clobber concurrent realtime updates.
+        let removedFriends = friends.filter { accountFriend($0, matchesAny: identityMemberIds) }
+        let directGroups = groups.filter { group in
+            (group.isDirect ?? false) && group.members.contains(where: {
+                groupMember($0, matchesAny: identityMemberIds)
+            })
+        }
+        let directGroupIds = Set(directGroups.map(\.id))
+        let removedGroupExpenses = expenses.filter { directGroupIds.contains($0.groupId) }
+
+        friends.removeAll { accountFriend($0, matchesAny: identityMemberIds) }
+        for group in directGroups {
+            print("🟢 Deleting direct group: \(group.id)")
+        }
+        expenses.removeAll { directGroupIds.contains($0.groupId) }
+        groups.removeAll { directGroupIds.contains($0.id) }
         persistCurrentState()
 
         do {
             try await accountService.deleteLinkedFriend(memberId: memberId)
+            guard isCurrentGroupMutation(mutationContext) else { return }
+            shouldKeepRealtimeTombstone = true
             print("✅ Backend deleteLinkedFriend success")
-            scheduleFriendSync()
         } catch {
+            guard isCurrentGroupMutation(mutationContext) else { throw error }
             // Surgical rollback: restore only the specific items removed, preserving
             // any concurrent realtime updates that arrived while the request was in flight.
-            if let friend = removedFriend, !friends.contains(where: { $0.memberId == memberId }) {
+            for friend in removedFriends where !friends.contains(where: { $0.memberId == friend.memberId }) {
                 friends.append(friend)
             }
-            if let g = directGroup, !groups.contains(where: { $0.id == g.id }) {
-                groups.append(g)
-                for expense in removedGroupExpenses where !expenses.contains(where: { $0.id == expense.id }) {
-                    expenses.append(expense)
-                }
+            for group in directGroups where !groups.contains(where: { $0.id == group.id }) {
+                groups.append(group)
+            }
+            for expense in removedGroupExpenses where !expenses.contains(where: { $0.id == expense.id }) {
+                expenses.append(expense)
             }
             persistCurrentState()
             print("🔴 Backend deleteLinkedFriend failed: \(error)")
@@ -1165,47 +1455,67 @@ func completeAuthentication(id: String, email: String, name: String?) {
     func deleteUnlinkedFriend(memberId: UUID) async throws -> DeleteFriendResult {
         print("🔵 deleteUnlinkedFriend called for: \(memberId)")
 
+        let mutationContext = groupMutationContext()
+        let identityMemberIds = accountFriendIdentityMemberIds(for: [memberId])
+        let deletionToken = try beginFriendDeletion(identityMemberIds: identityMemberIds)
+        var shouldKeepRealtimeTombstone = false
+        defer {
+            endFriendDeletion(deletionToken, keepRealtimeTombstone: shouldKeepRealtimeTombstone)
+        }
         // Capture what will change for surgical rollback.
         struct GroupDeleteRecord {
             let original: SpendingGroup
             let removedExpenses: [Expense]
+            let removedMembers: [GroupMember]
             let wasDeleted: Bool
         }
-        let removedFriend = friends.first { $0.memberId == memberId }
-        let groupsWithFriend = groups.filter { $0.members.contains(where: { $0.id == memberId }) }
+        let removedFriends = friends.filter { accountFriend($0, matchesAny: identityMemberIds) }
+        let groupsWithFriend = groups.filter { group in
+            group.members.contains(where: { groupMember($0, matchesAny: identityMemberIds) })
+        }
         let groupRecords: [GroupDeleteRecord] = groupsWithFriend.map { group in
             let removed = expenses.filter { expense in
                 expense.groupId == group.id && (
-                    expense.paidByMemberId == memberId ||
-                    expense.involvedMemberIds.contains(memberId)
+                    identityMemberIds.contains(where: { areSamePerson(expense.paidByMemberId, $0) }) ||
+                    expense.involvedMemberIds.contains(where: { involvedId in
+                        identityMemberIds.contains(where: { areSamePerson(involvedId, $0) })
+                    })
                 )
             }
+            let removedMembers = group.members.filter { groupMember($0, matchesAny: identityMemberIds) }
             var updated = group
-            updated.members.removeAll { $0.id == memberId }
+            updated.members.removeAll { groupMember($0, matchesAny: identityMemberIds) }
             let remaining = updated.members.filter { !isCurrentUser($0) }
-            return GroupDeleteRecord(original: group, removedExpenses: removed, wasDeleted: remaining.isEmpty)
+            return GroupDeleteRecord(
+                original: group,
+                removedExpenses: removed,
+                removedMembers: removedMembers,
+                wasDeleted: remaining.isEmpty
+            )
         }
 
-        friends.removeAll { $0.memberId == memberId }
+        friends.removeAll { accountFriend($0, matchesAny: identityMemberIds) }
         for record in groupRecords {
             for expense in record.removedExpenses { expenses.removeAll { $0.id == expense.id } }
             if record.wasDeleted {
                 expenses.removeAll { $0.groupId == record.original.id }
                 groups.removeAll { $0.id == record.original.id }
             } else if let idx = groups.firstIndex(where: { $0.id == record.original.id }) {
-                groups[idx].members.removeAll { $0.id == memberId }
+                groups[idx].members.removeAll { groupMember($0, matchesAny: identityMemberIds) }
             }
         }
         persistCurrentState()
 
         do {
             let result = try await accountService.deleteUnlinkedFriend(memberId: memberId)
+            guard isCurrentGroupMutation(mutationContext) else { return result }
+            shouldKeepRealtimeTombstone = true
             print("✅ Backend deleteUnlinkedFriend success")
-            scheduleFriendSync()
             return result
         } catch {
+            guard isCurrentGroupMutation(mutationContext) else { throw error }
             // Surgical rollback: restore only the specific items removed.
-            if let friend = removedFriend, !friends.contains(where: { $0.memberId == memberId }) {
+            for friend in removedFriends where !friends.contains(where: { $0.memberId == friend.memberId }) {
                 friends.append(friend)
             }
             for record in groupRecords {
@@ -1217,10 +1527,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
                         expenses.append(expense)
                     }
                 } else {
-                    if let idx = groups.firstIndex(where: { $0.id == record.original.id }),
-                       !groups[idx].members.contains(where: { $0.id == memberId }),
-                       let originalMember = record.original.members.first(where: { $0.id == memberId }) {
-                        groups[idx].members.append(originalMember)
+                    if let idx = groups.firstIndex(where: { $0.id == record.original.id }) {
+                        for member in record.removedMembers where !groups[idx].members.contains(where: { $0.id == member.id }) {
+                            groups[idx].members.append(member)
+                        }
                     }
                     for expense in record.removedExpenses where !expenses.contains(where: { $0.id == expense.id }) {
                         expenses.append(expense)
@@ -1243,19 +1553,19 @@ func completeAuthentication(id: String, email: String, name: String?) {
             throw PayBackError.underlying(message: "Account deletion is already in progress.")
         }
 
-        if accountDeletionState == .idle {
+        let shouldDeleteBackend = accountDeletionState != .awaitingAuthenticationDeletion
+        if shouldDeleteBackend {
             accountDeletionState = .deletingBackendAccount
         }
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
 
-        if accountDeletionState != .awaitingAuthenticationDeletion {
+        if shouldDeleteBackend {
             do {
                 try await accountService.selfDeleteAccount()
                 print("✅ Backend selfDeleteAccount success")
             } catch {
-                accountDeletionState = .idle
-                startSessionMonitoring()
+                accountDeletionState = .awaitingBackendDeletion
                 throw error
             }
         }
@@ -1276,12 +1586,24 @@ func completeAuthentication(id: String, email: String, name: String?) {
     @MainActor
     @discardableResult
     func completePendingAccountDeletionIfNeeded() async throws -> Bool {
-        guard try await accountService.hasCompletedSelfDeletion() else {
+        let status = try await accountService.selfDeletionStatus()
+        guard status.completed || status.inProgress else {
             return false
         }
 
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
+
+        if status.inProgress {
+            accountDeletionState = .deletingBackendAccount
+            do {
+                try await accountService.selfDeleteAccount()
+            } catch {
+                accountDeletionState = .awaitingBackendDeletion
+                throw error
+            }
+        }
+
         accountDeletionState = .deletingAuthenticationAccount
         do {
             try await emailAuthService.deleteCurrentUser()
@@ -1320,7 +1642,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func syncFriendsToCloud() async {
-        guard let session else { return }
+        guard let session,
+              session.account.status != "deleting",
+              accountDeletionState == .idle else { return }
         friendSyncTask?.cancel()
         do {
             try await accountService.syncFriends(accountEmail: session.account.email.lowercased(), friends: friends)
@@ -1423,7 +1747,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Merge Convex realtime expense snapshots with in-flight local writes.
     /// This prevents stale snapshots from clobbering optimistic local saves.
-    private func mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: [Expense]) -> [Expense] {
+    func mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: [Expense]) -> [Expense] {
         var merged = remoteExpenses
         var remoteIndexById: [UUID: Int] = [:]
         for (index, expense) in remoteExpenses.enumerated() {
@@ -1486,6 +1810,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         guard session != nil, !isImporting else { return }
         pendingExpenseUpsertIds.remove(expenseId)
         pendingExpenseSettlementIds.remove(expenseId)
+        latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
         pendingExpenseDeleteIds.insert(expenseId)
 
         Task { [retryPolicy, expenseCloudService, expenseId] in
@@ -1631,6 +1956,14 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         guard !memberIds.isEmpty else { return }
 
+        let mutationId = UUID()
+        let context = SettlementMutationContext(
+            accountId: session?.account.id,
+            dataEpoch: dataEpoch,
+            expenseId: expenseId,
+            mutationId: mutationId
+        )
+        latestSettlementMutationIdByExpense[expenseId] = mutationId
         let originalExpense = expenses[idx]
         let optimisticExpense = applyingSettlementState(
             to: originalExpense,
@@ -1644,29 +1977,38 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         guard session != nil, !isImporting else {
             pendingExpenseSettlementIds.remove(expenseId)
+            latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
             persistCurrentState()
             return
         }
 
         do {
             let canonicalExpense = try await retryPolicy.execute {
-                try await self.expenseCloudService.setSettlementState(
+                guard self.isCurrentSettlementMutation(context) else {
+                    throw CancellationError()
+                }
+                return try await self.expenseCloudService.setSettlementState(
                     expenseId: expenseId,
                     memberIds: memberIds,
                     settled: settled
                 )
             }
 
+            guard isCurrentSettlementMutation(context) else { return }
+
             if let canonicalIndex = expenses.firstIndex(where: { $0.id == expenseId }) {
                 expenses[canonicalIndex] = canonicalExpense
             } else {
                 expenses.append(canonicalExpense)
             }
-            // Keep pendingExpenseSettlementIds until the realtime snapshot confirms the
-            // remote payload matches our local state — same pattern as pendingExpenseUpsertIds.
+            // The mutation response is the UI acknowledgement. Keep only the separate
+            // realtime reconciliation tombstone until a matching subscription payload arrives.
+            latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
             persistCurrentState()
         } catch {
+            guard isCurrentSettlementMutation(context) else { return }
             pendingExpenseSettlementIds.remove(expenseId)
+            latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
             // Only rollback if current state still matches our optimistic write.
             // A newer in-flight settlement may have already superseded this state.
             if let rollbackIndex = expenses.firstIndex(where: { $0.id == expenseId }),
@@ -1676,6 +2018,18 @@ func completeAuthentication(id: String, email: String, name: String?) {
             persistCurrentState()
             throw error
         }
+    }
+
+    @MainActor
+    private func isCurrentSettlementMutation(_ context: SettlementMutationContext) -> Bool {
+        context.dataEpoch == dataEpoch &&
+            context.accountId == session?.account.id &&
+            latestSettlementMutationIdByExpense[context.expenseId] == context.mutationId
+    }
+
+    @MainActor
+    func isSettlementPending(for expenseId: UUID) -> Bool {
+        latestSettlementMutationIdByExpense[expenseId] != nil
     }
 
     @MainActor
@@ -1781,8 +2135,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 for split in expense.splits where !isMe(split.memberId) && !split.isSettled {
                     paidByUser += split.amount
                 }
-            } else if let split = expense.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
-                owes += split.amount
+            } else {
+                owes += expense.splits
+                    .filter { isMe($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             }
         }
 
@@ -1884,9 +2240,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 }
             } else {
                 // Someone else paid, check if user owes (using ANY of their member IDs)
-                if let split = expense.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
-                    owes += split.amount
-                }
+                owes += expense.splits
+                    .filter { isMe($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             }
         }
 
@@ -1907,14 +2263,13 @@ func completeAuthentication(id: String, email: String, name: String?) {
             expense.involvedMemberIds.contains(where: { isMe($0) }) &&
             expense.involvedMemberIds.contains(where: matchesFriendIdentity) {
             if isMe(expense.paidByMemberId) {
-                if let friendSplit = expense.splits.first(where: { matchesFriendIdentity($0.memberId) }),
-                   !friendSplit.isSettled {
-                    balance += friendSplit.amount
-                }
+                balance += expense.splits
+                    .filter { matchesFriendIdentity($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             } else if matchesFriendIdentity(expense.paidByMemberId) {
-                if let userSplit = expense.splits.first(where: { isMe($0.memberId) }), !userSplit.isSettled {
-                    balance -= userSplit.amount
-                }
+                balance -= expense.splits
+                    .filter { isMe($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             }
         }
 
@@ -1924,7 +2279,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
     // MARK: - Friend Sync
 
     private func scheduleFriendSync() {
-        guard let session, !isImporting else { return }
+        guard let session,
+              session.account.status != "deleting",
+              accountDeletionState == .idle,
+              !isImporting else { return }
         processFriendsUpdate(friends)
         purgeCurrentUserFriendRecords()
         pruneSelfOnlyDirectGroups()
@@ -1949,6 +2307,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     func loadRemoteData() async {
+        guard session?.account.status != "deleting",
+              accountDeletionState == .idle else { return }
         remoteLoadGeneration &+= 1
         let generation = remoteLoadGeneration
         let previousLoad = remoteLoadTask
@@ -3163,6 +3523,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         friends.removeAll()
         pendingExpenseUpsertIds.removeAll()
         pendingExpenseSettlementIds.removeAll()
+        latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
         persistCurrentState()
         Task {
@@ -3498,7 +3859,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Claims an invite token and optionally merges an existing unlinked friend atomically.
     func claimInviteToken(_ tokenId: UUID, mergingLocalFriend friend: AccountFriend?) async throws {
-        guard session != nil else {
+        guard let claimingSession = session else {
             throw PayBackError.authSessionMissing
         }
 
@@ -3514,19 +3875,50 @@ func completeAuthentication(id: String, email: String, name: String?) {
             }
         }
 
-        let result = try await retryPolicy.execute {
-            try await self.inviteLinkService.claimInviteToken(
-                tokenId,
-                mergeLocalFriendMemberId: friend?.memberId
-            )
+        let claimingAccountId = claimingSession.account.id
+        let claimingDataEpoch = dataEpoch
+        let mergeMemberId = friend?.memberId
+
+        // The mutation can commit before its acknowledgement reaches the app. Keep the
+        // idempotent retry and canonical refresh alive if the presenting view disappears,
+        // while preventing a late result from crossing into a different account session.
+        let operation = Task { @MainActor [weak self] in
+            guard let self else { throw PayBackError.authSessionMissing }
+            let result = try await retryPolicy.execute {
+                guard self.session?.account.id == claimingAccountId,
+                      self.dataEpoch == claimingDataEpoch
+                else {
+                    throw PayBackError.authSessionMissing
+                }
+                return try await self.inviteLinkService.claimInviteToken(
+                    tokenId,
+                    mergeLocalFriendMemberId: mergeMemberId
+                )
+            }
+
+            guard self.session?.account.id == claimingAccountId,
+                  self.dataEpoch == claimingDataEpoch
+            else {
+                throw PayBackError.authSessionMissing
+            }
+            self.applyLinkAcceptResult(result)
+            await self.stateReconciliation.invalidate()
+            guard self.session?.account.id == claimingAccountId,
+                  self.dataEpoch == claimingDataEpoch
+            else {
+                throw PayBackError.authSessionMissing
+            }
+
+            // Fetch the canonical friend, group, and expense state only after the
+            // atomic backend claim/merge succeeds. This avoids optimistic UI loss.
+            await self.loadRemoteData()
+            guard self.session?.account.id == claimingAccountId,
+                  self.dataEpoch == claimingDataEpoch
+            else {
+                throw PayBackError.authSessionMissing
+            }
         }
-
-        await applyLinkAcceptResult(result)
-        await reconcileAfterNetworkRecovery()
-
-        // Fetch the canonical friend, group, and expense state only after the
-        // atomic backend claim/merge succeeds. This avoids optimistic UI loss.
-        await loadRemoteData()
+        try await operation.value
     }
 
     @MainActor
@@ -3771,38 +4163,52 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     /// Merges two caller-owned, confirmed, unlinked friend records.
+    @MainActor
     func mergeFriend(unlinkedMemberId: UUID, into targetMemberId: UUID) async throws {
-        guard let session else {
+        guard let mergingSession = session else {
             throw PayBackError.authSessionMissing
         }
 
-        let mergeIds = try await MainActor.run { () throws -> (source: String, target: String) in
-            guard unlinkedMemberId != targetMemberId,
-                  let source = friends.first(where: { $0.memberId == unlinkedMemberId }),
-                  let target = friends.first(where: { $0.memberId == targetMemberId }),
-                  isMergeableUnlinkedFriend(source),
-                  isMergeableUnlinkedFriend(target) else {
-                throw PayBackError.underlying(
-                    message: "Only confirmed unlinked friends can be merged."
-                )
+        let mergingAccountId = mergingSession.account.id
+        let mergingAccountEmail = mergingSession.account.email.lowercased()
+        let mergingDataEpoch = dataEpoch
+
+        func ensureCurrentMergingSession() throws {
+            guard session?.account.id == mergingAccountId,
+                  dataEpoch == mergingDataEpoch else {
+                throw PayBackError.authSessionMissing
             }
-            return (source.memberId.uuidString, target.memberId.uuidString)
         }
 
+        guard unlinkedMemberId != targetMemberId,
+              let source = friends.first(where: { $0.memberId == unlinkedMemberId }),
+              let target = friends.first(where: { $0.memberId == targetMemberId }),
+              isMergeableUnlinkedFriend(source),
+              isMergeableUnlinkedFriend(target) else {
+            throw PayBackError.underlying(
+                message: "Only confirmed unlinked friends can be merged."
+            )
+        }
+        let mergeIds = (source: source.memberId.uuidString, target: target.memberId.uuidString)
+
+        try ensureCurrentMergingSession()
         try await accountService.mergeUnlinkedFriends(
             friendId1: mergeIds.target,
             friendId2: mergeIds.source
         )
+        try ensureCurrentMergingSession()
 
         // Keep the local source until the backend acknowledges the transaction and
         // returns a canonical friend snapshot. A failed hydration remains retryable.
         let remoteFriends = try await accountService.fetchFriends(
-            accountEmail: session.account.email.lowercased()
+            accountEmail: mergingAccountEmail
         )
-        await MainActor.run {
-            processFriendsUpdate(remoteFriends)
-        }
+        try ensureCurrentMergingSession()
+        processFriendsUpdate(remoteFriends)
+        try ensureCurrentMergingSession()
+
         await loadRemoteData()
+        try ensureCurrentMergingSession()
     }
 
     // MARK: - Account Linking Helpers
@@ -4202,7 +4608,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// Whether a confirmed friend can be used as the source of an invite-time merge.
     func isMergeableUnlinkedFriend(_ friend: AccountFriend) -> Bool {
         let linkState = normalizedFriendStatus(friend.linkState)
-        guard friend.hasLinkedAccount == false,
+        guard !isMe(friend.memberId),
+              friend.hasLinkedAccount == false,
               friend.linkedAccountId == nil,
               friend.linkedAccountEmail == nil,
               friend.linkedMemberId == nil,

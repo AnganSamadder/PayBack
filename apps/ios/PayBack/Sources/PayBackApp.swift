@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import Foundation
 import Network
-import Clerk
+import ClerkKit
 
 #if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
@@ -17,7 +17,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
 struct RootViewWithStore: View {
     @StateObject private var store = AppStore()
-    @Environment(\.clerk) private var clerk
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var networkMonitor = NetworkMonitor()
     @State private var pendingInviteToken: UUID?
@@ -172,14 +171,15 @@ struct RootViewWithStore: View {
                     Text("Finish Deleting Your Account")
                         .font(.title2.bold())
                         .multilineTextAlignment(.center)
-                    Text("Your PayBack data is deleted. Finish removing your sign-in account before continuing.")
+                    Text(accountDeletionRecoveryDescription)
                         .font(.body)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.white.opacity(0.82))
                 }
                 .foregroundStyle(.white)
 
-                if store.accountDeletionState == .deletingAuthenticationAccount {
+                if store.accountDeletionState == .deletingBackendAccount ||
+                    store.accountDeletionState == .deletingAuthenticationAccount {
                     ProgressView("Finishing account deletion…")
                         .tint(.white)
                         .foregroundStyle(.white)
@@ -195,16 +195,27 @@ struct RootViewWithStore: View {
                     .foregroundStyle(Color(red: 0.25, green: 0.18, blue: 0.55))
                 }
 
-                if let accountDeletionRecoveryError {
-                    Text(accountDeletionRecoveryError)
+                if let recoveryError = accountDeletionRecoveryError ?? store.accountDeletionRecoveryErrorMessage {
+                    Text(recoveryError)
                         .font(.footnote)
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
-                        .accessibilityLabel("Account deletion error: \(accountDeletionRecoveryError)")
+                        .accessibilityLabel("Account deletion error: \(recoveryError)")
                 }
             }
             .padding(32)
             .frame(maxWidth: 520)
+        }
+    }
+
+    private var accountDeletionRecoveryDescription: String {
+        switch store.accountDeletionState {
+        case .deletingBackendAccount, .awaitingBackendDeletion:
+            "Your account deletion is in progress. Finish deleting your PayBack data and sign-in account before continuing."
+        case .deletingAuthenticationAccount, .awaitingAuthenticationDeletion:
+            "Your PayBack data is deleted. Finish removing your sign-in account before continuing."
+        case .idle:
+            "Finish deleting your PayBack account before continuing."
         }
     }
 
@@ -344,32 +355,43 @@ extension NWInterface.InterfaceType {
 @main
 struct PayBackApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @State private var clerk = Clerk.shared
+    @State private var clerk: Clerk
 
     #if !PAYBACK_CI_NO_CONVEX
-    let convexClient: ConvexClientWithAuth<ClerkAuthResult>
+    let convexClient: ConvexClientWithAuth<ClerkAuthResult>?
     #endif
 
     init() {
         // Start performance tracking
         AppConfig.markAppStart()
 
+        let clerk = Clerk.configure(
+            publishableKey: AppConfig.clerkPublishableKey
+        )
+        _clerk = State(initialValue: clerk)
+
         // Log startup configuration
         AppConfig.logStartupInfo()
         AppConfig.markTiming("Configuration logged")
 
         #if !PAYBACK_CI_NO_CONVEX
-        let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
-        AppConfig.markTiming("ClerkAuthProvider created")
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
+            AppConfig.markTiming("ClerkAuthProvider created")
 
-        convexClient = ConvexClientWithAuth(
-            deploymentUrl: ConvexConfig.deploymentUrl,
-            authProvider: authProvider
-        )
-        AppConfig.markTiming("ConvexClient created")
+            let client = ConvexClientWithAuth(
+                deploymentUrl: ConvexConfig.deploymentUrl,
+                authProvider: authProvider
+            )
+            convexClient = client
+            AppConfig.markTiming("ConvexClient created")
 
-        Dependencies.configure(client: convexClient)
-        AppConfig.markTiming("Dependencies configured")
+            Dependencies.configure(client: client)
+            AppConfig.markTiming("Dependencies configured")
+        } else {
+            convexClient = nil
+            AppConfig.markTiming("Convex bootstrap skipped for unit tests")
+        }
         #else
         AppConfig.markTiming("Convex disabled for CI")
         #endif
@@ -383,7 +405,7 @@ struct PayBackApp: App {
     var body: some Scene {
         WindowGroup {
             RootViewWithStore()
-                .environment(\.clerk, clerk)
+                .environment(clerk)
                 .tint(AppTheme.brand)
         }
     }

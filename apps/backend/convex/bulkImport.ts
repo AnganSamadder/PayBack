@@ -1,7 +1,7 @@
-import { Doc } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUserOrThrow } from "./helpers";
+import { assertAccountCanAcceptChanges, getCurrentUserOrThrow } from "./helpers";
 import {
   assertIdentityMaterializationReady,
   findDirectAccountByMemberId,
@@ -14,6 +14,12 @@ import {
   provenFriendLinkQueryWork,
   resolveProvenFriendLink
 } from "./friendLinkProvenance";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
+import {
+  applyExpenseWriteBatch,
+  type ExpenseWriteOperation,
+  MAX_EXPENSE_VIEWERS
+} from "./expenseWrites";
 
 const friendValidator = v.object({
   member_id: v.string(),
@@ -86,9 +92,9 @@ const MAX_IMPORT_INCOMING_GROUPS = 256;
 const MAX_IMPORT_INCOMING_EXPENSES = 512;
 const MAX_IMPORT_IDENTITY_QUERY_WORK = 3072;
 const MAX_IMPORT_QUERY_WORK = 3584;
-const MAX_IMPORT_WRITE_WORK = 2048;
+const MAX_IMPORT_WRITE_WORK = 1536;
 const MAX_IMPORT_READ_ROWS = 2048;
-const MAX_IMPORT_ESTIMATED_BYTES = 8 * 1024 * 1024;
+const MAX_IMPORT_ESTIMATED_BYTES = 3 * 1024 * 1024;
 const MAX_IMPORT_DOCUMENT_RESERVATION_BYTES = 2 * 1024 * 1024;
 const MAX_IMPORT_HARD_READ_BYTES = 10 * 1024 * 1024;
 const MAX_IMPORT_PAGE_ROWS = 5;
@@ -154,29 +160,6 @@ async function collectSequentialImportRows<T>(
   }
 }
 
-async function reconcilePreloadedUserExpenses(
-  ctx: MutationCtx,
-  expenseId: string,
-  participantUserIds: string[],
-  existingRows: Doc<"user_expenses">[]
-) {
-  const existingUserIds = new Set(existingRows.map((row) => row.user_id));
-  const targetUserIds = new Set(participantUserIds);
-  const toAdd = participantUserIds.filter((userId) => !existingUserIds.has(userId));
-  const toRemove = existingRows.filter((row) => !targetUserIds.has(row.user_id));
-
-  await Promise.all(
-    toAdd.map((userId) =>
-      ctx.db.insert("user_expenses", {
-        user_id: userId,
-        expense_id: expenseId,
-        updated_at: Date.now()
-      })
-    )
-  );
-  await Promise.all(toRemove.map((row) => ctx.db.delete(row._id)));
-}
-
 type ImportOwnerIdentity = {
   owner_id?: Doc<"accounts">["_id"];
   owner_account_id?: string;
@@ -233,6 +216,7 @@ async function resolveServerProvenLinkedAccount(
     accountImportRows(importBudget, rows)
   );
   const account = provenLink?.account ?? null;
+  assertAccountCanAcceptChanges(account);
   friendCache.set(cacheKey, account);
   return account;
 }
@@ -361,10 +345,19 @@ export const bulkImport = mutation({
       throw new Error("Import contains too many distinct expenses");
     }
     const importedExpenses = Array.from(incomingExpensesById.values());
+    for (const expense of importedExpenses) {
+      if (
+        expense.involved_member_ids.length > MAX_EXPENSE_VIEWERS ||
+        expense.splits.length > MAX_EXPENSE_VIEWERS ||
+        expense.participant_member_ids.length > MAX_EXPENSE_VIEWERS ||
+        expense.participants.length > MAX_EXPENSE_VIEWERS
+      ) {
+        throw new Error(`Imported expenses support at most ${MAX_EXPENSE_VIEWERS} participants`);
+      }
+    }
     chargeImportWrites(
       importBudget,
       normalizedIncomingFriends.size +
-        importedGroups.length +
         importedExpenses.reduce((total, expense) => {
           const participantMemberIds = new Set(
             [
@@ -384,7 +377,6 @@ export const bulkImport = mutation({
     // Reserve the compatibility alias read that can occur later for every distinct friend.
     // This keeps all identity reads inside one pre-write aggregate budget.
     chargeIdentityQueries(normalizedIncomingFriends.size);
-    const existingVisibilityRowsByExpenseId = new Map<string, Doc<"user_expenses">[]>();
     for (const expense of importedExpenses) {
       const visibilityRows = await collectSequentialImportRows(importBudget, (cursor, limit) =>
         ctx.db
@@ -393,7 +385,6 @@ export const bulkImport = mutation({
           .order("asc")
           .paginate({ cursor, numItems: limit })
       );
-      existingVisibilityRowsByExpenseId.set(expense.id, visibilityRows);
       chargeImportWrites(importBudget, visibilityRows.length);
     }
     const resolvedImportIdentities = new Map<string, string>();
@@ -413,6 +404,7 @@ export const bulkImport = mutation({
         chargeIdentityQueries(3);
         const account = await findDirectAccountByMemberId(ctx.db, currentMemberId);
         accountImportRows(importBudget, account ? [account] : []);
+        assertAccountCanAcceptChanges(account);
         if (account?.member_id) {
           currentMemberId = normalizeMemberId(account.member_id);
           break;
@@ -702,6 +694,9 @@ export const bulkImport = mutation({
         ])
       ).values()
     );
+    const fencedGroupClientIds = new Set(
+      existingGroups.filter((group) => group.deletion_token).map((group) => group.id)
+    );
 
     const groupRefMap = new Map<string, (typeof existingGroups)[0]["_id"]>();
     for (const existingGroup of existingGroups) {
@@ -722,6 +717,7 @@ export const bulkImport = mutation({
         if (!isGroupOwnedByAccount(existing, user)) {
           throw new Error(`Group ${group.id} belongs to another account`);
         }
+        if (existing.deletion_token) throw new Error("Group deletion is in progress");
         groupRefMap.set(group.id, existing._id);
       }
       existingImportedGroups.set(group.id, existing);
@@ -741,6 +737,13 @@ export const bulkImport = mutation({
     }
 
     // All database reads and application-level limits are complete. Apply the prepared writes.
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx, {
+      budget: {
+        chargeQueries: (count) => chargeImportQueries(importBudget, count),
+        chargeRows: (rows) => accountImportRows(importBudget, rows),
+        chargeWrites: (count) => chargeImportWrites(importBudget, count)
+      }
+    });
     for (const plan of friendPatches) {
       await ctx.db.patch(plan.id, plan.patch);
       created.friends += 1;
@@ -759,7 +762,7 @@ export const bulkImport = mutation({
         id: normalizeMemberId(memberIdMap.get(normalizeMemberId(m.id)) || m.id)
       }));
 
-      const groupDocId = await ctx.db.insert("groups", {
+      const groupDocId = await groupVisibilityBatch.insert({
         id: group.id,
         name: group.name,
         members: remappedMembers,
@@ -773,10 +776,15 @@ export const bulkImport = mutation({
       groupRefMap.set(group.id, groupDocId);
       created.groups++;
     }
+    await groupVisibilityBatch.flush();
 
     // Process Expenses
+    const expenseOperations: ExpenseWriteOperation[] = [];
     for (const expense of importedExpenses) {
       if (existingImportedExpenses.get(expense.id)) continue;
+      if (fencedGroupClientIds.has(expense.group_id)) {
+        throw new Error("Group deletion is in progress");
+      }
 
       const groupRef = groupRefMap.get(expense.group_id);
       if (!groupRef) {
@@ -799,7 +807,7 @@ export const bulkImport = mutation({
         expense.participant_member_ids.map((id) => memberIdMap.get(normalizeMemberId(id)) || id)
       );
       const participantEmails = new Set<string>([accountEmail]);
-      const participantUserIds = new Set<string>([user.id]);
+      const viewerAccountIds = new Map<string, Id<"accounts">>([[String(user._id), user._id]]);
       const addTrustedParticipant = (memberId: string) => {
         const linkedAccount = currentUserMemberIds.has(memberId)
           ? user
@@ -807,7 +815,7 @@ export const bulkImport = mutation({
         if (!linkedAccount) return null;
 
         participantEmails.add(linkedAccount.email.trim().toLowerCase());
-        participantUserIds.add(linkedAccount.id);
+        viewerAccountIds.set(String(linkedAccount._id), linkedAccount._id);
         return linkedAccount;
       };
       for (const memberId of remappedParticipantIds) {
@@ -831,37 +839,34 @@ export const bulkImport = mutation({
         };
       });
 
-      await ctx.db.insert("expenses", {
-        id: expense.id,
-        group_id: expense.group_id,
-        group_ref: groupRef,
-        description: expense.description,
-        date: expense.date,
-        total_amount: expense.total_amount,
-        paid_by_member_id: remappedPaidBy,
-        involved_member_ids: remappedInvolved,
-        splits: remappedSplits,
-        is_settled: expense.is_settled,
-        owner_email: accountEmail,
-        owner_account_id: user.id,
-        owner_id: user._id,
-        participant_member_ids: remappedParticipantIds,
-        participants: remappedParticipants,
-        participant_emails: Array.from(participantEmails),
-        subexpenses: expense.subexpenses,
-        created_at: Date.now(),
-        updated_at: Date.now()
+      expenseOperations.push({
+        kind: "insert",
+        expense: {
+          id: expense.id,
+          group_id: expense.group_id,
+          group_ref: groupRef,
+          description: expense.description,
+          date: expense.date,
+          total_amount: expense.total_amount,
+          paid_by_member_id: remappedPaidBy,
+          involved_member_ids: remappedInvolved,
+          splits: remappedSplits,
+          is_settled: expense.is_settled,
+          owner_email: accountEmail,
+          owner_account_id: user.id,
+          owner_id: user._id,
+          participant_member_ids: remappedParticipantIds,
+          participants: remappedParticipants,
+          participant_emails: Array.from(participantEmails),
+          subexpenses: expense.subexpenses,
+          created_at: Date.now(),
+          updated_at: Date.now()
+        },
+        viewerAccountIds: Array.from(viewerAccountIds.values())
       });
-
-      await reconcilePreloadedUserExpenses(
-        ctx,
-        expense.id,
-        Array.from(participantUserIds),
-        existingVisibilityRowsByExpenseId.get(expense.id) ?? []
-      );
-
-      created.expenses++;
     }
+    await applyExpenseWriteBatch(ctx, expenseOperations);
+    created.expenses += expenseOperations.length;
 
     return {
       success: errors.length === 0,

@@ -3,6 +3,27 @@ import XCTest
 
 /// Comprehensive tests for Convex DTO mapping logic
 final class ConvexDTOsTests: XCTestCase {
+#if !PAYBACK_CI_NO_CONVEX
+    func testDeletingViewerDTOMapsAccountStatusForRealtimeRecovery() throws {
+        let data = """
+        {
+          "id": "owner_auth",
+          "email": "owner@example.com",
+          "display_name": "Owner",
+          "status": "deleting"
+        }
+        """.data(using: .utf8)!
+
+        let dto = try JSONDecoder().decode(ConvexAccountService.UserViewerDTO.self, from: data)
+
+        XCTAssertEqual(dto.userAccount.status, "deleting")
+    }
+#endif
+
+    func testSelfDeletionClientCapabilityMatchesBackendContract() {
+        XCTAssertEqual(SelfDeletionProgressDriver.clientCapability, "bounded_progress_v1")
+    }
+
     func testSelfDeletionReceiptDecodesStructuredMutationResult() throws {
         let data = """
         {
@@ -22,6 +43,119 @@ final class ConvexDTOsTests: XCTestCase {
         XCTAssertEqual(receipt.requestId, "user_123")
         XCTAssertEqual(receipt.friendshipsUnlinked, 2)
         XCTAssertTrue(receipt.expensesPreserved)
+    }
+
+    func testSelfDeletionReceiptDecodesBoundedProgress() throws {
+        let data = """
+        {
+          "success": false,
+          "inProgress": true,
+          "state": "deleting",
+          "requestId": "user_123",
+          "deletedAt": 0,
+          "friendshipsUnlinked": 1,
+          "expensesPreserved": false,
+          "phase": "owned_expenses",
+          "progressToken": "user_123:owned_expenses:4:1",
+          "processedCount": 4,
+          "message": "Account deletion is still in progress"
+        }
+        """.data(using: .utf8)!
+
+        let receipt = try JSONDecoder().decode(ConvexSelfDeletionReceiptDTO.self, from: data)
+
+        XCTAssertTrue(receipt.inProgress)
+        XCTAssertEqual(receipt.phase, "owned_expenses")
+        XCTAssertEqual(receipt.processedCount, 4)
+    }
+
+    func testSelfDeletionProgressDriverContinuesUntilFinalReceipt() async throws {
+        let responses = try [
+            selfDeletionReceipt(success: false, inProgress: true, token: "phase-a:1"),
+            selfDeletionReceipt(success: false, inProgress: true, token: "phase-b:2"),
+            selfDeletionReceipt(success: true, inProgress: false, token: "complete:3")
+        ]
+        let sequence = SelfDeletionReceiptSequence(responses)
+
+        let result = try await SelfDeletionProgressDriver.run {
+            try await sequence.next()
+        }
+
+        XCTAssertTrue(result.success)
+        let callCount = await sequence.callCount
+        XCTAssertEqual(callCount, 3)
+    }
+
+    func testSelfDeletionProgressDriverRejectsRepeatedProgressToken() async throws {
+        let repeated = try selfDeletionReceipt(
+            success: false,
+            inProgress: true,
+            token: "stalled"
+        )
+
+        await XCTAssertThrowsError(
+            try await SelfDeletionProgressDriver.run(maximumNoProgressResponses: 2) {
+                repeated
+            }
+        )
+    }
+
+    func testSelfDeletionProgressDriverRejectsIncompleteFinalReceiptSemantics() async throws {
+        let invalidReceipts = try [
+            selfDeletionReceipt(
+                success: true,
+                inProgress: false,
+                token: "invalid-state",
+                state: "deleting"
+            ),
+            selfDeletionReceipt(
+                success: true,
+                inProgress: false,
+                token: "invalid-phase",
+                phase: "owned_expenses"
+            ),
+            selfDeletionReceipt(
+                success: true,
+                inProgress: false,
+                token: "invalid-time",
+                deletedAt: 0
+            )
+        ]
+
+        for receipt in invalidReceipts {
+            await XCTAssertThrowsError(
+                try await SelfDeletionProgressDriver.run { receipt }
+            )
+        }
+    }
+
+    private func selfDeletionReceipt(
+        success: Bool,
+        inProgress: Bool,
+        token: String,
+        state: String? = nil,
+        phase: String? = nil,
+        deletedAt: Double? = nil
+    ) throws -> ConvexSelfDeletionReceiptDTO {
+        let resolvedState = state ?? (success ? "deleted" : "deleting")
+        let resolvedPhase = phase ?? (success ? "complete" : "owned_expenses")
+        let resolvedDeletedAt = deletedAt ?? (success ? 1_722_384_000_000 : 0)
+        let data = """
+        {
+          "success": \(success),
+          "inProgress": \(inProgress),
+          "state": "\(resolvedState)",
+          "requestId": "user_123",
+          "deletedAt": \(resolvedDeletedAt),
+          "friendshipsUnlinked": 2,
+          "expensesPreserved": \(success),
+          "phase": "\(resolvedPhase)",
+          "progressToken": "\(token)",
+          "processedCount": 4,
+          "message": "test"
+        }
+        """.data(using: .utf8)!
+        return try JSONDecoder().decode(ConvexSelfDeletionReceiptDTO.self, from: data)
     }
 
     // MARK: - ConvexExpenseDTO Tests
@@ -722,5 +856,22 @@ final class ConvexDTOsTests: XCTestCase {
 
         XCTAssertEqual(dto.name, "Test Group")
         XCTAssertEqual(dto.members.count, 1)
+    }
+}
+
+private actor SelfDeletionReceiptSequence {
+    private var responses: [ConvexSelfDeletionReceiptDTO]
+    private(set) var callCount = 0
+
+    init(_ responses: [ConvexSelfDeletionReceiptDTO]) {
+        self.responses = responses
+    }
+
+    func next() throws -> ConvexSelfDeletionReceiptDTO {
+        callCount += 1
+        guard !responses.isEmpty else {
+            throw PayBackError.underlying(message: "No response")
+        }
+        return responses.removeFirst()
     }
 }

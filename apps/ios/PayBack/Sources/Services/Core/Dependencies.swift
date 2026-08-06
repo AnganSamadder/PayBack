@@ -157,13 +157,14 @@ final class Dependencies: Sendable {
     }
 
     /// Trigger Convex authentication using the current Clerk session
-    static func authenticateConvex() async {
+    static func authenticateConvex() async throws {
         print("[AuthDebug] Dependencies.authenticateConvex called")
         guard let client = convexClient as? ConvexClientWithAuth<ClerkAuthResult> else {
             print("[AuthDebug] convexClient is NOT ConvexClientWithAuth")
             return
         }
-        _ = await client.loginFromCache()
+        let result = await client.loginFromCache()
+        _ = try result.get()
         print("[AuthDebug] Dependencies.authenticateConvex completed")
     }
 

@@ -22,6 +22,19 @@ func makeCancellableAsyncThrowingStream<Element: Sendable>(
     }
 }
 
+enum InviteClaimArgumentBuilder {
+    static func build(
+        tokenId: UUID,
+        mergeLocalFriendMemberId: UUID?
+    ) -> [String: String] {
+        var args = ["id": tokenId.uuidString]
+        if let mergeLocalFriendMemberId {
+            args["mergeLocalFriendMemberId"] = mergeLocalFriendMemberId.uuidString
+        }
+        return args
+    }
+}
+
 #if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
 
@@ -147,10 +160,14 @@ actor ConvexInviteLinkService: InviteLinkService {
         _ tokenId: UUID,
         mergeLocalFriendMemberId: UUID?
     ) async throws -> LinkAcceptResult {
-        let args: [String: ConvexEncodable?] = [
-            "id": tokenId.uuidString,
-            "mergeLocalFriendMemberId": mergeLocalFriendMemberId?.uuidString
-        ]
+        let claimArguments = InviteClaimArgumentBuilder.build(
+            tokenId: tokenId,
+            mergeLocalFriendMemberId: mergeLocalFriendMemberId
+        )
+        var args: [String: ConvexEncodable?] = [:]
+        for (key, value) in claimArguments {
+            args[key] = value
+        }
 
         // Mutation returns the result directly
         let result: ConvexLinkAcceptResultDTO = try await client.mutation("inviteTokens:claim", with: args)

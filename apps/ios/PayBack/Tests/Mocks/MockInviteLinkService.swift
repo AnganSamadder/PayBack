@@ -7,6 +7,13 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
     private var tokens: [UUID: InviteToken] = [:]
     private var claims: Set<UUID> = []
     private var pendingClaimError: Error?
+    private var suspendedClaimError: Error?
+    private var claimAttemptWaiters: [CheckedContinuation<Void, Never>] = []
+    private var claimErrorContinuation: CheckedContinuation<Void, Never>?
+    private var claimAttemptCount = 0
+    private var claimsSuspendedAfterCommit: Set<UUID> = []
+    private var claimCommitWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
+    private var claimResumeContinuations: [UUID: CheckedContinuation<Void, Never>] = [:]
     private(set) var lastClaimedTokenId: UUID?
     private(set) var lastClaimMergeLocalFriendMemberId: UUID?
     private let mockCreatorId: String
@@ -118,6 +125,19 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         _ tokenId: UUID,
         mergeLocalFriendMemberId: UUID?
     ) async throws -> LinkAcceptResult {
+        claimAttemptCount += 1
+        let attemptWaiters = claimAttemptWaiters
+        claimAttemptWaiters.removeAll()
+        attemptWaiters.forEach { $0.resume() }
+
+        if let error = suspendedClaimError {
+            suspendedClaimError = nil
+            await withCheckedContinuation { continuation in
+                claimErrorContinuation = continuation
+            }
+            throw error
+        }
+
         guard var token = tokens[tokenId] else {
             throw PayBackError.linkInvalid
         }
@@ -153,7 +173,19 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         lastClaimedTokenId = tokenId
         lastClaimMergeLocalFriendMemberId = mergeLocalFriendMemberId
 
-        return LinkAcceptResult(
+        let waiters = claimCommitWaiters.removeValue(forKey: tokenId) ?? []
+        waiters.forEach { $0.resume() }
+        if claimsSuspendedAfterCommit.contains(tokenId) {
+            await withCheckedContinuation { continuation in
+                claimResumeContinuations[tokenId] = continuation
+            }
+        }
+
+        return claimResult(for: token)
+    }
+
+    private func claimResult(for token: InviteToken) -> LinkAcceptResult {
+        LinkAcceptResult(
             targetMemberId: token.targetMemberId,
             canonicalMemberId: mockClaimerCanonicalMemberId,
             aliasMemberIds: [token.targetMemberId],
@@ -204,12 +236,59 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         tokens.removeAll()
         claims.removeAll()
         pendingClaimError = nil
+        suspendedClaimError = nil
+        claimAttemptWaiters.forEach { $0.resume() }
+        claimAttemptWaiters.removeAll()
+        claimErrorContinuation?.resume()
+        claimErrorContinuation = nil
+        claimAttemptCount = 0
+        claimsSuspendedAfterCommit.removeAll()
+        claimCommitWaiters.values.flatMap { $0 }.forEach { $0.resume() }
+        claimCommitWaiters.removeAll()
+        claimResumeContinuations.values.forEach { $0.resume() }
+        claimResumeContinuations.removeAll()
         lastClaimedTokenId = nil
         lastClaimMergeLocalFriendMemberId = nil
     }
 
     func setClaimError(_ error: Error?) {
         pendingClaimError = error
+    }
+
+    func suspendNextClaim(with error: Error) {
+        suspendedClaimError = error
+    }
+
+    func waitUntilClaimAttempted() async {
+        guard claimAttemptCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            claimAttemptWaiters.append(continuation)
+        }
+    }
+
+    func resumeSuspendedClaim() {
+        claimErrorContinuation?.resume()
+        claimErrorContinuation = nil
+    }
+
+    func claimAttempts() -> Int {
+        claimAttemptCount
+    }
+
+    func suspendClaimAfterCommit(_ tokenId: UUID) {
+        claimsSuspendedAfterCommit.insert(tokenId)
+    }
+
+    func waitUntilClaimCommitted(_ tokenId: UUID) async {
+        guard !claims.contains(tokenId) else { return }
+        await withCheckedContinuation { continuation in
+            claimCommitWaiters[tokenId, default: []].append(continuation)
+        }
+    }
+
+    func resumeClaimAfterCommit(_ tokenId: UUID) {
+        claimsSuspendedAfterCommit.remove(tokenId)
+        claimResumeContinuations.removeValue(forKey: tokenId)?.resume()
     }
 
     func claimedTokenId() -> UUID? {

@@ -1,6 +1,12 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
+import {
+  accountMergeQueriesForLimit,
+  assertMergeIdentityMaterializationReady,
+  createMergeReadBudget,
+  findBudgetedManualMergeAccount
+} from "../aliases";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
@@ -372,6 +378,27 @@ describe("mergeUnlinkedFriends eligibility", () => {
     });
 
     expect(budget.scannedRows).toBeLessThanOrEqual(265);
+  });
+
+  test("charges manual-merge account and materialization pre-reads to one budget", async () => {
+    const { t } = await createEligibilityScenario();
+    const budget = createMergeReadBudget();
+    budget.queryWork = 4094;
+    const user = await t.run((ctx) =>
+      findBudgetedManualMergeAccount(
+        ctx,
+        { subject: "owner_auth", email: "owner@test.com" },
+        budget
+      )
+    );
+    expect(user.id).toBe("owner_auth");
+    expect(budget.queryWork).toBe(4095);
+
+    await t.run((ctx) => assertMergeIdentityMaterializationReady(ctx, budget));
+    expect(budget.queryWork).toBe(4096);
+    expect(() => accountMergeQueriesForLimit(budget, 1)).toThrow(
+      "Friend merge is too large to complete safely"
+    );
   });
 
   test.each(["pending", " ReJeCtEd ", "request_sent", "request_received", "ghost"])(
@@ -1928,6 +1955,52 @@ test("mergeMemberIds rewrites a proven linked target from live account identity"
   });
   expect(target?.local_alias_member_ids).toEqual(
     expect.arrayContaining(["legacy_target_member", "local_alias"])
+  );
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      sourceId: "local_alias",
+      targetCanonicalId: "legacy_target_member"
+    })
+  ).resolves.toMatchObject({
+    success: true,
+    already_merged: true,
+    canonical_member_id: "live_target_member",
+    alias_member_id: "local_alias"
+  });
+});
+
+test("mergeMemberIds does not resolve local aliases from an unlinked target", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  await t.run(async (ctx) => {
+    const target = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "canonical_friend")
+      )
+      .unique();
+    if (!target) throw new Error("missing target");
+    await ctx.db.patch(target._id, {
+      local_alias_member_ids: ["legacy_target_member"]
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      sourceId: "local_alias",
+      targetCanonicalId: "legacy_target_member"
+    })
+  ).rejects.toThrow("Friend with member_id legacy_target_member not found");
+
+  const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
+  expect(friends).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        member_id: "canonical_friend",
+        local_alias_member_ids: ["legacy_target_member"]
+      }),
+      expect.objectContaining({ member_id: "local_alias" })
+    ])
   );
 });
 
