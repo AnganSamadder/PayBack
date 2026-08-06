@@ -656,6 +656,107 @@ test.each(["invite", "link request"] as const)(
   }
 );
 
+test("invite claim rejects a stale cleanup fence without deleting it during preflight", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const fenceId = await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "stale_fence_creator_auth",
+      email: "stale-fence-creator@example.com",
+      display_name: "Creator",
+      created_at: now,
+      member_id: "stale_fence_creator_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "stale_fence_claimer_auth",
+      email: "stale-fence-claimer@example.com",
+      display_name: "Claimer",
+      created_at: now,
+      member_id: "stale_fence_claimer_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+    const targetFriendId = await ctx.db.insert("account_friends", {
+      account_email: "stale-fence-creator@example.com",
+      member_id: "stale_fence_legacy_member",
+      name: "Claimer",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      link_state: "unlinked",
+      status: "manual",
+      updated_at: now
+    });
+    await ctx.db.insert("invite_tokens", {
+      id: "stale_fence_invite",
+      creator_id: "stale_fence_creator_auth",
+      creator_email: "stale-fence-creator@example.com",
+      target_member_id: "stale_fence_legacy_member",
+      target_friend_id: targetFriendId,
+      target_member_name: "Claimer",
+      created_at: now,
+      expires_at: now + 60_000
+    });
+    const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+      email: "stale-orphan@example.com",
+      subject: "stale_orphan_auth",
+      member_ids: ["stale_fence_legacy_member"],
+      mode: "hard",
+      status: "complete",
+      processed_count: 1,
+      retry_count: 0,
+      member_fence_complete: true,
+      created_at: now,
+      updated_at: now
+    });
+    return await ctx.db.insert("orphan_cleanup_member_fences", {
+      job_id: jobId,
+      member_id: "stale_fence_legacy_member",
+      generation: 0,
+      created_at: now
+    });
+  });
+
+  const claimer = t.withIdentity(
+    authIdentity("stale-fence-claimer@example.com", "stale_fence_claimer_auth")
+  );
+  await expect(
+    claimer.mutation(api.inviteTokens.claim, { id: "stale_fence_invite" })
+  ).rejects.toThrow("Identity maintenance required: stale orphan cleanup fence");
+
+  const state = await t.run(async (ctx) => ({
+    fence: await ctx.db.get(fenceId),
+    token: await ctx.db
+      .query("invite_tokens")
+      .withIndex("by_client_id", (q) => q.eq("id", "stale_fence_invite"))
+      .unique(),
+    claimer: await ctx.db
+      .query("accounts")
+      .withIndex("by_auth_id", (q) => q.eq("id", "stale_fence_claimer_auth"))
+      .unique(),
+    targetFriend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q
+          .eq("account_email", "stale-fence-creator@example.com")
+          .eq("member_id", "stale_fence_legacy_member")
+      )
+      .unique(),
+    aliases: await ctx.db.query("member_aliases").collect()
+  }));
+  expect(state.fence).not.toBeNull();
+  expect(state.token?.claimed_by).toBeUndefined();
+  expect(state.claimer?.alias_member_ids).toBeUndefined();
+  expect(state.targetFriend).toMatchObject({
+    has_linked_account: false,
+    link_state: "unlinked"
+  });
+  expect(state.aliases).toEqual([]);
+});
+
 test("friends:upsert cannot create linked metadata from a client payload", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();

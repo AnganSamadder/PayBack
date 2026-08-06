@@ -18,7 +18,7 @@ import {
   type PreparedInviteMergeSource
 } from "./aliases";
 import {
-  assertMemberIdentityNotCleanupFenced,
+  assertMemberIdentityNotCleanupFencedReadOnly,
   deterministicLinkingError,
   IDENTITY_MATERIALIZATION_KEY,
   LINKING_CONTRACT_VERSION,
@@ -313,7 +313,7 @@ async function prepareBudgetedAliasInsert(
   }
   if (!normalizedAlias || normalizedAlias === canonicalMemberId) return null;
 
-  await assertMemberIdentityNotCleanupFenced(ctx, normalizedAlias, (rows) => {
+  await assertMemberIdentityNotCleanupFencedReadOnly(ctx, normalizedAlias, (rows) => {
     chargeLinkingQueries(budget, 1);
     accountLinkingRows(budget, rows);
   });

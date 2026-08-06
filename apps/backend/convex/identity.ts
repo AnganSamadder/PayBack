@@ -33,10 +33,11 @@ export function normalizeMemberIds(memberIds: string[] | undefined | null): stri
   return Array.from(seen);
 }
 
-export async function assertMemberIdentityNotCleanupFenced(
+async function assertMemberIdentityNotCleanupFencedWithPolicy(
   ctx: MutationCtx,
   rawMemberId: string,
-  observeRead?: (rows: readonly unknown[]) => void
+  observeRead: ((rows: readonly unknown[]) => void) | undefined,
+  staleFencePolicy: "delete" | "reject"
 ): Promise<void> {
   const memberId = normalizeMemberId(rawMemberId);
   if (!memberId) return;
@@ -56,8 +57,27 @@ export async function assertMemberIdentityNotCleanupFenced(
     if (job?.status === "pending" && fence.generation === (job.member_fence_generation ?? 0)) {
       throw new Error("Member identity is temporarily locked for account cleanup");
     }
+    if (staleFencePolicy === "reject") {
+      throw new Error("Identity maintenance required: stale orphan cleanup fence");
+    }
     await ctx.db.delete(fence._id);
   }
+}
+
+export async function assertMemberIdentityNotCleanupFenced(
+  ctx: MutationCtx,
+  rawMemberId: string,
+  observeRead?: (rows: readonly unknown[]) => void
+): Promise<void> {
+  await assertMemberIdentityNotCleanupFencedWithPolicy(ctx, rawMemberId, observeRead, "delete");
+}
+
+export async function assertMemberIdentityNotCleanupFencedReadOnly(
+  ctx: MutationCtx,
+  rawMemberId: string,
+  observeRead?: (rows: readonly unknown[]) => void
+): Promise<void> {
+  await assertMemberIdentityNotCleanupFencedWithPolicy(ctx, rawMemberId, observeRead, "reject");
 }
 
 export async function findAccountsByEmailIdentity(db: DatabaseReader, email: string) {
