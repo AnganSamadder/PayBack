@@ -12,4 +12,8 @@ test("linked-account resolution does not collect deployment-wide groups or accou
   expect(resolver).not.toMatch(/query\("groups"\)\s*\.collect\(\)/);
   expect(resolver).not.toMatch(/query\("accounts"\)\s*\.collect\(\)/);
   expect(resolver).not.toMatch(/\.collect\(\)/);
+  expect(resolver).not.toMatch(/\.take\(/);
+  expect(resolver).toMatch(/\.paginate\(/);
+  expect(resolver).toMatch(/maximumRowsRead/);
+  expect(resolver).toMatch(/maximumBytesRead/);
 });

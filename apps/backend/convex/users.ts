@@ -8,7 +8,7 @@ import {
   MutationCtx
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { v } from "convex/values";
+import { getConvexSize, v, type Value } from "convex/values";
 import { Doc } from "./_generated/dataModel";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
@@ -54,10 +54,6 @@ const MAX_LINKED_ACCOUNT_SURFACE_ENCODED_BYTES = 1_000_000;
 
 function linkedAccountSurfaceLimitError(resource: string) {
   return new Error(`Linked account caller-visible identity surface exceeds the ${resource} limit`);
-}
-
-function encodedSize(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value) ?? "").length;
 }
 
 function orphanCleanupLimitError(resource: "groups" | "expenses" | "visibility") {
@@ -1498,12 +1494,20 @@ export const resolveLinkedAccountsForMemberIds = query({
     const authorizedMemberIds = new Set<string>();
     let surfaceEncodedBytes = 0;
     let surfaceLookups = 3;
-    const consumeSurfaceRows = (rows: readonly unknown[], resource: string) => {
-      surfaceEncodedBytes += encodedSize(rows);
+    const consumeSurfaceRows = (rows: readonly Value[], resource: string) => {
+      surfaceEncodedBytes += rows.reduce<number>((total, row) => total + getConvexSize(row), 0);
       if (surfaceEncodedBytes > MAX_LINKED_ACCOUNT_SURFACE_ENCODED_BYTES) {
         throw linkedAccountSurfaceLimitError(`${resource} encoded-byte`);
       }
     };
+    const remainingSurfaceBytes = () =>
+      Math.max(1, MAX_LINKED_ACCOUNT_SURFACE_ENCODED_BYTES - surfaceEncodedBytes);
+    const surfacePageOptions = (maximumRowsRead: number) => ({
+      cursor: null,
+      numItems: maximumRowsRead,
+      maximumRowsRead,
+      maximumBytesRead: remainingSurfaceBytes()
+    });
     const reserveSurfaceLookups = (count: number) => {
       surfaceLookups += count;
       if (surfaceLookups > MAX_LINKED_ACCOUNT_SURFACE_LOOKUPS) {
@@ -1516,21 +1520,31 @@ export const resolveLinkedAccountsForMemberIds = query({
       authorizedMemberIds.add(normalizeMemberId(id));
     }
 
-    const ownerGroups = await ctx.db
+    const ownerGroupPage = await ctx.db
       .query("groups")
       .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-      .take(MAX_LINKED_ACCOUNT_SURFACE_GROUPS + 1);
-    if (ownerGroups.length > MAX_LINKED_ACCOUNT_SURFACE_GROUPS) {
+      .paginate(surfacePageOptions(MAX_LINKED_ACCOUNT_SURFACE_GROUPS + 1));
+    if (
+      !ownerGroupPage.isDone ||
+      ownerGroupPage.pageStatus === "SplitRequired" ||
+      ownerGroupPage.page.length > MAX_LINKED_ACCOUNT_SURFACE_GROUPS
+    ) {
       throw linkedAccountSurfaceLimitError("owned-group row");
     }
+    const ownerGroups = ownerGroupPage.page;
     consumeSurfaceRows(ownerGroups, "owned-group");
-    const visibilityRows = await ctx.db
+    const visibilityPage = await ctx.db
       .query("group_visibility")
       .withIndex("by_account_id_and_group_updated_at", (q) => q.eq("account_id", user._id))
-      .take(MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS + 1);
-    if (visibilityRows.length > MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS) {
+      .paginate(surfacePageOptions(MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS + 1));
+    if (
+      !visibilityPage.isDone ||
+      visibilityPage.pageStatus === "SplitRequired" ||
+      visibilityPage.page.length > MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS
+    ) {
       throw linkedAccountSurfaceLimitError("visibility row");
     }
+    const visibilityRows = visibilityPage.page;
     consumeSurfaceRows(visibilityRows, "visibility");
     const visibleGroups = new Map(ownerGroups.map((group) => [String(group._id), group]));
     for (const visibilityRow of visibilityRows) {
@@ -1547,13 +1561,18 @@ export const resolveLinkedAccountsForMemberIds = query({
       }
     }
 
-    const myFriends = await ctx.db
+    const friendPage = await ctx.db
       .query("account_friends")
       .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
-      .take(MAX_LINKED_ACCOUNT_SURFACE_FRIENDS + 1);
-    if (myFriends.length > MAX_LINKED_ACCOUNT_SURFACE_FRIENDS) {
+      .paginate(surfacePageOptions(MAX_LINKED_ACCOUNT_SURFACE_FRIENDS + 1));
+    if (
+      !friendPage.isDone ||
+      friendPage.pageStatus === "SplitRequired" ||
+      friendPage.page.length > MAX_LINKED_ACCOUNT_SURFACE_FRIENDS
+    ) {
       throw linkedAccountSurfaceLimitError("friend row");
     }
+    const myFriends = friendPage.page;
     consumeSurfaceRows(myFriends, "friend");
     for (const friend of myFriends) {
       authorizedMemberIds.add(normalizeMemberId(friend.member_id));
