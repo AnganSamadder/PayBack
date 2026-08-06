@@ -975,6 +975,27 @@ final class AppStoreLinkingTests: XCTestCase {
         XCTAssertEqual(sut.mergeableUnlinkedFriends.map(\.memberId), [manual.memberId])
     }
 
+    func testMergeableUnlinkedFriendsExcludesCurrentUserEquivalentIdentity() async throws {
+        let equivalentMemberId = UUID()
+        let account = UserAccount(
+            id: "test-123",
+            email: "test@example.com",
+            displayName: "Example User",
+            equivalentMemberIds: [equivalentMemberId]
+        )
+        await mockAccountService.addAccount(account)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let staleSelfAlias = AccountFriend(
+            memberId: equivalentMemberId,
+            name: "Old Me",
+            status: "friend"
+        )
+        sut.friends = [staleSelfAlias]
+
+        XCTAssertTrue(sut.mergeableUnlinkedFriends.isEmpty)
+    }
+
     func testMergeFriend_PreservesLocalSourceWhenBackendRejects() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)

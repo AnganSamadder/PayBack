@@ -4299,7 +4299,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// Whether a confirmed friend can be used as the source of an invite-time merge.
     func isMergeableUnlinkedFriend(_ friend: AccountFriend) -> Bool {
         let linkState = normalizedFriendStatus(friend.linkState)
-        guard friend.hasLinkedAccount == false,
+        guard !isMe(friend.memberId),
+              friend.hasLinkedAccount == false,
               friend.linkedAccountId == nil,
               friend.linkedAccountEmail == nil,
               friend.linkedMemberId == nil,
