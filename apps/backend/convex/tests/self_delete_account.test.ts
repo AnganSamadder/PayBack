@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
 
 function identity(email: string, subject: string) {
   return {
@@ -104,12 +105,7 @@ test("self deletion durably schedules cleanup email preparation before creating 
   }));
   expect(state.materialization).toMatchObject({ status: "pending", phase: "accounts" });
   expect(state.progress).toEqual([]);
-  await (
-    t.finishAllScheduledFunctions as (
-      advanceTimers: () => void,
-      maxIterations: number
-    ) => Promise<void>
-  )(vi.runAllTimers, 500);
+  await finishScheduledFunctions(t, 500);
   vi.useRealTimers();
 });
 

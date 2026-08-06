@@ -4,6 +4,7 @@ import { api, internal } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
 import { enqueueOrphanCleanupJob, resumeOrphanCleanupJob } from "../users";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
 
 const resumableArgs = { clientCapability: "resumable_orphan_cleanup_v1" as const };
 
@@ -157,12 +158,7 @@ test("users.store restarts a stale preparation worker within the client deadline
     await expect(user.mutation(api.users.store, resumableArgs)).resolves.toBe(
       "preparing:recover_auth"
     );
-    await (
-      t.finishAllScheduledFunctions as (
-        advanceTimers: () => void,
-        maxIterations: number
-      ) => Promise<void>
-    )(vi.runAllTimers, 100);
+    await finishScheduledFunctions(t);
     const accountId = await user.mutation(api.users.store, resumableArgs);
     expect(accountId).not.toContain("preparing:");
   } finally {
@@ -252,12 +248,15 @@ test("users.store durably clears oversized orphan data before creating one accou
       );
     }
     expect(await t.run((ctx) => ctx.db.query("orphan_cleanup_jobs").collect())).toHaveLength(1);
-    await (
-      t.finishAllScheduledFunctions as (
-        advanceTimers: () => void,
-        maxIterations: number
-      ) => Promise<void>
-    )(vi.runAllTimers, 2_000);
+    await finishScheduledFunctions(t, 2_000);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+          (scheduled) => scheduled.state.kind === "pending" || scheduled.state.kind === "inProgress"
+        )
+      )
+    ).toEqual([]);
 
     const accountId = await user.mutation(api.users.store, resumableArgs);
     expect(accountId).not.toContain("preparing:");
@@ -302,12 +301,7 @@ test("users.store refuses orphan cleanup when legacy ownership points at a live 
 
     const user = t.withIdentity(identity("new@example.com", "new_auth"));
     await expect(user.mutation(api.users.store, resumableArgs)).resolves.toBe("preparing:new_auth");
-    await (
-      t.finishAllScheduledFunctions as (
-        advanceTimers: () => void,
-        maxIterations: number
-      ) => Promise<void>
-    )(vi.runAllTimers, 100);
+    await finishScheduledFunctions(t);
     await expect(user.mutation(api.users.store, resumableArgs)).rejects.toThrow(
       "Account preparation requires support"
     );
@@ -447,12 +441,7 @@ test("orphan cleanup never deletes rows referenced by a live persisted account i
     await t.run((ctx) =>
       enqueueOrphanCleanupJob(ctx, { email: "orphan@example.com", mode: "hard" })
     );
-    await (
-      t.finishAllScheduledFunctions as (
-        advanceTimers: () => void,
-        maxIterations: number
-      ) => Promise<void>
-    )(vi.runAllTimers, 100);
+    await finishScheduledFunctions(t);
 
     expect(await t.run((ctx) => ctx.db.get(accountId))).not.toBeNull();
     expect(await t.run((ctx) => ctx.db.get(visibilityId))).not.toBeNull();
@@ -527,12 +516,7 @@ test("orphan cleanup preflights every linked member identity before deleting own
         mode: "hard"
       })
     );
-    await (
-      t.finishAllScheduledFunctions as (
-        advanceTimers: () => void,
-        maxIterations: number
-      ) => Promise<void>
-    )(vi.runAllTimers, 200);
+    await finishScheduledFunctions(t, 200);
 
     expect(await t.run((ctx) => ctx.db.get(groupId))).not.toBeNull();
     expect(await t.run((ctx) => ctx.db.query("orphan_cleanup_jobs").unique())).toMatchObject({
@@ -576,12 +560,7 @@ test("orphan cleanup preflights alias-only provenance before deleting it", async
     await t.run((ctx) =>
       enqueueOrphanCleanupJob(ctx, { email: "orphan@example.com", mode: "hard" })
     );
-    await (
-      t.finishAllScheduledFunctions as (
-        advanceTimers: () => void,
-        maxIterations: number
-      ) => Promise<void>
-    )(vi.runAllTimers, 200);
+    await finishScheduledFunctions(t, 200);
 
     expect(await t.run((ctx) => ctx.db.get(aliasId))).not.toBeNull();
     expect(await t.run((ctx) => ctx.db.query("orphan_cleanup_jobs").unique())).toMatchObject({
@@ -630,12 +609,7 @@ test("orphan cleanup preserves stale-email requests owned by a live account", as
     await t.run((ctx) =>
       enqueueOrphanCleanupJob(ctx, { email: "orphan@example.com", mode: "hard" })
     );
-    await (
-      t.finishAllScheduledFunctions as (
-        advanceTimers: () => void,
-        maxIterations: number
-      ) => Promise<void>
-    )(vi.runAllTimers, 200);
+    await finishScheduledFunctions(t, 200);
 
     expect(await t.run((ctx) => ctx.db.get(requestId))).not.toBeNull();
     expect(await t.run((ctx) => ctx.db.query("orphan_cleanup_jobs").unique())).toMatchObject({
@@ -787,12 +761,7 @@ test("terminal orphan cleanup failure releases member fences", async () => {
       jobId,
       error: "terminal"
     });
-    await (
-      t.finishAllScheduledFunctions as (
-        advanceTimers: () => void,
-        maxIterations: number
-      ) => Promise<void>
-    )(vi.runAllTimers, 20);
+    await finishScheduledFunctions(t, 20);
 
     expect(await t.run((ctx) => ctx.db.get(jobId))).toMatchObject({ status: "failed" });
     expect(await t.run((ctx) => ctx.db.query("orphan_cleanup_member_fences").collect())).toEqual(

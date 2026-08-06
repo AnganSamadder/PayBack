@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
 
 function identity(email: string, subject: string) {
   return {
@@ -98,7 +99,7 @@ describe("durable clear-all processing", () => {
 
       const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
       await expect(owner.mutation(api.expenses.clearAllForUser, {})).resolves.toBeNull();
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      await finishScheduledFunctions(t);
 
       expect(await t.run((ctx) => ctx.db.query("expenses").collect())).toEqual([]);
     } finally {

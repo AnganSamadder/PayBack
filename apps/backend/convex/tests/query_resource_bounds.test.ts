@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
 
 function identity(email: string, subject: string) {
   return {
@@ -917,7 +918,7 @@ test("friends:clearAllForUser deletes in bounded resumable batches", async () =>
       })
     );
 
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await finishScheduledFunctions(t);
     const afterContinuation = await t.run((ctx) =>
       ctx.db
         .query("account_friends")
