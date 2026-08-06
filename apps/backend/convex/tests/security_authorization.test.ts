@@ -614,6 +614,12 @@ describe("Security Authorization", () => {
         phase: "complete",
         updated_at: Date.now()
       });
+      await ctx.db.insert("sync_materialization_state", {
+        key: "group_visibility_v1",
+        status: "ready",
+        processed: 0,
+        updated_at: Date.now()
+      });
     });
 
     const callerCtx = t.withIdentity(identity("caller@test.com", "caller_id"));
