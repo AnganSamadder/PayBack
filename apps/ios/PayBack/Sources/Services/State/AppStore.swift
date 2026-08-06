@@ -3594,10 +3594,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
     // MARK: - Link Requests
 
     /// Sends a link request to an email address for a specific friend with retry logic
+    @MainActor
     func sendLinkRequest(toEmail email: String, forFriend friend: GroupMember) async throws {
         guard let session = session else {
             throw PayBackError.authSessionMissing
         }
+        let context = groupMutationContext()
 
         // Prevent self-linking: check if recipient email matches current user's email
         let normalizedEmail = try accountService.normalizedEmail(from: email)
@@ -3635,17 +3637,15 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         // A recipient email can have only one active outgoing request, even if a
         // retry creates a fresh local member ID.
-        let hasPendingRequest = await MainActor.run {
-            outgoingLinkRequests.contains { request in
-                guard request.status == .pending, request.expiresAt > Date() else {
-                    return false
-                }
-                let requestEmail = request.recipientEmail
-                    .lowercased()
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return areSamePerson(request.targetMemberId, friend.id) ||
-                    requestEmail == normalizedEmail
+        let hasPendingRequest = outgoingLinkRequests.contains { request in
+            guard request.status == .pending, request.expiresAt > Date() else {
+                return false
             }
+            let requestEmail = request.recipientEmail
+                .lowercased()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return areSamePerson(request.targetMemberId, friend.id) ||
+                requestEmail == normalizedEmail
         }
 
         if hasPendingRequest {
@@ -3655,32 +3655,35 @@ func completeAuthentication(id: String, email: String, name: String?) {
         // The backend requires the target identity to be a caller-owned unlinked
         // friend. Persist that identity before creating the request. If the request
         // fails, the friend remains available for an explicit retry.
-        let friendsToSync = await MainActor.run {
-            if let existingIndex = friends.firstIndex(where: {
-                areSamePerson($0.memberId, friend.id)
-            }) {
-                if friends[existingIndex].hasLinkedAccount == false,
-                   friends[existingIndex].name != friend.name {
-                    friends[existingIndex].name = friend.name
-                    persistCurrentState()
-                }
-            } else {
-                friends.append(
-                    AccountFriend(memberId: friend.id, name: friend.name, status: "friend")
-                )
+        guard isCurrentGroupMutation(context) else { return }
+        if let existingIndex = friends.firstIndex(where: {
+            areSamePerson($0.memberId, friend.id)
+        }) {
+            if friends[existingIndex].hasLinkedAccount == false,
+               friends[existingIndex].name != friend.name {
+                friends[existingIndex].name = friend.name
                 persistCurrentState()
             }
-            return friends
+        } else {
+            friends.append(
+                AccountFriend(memberId: friend.id, name: friend.name, status: "friend")
+            )
+            persistCurrentState()
         }
+        let friendsToSync = friends
         try await accountService.syncFriends(
             accountEmail: session.account.email,
             friends: friendsToSync
         )
+        guard isCurrentGroupMutation(context) else { return }
 
         // Reuse one idempotency key across ambiguous network retries so the
         // backend and client always refer to the same logical request.
         let requestId = UUID()
         let request = try await retryPolicy.execute {
+            guard self.isCurrentGroupMutation(context) else {
+                throw CancellationError()
+            }
             try await self.linkRequestService.createLinkRequest(
                 requestId: requestId,
                 recipientEmail: normalizedEmail,
@@ -3688,67 +3691,78 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 targetMemberName: friend.name
             )
         }
+        guard isCurrentGroupMutation(context) else { return }
         guard areSamePerson(request.targetMemberId, friend.id) else {
             throw PayBackError.linkInvalid
         }
 
         // Add to outgoing requests
-        await MainActor.run {
-            if !outgoingLinkRequests.contains(where: { $0.id == request.id }) {
-                outgoingLinkRequests.append(request)
-            }
+        if !outgoingLinkRequests.contains(where: { $0.id == request.id }) {
+            outgoingLinkRequests.append(request)
         }
     }
 
     /// Fetches all incoming and outgoing link requests with retry logic
+    @MainActor
     func fetchLinkRequests() async throws {
         guard session != nil else {
             throw PayBackError.authSessionMissing
         }
+        let context = groupMutationContext()
 
         let incoming = try await retryPolicy.execute {
+            guard self.isCurrentGroupMutation(context) else {
+                throw CancellationError()
+            }
             try await self.linkRequestService.fetchIncomingRequests()
         }
+        guard isCurrentGroupMutation(context) else { return }
 
         let outgoing = try await retryPolicy.execute {
+            guard self.isCurrentGroupMutation(context) else {
+                throw CancellationError()
+            }
             try await self.linkRequestService.fetchOutgoingRequests()
         }
+        guard isCurrentGroupMutation(context) else { return }
 
-        await MainActor.run {
-            self.incomingLinkRequests = incoming
-            self.outgoingLinkRequests = outgoing
-        }
+        incomingLinkRequests = incoming
+        outgoingLinkRequests = outgoing
     }
 
     /// Fetches previous (accepted/rejected) link requests with retry logic
+    @MainActor
     func fetchPreviousRequests() async throws {
         guard session != nil else {
             throw PayBackError.authSessionMissing
         }
+        let context = groupMutationContext()
 
         let previous = try await retryPolicy.execute {
+            guard self.isCurrentGroupMutation(context) else {
+                throw CancellationError()
+            }
             try await self.linkRequestService.fetchPreviousRequests()
         }
+        guard isCurrentGroupMutation(context) else { return }
 
-        await MainActor.run {
-            self.previousLinkRequests = previous
-        }
+        previousLinkRequests = previous
     }
 
     /// Accepts a link request and links the account with retry logic
+    @MainActor
     func acceptLinkRequest(_ request: LinkRequest) async throws {
         guard session != nil else {
             throw PayBackError.authSessionMissing
         }
+        let context = groupMutationContext()
 
         // Check if this request was previously rejected
-        let wasPreviouslyRejected = await MainActor.run {
-            previousLinkRequests.contains { previousRequest in
-                previousRequest.targetMemberId == request.targetMemberId &&
-                previousRequest.requesterEmail == request.requesterEmail &&
-                (previousRequest.status == .rejected || previousRequest.status == .declined) &&
-                previousRequest.rejectedAt != nil
-            }
+        let wasPreviouslyRejected = previousLinkRequests.contains { previousRequest in
+            previousRequest.targetMemberId == request.targetMemberId &&
+            previousRequest.requesterEmail == request.requesterEmail &&
+            (previousRequest.status == .rejected || previousRequest.status == .declined) &&
+            previousRequest.rejectedAt != nil
         }
 
         #if DEBUG
@@ -3759,17 +3773,22 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         // Accept the request via service with retry
         let result = try await retryPolicy.execute {
+            guard self.isCurrentGroupMutation(context) else {
+                throw CancellationError()
+            }
             try await self.linkRequestService.acceptLinkRequest(request.id)
         }
+        guard isCurrentGroupMutation(context) else { return }
 
         await applyLinkAcceptResult(result)
+        guard isCurrentGroupMutation(context) else { return }
         await reconcileAfterNetworkRecovery()
+        guard isCurrentGroupMutation(context) else { return }
         await loadRemoteData()
+        guard isCurrentGroupMutation(context) else { return }
 
         // Remove from incoming requests
-        await MainActor.run {
-            incomingLinkRequests.removeAll { $0.id == request.id }
-        }
+        incomingLinkRequests.removeAll { $0.id == request.id }
     }
 
     /// Checks if a link request was previously rejected
@@ -3783,33 +3802,45 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     /// Declines a link request
+    @MainActor
     func declineLinkRequest(_ request: LinkRequest) async throws {
         guard session != nil else {
             throw PayBackError.authSessionMissing
         }
+        let context = groupMutationContext()
 
         // Decline the request via service
-        try await linkRequestService.declineLinkRequest(request.id)
+        try await retryPolicy.execute {
+            guard self.isCurrentGroupMutation(context) else {
+                throw CancellationError()
+            }
+            try await self.linkRequestService.declineLinkRequest(request.id)
+        }
+        guard isCurrentGroupMutation(context) else { return }
 
         // Remove from incoming requests
-        await MainActor.run {
-            incomingLinkRequests.removeAll { $0.id == request.id }
-        }
+        incomingLinkRequests.removeAll { $0.id == request.id }
     }
 
     /// Cancels an outgoing link request
+    @MainActor
     func cancelLinkRequest(_ request: LinkRequest) async throws {
         guard session != nil else {
             throw PayBackError.authSessionMissing
         }
+        let context = groupMutationContext()
 
         // Cancel the request via service
-        try await linkRequestService.cancelLinkRequest(request.id)
+        try await retryPolicy.execute {
+            guard self.isCurrentGroupMutation(context) else {
+                throw CancellationError()
+            }
+            try await self.linkRequestService.cancelLinkRequest(request.id)
+        }
+        guard isCurrentGroupMutation(context) else { return }
 
         // Remove from outgoing requests
-        await MainActor.run {
-            outgoingLinkRequests.removeAll { $0.id == request.id }
-        }
+        outgoingLinkRequests.removeAll { $0.id == request.id }
     }
 
     // MARK: - Invite Links

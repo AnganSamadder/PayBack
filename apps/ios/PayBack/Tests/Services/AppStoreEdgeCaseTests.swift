@@ -928,6 +928,112 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         )
     }
 
+    func testAcceptLinkRequest_AfterAccountSwitch_DoesNotMutateNewSession() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        let request = pendingLinkRequest(recipientEmail: accountA.email)
+        sut.session = UserSession(account: accountA)
+        await mockLinkRequestService.addIncomingRequest(request)
+        await mockLinkRequestService.suspendNextAccept()
+
+        let operation = Task { @MainActor in
+            try await sut.acceptLinkRequest(request)
+        }
+        XCTAssertTrue(await waitForAcceptInvocation())
+
+        sut.session = UserSession(account: accountB)
+        await mockLinkRequestService.resumeAccept()
+        try await operation.value
+
+        XCTAssertEqual(sut.session?.account, accountB)
+    }
+
+    func testFetchLinkRequests_AfterAccountSwitch_DoesNotPublishOldAccountRequests() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        let request = pendingLinkRequest(recipientEmail: accountA.email)
+        sut.session = UserSession(account: accountA)
+        await mockLinkRequestService.setUserEmail(accountA.email)
+        await mockLinkRequestService.addIncomingRequest(request)
+        await mockLinkRequestService.suspendNextIncomingFetch()
+
+        let operation = Task { @MainActor in
+            try await sut.fetchLinkRequests()
+        }
+        XCTAssertTrue(await waitForIncomingFetchInvocation())
+
+        sut.session = UserSession(account: accountB)
+        await mockLinkRequestService.resumeIncomingFetch()
+        try await operation.value
+
+        XCTAssertEqual(sut.session?.account, accountB)
+        XCTAssertTrue(sut.incomingLinkRequests.isEmpty)
+        XCTAssertTrue(sut.outgoingLinkRequests.isEmpty)
+    }
+
+    func testSendLinkRequest_AfterAccountSwitch_DoesNotPublishOldAccountRequest() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        sut.session = UserSession(account: accountA)
+        await mockLinkRequestService.setUserEmail(accountA.email)
+        await mockLinkRequestService.suspendNextCreate()
+
+        let operation = Task { @MainActor in
+            try await sut.sendLinkRequest(
+                toEmail: "recipient@example.com",
+                forFriend: GroupMember(name: "Alice")
+            )
+        }
+        XCTAssertTrue(await waitForCreateInvocation())
+
+        sut.session = UserSession(account: accountB)
+        await mockLinkRequestService.resumeCreate()
+        try await operation.value
+
+        XCTAssertEqual(sut.session?.account, accountB)
+        XCTAssertTrue(sut.outgoingLinkRequests.isEmpty)
+    }
+
+    private func pendingLinkRequest(recipientEmail: String) -> LinkRequest {
+        LinkRequest(
+            id: UUID(),
+            requesterId: "sender-123",
+            requesterEmail: "sender@example.com",
+            requesterName: "Sender",
+            recipientEmail: recipientEmail,
+            targetMemberId: UUID(),
+            targetMemberName: "Alice",
+            createdAt: Date(),
+            status: .pending,
+            expiresAt: Date().addingTimeInterval(7 * 24 * 3600),
+            rejectedAt: nil
+        )
+    }
+
+    private func waitForAcceptInvocation() async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockLinkRequestService.currentAcceptInvocationCount() > 0 { return true }
+            await Task.yield()
+        }
+        return false
+    }
+
+    private func waitForIncomingFetchInvocation() async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockLinkRequestService.currentIncomingFetchInvocationCount() > 0 { return true }
+            await Task.yield()
+        }
+        return false
+    }
+
+    private func waitForCreateInvocation() async -> Bool {
+        for _ in 0..<1_000 {
+            if await mockLinkRequestService.currentCreateInvocationCount() > 0 { return true }
+            await Task.yield()
+        }
+        return false
+    }
+
     // MARK: - Account Deletion
 
     func testSelfDeleteAccount_BackendFailureBlocksAppUntilRetry() async throws {
