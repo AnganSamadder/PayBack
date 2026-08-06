@@ -675,6 +675,19 @@ Required fields:
 4. Signup confirm password: `.textContentType(.password)` and submit label `.join`.
 5. Verification code: `.textContentType(.oneTimeCode)` with keyboard-dismiss affordance.
 
+### 11.3 Native password reset continuity
+
+Password reset must remain inside the Clerk native sign-in attempt:
+
+1. Start with identifier-first sign-in, then send `reset_password_email_code`.
+2. Verify only a prepared reset-code factor and require Clerk status `needs_new_password`.
+3. Set the new password only from `needs_new_password`, sign out other sessions, and require `complete` for automatic authentication.
+4. Hand the completed Clerk session through `AppStore.completeAuthenticationAndWait` so Convex and local session state are ready before showing authenticated UI.
+5. Keep reset email, code, and password drafts in `AuthCoordinator`; back navigation must not silently discard them.
+6. Serialize reset requests with the shared busy state and always clear busy state on success, error, or cancellation.
+7. Show stage-specific generic errors; never expose raw provider details or PII.
+8. If Clerk accepts the password but returns `needs_second_factor` or `needs_client_trust`, return to login with an accurate success/recovery message; never label the accepted password update as failed.
+
 ## 12) Add Expense UX Continuity (iOS, provenance: 2026-02-20)
 
 ### 12.1 Save validation parity
