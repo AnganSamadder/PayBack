@@ -54,6 +54,11 @@ final class AppStore: ObservableObject {
         let mutationId: UUID
     }
 
+    private struct SettlementRealtimeExpectation {
+        let memberIds: Set<UUID>
+        let settled: Bool
+    }
+
     @Published var groups: [SpendingGroup]
     @Published var expenses: [Expense]
     @Published var currentUser: GroupMember
@@ -84,10 +89,9 @@ final class AppStore: ObservableObject {
     private var remoteLoadGeneration: UInt64 = 0
     /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseUpsertIds: Set<UUID> = []
-    /// Successful settlement writes not yet confirmed by a matching realtime snapshot.
-    /// This protects canonical mutation responses from stale subscription payloads without
-    /// keeping the settlement UI disabled after the server acknowledges the mutation.
-    private var pendingExpenseSettlementIds: Set<UUID> = []
+    /// Successful settlement writes not yet confirmed by a realtime snapshot that preserves
+    /// the requested split state. Untargeted concurrent changes remain authoritative.
+    private var pendingExpenseSettlementExpectations: [UUID: SettlementRealtimeExpectation] = [:]
     /// Only the latest in-flight settlement for an expense may reconcile its response.
     private var latestSettlementMutationIdByExpense: [UUID: UUID] = [:]
     /// Local expense deletes that have been sent to cloud but not yet observed in realtime snapshots.
@@ -842,7 +846,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses = []
         friends = []
         pendingExpenseUpsertIds.removeAll()
-        pendingExpenseSettlementIds.removeAll()
+        pendingExpenseSettlementExpectations.removeAll()
         latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
         activeGroupMutationTokensByGroupId.removeAll()
@@ -891,7 +895,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         groups = []
         friends = []
         pendingExpenseUpsertIds.removeAll()
-        pendingExpenseSettlementIds.removeAll()
+        pendingExpenseSettlementExpectations.removeAll()
         latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
         activeGroupMutationTokensByGroupId.removeAll()
@@ -1740,13 +1744,29 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
 
         // Keep local optimistic writes until realtime snapshot reflects the same payload.
-        let pendingLocalExpenseIds = pendingExpenseUpsertIds.union(pendingExpenseSettlementIds)
+        let pendingLocalExpenseIds = pendingExpenseUpsertIds.union(pendingExpenseSettlementExpectations.keys)
         for localExpense in expenses where pendingLocalExpenseIds.contains(localExpense.id) {
             if let remoteIndex = remoteIndexById[localExpense.id] {
-                if merged[remoteIndex] == localExpense {
-                    pendingExpenseUpsertIds.remove(localExpense.id)
-                    pendingExpenseSettlementIds.remove(localExpense.id)
-                } else {
+                let remoteExpense = merged[remoteIndex]
+                var shouldPreserveLocalExpense = false
+
+                if pendingExpenseUpsertIds.contains(localExpense.id) {
+                    if remoteExpense == localExpense {
+                        pendingExpenseUpsertIds.remove(localExpense.id)
+                    } else {
+                        shouldPreserveLocalExpense = true
+                    }
+                }
+
+                if let expectation = pendingExpenseSettlementExpectations[localExpense.id] {
+                    if doesRemoteExpense(remoteExpense, acknowledge: expectation) {
+                        pendingExpenseSettlementExpectations.removeValue(forKey: localExpense.id)
+                    } else {
+                        shouldPreserveLocalExpense = true
+                    }
+                }
+
+                if shouldPreserveLocalExpense {
                     merged[remoteIndex] = localExpense
                 }
             } else {
@@ -1765,6 +1785,17 @@ func completeAuthentication(id: String, email: String, name: String?) {
         // Safety dedupe for mixed local/remote merges.
         var seenIds = Set<UUID>()
         return merged.filter { seenIds.insert($0.id).inserted }
+    }
+
+    private func doesRemoteExpense(
+        _ expense: Expense,
+        acknowledge expectation: SettlementRealtimeExpectation
+    ) -> Bool {
+        expectation.memberIds.allSatisfy { expectedMemberId in
+            expense.splits.contains { split in
+                areSamePerson(split.memberId, expectedMemberId) && split.isSettled == expectation.settled
+            }
+        }
     }
 
     /// Sends expense upsert to Convex and marks it pending for realtime reconciliation.
@@ -1794,7 +1825,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     private func queueExpenseDelete(_ expenseId: UUID) {
         guard session != nil, !isImporting else { return }
         pendingExpenseUpsertIds.remove(expenseId)
-        pendingExpenseSettlementIds.remove(expenseId)
+        pendingExpenseSettlementExpectations.removeValue(forKey: expenseId)
         latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
         pendingExpenseDeleteIds.insert(expenseId)
 
@@ -1957,11 +1988,14 @@ func completeAuthentication(id: String, email: String, name: String?) {
         )
 
         expenses[idx] = optimisticExpense
-        pendingExpenseSettlementIds.insert(expenseId)
+        pendingExpenseSettlementExpectations[expenseId] = SettlementRealtimeExpectation(
+            memberIds: memberIds,
+            settled: settled
+        )
         persistCurrentState()
 
         guard session != nil, !isImporting else {
-            pendingExpenseSettlementIds.remove(expenseId)
+            pendingExpenseSettlementExpectations.removeValue(forKey: expenseId)
             latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
             persistCurrentState()
             return
@@ -1992,7 +2026,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             persistCurrentState()
         } catch {
             guard isCurrentSettlementMutation(context) else { return }
-            pendingExpenseSettlementIds.remove(expenseId)
+            pendingExpenseSettlementExpectations.removeValue(forKey: expenseId)
             latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
             // Only rollback if current state still matches our optimistic write.
             // A newer in-flight settlement may have already superseded this state.
@@ -3500,7 +3534,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses.removeAll()
         friends.removeAll()
         pendingExpenseUpsertIds.removeAll()
-        pendingExpenseSettlementIds.removeAll()
+        pendingExpenseSettlementExpectations.removeAll()
         latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
         persistCurrentState()
