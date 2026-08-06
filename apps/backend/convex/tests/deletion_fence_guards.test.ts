@@ -217,6 +217,197 @@ test("bulk import rejects writes into a deletion-fenced group", async () => {
   expect(await t.run((ctx) => ctx.db.query("expenses").collect())).toEqual([]);
 });
 
+test("group read surfaces hide deletion-fenced groups", async () => {
+  const t = convexTest(schema, modules);
+  const { activeGroupId, fencedGroupId } = await t.run(async (ctx) => {
+    const ownerId = await seedAccount(ctx, {
+      id: "owner_auth",
+      email: "owner@test.com",
+      memberId: "owner_member"
+    });
+    await ctx.db.insert("sync_materialization_state", {
+      key: "group_visibility_v1",
+      status: "ready",
+      processed: 0,
+      updated_at: 1
+    });
+    const activeGroupId = await ctx.db.insert("groups", {
+      id: "active_group",
+      name: "Active group",
+      members: [{ id: "owner_member", name: "Owner", is_current_user: true }],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: 1,
+      updated_at: 1
+    });
+    const fencedGroupId = await ctx.db.insert("groups", {
+      id: "fenced_group",
+      name: "Fenced group",
+      members: [{ id: "owner_member", name: "Owner", is_current_user: true }],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      deletion_token: "pending-delete",
+      created_at: 2,
+      updated_at: 2
+    });
+    await ctx.db.insert("group_visibility", {
+      account_id: ownerId,
+      group_id: activeGroupId,
+      group_updated_at: 1,
+      created_at: 1,
+      updated_at: 1
+    });
+    await ctx.db.insert("group_visibility", {
+      account_id: ownerId,
+      group_id: fencedGroupId,
+      group_updated_at: 2,
+      created_at: 2,
+      updated_at: 2
+    });
+    return { activeGroupId, fencedGroupId };
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  const groups = await owner.query(api.groups.list, {});
+  expect(groups.map((group) => group.id)).toEqual(["active_group"]);
+
+  const groupsV2 = await owner.query(api.groups.listV2, {
+    paginationOpts: { cursor: null, numItems: 8 }
+  });
+  expect(groupsV2.page.map((group) => group.id)).toEqual(["active_group"]);
+
+  const groupsPaginated = await owner.query(api.groups.listPaginated, {});
+  expect(groupsPaginated.items.map((group) => group.id)).toEqual(["active_group"]);
+  expect(await owner.query(api.groups.get, { id: "fenced_group" })).toBeNull();
+  expect(await owner.query(api.groups.get, { id: "active_group" })).toMatchObject({
+    _id: activeGroupId
+  });
+
+  expect(fencedGroupId).not.toBe(activeGroupId);
+});
+
+test("expense read surfaces hide only expenses canonically attached to fenced groups", async () => {
+  const t = convexTest(schema, modules);
+  const { activeGroupId, fencedGroupId } = await t.run(async (ctx) => {
+    const ownerId = await seedAccount(ctx, {
+      id: "owner_auth",
+      email: "owner@test.com",
+      memberId: "owner_member"
+    });
+    await ctx.db.insert("sync_materialization_state", {
+      key: "user_expense_refs_v1",
+      status: "ready",
+      processed: 0,
+      updated_at: 1
+    });
+    const activeGroupId = await ctx.db.insert("groups", {
+      id: "active_group",
+      name: "Active group",
+      members: [{ id: "owner_member", name: "Owner", is_current_user: true }],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: 1,
+      updated_at: 1
+    });
+    const fencedGroupId = await ctx.db.insert("groups", {
+      id: "fenced_group",
+      name: "Fenced group",
+      members: [{ id: "owner_member", name: "Owner", is_current_user: true }],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      deletion_token: "pending-delete",
+      created_at: 2,
+      updated_at: 2
+    });
+
+    const insertExpense = async (args: {
+      id: string;
+      groupId: string;
+      groupRef?: typeof activeGroupId;
+      updatedAt: number;
+    }) => {
+      const expenseId = await ctx.db.insert("expenses", {
+        id: args.id,
+        group_id: args.groupId,
+        group_ref: args.groupRef,
+        description: args.id,
+        date: args.updatedAt,
+        total_amount: 10,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member"],
+        splits: [
+          {
+            id: `${args.id}_split`,
+            member_id: "owner_member",
+            amount: 10,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        participant_member_ids: ["owner_member"],
+        participant_emails: ["owner@test.com"],
+        participants: [{ member_id: "owner_member", name: "Owner" }],
+        created_at: args.updatedAt,
+        updated_at: args.updatedAt
+      });
+      await ctx.db.insert("user_expenses", {
+        user_id: "owner_auth",
+        expense_id: args.id,
+        account_ref: ownerId,
+        expense_ref: expenseId,
+        updated_at: args.updatedAt
+      });
+    };
+
+    await insertExpense({
+      id: "canonical_fenced",
+      groupId: "fenced_group",
+      groupRef: fencedGroupId,
+      updatedAt: 3
+    });
+    await insertExpense({ id: "legacy_fenced", groupId: "fenced_group", updatedAt: 4 });
+    await insertExpense({
+      id: "canonical_collision_survivor",
+      groupId: "fenced_group",
+      groupRef: activeGroupId,
+      updatedAt: 5
+    });
+    return { activeGroupId, fencedGroupId };
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  const visibleExpenseIds = ["canonical_collision_survivor"];
+
+  const expenses = await owner.query(api.expenses.list, {});
+  expect(expenses.map((expense) => expense.id)).toEqual(visibleExpenseIds);
+
+  const expensesV2 = await owner.query(api.expenses.listV2, {
+    paginationOpts: { cursor: null, numItems: 8 }
+  });
+  expect(expensesV2.page.map((expense) => expense.id)).toEqual(visibleExpenseIds);
+
+  const activeExpenses = await owner.query(api.expenses.listByGroup, {
+    group_id: "active_group"
+  });
+  expect(activeExpenses.map((expense) => expense.id)).toEqual(visibleExpenseIds);
+  expect(await owner.query(api.expenses.listByGroup, { group_id: "fenced_group" })).toEqual([]);
+
+  const activeExpensesPaginated = await owner.query(api.expenses.listByGroupPaginated, {
+    groupId: activeGroupId
+  });
+  expect(activeExpensesPaginated.items.map((expense) => expense.id)).toEqual(visibleExpenseIds);
+  expect(
+    await owner.query(api.expenses.listByGroupPaginated, { groupId: fencedGroupId })
+  ).toEqual({ items: [], nextCursor: null });
+});
+
 test("deleting legacy account cannot bootstrap a new canonical member identity", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {

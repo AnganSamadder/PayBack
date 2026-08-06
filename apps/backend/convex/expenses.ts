@@ -168,6 +168,19 @@ async function requireGroupByClientIdWithAccess(
   return { group, callerEquivalentIds };
 }
 
+async function isExpenseAttachedToDeletingGroup(
+  ctx: any,
+  expense: Doc<"expenses">
+): Promise<boolean> {
+  const group = expense.group_ref
+    ? await ctx.db.get(expense.group_ref)
+    : await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (query: any) => query.eq("id", expense.group_id))
+        .unique();
+  return group?.deletion_token !== undefined;
+}
+
 function normalizeLinkedAccountId(value: string | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -1144,6 +1157,7 @@ export const listByGroup = query({
     if (!user) return [];
 
     const { group } = await requireGroupByClientIdWithAccess(ctx, user, args.group_id);
+    if (group.deletion_token) return [];
 
     const expenses = await ctx.db
       .query("expenses")
@@ -1171,6 +1185,9 @@ export const listByGroupPaginated = query({
       return { items: [], nextCursor: null };
     }
     await requireGroupAccess(ctx, user, group);
+    if (group.deletion_token) {
+      return { items: [], nextCursor: null };
+    }
 
     const result = await ctx.db
       .query("expenses")
@@ -1209,7 +1226,13 @@ export const list = query({
       })
     );
 
-    return expenses.filter((e) => e !== null);
+    const visibleExpenses = await Promise.all(
+      expenses.map(async (expense) => {
+        if (!expense || (await isExpenseAttachedToDeletingGroup(ctx, expense))) return null;
+        return expense;
+      })
+    );
+    return visibleExpenses.filter((expense) => expense !== null);
   }
 });
 
@@ -1245,6 +1268,7 @@ export const listV2 = query({
       if (!expense || expense.id !== visibility.expense_id) {
         throw syncV2NotReadyError("expense visibility is inconsistent");
       }
+      if (await isExpenseAttachedToDeletingGroup(ctx, expense)) continue;
       page.push(expense);
     }
     return {

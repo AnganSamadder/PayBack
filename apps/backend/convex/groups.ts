@@ -404,9 +404,15 @@ export async function listInternal(ctx: any) {
 
   // Merge results
   const groupMap = new Map();
-  groupsByOwnerId.forEach((g: any) => groupMap.set(g._id, g));
-  groupsByEmail.forEach((g: any) => groupMap.set(g._id, g));
-  groupsByMembership.forEach((g: any) => groupMap.set(g._id, g));
+  groupsByOwnerId.forEach((g: any) => {
+    if (!g.deletion_token) groupMap.set(g._id, g);
+  });
+  groupsByEmail.forEach((g: any) => {
+    if (!g.deletion_token) groupMap.set(g._id, g);
+  });
+  groupsByMembership.forEach((g: any) => {
+    if (!g.deletion_token) groupMap.set(g._id, g);
+  });
 
   return Array.from(groupMap.values());
 }
@@ -447,6 +453,7 @@ export const listV2 = query({
       if (!group) {
         throw syncV2NotReadyError("group visibility references a missing group");
       }
+      if (group.deletion_token) continue;
       page.push(group);
     }
     return {
@@ -487,7 +494,7 @@ export const get = query({
       .withIndex("by_client_id", (q) => q.eq("id", args.id))
       .first();
 
-    if (!group) return null;
+    if (!group || group.deletion_token) return null;
 
     // Auth check
     if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
