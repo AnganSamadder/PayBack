@@ -70,15 +70,13 @@ struct GroupsListView: View {
         ) { group in
             Button("Delete \"\(group.name)\"", role: .destructive) {
                 Haptics.notify(.warning)
-                if let index = store.groups.firstIndex(where: { $0.id == group.id }) {
-                    Task {
-                        do {
-                            try await store.deleteGroups(at: IndexSet(integer: index))
-                        } catch {
-                            deleteErrorMessage = error.userFacingMessage(
-                                fallback: "The group could not be deleted from the cloud. Your local data was restored. Check your connection and try again."
-                            )
-                        }
+                Task {
+                    do {
+                        try await store.deleteGroups(ids: [group.id])
+                    } catch {
+                        deleteErrorMessage = error.userFacingMessage(
+                            fallback: "The group could not be deleted from the cloud. Your local data was restored. Check your connection and try again."
+                        )
                     }
                 }
                 groupToDelete = nil

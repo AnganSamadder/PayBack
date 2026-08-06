@@ -44,6 +44,7 @@ Sources/
 - **Convex Env Routing**: Build setting `PAYBACK_CONVEX_ENV` is source of truth (`Debug/Internal=development`, `Release=production`).
 - **Auth**: Two-step process: Clerk (Identity) -> Convex (Session).
 - **Concurrency**: `MainActor` usage is critical for UI updates from sync.
+- **Async destructive actions**: Capture and transport stable UUIDs into `Task`/`await` work. Never carry `IndexSet` or array offsets across an asynchronous boundary because live data may reorder first.
 
 ## TESTING
 - **Framework**: XCTest.

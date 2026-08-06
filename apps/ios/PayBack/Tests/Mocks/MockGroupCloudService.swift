@@ -19,6 +19,7 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
     private var memberRemovalContinuations: [CheckedContinuation<Void, Never>] = []
     private var upsertInvocationCount = 0
     private var deleteInvocationCount = 0
+    private var deletedGroupIDBatches: [[UUID]] = []
     private var leaveInvocationCount = 0
     private var removeMemberInvocationCount = 0
 
@@ -48,6 +49,7 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
 
     func deleteGroups(_ groupIds: [UUID]) async throws {
         deleteInvocationCount += 1
+        deletedGroupIDBatches.append(groupIds)
         if deleteDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: deleteDelayNanoseconds)
         }
@@ -142,6 +144,10 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         deleteInvocationCount
     }
 
+    func deletedGroupIDs() -> [UUID] {
+        deletedGroupIDBatches.flatMap { $0 }
+    }
+
     func currentLeaveInvocationCount() -> Int {
         leaveInvocationCount
     }
@@ -201,6 +207,7 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         memberRemovalContinuations.removeAll()
         upsertInvocationCount = 0
         deleteInvocationCount = 0
+        deletedGroupIDBatches.removeAll()
         leaveInvocationCount = 0
         removeMemberInvocationCount = 0
     }

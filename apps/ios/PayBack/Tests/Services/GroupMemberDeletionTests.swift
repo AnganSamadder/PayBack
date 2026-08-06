@@ -294,6 +294,31 @@ final class GroupMemberDeletionTests: XCTestCase {
         XCTAssertEqual(Set(sut.expenses.map(\.id)), [removedExpense.id, retainedExpense.id])
     }
 
+    func testDeleteGroups_CapturedIdentitySurvivesListReorderBeforeExecution() async throws {
+        let targetGroup = SpendingGroup(
+            name: "Target",
+            members: [sut.currentUser, GroupMember(name: "Alice")]
+        )
+        let retainedGroup = SpendingGroup(
+            name: "Retained",
+            members: [sut.currentUser, GroupMember(name: "Bob")]
+        )
+        let insertedGroup = SpendingGroup(
+            name: "Inserted",
+            members: [sut.currentUser, GroupMember(name: "Casey")]
+        )
+        sut.groups = [targetGroup, retainedGroup]
+
+        let confirmedGroupIDs: Set<UUID> = [targetGroup.id]
+        sut.groups = [insertedGroup, retainedGroup, targetGroup]
+
+        try await sut.deleteGroups(ids: confirmedGroupIDs)
+
+        XCTAssertEqual(Set(sut.groups.map(\.id)), [insertedGroup.id, retainedGroup.id])
+        let deletedGroupIDs = await mockGroupCloudService.deletedGroupIDs()
+        XCTAssertEqual(deletedGroupIDs, [targetGroup.id])
+    }
+
     func testLeaveGroup_CloudFailureRestoresGroupAndExpenses() async {
         let group = SpendingGroup(name: "Trip", members: [sut.currentUser, GroupMember(name: "Alice")])
         let expense = makeExpense(groupId: group.id, memberId: group.members[1].id)

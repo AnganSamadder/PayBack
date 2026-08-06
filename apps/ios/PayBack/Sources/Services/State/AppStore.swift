@@ -1056,17 +1056,26 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     func deleteGroups(at offsets: IndexSet) async throws {
-        // Filter out invalid indices to prevent crashes
         let validOffsets = offsets.filter { $0 < groups.count }
         guard !validOffsets.isEmpty else { return }
 
+        let groupIds = Set(validOffsets.map { groups[$0].id })
+        try await deleteGroups(ids: groupIds)
+    }
+
+    @MainActor
+    func deleteGroups(ids groupIds: Set<UUID>) async throws {
+        guard !groupIds.isEmpty else { return }
+
+        let removedGroups = groups.filter { groupIds.contains($0.id) }
+        guard !removedGroups.isEmpty else { return }
+
         let context = groupMutationContext()
-        let removedGroups = validOffsets.map { groups[$0] }
         let toDelete = removedGroups.map(\.id)
         let mutationToken = try beginGroupMutation(groupIds: Set(toDelete))
         defer { endGroupMutation(mutationToken) }
         let relatedExpenses = expenses.filter { toDelete.contains($0.groupId) }
-        groups.remove(atOffsets: IndexSet(validOffsets))
+        groups.removeAll { groupIds.contains($0.id) }
         expenses.removeAll { toDelete.contains($0.groupId) }
         persistCurrentState()
 
