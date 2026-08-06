@@ -76,12 +76,20 @@ struct GroupDetailView: View {
                     .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
                 }
                 .background(Color.clear)
-            } else if isUpdatingGroup {
-                ProgressView("Updating group…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
+                .allowsHitTesting(!isUpdatingGroup)
+            } else if !isUpdatingGroup {
                 // Group was deleted, go back
                 Color.clear.onAppear { handleBack() }
+            }
+
+            if isUpdatingGroup {
+                ZStack {
+                    Color.black.opacity(0.08)
+                        .ignoresSafeArea()
+                    ProgressView("Updating group…")
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
             }
         }
         .navigationTitle("Group Details")
@@ -114,6 +122,7 @@ struct GroupDetailView: View {
             presenting: memberToDelete
         ) { member in
             Button("Remove \"\(member.name)\"", role: .destructive) {
+                guard !isUpdatingGroup else { return }
                 Haptics.notify(.warning)
                 isUpdatingGroup = true
                 Task {
@@ -142,6 +151,7 @@ struct GroupDetailView: View {
         }
         .alert("Leave Group?", isPresented: $showLeaveConfirmation) {
             Button("Leave", role: .destructive) {
+                guard !isUpdatingGroup else { return }
                 isUpdatingGroup = true
                 Task {
                     do {

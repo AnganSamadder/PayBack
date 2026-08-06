@@ -15,6 +15,8 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
     private var deleteDelayNanoseconds: UInt64 = 0
     private var leaveDelayNanoseconds: UInt64 = 0
     private var removeMemberDelayNanoseconds: UInt64 = 0
+    private var memberRemovalSuspensionBudget = 0
+    private var memberRemovalContinuations: [CheckedContinuation<Void, Never>] = []
     private var upsertInvocationCount = 0
     private var deleteInvocationCount = 0
     private var leaveInvocationCount = 0
@@ -59,6 +61,12 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
 
     func removeMemberFromGroup(_ groupId: UUID, memberId: UUID) async throws {
         removeMemberInvocationCount += 1
+        if memberRemovalSuspensionBudget > 0 {
+            memberRemovalSuspensionBudget -= 1
+            await withCheckedContinuation { continuation in
+                memberRemovalContinuations.append(continuation)
+            }
+        }
         if removeMemberDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: removeMemberDelayNanoseconds)
         }
@@ -142,6 +150,15 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         removeMemberInvocationCount
     }
 
+    func suspendNextMemberRemovals(_ count: Int) {
+        memberRemovalSuspensionBudget = count
+    }
+
+    func resumeNextMemberRemoval() {
+        guard !memberRemovalContinuations.isEmpty else { return }
+        memberRemovalContinuations.removeFirst().resume()
+    }
+
     func queueFetches(groups: [[SpendingGroup]], delaysNanoseconds: [UInt64]) {
         queuedFetchGroups = groups
         queuedFetchDelaysNanoseconds = delaysNanoseconds
@@ -179,6 +196,9 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         deleteDelayNanoseconds = 0
         leaveDelayNanoseconds = 0
         removeMemberDelayNanoseconds = 0
+        memberRemovalSuspensionBudget = 0
+        memberRemovalContinuations.forEach { $0.resume() }
+        memberRemovalContinuations.removeAll()
         upsertInvocationCount = 0
         deleteInvocationCount = 0
         leaveInvocationCount = 0

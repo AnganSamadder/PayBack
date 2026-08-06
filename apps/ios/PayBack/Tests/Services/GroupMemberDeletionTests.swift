@@ -264,6 +264,8 @@ final class GroupMemberDeletionTests: XCTestCase {
         XCTAssertTrue(groupDetailSource.contains("try await store.leaveGroup"))
         XCTAssertTrue(groupDetailSource.contains("try await store.removeMemberFromGroup"))
         XCTAssertTrue(groupDetailSource.contains("Unable to Update Group"))
+        XCTAssertTrue(groupDetailSource.contains(".allowsHitTesting(!isUpdatingGroup)"))
+        XCTAssertTrue(groupDetailSource.contains("ProgressView(\"Updating group…\")"))
 
         let appStoreSource = try String(
             contentsOf: payBackDirectory.appendingPathComponent("Sources/Services/State/AppStore.swift"),
@@ -465,6 +467,55 @@ final class GroupMemberDeletionTests: XCTestCase {
         XCTAssertFalse(sut.groups.first?.members.contains(where: { $0.id == alice.id }) ?? true)
     }
 
+    func testRemoveMemberFromGroup_RejectsOverlappingMutationAndRestoresOriginalState() async {
+        let alice = GroupMember(name: "Alice")
+        let bob = GroupMember(name: "Bob")
+        let group = SpendingGroup(name: "Trip", members: [sut.currentUser, alice, bob])
+        let aliceExpense = makeExpense(groupId: group.id, memberId: alice.id)
+        let bobExpense = makeExpense(groupId: group.id, memberId: bob.id)
+        sut.groups = [group]
+        sut.expenses = [aliceExpense, bobExpense]
+        await mockGroupCloudService.setShouldFail(true)
+        await mockGroupCloudService.suspendNextMemberRemovals(2)
+
+        let firstOperation = Task { @MainActor () -> Error? in
+            do {
+                try await sut.removeMemberFromGroup(groupId: group.id, memberId: alice.id)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        let firstRemovalStarted = await waitForRemoveMemberInvocations(atLeast: 1)
+        XCTAssertTrue(firstRemovalStarted)
+
+        let secondOperation = Task { @MainActor () -> Error? in
+            do {
+                try await sut.removeMemberFromGroup(groupId: group.id, memberId: bob.id)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        for _ in 0..<100 { await Task.yield() }
+
+        await mockGroupCloudService.resumeNextMemberRemoval()
+        for _ in 0..<100 { await Task.yield() }
+        await mockGroupCloudService.resumeNextMemberRemoval()
+        let firstError = await firstOperation.value
+        let secondError = await secondOperation.value
+        let cloudRemovalCount = await mockGroupCloudService.currentRemoveMemberInvocationCount()
+
+        XCTAssertEqual(firstError as? PayBackError, .authSessionMissing)
+        XCTAssertEqual(
+            secondError as? PayBackError,
+            .underlying(message: "A group update is already in progress.")
+        )
+        XCTAssertEqual(cloudRemovalCount, 1)
+        XCTAssertEqual(sut.groups.first?.members.map(\.id), group.members.map(\.id))
+        XCTAssertEqual(Set(sut.expenses.map(\.id)), [aliceExpense.id, bobExpense.id])
+    }
+
     private func makeExpense(groupId: UUID, memberId: UUID) -> Expense {
         Expense(
             groupId: groupId,
@@ -482,6 +533,13 @@ final class GroupMemberDeletionTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 1_000_000)
         }
         return false
+    }
+
+    private func waitForRemoveMemberInvocations(atLeast expectedCount: Int) async -> Bool {
+        await waitForInvocation {
+            let count = await mockGroupCloudService.currentRemoveMemberInvocationCount()
+            return count >= expectedCount ? 1 : 0
+        }
     }
 }
 

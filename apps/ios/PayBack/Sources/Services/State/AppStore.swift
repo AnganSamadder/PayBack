@@ -37,6 +37,11 @@ final class AppStore: ObservableObject {
         let dataEpoch: UUID
     }
 
+    private struct GroupMutationToken {
+        let id: UUID
+        let groupIds: Set<UUID>
+    }
+
     private struct SettlementMutationContext {
         let accountId: String?
         let dataEpoch: UUID
@@ -76,6 +81,8 @@ final class AppStore: ObservableObject {
     private var pendingExpenseSettlementIds: Set<UUID> = []
     /// Local expense deletes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseDeleteIds: Set<UUID> = []
+    /// Destructive group operations are serialized per group so optimistic rollback snapshots cannot interleave.
+    private var activeGroupMutationTokensByGroupId: [UUID: UUID] = [:]
     /// Realtime payloads should not replace local state until the current session has completed
     /// an explicit remote hydration. This prevents empty startup snapshots from clobbering
     /// locally restored or test-seeded state.
@@ -801,6 +808,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         pendingExpenseUpsertIds.removeAll()
         pendingExpenseSettlementIds.removeAll()
         pendingExpenseDeleteIds.removeAll()
+        activeGroupMutationTokensByGroupId.removeAll()
         dataEpoch = UUID()
 
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
@@ -1055,6 +1063,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
         let context = groupMutationContext()
         let removedGroups = validOffsets.map { groups[$0] }
         let toDelete = removedGroups.map(\.id)
+        let mutationToken = try beginGroupMutation(groupIds: Set(toDelete))
+        defer { endGroupMutation(mutationToken) }
         let relatedExpenses = expenses.filter { toDelete.contains($0.groupId) }
         groups.remove(atOffsets: IndexSet(validOffsets))
         expenses.removeAll { toDelete.contains($0.groupId) }
@@ -1077,6 +1087,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
     func leaveGroup(_ groupId: UUID) async throws {
         guard let group = groups.first(where: { $0.id == groupId }) else { return }
 
+        let mutationToken = try beginGroupMutation(groupIds: [groupId])
+        defer { endGroupMutation(mutationToken) }
         let context = groupMutationContext()
         let removedExpenses = expenses.filter { $0.groupId == groupId }
         groups.removeAll { $0.id == groupId }
@@ -1117,6 +1129,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
         let context = groupMutationContext()
         let originalGroup = groups[groupIndex]
         guard originalGroup.members.contains(where: { $0.id == memberId }) else { return }
+        let mutationToken = try beginGroupMutation(groupIds: [groupId])
+        defer { endGroupMutation(mutationToken) }
         let allOriginalGroupExpenses = expenses.filter { $0.groupId == groupId }
         var group = originalGroup
 
@@ -1183,6 +1197,26 @@ func completeAuthentication(id: String, email: String, name: String?) {
     @MainActor
     private func isCurrentGroupMutation(_ context: GroupMutationContext) -> Bool {
         context.dataEpoch == dataEpoch && context.accountId == session?.account.id
+    }
+
+    @MainActor
+    private func beginGroupMutation(groupIds: Set<UUID>) throws -> GroupMutationToken {
+        guard groupIds.allSatisfy({ activeGroupMutationTokensByGroupId[$0] == nil }) else {
+            throw PayBackError.underlying(message: "A group update is already in progress.")
+        }
+
+        let token = GroupMutationToken(id: UUID(), groupIds: groupIds)
+        for groupId in groupIds {
+            activeGroupMutationTokensByGroupId[groupId] = token.id
+        }
+        return token
+    }
+
+    @MainActor
+    private func endGroupMutation(_ token: GroupMutationToken) {
+        for groupId in token.groupIds where activeGroupMutationTokensByGroupId[groupId] == token.id {
+            activeGroupMutationTokensByGroupId.removeValue(forKey: groupId)
+        }
     }
 
     @MainActor
