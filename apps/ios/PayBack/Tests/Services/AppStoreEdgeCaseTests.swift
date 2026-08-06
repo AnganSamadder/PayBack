@@ -696,7 +696,8 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         let operation = Task { @MainActor in
             try await sut.uploadProfileImage(Data([0x01]))
         }
-        XCTAssertTrue(await waitForProfileImageUploadInvocation())
+        let uploadStarted = await waitForProfileImageUploadInvocation()
+        XCTAssertTrue(uploadStarted)
 
         sut.session = UserSession(account: accountB)
         sut.currentUser.profileImageUrl = accountB.profileImageUrl
@@ -964,7 +965,8 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         let operation = Task { @MainActor in
             try await sut.acceptLinkRequest(request)
         }
-        XCTAssertTrue(await waitForAcceptInvocation())
+        let acceptStarted = await waitForAcceptInvocation()
+        XCTAssertTrue(acceptStarted)
 
         sut.session = UserSession(account: accountB)
         await mockLinkRequestService.resumeAccept()
@@ -985,7 +987,8 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         let operation = Task { @MainActor in
             try await sut.fetchLinkRequests()
         }
-        XCTAssertTrue(await waitForIncomingFetchInvocation())
+        let fetchStarted = await waitForIncomingFetchInvocation()
+        XCTAssertTrue(fetchStarted)
 
         sut.session = UserSession(account: accountB)
         await mockLinkRequestService.resumeIncomingFetch()
@@ -1009,7 +1012,8 @@ final class AppStoreEdgeCaseTests: XCTestCase {
                 forFriend: GroupMember(name: "Alice")
             )
         }
-        XCTAssertTrue(await waitForCreateInvocation())
+        let createStarted = await waitForCreateInvocation()
+        XCTAssertTrue(createStarted)
 
         sut.session = UserSession(account: accountB)
         await mockLinkRequestService.resumeCreate()
