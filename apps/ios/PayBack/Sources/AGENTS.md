@@ -45,6 +45,7 @@ Sources/
 - **Auth**: Two-step process: Clerk (Identity) -> Convex (Session).
 - **Concurrency**: `MainActor` usage is critical for UI updates from sync.
 - **Async destructive actions**: Capture and transport stable UUIDs into `Task`/`await` work. Never carry `IndexSet` or array offsets across an asynchronous boundary because live data may reorder first.
+- **Overlapping mutations**: Same-entity optimistic writes need a per-entity generation token. Only the latest generation may apply a response, rollback, clear pending state, or surface an error.
 
 ## TESTING
 - **Framework**: XCTest.

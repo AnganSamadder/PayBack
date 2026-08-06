@@ -449,6 +449,71 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertEqual(mockPersistence.load().expenses, [expenseB])
     }
 
+    func testOverlappingSettlementSuccessesKeepNewestResponse() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let originalExpense = settlementExpense(description: "Dinner")
+        let settledExpense = settlementExpense(originalExpense, settled: true)
+        let unsettledExpense = settlementExpense(originalExpense, settled: false)
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.enqueueSettlementSuccess(
+            settledExpense,
+            delayNanoseconds: 250_000_000
+        )
+        await mockExpenseCloudService.enqueueSettlementSuccess(unsettledExpense)
+
+        let olderOperation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(originalExpense)
+        }
+        let olderRequestStarted = await waitForSettlementInvocation(count: 1)
+        XCTAssertTrue(olderRequestStarted)
+
+        let newerOperation = Task { @MainActor in
+            try await sut.unsettleExpenseForCurrentUser(originalExpense)
+        }
+        let newerRequestStarted = await waitForSettlementInvocation(count: 2)
+        XCTAssertTrue(newerRequestStarted)
+
+        try await newerOperation.value
+        try await olderOperation.value
+
+        XCTAssertEqual(sut.expenses, [unsettledExpense])
+        XCTAssertTrue(sut.isSettlementPending(for: originalExpense.id))
+    }
+
+    func testOlderSettlementFailureDoesNotUndoOrSurfaceAfterNewerSuccess() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let originalExpense = settlementExpense(description: "Dinner")
+        let unsettledExpense = settlementExpense(originalExpense, settled: false)
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.enqueueSettlementFailure(
+            .authSessionMissing,
+            delayNanoseconds: 250_000_000
+        )
+        await mockExpenseCloudService.enqueueSettlementSuccess(unsettledExpense)
+
+        let olderOperation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(originalExpense)
+        }
+        let olderRequestStarted = await waitForSettlementInvocation(count: 1)
+        XCTAssertTrue(olderRequestStarted)
+
+        let newerOperation = Task { @MainActor in
+            try await sut.unsettleExpenseForCurrentUser(originalExpense)
+        }
+        let newerRequestStarted = await waitForSettlementInvocation(count: 2)
+        XCTAssertTrue(newerRequestStarted)
+
+        try await newerOperation.value
+        try await olderOperation.value
+
+        XCTAssertEqual(sut.expenses, [unsettledExpense])
+        XCTAssertTrue(sut.isSettlementPending(for: originalExpense.id))
+    }
+
     private func settlementExpense(description: String) -> Expense {
         Expense(
             groupId: UUID(),
@@ -460,9 +525,20 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         )
     }
 
-    private func waitForSettlementInvocation() async -> Bool {
+    private func settlementExpense(_ expense: Expense, settled: Bool) -> Expense {
+        var updatedExpense = expense
+        updatedExpense.splits = expense.splits.map { split in
+            var updatedSplit = split
+            updatedSplit.isSettled = settled
+            return updatedSplit
+        }
+        updatedExpense.isSettled = updatedExpense.splits.allSatisfy(\.isSettled)
+        return updatedExpense
+    }
+
+    private func waitForSettlementInvocation(count expectedCount: Int = 1) async -> Bool {
         for _ in 0..<1_000 {
-            if await mockExpenseCloudService.currentSettlementInvocationCount() > 0 {
+            if await mockExpenseCloudService.currentSettlementInvocationCount() >= expectedCount {
                 return true
             }
             await Task.yield()

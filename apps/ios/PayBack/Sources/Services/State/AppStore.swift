@@ -45,6 +45,8 @@ final class AppStore: ObservableObject {
     private struct SettlementMutationContext {
         let accountId: String?
         let dataEpoch: UUID
+        let expenseId: UUID
+        let mutationId: UUID
     }
 
     @Published var groups: [SpendingGroup]
@@ -79,6 +81,8 @@ final class AppStore: ObservableObject {
     private var pendingExpenseUpsertIds: Set<UUID> = []
     /// Local settlement writes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseSettlementIds: Set<UUID> = []
+    /// Only the latest in-flight settlement for an expense may reconcile its response.
+    private var latestSettlementMutationIdByExpense: [UUID: UUID] = [:]
     /// Local expense deletes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseDeleteIds: Set<UUID> = []
     /// Destructive group operations are serialized per group so optimistic rollback snapshots cannot interleave.
@@ -807,6 +811,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         friends = []
         pendingExpenseUpsertIds.removeAll()
         pendingExpenseSettlementIds.removeAll()
+        latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
         activeGroupMutationTokensByGroupId.removeAll()
         dataEpoch = UUID()
@@ -853,6 +858,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         friends = []
         pendingExpenseUpsertIds.removeAll()
         pendingExpenseSettlementIds.removeAll()
+        latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
 
         // Persist locally
@@ -1648,6 +1654,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 if merged[remoteIndex] == localExpense {
                     pendingExpenseUpsertIds.remove(localExpense.id)
                     pendingExpenseSettlementIds.remove(localExpense.id)
+                    latestSettlementMutationIdByExpense.removeValue(forKey: localExpense.id)
                 } else {
                     merged[remoteIndex] = localExpense
                 }
@@ -1697,6 +1704,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         guard session != nil, !isImporting else { return }
         pendingExpenseUpsertIds.remove(expenseId)
         pendingExpenseSettlementIds.remove(expenseId)
+        latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
         pendingExpenseDeleteIds.insert(expenseId)
 
         Task { [retryPolicy, expenseCloudService, expenseId] in
@@ -1842,10 +1850,14 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         guard !memberIds.isEmpty else { return }
 
+        let mutationId = UUID()
         let context = SettlementMutationContext(
             accountId: session?.account.id,
-            dataEpoch: dataEpoch
+            dataEpoch: dataEpoch,
+            expenseId: expenseId,
+            mutationId: mutationId
         )
+        latestSettlementMutationIdByExpense[expenseId] = mutationId
         let originalExpense = expenses[idx]
         let optimisticExpense = applyingSettlementState(
             to: originalExpense,
@@ -1859,6 +1871,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         guard session != nil, !isImporting else {
             pendingExpenseSettlementIds.remove(expenseId)
+            latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
             persistCurrentState()
             return
         }
@@ -1885,6 +1898,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         } catch {
             guard isCurrentSettlementMutation(context) else { return }
             pendingExpenseSettlementIds.remove(expenseId)
+            latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
             // Only rollback if current state still matches our optimistic write.
             // A newer in-flight settlement may have already superseded this state.
             if let rollbackIndex = expenses.firstIndex(where: { $0.id == expenseId }),
@@ -1898,7 +1912,14 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     private func isCurrentSettlementMutation(_ context: SettlementMutationContext) -> Bool {
-        context.dataEpoch == dataEpoch && context.accountId == session?.account.id
+        context.dataEpoch == dataEpoch &&
+            context.accountId == session?.account.id &&
+            latestSettlementMutationIdByExpense[context.expenseId] == context.mutationId
+    }
+
+    @MainActor
+    func isSettlementPending(for expenseId: UUID) -> Bool {
+        pendingExpenseSettlementIds.contains(expenseId)
     }
 
     @MainActor
@@ -3385,6 +3406,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         friends.removeAll()
         pendingExpenseUpsertIds.removeAll()
         pendingExpenseSettlementIds.removeAll()
+        latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
         persistCurrentState()
         Task {
