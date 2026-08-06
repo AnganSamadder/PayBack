@@ -669,7 +669,7 @@ private struct CenterEntryBubble: View {
     @Binding var showSubexpenses: Bool
 
     private let supported = ["USD","EUR","GBP","JPY","INR","CAD","AUD","BTC","ETH"]
-    @FocusState private var focusedSubexpenseId: UUID?
+    @State private var focusedSubexpenseId: UUID?
     @FocusState private var isDescriptionFocused: Bool
 
     var body: some View {
@@ -817,7 +817,7 @@ private struct SubexpensesEditor: View {
     @Binding var subexpenses: [Subexpense]
     @Binding var amountText: String
     let currency: String
-    var focusedId: FocusState<UUID?>.Binding
+    @Binding var focusedId: UUID?
 
     var body: some View {
         VStack(spacing: 8) {
@@ -829,7 +829,7 @@ private struct SubexpensesEditor: View {
                             SubexpenseRow(
                                 subexpense: $sub,
                                 currency: currency,
-                                focusedId: focusedId,
+                                focusedId: $focusedId,
                                 onDelete: {
                                     withAnimation(AppAnimation.springy) {
                                         subexpenses.removeAll { $0.id == sub.id }
@@ -844,7 +844,7 @@ private struct SubexpensesEditor: View {
                                         if index < subexpenses.count - 1 {
                                             // Move to next existing subexpense
                                             let nextId = subexpenses[index + 1].id
-                                            focusedId.wrappedValue = nextId
+                                            focusedId = nextId
                                             withAnimation {
                                                 proxy.scrollTo(nextId, anchor: .bottom)
                                             }
@@ -885,7 +885,7 @@ private struct SubexpensesEditor: View {
 
         if shouldFocus {
             // Set focus immediately
-            focusedId.wrappedValue = newSub.id
+            focusedId = newSub.id
         }
 
         // Scroll to new item after a brief delay to let view update
@@ -912,14 +912,13 @@ private struct SubexpensesEditor: View {
 private struct SubexpenseRow: View {
     @Binding var subexpense: Subexpense
     let currency: String
-    var focusedId: FocusState<UUID?>.Binding
+    @Binding var focusedId: UUID?
     let onDelete: () -> Void
     let onNext: () -> Void
     let onFocusLost: () -> Void
 
-    // Computed property to check if this row is focused
-    private var isThisRowFocused: Bool {
-        focusedId.wrappedValue == subexpense.id
+    private var isAmountFocused: Bool {
+        focusedId == subexpense.id
     }
 
     var body: some View {
@@ -935,14 +934,22 @@ private struct SubexpenseRow: View {
                     amount: $subexpense.amount,
                     currency: currency,
                     font: .system(size: 18, weight: .medium, design: .rounded),
-                    focusedId: focusedId,
-                    myId: subexpense.id
+                    externalFocus: Binding(
+                        get: { focusedId == subexpense.id },
+                        set: { isFocused in
+                            if isFocused {
+                                focusedId = subexpense.id
+                            } else if focusedId == subexpense.id {
+                                focusedId = nil
+                            }
+                        }
+                    )
                 )
 
                 Spacer()
 
                 // Delete button - sleek and themed
-                if isThisRowFocused || subexpense.amount > 0 {
+                if isAmountFocused || subexpense.amount > 0 {
                     Button(action: onDelete) {
                         Image(systemName: "xmark.circle.fill")
                             .font(.title3)
@@ -961,9 +968,9 @@ private struct SubexpenseRow: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
-                if isThisRowFocused {
+                if isAmountFocused {
                     Button("Done") {
-                        focusedId.wrappedValue = nil
+                        focusedId = nil
                     }
 
                     Spacer()
@@ -975,9 +982,8 @@ private struct SubexpenseRow: View {
                 }
             }
         }
-        // Track when this row loses focus
-        .onChange(of: focusedId.wrappedValue) { oldVal, newVal in
-            if oldVal == subexpense.id && newVal != subexpense.id {
+        .onChange(of: focusedId) { oldValue, newValue in
+            if oldValue == subexpense.id, newValue != subexpense.id {
                 onFocusLost()
             }
         }
