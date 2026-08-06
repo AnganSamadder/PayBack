@@ -704,6 +704,15 @@ export async function prepareGroupVisibilityPatchBatch(
   operations: readonly GroupVisibilityPatchOperation[],
   options: Omit<GroupVisibilityBatchOptions, "dryRun" | "deferSyncRevisions"> = {}
 ): Promise<PreparedGroupVisibilityPatchBatch> {
+  const groupIds = new Set<string>();
+  for (const operation of operations) {
+    const groupId = String(operation.groupId);
+    if (groupIds.has(groupId)) {
+      throw new Error(`Group ${groupId} appears more than once in a prepared patch batch`);
+    }
+    groupIds.add(groupId);
+  }
+
   const batch = new GroupVisibilityWriteBatch(ctx, {
     ...options,
     dryRun: true,

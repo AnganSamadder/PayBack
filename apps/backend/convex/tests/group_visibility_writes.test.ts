@@ -12,6 +12,41 @@ import schema from "../schema";
 import { modules } from "../test.setup";
 
 describe("group visibility writes", () => {
+  test("rejects duplicate group IDs before returning a prepared patch batch", async () => {
+    const t = convexTest(schema, modules);
+    const groupId = await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "duplicate_patch_owner_auth",
+        email: "duplicate-patch-owner@test.com",
+        display_name: "Owner",
+        member_id: "duplicate_patch_owner_member",
+        created_at: 1
+      });
+      return await ctx.db.insert("groups", {
+        id: "duplicate_patch_group",
+        name: "Before",
+        members: [{ id: "duplicate_patch_owner_member", name: "Owner" }],
+        owner_email: "duplicate-patch-owner@test.com",
+        owner_account_id: "duplicate_patch_owner_auth",
+        owner_id: ownerId,
+        created_at: 1,
+        updated_at: 1
+      });
+    });
+
+    await expect(
+      t.run((ctx) =>
+        prepareGroupVisibilityPatchBatch(ctx, [
+          { groupId, patch: { name: "First", updated_at: 2 } },
+          { groupId, patch: { name: "Second", updated_at: 3 } }
+        ])
+      )
+    ).rejects.toThrow(`Group ${String(groupId)} appears more than once in a prepared patch batch`);
+
+    const group = await t.run((ctx) => ctx.db.get(groupId));
+    expect(group).toMatchObject({ name: "Before", updated_at: 1 });
+  });
+
   test("applies prepared group patches without replanning and preserves planned timestamps", async () => {
     const t = convexTest(schema, modules);
     const charges = { writes: 0, writeBytes: 0 };
