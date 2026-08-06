@@ -75,9 +75,8 @@ export const send = mutation({
         member_id: recipientCanonicalId,
         name: recipient.display_name ?? recipient.email ?? "Unknown",
         status: "request_sent",
-        has_linked_account: true,
-        linked_account_id: recipient.id,
-        linked_account_email: recipient.email.trim().toLowerCase(),
+        has_linked_account: false,
+        link_state: "unlinked",
         profile_image_url: recipient.profile_image_url,
         profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
         updated_at: Date.now()
@@ -128,10 +127,13 @@ export const accept = mutation({
 
     if (existingFriendForRecipient) {
       await ctx.db.patch(existingFriendForRecipient._id, {
+        member_id: senderCanonicalId,
         status: "friend",
         has_linked_account: true,
         linked_account_id: sender.id,
         linked_account_email: sender.email.trim().toLowerCase(),
+        linked_member_id: senderCanonicalId,
+        link_state: "linked",
         updated_at: Date.now()
       });
     } else {
@@ -143,6 +145,8 @@ export const accept = mutation({
         has_linked_account: true,
         linked_account_id: sender.id,
         linked_account_email: sender.email.trim().toLowerCase(),
+        linked_member_id: senderCanonicalId,
+        link_state: "linked",
         profile_image_url: sender.profile_image_url,
         profile_avatar_color: sender.profile_avatar_color ?? getRandomAvatarColor(),
         updated_at: Date.now()
@@ -166,10 +170,13 @@ export const accept = mutation({
 
     if (existingFriendForSender) {
       await ctx.db.patch(existingFriendForSender._id, {
+        member_id: recipientCanonicalId,
         status: "friend",
         has_linked_account: true,
         linked_account_id: recipient.id,
         linked_account_email: recipientEmail,
+        linked_member_id: recipientCanonicalId,
+        link_state: "linked",
         updated_at: Date.now()
       });
     } else {
@@ -181,6 +188,8 @@ export const accept = mutation({
         has_linked_account: true,
         linked_account_id: recipient.id,
         linked_account_email: recipientEmail,
+        linked_member_id: recipientCanonicalId,
+        link_state: "linked",
         profile_image_url: recipient.profile_image_url,
         profile_avatar_color: recipient.profile_avatar_color ?? getRandomAvatarColor(),
         updated_at: Date.now()
@@ -236,10 +245,15 @@ export const listIncoming = query({
     for (const req of requests) {
       const sender = await ctx.db.get(req.sender_id);
       if (sender) {
+        const senderCanonicalId = await resolveCanonicalMemberIdInternal(
+          ctx.db,
+          sender.member_id ?? sender.id
+        );
         results.push({
           request: req,
           sender: {
-            id: sender._id,
+            id: sender.id,
+            member_id: senderCanonicalId,
             name: sender.display_name,
             email: sender.email,
             profile_image_url: sender.profile_image_url,
