@@ -242,11 +242,15 @@ struct PasswordResetNewPasswordView: View {
     var body: some View {
         VStack(spacing: 32) {
             Button(action: onBack) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .frame(width: 44, height: 44)
-                    .background(Circle().fill(.white.opacity(0.12)))
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.left")
+                    Text("Back to sign in")
+                }
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.9))
+                .padding(.horizontal, 14)
+                .frame(height: 44)
+                .background(Capsule().fill(.white.opacity(0.12)))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .disabled(isBusy)

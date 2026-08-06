@@ -690,10 +690,12 @@ Password reset must remain inside the Clerk native sign-in attempt:
 2. Verify only a prepared reset-code factor and require Clerk status `needs_new_password`.
 3. Set the new password only from `needs_new_password`, sign out other sessions, and require `complete` for automatic authentication.
 4. Hand the completed Clerk session through `AppStore.completeAuthenticationAndWait` so Convex and local session state are ready before showing authenticated UI.
-5. Keep reset email, code, and password drafts in `AuthCoordinator`; back navigation must not silently discard them.
-6. Serialize reset requests with the shared busy state and always clear busy state on success, error, or cancellation.
-7. Show stage-specific generic errors; never expose raw provider details or PII.
-8. If Clerk accepts the password but returns `needs_second_factor` or `needs_client_trust`, return to login with an accurate success/recovery message; never label the accepted password update as failed.
+5. Keep reset email, code, and password drafts in `AuthCoordinator` while their Clerk checkpoint remains valid.
+6. Password-reset initiation and resend must show the same generic notice whether Clerk accepts or rejects the identifier; do not reveal account existence through request-stage UI.
+7. After Clerk reaches `needs_new_password`, never navigate backward to code verification. An explicit back-to-sign-in action must abandon the verified attempt and clear code/password secrets.
+8. Serialize reset requests with the shared busy state and always clear busy state on success, error, or cancellation.
+9. Show stage-specific generic errors; never expose raw provider details or PII.
+10. If Clerk accepts the password but returns `needs_second_factor` or `needs_client_trust`, return to login with an accurate success/recovery message; never label the accepted password update as failed.
 
 ## 12) Add Expense UX Continuity (iOS, provenance: 2026-02-20)
 

@@ -81,8 +81,10 @@ final class AuthCoordinator: ObservableObject {
         route = .login
     }
 
-    func backToPasswordResetCode() {
-        route = .passwordResetCode(email: passwordResetEmail)
+    func backToLoginAfterVerifiedPasswordReset() {
+        loginEmail = passwordResetEmail
+        clearPasswordResetSecrets()
+        route = .login
     }
 
     func login(emailInput: String, password: String) async {
@@ -191,18 +193,26 @@ final class AuthCoordinator: ObservableObject {
         loginEmail = emailInput
 
         await runBusyTask {
+            let normalizedEmail: String
             do {
-                let normalizedEmail = try self.accountService.normalizedEmail(from: emailInput)
-                try await self.emailAuthService.sendPasswordReset(email: normalizedEmail)
-                self.loginEmail = normalizedEmail
-                self.passwordResetEmail = normalizedEmail
-                self.passwordResetCode = ""
-                self.passwordResetNewPassword = ""
-                self.passwordResetConfirmPassword = ""
-                self.route = .passwordResetCode(email: normalizedEmail)
+                normalizedEmail = try self.accountService.normalizedEmail(from: emailInput)
             } catch {
                 self.handlePasswordReset(error: error, step: .requestCode)
+                return
             }
+
+            do {
+                try await self.emailAuthService.sendPasswordReset(email: normalizedEmail)
+            } catch {
+#if DEBUG
+                if !(error is CancellationError) {
+                    print("[AuthCoordinator] Password reset request was not accepted: \(type(of: error))")
+                }
+#endif
+            }
+
+            guard !Task.isCancelled else { return }
+            self.presentPasswordResetCodeStep(email: normalizedEmail)
         }
     }
 
@@ -226,10 +236,16 @@ final class AuthCoordinator: ObservableObject {
         await runBusyTask {
             do {
                 try await self.emailAuthService.resendPasswordResetCode()
-                self.infoMessage = "A new reset code has been sent."
             } catch {
-                self.handlePasswordReset(error: error, step: .requestCode)
+#if DEBUG
+                if !(error is CancellationError) {
+                    print("[AuthCoordinator] Password reset resend was not accepted: \(type(of: error))")
+                }
+#endif
             }
+
+            guard !Task.isCancelled else { return }
+            self.infoMessage = "If an account exists for that email, a new reset code has been sent."
         }
     }
 
@@ -320,6 +336,16 @@ final class AuthCoordinator: ObservableObject {
         loginEmail = passwordResetEmail
         infoMessage = "Your password was updated. Sign in with your new password to continue."
         route = .login
+    }
+
+    private func presentPasswordResetCodeStep(email: String) {
+        loginEmail = email
+        passwordResetEmail = email
+        passwordResetCode = ""
+        passwordResetNewPassword = ""
+        passwordResetConfirmPassword = ""
+        infoMessage = "If an account exists for that email, a reset code has been sent."
+        route = .passwordResetCode(email: email)
     }
 
     private func clearPasswordResetSecrets() {

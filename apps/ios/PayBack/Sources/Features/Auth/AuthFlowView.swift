@@ -131,7 +131,7 @@ struct AuthFlowView: View {
                 },
                 onBack: {
                     withAnimation {
-                        coordinator.backToPasswordResetCode()
+                        coordinator.backToLoginAfterVerifiedPasswordReset()
                     }
                 }
             )
