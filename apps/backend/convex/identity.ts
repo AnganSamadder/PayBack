@@ -37,10 +37,10 @@ async function assertMemberIdentityNotCleanupFencedWithPolicy(
   ctx: MutationCtx,
   rawMemberId: string,
   observeRead: ((rows: readonly unknown[]) => void) | undefined,
-  staleFencePolicy: "delete" | "reject"
-): Promise<void> {
+  staleFencePolicy: "delete" | "defer"
+): Promise<Doc<"orphan_cleanup_member_fences">[]> {
   const memberId = normalizeMemberId(rawMemberId);
-  if (!memberId) return;
+  if (!memberId) return [];
 
   const fences = await ctx.db
     .query("orphan_cleanup_member_fences")
@@ -51,17 +51,19 @@ async function assertMemberIdentityNotCleanupFencedWithPolicy(
     throw new Error("Identity maintenance required: duplicate orphan cleanup fences");
   }
 
+  const staleFences: Doc<"orphan_cleanup_member_fences">[] = [];
   for (const fence of fences) {
     const job = await ctx.db.get(fence.job_id);
     observeRead?.(job ? [job] : []);
     if (job?.status === "pending" && fence.generation === (job.member_fence_generation ?? 0)) {
       throw new Error("Member identity is temporarily locked for account cleanup");
     }
-    if (staleFencePolicy === "reject") {
-      throw new Error("Identity maintenance required: stale orphan cleanup fence");
-    }
-    await ctx.db.delete(fence._id);
+    staleFences.push(fence);
   }
+  if (staleFencePolicy === "delete") {
+    for (const fence of staleFences) await ctx.db.delete(fence._id);
+  }
+  return staleFences;
 }
 
 export async function assertMemberIdentityNotCleanupFenced(
@@ -72,12 +74,17 @@ export async function assertMemberIdentityNotCleanupFenced(
   await assertMemberIdentityNotCleanupFencedWithPolicy(ctx, rawMemberId, observeRead, "delete");
 }
 
-export async function assertMemberIdentityNotCleanupFencedReadOnly(
+export async function prepareMemberIdentityCleanupFenceDeletes(
   ctx: MutationCtx,
   rawMemberId: string,
   observeRead?: (rows: readonly unknown[]) => void
-): Promise<void> {
-  await assertMemberIdentityNotCleanupFencedWithPolicy(ctx, rawMemberId, observeRead, "reject");
+): Promise<Doc<"orphan_cleanup_member_fences">[]> {
+  return await assertMemberIdentityNotCleanupFencedWithPolicy(
+    ctx,
+    rawMemberId,
+    observeRead,
+    "defer"
+  );
 }
 
 export async function findAccountsByEmailIdentity(db: DatabaseReader, email: string) {

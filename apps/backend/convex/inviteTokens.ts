@@ -18,7 +18,6 @@ import {
   type PreparedInviteMergeSource
 } from "./aliases";
 import {
-  assertMemberIdentityNotCleanupFencedReadOnly,
   deterministicLinkingError,
   IDENTITY_MATERIALIZATION_KEY,
   LINKING_CONTRACT_VERSION,
@@ -26,7 +25,8 @@ import {
   MAX_ALIAS_ROWS_PER_MEMBER_ID,
   MAX_LIVE_ACCOUNT_ALIASES,
   normalizeMemberId,
-  normalizeMemberIds
+  normalizeMemberIds,
+  prepareMemberIdentityCleanupFenceDeletes
 } from "./identity";
 import { isGhostFriendIdentity } from "./friendLinkProvenance";
 import {
@@ -299,24 +299,39 @@ type AliasInsertPlan = {
   created_at: number;
 };
 
+type PreparedAliasInsert = {
+  aliasInsert: AliasInsertPlan | null;
+  staleFenceDeletes: Doc<"orphan_cleanup_member_fences">[];
+};
+
 async function prepareBudgetedAliasInsert(
   ctx: MutationCtx,
   account: Pick<Doc<"accounts">, "id" | "email" | "member_id">,
   aliasMemberId: string,
   now: number,
   budget: LinkingReadBudget
-): Promise<AliasInsertPlan | null> {
+): Promise<PreparedAliasInsert> {
   const canonicalMemberId = account.member_id ? normalizeMemberId(account.member_id) : undefined;
   const normalizedAlias = normalizeMemberId(aliasMemberId);
   if (!canonicalMemberId) {
     throw new Error("Cannot materialize aliases without a canonical member_id");
   }
-  if (!normalizedAlias || normalizedAlias === canonicalMemberId) return null;
+  if (!normalizedAlias || normalizedAlias === canonicalMemberId) {
+    return { aliasInsert: null, staleFenceDeletes: [] };
+  }
 
-  await assertMemberIdentityNotCleanupFencedReadOnly(ctx, normalizedAlias, (rows) => {
-    chargeLinkingQueries(budget, 1);
-    accountLinkingRows(budget, rows);
-  });
+  const staleFenceDeletes = await prepareMemberIdentityCleanupFenceDeletes(
+    ctx,
+    normalizedAlias,
+    (rows) => {
+      chargeLinkingQueries(budget, 1);
+      accountLinkingRows(budget, rows);
+    }
+  );
+  reserveMergeWriteValuesForLimit(
+    budget,
+    staleFenceDeletes.map((fence) => fence as Value)
+  );
 
   chargeLinkingQueries(budget, 1);
   const canonicalShadows = await ctx.db
@@ -363,15 +378,18 @@ async function prepareBudgetedAliasInsert(
       `Identity maintenance required: duplicate account materializations for ${normalizedAlias}`
     );
   }
-  if (sourceRows.length === 1) return null;
+  if (sourceRows.length === 1) return { aliasInsert: null, staleFenceDeletes };
 
   return {
-    canonical_member_id: canonicalMemberId,
-    alias_member_id: normalizedAlias,
-    account_email: account.email.toLowerCase().trim(),
-    materialization_source: "account_alias",
-    source_account_id: account.id,
-    created_at: now
+    aliasInsert: {
+      canonical_member_id: canonicalMemberId,
+      alias_member_id: normalizedAlias,
+      account_email: account.email.toLowerCase().trim(),
+      materialization_source: "account_alias",
+      source_account_id: account.id,
+      created_at: now
+    },
+    staleFenceDeletes
   };
 }
 
@@ -877,6 +895,7 @@ export type LinkClaimPlan = {
   selectedFriendMerge?: PreparedInviteMergeSource;
   referenceRewrite: CanonicalReferenceRewritePlan;
   aliasInsert: AliasInsertPlan | null;
+  staleFenceDeletes: Doc<"orphan_cleanup_member_fences">[];
   claimantAccountId: Id<"accounts">;
   claimantAliases: string[];
   updatedAt: number;
@@ -1064,7 +1083,7 @@ export async function prepareClaimForUser(
     user,
     budget
   );
-  const aliasInsert = await prepareBudgetedAliasInsert(
+  const { aliasInsert, staleFenceDeletes } = await prepareBudgetedAliasInsert(
     ctx,
     { id: user.id, email: user.email, member_id: userCanonicalMemberId },
     linkContext.targetMemberId,
@@ -1287,6 +1306,7 @@ export async function prepareClaimForUser(
     selectedFriendMerge,
     referenceRewrite,
     aliasInsert,
+    staleFenceDeletes,
     claimantAccountId: user._id,
     claimantAliases: updatedAliases,
     updatedAt: now,
@@ -1306,6 +1326,7 @@ export async function prepareClaimForUser(
 export async function applyClaimForUser(ctx: MutationCtx, plan: LinkClaimPlan) {
   await plan.selectedFriendMerge?.applyCanonicalRewrite();
   await applyCanonicalReferenceRewrite(ctx, plan.referenceRewrite);
+  for (const fence of plan.staleFenceDeletes) await ctx.db.delete(fence._id);
   if (plan.aliasInsert) {
     await ctx.db.insert("member_aliases", plan.aliasInsert);
   }

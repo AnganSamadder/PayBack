@@ -656,7 +656,7 @@ test.each(["invite", "link request"] as const)(
   }
 );
 
-test("invite claim rejects a stale cleanup fence without deleting it during preflight", async () => {
+test("invite claim defers stale cleanup fence deletion until preflight succeeds", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
   const fenceId = await t.run(async (ctx) => {
@@ -725,7 +725,7 @@ test("invite claim rejects a stale cleanup fence without deleting it during pref
   );
   await expect(
     claimer.mutation(api.inviteTokens.claim, { id: "stale_fence_invite" })
-  ).rejects.toThrow("Identity maintenance required: stale orphan cleanup fence");
+  ).resolves.toMatchObject({ canonical_member_id: "stale_fence_claimer_member" });
 
   const state = await t.run(async (ctx) => ({
     fence: await ctx.db.get(fenceId),
@@ -747,14 +747,19 @@ test("invite claim rejects a stale cleanup fence without deleting it during pref
       .unique(),
     aliases: await ctx.db.query("member_aliases").collect()
   }));
-  expect(state.fence).not.toBeNull();
-  expect(state.token?.claimed_by).toBeUndefined();
-  expect(state.claimer?.alias_member_ids).toBeUndefined();
+  expect(state.fence).toBeNull();
+  expect(state.token?.claimed_by).toBe("stale_fence_claimer_auth");
+  expect(state.claimer?.alias_member_ids).toContain("stale_fence_legacy_member");
   expect(state.targetFriend).toMatchObject({
-    has_linked_account: false,
-    link_state: "unlinked"
+    has_linked_account: true,
+    link_state: "linked"
   });
-  expect(state.aliases).toEqual([]);
+  expect(state.aliases).toMatchObject([
+    {
+      alias_member_id: "stale_fence_legacy_member",
+      canonical_member_id: "stale_fence_claimer_member"
+    }
+  ]);
 });
 
 test("friends:upsert cannot create linked metadata from a client payload", async () => {

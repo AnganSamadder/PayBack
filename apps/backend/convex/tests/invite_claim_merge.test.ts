@@ -1,6 +1,8 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
+import { createLinkingReadBudget } from "../aliases";
+import { prepareClaimForUser } from "../inviteTokens";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
@@ -2071,6 +2073,24 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
         payloadBytes: 850 * 1024,
         now
       });
+      const staleJobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "stale-aggregate@example.com",
+        subject: "stale_aggregate_auth",
+        member_ids: ["claimer_legacy_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: now,
+        updated_at: now
+      });
+      await ctx.db.insert("orphan_cleanup_member_fences", {
+        job_id: staleJobId,
+        member_id: "claimer_legacy_member",
+        generation: 0,
+        created_at: now
+      });
     });
 
     const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
@@ -2104,7 +2124,11 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
       aliases: await ctx.db.query("member_aliases").collect(),
       groupVisibility: await ctx.db.query("group_visibility").collect(),
       expenseVisibility: await ctx.db.query("user_expenses").collect(),
-      syncStates: await ctx.db.query("account_sync_state").collect()
+      syncStates: await ctx.db.query("account_sync_state").collect(),
+      staleFences: await ctx.db
+        .query("orphan_cleanup_member_fences")
+        .withIndex("by_member_id", (q) => q.eq("member_id", "claimer_legacy_member"))
+        .collect()
     }));
     expect(state.token?.claimed_by).toBeUndefined();
     expect(state.claimant?.alias_member_ids).toBeUndefined();
@@ -2118,7 +2142,110 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     expect(state.groupVisibility).toEqual([]);
     expect(state.expenseVisibility).toEqual([]);
     expect(state.syncStates).toEqual([]);
+    expect(state.staleFences).toHaveLength(1);
   }, 30_000);
+
+  test("keeps a deferred stale fence when the aggregate write reservation is exhausted", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const fixture = await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "fence_limit_creator_auth",
+        email: "fence-limit-creator@test.com",
+        display_name: "Creator",
+        created_at: now,
+        member_id: "fence_limit_creator_member"
+      });
+      const claimantId = await ctx.db.insert("accounts", {
+        id: "fence_limit_claimant_auth",
+        email: "fence-limit-claimant@test.com",
+        display_name: "Claimant",
+        created_at: now,
+        member_id: "fence_limit_claimant_member"
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: now
+      });
+      const targetFriendId = await ctx.db.insert("account_friends", {
+        account_email: "fence-limit-creator@test.com",
+        member_id: "fence_limit_legacy_member",
+        name: "Claimant",
+        profile_avatar_color: "#123456",
+        has_linked_account: false,
+        link_state: "unlinked",
+        status: "friend",
+        updated_at: now
+      });
+      await ctx.db.insert("invite_tokens", {
+        id: "fence_limit_invite",
+        creator_id: "fence_limit_creator_auth",
+        creator_email: "fence-limit-creator@test.com",
+        target_member_id: "fence_limit_legacy_member",
+        target_friend_id: targetFriendId,
+        target_member_name: "Claimant",
+        created_at: now,
+        expires_at: now + 60_000
+      });
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "fence-limit-orphan@test.com",
+        subject: "fence_limit_orphan_auth",
+        member_ids: ["fence_limit_legacy_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: now,
+        updated_at: now
+      });
+      const fenceId = await ctx.db.insert("orphan_cleanup_member_fences", {
+        job_id: jobId,
+        member_id: "fence_limit_legacy_member",
+        generation: 0,
+        created_at: now
+      });
+      const claimant = await ctx.db.get(claimantId);
+      if (!claimant) throw new Error("Expected claimant");
+      return { claimant, targetFriendId, fenceId };
+    });
+    const budget = createLinkingReadBudget();
+    budget.estimatedWriteBytes = 12 * 1024 * 1024 - 1;
+
+    await expect(
+      t.run((ctx) =>
+        prepareClaimForUser(
+          ctx,
+          fixture.claimant,
+          {
+            targetMemberId: "fence_limit_legacy_member",
+            targetFriendId: fixture.targetFriendId,
+            creatorEmail: "fence-limit-creator@test.com",
+            creatorId: "fence_limit_creator_auth"
+          },
+          budget
+        )
+      )
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    const state = await t.run(async (ctx) => ({
+      fence: await ctx.db.get(fixture.fenceId),
+      token: await ctx.db
+        .query("invite_tokens")
+        .withIndex("by_client_id", (q) => q.eq("id", "fence_limit_invite"))
+        .unique(),
+      claimant: await ctx.db.get(fixture.claimant._id),
+      targetFriend: await ctx.db.get(fixture.targetFriendId),
+      aliases: await ctx.db.query("member_aliases").collect()
+    }));
+    expect(state.fence).not.toBeNull();
+    expect(state.token?.claimed_by).toBeUndefined();
+    expect(state.claimant?.alias_member_ids).toBeUndefined();
+    expect(state.targetFriend).toMatchObject({ has_linked_account: false });
+    expect(state.aliases).toEqual([]);
+  });
 
   test("rejects two individually safe invite rewrites when their aggregate work is unsafe", async () => {
     const t = convexTest(schema, modules);
