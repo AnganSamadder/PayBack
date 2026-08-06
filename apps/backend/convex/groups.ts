@@ -56,7 +56,7 @@ async function fenceGroupForDeletion(
     return { group, deletionToken: group.deletion_token };
   }
   const deletionToken = crypto.randomUUID();
-  await ctx.db.patch(group._id, { deletion_token: deletionToken });
+  await patchGroupWithVisibility(ctx, group._id, { deletion_token: deletionToken });
   return { group: { ...group, deletion_token: deletionToken }, deletionToken };
 }
 
