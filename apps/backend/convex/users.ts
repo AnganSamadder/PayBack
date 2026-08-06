@@ -453,31 +453,38 @@ async function cleanupOrphanedDataForEmailLegacy(
 
   const groupIds: string[] = [];
   const groupExpenseIds: string[] = [];
-  const deletedExpenseIds = new Set<string>();
   const expensesToDelete = new Map<string, Doc<"expenses">>();
   const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
   for (const group of groupsById.values()) {
-    const remainingExpenseCapacity = MAX_EXPENSE_WRITE_OPERATIONS - expensesToDelete.size;
-    const groupExpenses = await ctx.db
+    const referencedExpenses = await ctx.db
+      .query("expenses")
+      .withIndex("by_group_ref", (q: any) => q.eq("group_ref", group._id))
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    const legacyExpenses = await ctx.db
       .query("expenses")
       .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-      .take(remainingExpenseCapacity + 1);
-    if (groupExpenses.length > remainingExpenseCapacity) {
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    if (
+      referencedExpenses.length > MAX_EXPENSE_WRITE_OPERATIONS ||
+      legacyExpenses.length > MAX_EXPENSE_WRITE_OPERATIONS
+    ) {
       throw orphanCleanupLimitError("expenses");
     }
 
-    for (const expense of groupExpenses) {
-      if (
-        expense.owner_account_id !== subject ||
-        expense.owner_email.trim().toLowerCase() !== normalizedEmail ||
-        (await ctx.db.get(expense.owner_id))
-      ) {
-        throw new Error("Cannot clean an expense with conflicting live ownership");
-      }
-      if (deletedExpenseIds.has(expense._id)) continue;
-      expensesToDelete.set(String(expense._id), expense);
-      deletedExpenseIds.add(expense._id);
+    const attachedExpenses = [
+      ...referencedExpenses,
+      ...legacyExpenses.filter(
+        (expense: Doc<"expenses">) => !expense.group_ref || expense.group_ref === group._id
+      )
+    ];
+    for (const expense of attachedExpenses) {
+      const expenseKey = String(expense._id);
+      if (expensesToDelete.has(expenseKey)) continue;
+      expensesToDelete.set(expenseKey, expense);
       groupExpenseIds.push(expense._id);
+      if (expensesToDelete.size > MAX_EXPENSE_WRITE_OPERATIONS) {
+        throw orphanCleanupLimitError("expenses");
+      }
     }
 
     await groupVisibilityBatch.delete(group._id);
@@ -524,9 +531,8 @@ async function cleanupOrphanedDataForEmailLegacy(
     ) {
       throw new Error("Cannot clean an expense with conflicting live ownership");
     }
-    if (deletedExpenseIds.has(expense._id)) continue;
+    if (expensesToDelete.has(String(expense._id))) continue;
     expensesToDelete.set(String(expense._id), expense);
-    deletedExpenseIds.add(expense._id);
     ownedExpenseIds.push(expense._id);
   }
   await deleteOrphanCleanupExpenses(ctx, expensesToDelete);

@@ -83,6 +83,107 @@ test("legacy users.store cleans normalized orphan artifacts for mixed-case auth 
   });
 });
 
+test("legacy users.store cascades an owned group across both expense indexes", async () => {
+  const t = convexTest(schema, modules);
+  const foreignAccountId = await t.run(async (ctx) => {
+    await ctx.db.insert("cleanup_email_materialization_state", {
+      key: "cleanup_email_canonicalization_v1",
+      status: "ready",
+      phase: "complete",
+      processed: 0,
+      retry_count: 0,
+      updated_at: 1
+    });
+    const orphanOwnerId = await ctx.db.insert("accounts", {
+      id: "new_orphan_auth",
+      email: "orphan@example.com",
+      normalized_email: "orphan@example.com",
+      display_name: "Orphan",
+      member_id: "orphan_member",
+      created_at: 1
+    });
+    const liveAccountId = await ctx.db.insert("accounts", {
+      id: "foreign_auth",
+      email: "foreign@example.com",
+      normalized_email: "foreign@example.com",
+      display_name: "Foreign",
+      member_id: "foreign_member",
+      created_at: 1
+    });
+    await ctx.db.delete(orphanOwnerId);
+    const groupId = await ctx.db.insert("groups", {
+      id: "orphan_group",
+      name: "Orphan group",
+      members: [
+        { id: "orphan_member", name: "Orphan" },
+        { id: "foreign_member", name: "Foreign" }
+      ],
+      owner_email: "orphan@example.com",
+      owner_account_id: "new_orphan_auth",
+      owner_id: orphanOwnerId,
+      created_at: 1,
+      updated_at: 1
+    });
+    for (const [index, groupFields] of [
+      [0, { group_id: "orphan_group" }],
+      [1, { group_id: "stale_group_id", group_ref: groupId }]
+    ] as const) {
+      const expenseId = await ctx.db.insert("expenses", {
+        id: `foreign_expense_${index}`,
+        ...groupFields,
+        context_kind: "group" as const,
+        description: `Foreign expense ${index}`,
+        date: 1,
+        total_amount: 1,
+        paid_by_member_id: "foreign_member",
+        involved_member_ids: ["orphan_member", "foreign_member"],
+        splits: [
+          {
+            id: `foreign_split_${index}`,
+            member_id: "foreign_member",
+            amount: 1,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "foreign@example.com",
+        owner_account_id: "foreign_auth",
+        owner_id: liveAccountId,
+        participant_member_ids: ["orphan_member", "foreign_member"],
+        participant_emails: ["orphan@example.com", "foreign@example.com"],
+        participants: [
+          { member_id: "orphan_member", name: "Orphan" },
+          { member_id: "foreign_member", name: "Foreign" }
+        ],
+        created_at: 1,
+        updated_at: 1
+      });
+      await ctx.db.insert("user_expenses", {
+        user_id: "foreign_auth",
+        account_ref: liveAccountId,
+        expense_id: `foreign_expense_${index}`,
+        expense_ref: expenseId,
+        updated_at: 1
+      });
+    }
+    return liveAccountId;
+  });
+
+  const user = t.withIdentity(identity("orphan@example.com", "new_orphan_auth"));
+  await expect(user.mutation(api.users.store, {})).resolves.not.toContain("preparing:");
+
+  const state = await t.run(async (ctx) => ({
+    groups: await ctx.db.query("groups").collect(),
+    expenses: await ctx.db.query("expenses").collect(),
+    visibility: await ctx.db.query("user_expenses").collect(),
+    foreignAccount: await ctx.db.get(foreignAccountId)
+  }));
+  expect(state.groups).toEqual([]);
+  expect(state.expenses).toEqual([]);
+  expect(state.visibility).toEqual([]);
+  expect(state.foreignAccount).not.toBeNull();
+});
+
 test("resumable users.store skips cleanup jobs when only unrelated data exists", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
