@@ -2098,7 +2098,7 @@ async function advanceSelfDeletion(
       if (!hasConsistentGroupOwner(group, account)) {
         throw new Error("Cannot delete records with a conflicting owner identity");
       }
-      if (progress.deletion_mode === "hard") {
+      if (progress.deletion_mode === "hard" || group.deletion_token) {
         return await updateSelfDeletionProgress(
           ctx,
           progress,
