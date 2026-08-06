@@ -1119,6 +1119,10 @@ export const setSettlementState = mutation({
       }
     }
 
+    if (await isExpenseAttachedToDeletingGroup(ctx, expense)) {
+      throw new Error("Group deletion is in progress");
+    }
+
     const nextSplits = expense.splits.map((split: any) => {
       const normalizedMemberId = normalizeMemberId(split.member_id);
       if (!requestedMemberIds.has(normalizedMemberId)) {

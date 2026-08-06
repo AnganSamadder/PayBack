@@ -408,6 +408,134 @@ test("expense read surfaces hide only expenses canonically attached to fenced gr
   ).toEqual({ items: [], nextCursor: null });
 });
 
+test("settlement writes reject expenses canonically attached to a fenced group", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    const ownerId = await seedAccount(ctx, {
+      id: "owner_auth",
+      email: "owner@test.com",
+      memberId: "owner_member"
+    });
+    const fencedGroupId = await ctx.db.insert("groups", {
+      id: "fenced_group",
+      name: "Fenced group",
+      members: [{ id: "owner_member", name: "Owner", is_current_user: true }],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      deletion_token: "pending-delete",
+      created_at: 1,
+      updated_at: 1
+    });
+    await ctx.db.insert("expenses", {
+      id: "fenced_expense",
+      group_id: "fenced_group",
+      group_ref: fencedGroupId,
+      description: "Fenced expense",
+      date: 1,
+      total_amount: 10,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member"],
+      splits: [
+        {
+          id: "fenced_split",
+          member_id: "owner_member",
+          amount: 10,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: ["owner_member"],
+      participant_emails: ["owner@test.com"],
+      participants: [{ member_id: "owner_member", name: "Owner" }],
+      created_at: 1,
+      updated_at: 1
+    });
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await expect(
+    owner.mutation(api.expenses.setSettlementState, {
+      expenseId: "fenced_expense",
+      settled: true
+    })
+  ).rejects.toThrow("Group deletion is in progress");
+
+  const expense = await t.run((ctx) => ctx.db.query("expenses").unique());
+  expect(expense?.is_settled).toBe(false);
+  expect(expense?.splits[0]?.is_settled).toBe(false);
+});
+
+test("settlement writes honor an active canonical group despite a colliding group id", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    const ownerId = await seedAccount(ctx, {
+      id: "owner_auth",
+      email: "owner@test.com",
+      memberId: "owner_member"
+    });
+    await ctx.db.insert("groups", {
+      id: "colliding_group",
+      name: "Fenced group",
+      members: [{ id: "owner_member", name: "Owner", is_current_user: true }],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      deletion_token: "pending-delete",
+      created_at: 1,
+      updated_at: 1
+    });
+    const activeGroupId = await ctx.db.insert("groups", {
+      id: "active_group",
+      name: "Active group",
+      members: [{ id: "owner_member", name: "Owner", is_current_user: true }],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      created_at: 2,
+      updated_at: 2
+    });
+    await ctx.db.insert("expenses", {
+      id: "active_expense",
+      group_id: "colliding_group",
+      group_ref: activeGroupId,
+      description: "Active expense",
+      date: 2,
+      total_amount: 10,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member"],
+      splits: [
+        {
+          id: "active_split",
+          member_id: "owner_member",
+          amount: 10,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: ["owner_member"],
+      participant_emails: ["owner@test.com"],
+      participants: [{ member_id: "owner_member", name: "Owner" }],
+      created_at: 2,
+      updated_at: 2
+    });
+  });
+
+  const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  const result = await owner.mutation(api.expenses.setSettlementState, {
+    expenseId: "active_expense",
+    settled: true
+  });
+  expect(result.is_settled).toBe(true);
+  expect(result.splits[0]?.is_settled).toBe(true);
+});
+
 test("deleting legacy account cannot bootstrap a new canonical member identity", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
