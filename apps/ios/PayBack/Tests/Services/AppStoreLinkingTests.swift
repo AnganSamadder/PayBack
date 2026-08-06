@@ -1053,6 +1053,71 @@ final class AppStoreLinkingTests: XCTestCase {
         XCTAssertTrue(sut.friends.contains(where: { $0.memberId == target.memberId }))
     }
 
+    func testMergeFriend_DoesNotApplyRemoteFriendsAfterAccountSwitch() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.session = UserSession(account: account)
+
+        let source = AccountFriend(memberId: UUID(), name: "Duplicate", status: "friend")
+        let target = AccountFriend(memberId: UUID(), name: "Canonical", status: "friend")
+        let newAccountFriend = AccountFriend(memberId: UUID(), name: "New Account Friend", status: "friend")
+        sut.friends = [source, target]
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [source, target])
+        await mockAccountService.suspendNextFriendFetch()
+
+        let mergeTask = Task {
+            try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+        }
+        await mockAccountService.waitUntilFriendFetchSuspends()
+        sut.session = UserSession(
+            account: UserAccount(id: "test-456", email: "other@example.com", displayName: "Other User")
+        )
+        sut.friends = [newAccountFriend]
+        await mockAccountService.resumeFriendFetch()
+
+        do {
+            try await mergeTask.value
+            XCTFail("Expected the merge refresh to stop when the initiating account changed")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        XCTAssertEqual(sut.friends.map(\.memberId), [newAccountFriend.memberId])
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == source.memberId }))
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == target.memberId }))
+    }
+
+    func testMergeFriend_DoesNotApplyRemoteFriendsAfterSameAccountRelogin() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        sut.session = UserSession(account: account)
+
+        let source = AccountFriend(memberId: UUID(), name: "Duplicate", status: "friend")
+        let target = AccountFriend(memberId: UUID(), name: "Canonical", status: "friend")
+        let newSessionFriend = AccountFriend(memberId: UUID(), name: "New Session Friend", status: "friend")
+        sut.friends = [source, target]
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [source, target])
+        await mockAccountService.suspendNextFriendFetch()
+
+        let mergeTask = Task {
+            try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+        }
+        await mockAccountService.waitUntilFriendFetchSuspends()
+        await sut.signOut()
+        sut.session = UserSession(account: account)
+        sut.friends = [newSessionFriend]
+        await mockAccountService.resumeFriendFetch()
+
+        do {
+            try await mergeTask.value
+            XCTFail("Expected the merge refresh to stop at the old logical session boundary")
+        } catch let error as PayBackError {
+            XCTAssertEqual(error, .authSessionMissing)
+        }
+
+        XCTAssertEqual(sut.friends.map(\.memberId), [newSessionFriend.memberId])
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == source.memberId }))
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == target.memberId }))
+    }
+
     func testMergeFriend_RejectsLinkedTargetBeforeBackendSubmission() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)

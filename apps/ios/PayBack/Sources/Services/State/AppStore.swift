@@ -3882,38 +3882,52 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     /// Merges two caller-owned, confirmed, unlinked friend records.
+    @MainActor
     func mergeFriend(unlinkedMemberId: UUID, into targetMemberId: UUID) async throws {
-        guard let session else {
+        guard let mergingSession = session else {
             throw PayBackError.authSessionMissing
         }
 
-        let mergeIds = try await MainActor.run { () throws -> (source: String, target: String) in
-            guard unlinkedMemberId != targetMemberId,
-                  let source = friends.first(where: { $0.memberId == unlinkedMemberId }),
-                  let target = friends.first(where: { $0.memberId == targetMemberId }),
-                  isMergeableUnlinkedFriend(source),
-                  isMergeableUnlinkedFriend(target) else {
-                throw PayBackError.underlying(
-                    message: "Only confirmed unlinked friends can be merged."
-                )
+        let mergingAccountId = mergingSession.account.id
+        let mergingAccountEmail = mergingSession.account.email.lowercased()
+        let mergingDataEpoch = dataEpoch
+
+        func ensureCurrentMergingSession() throws {
+            guard session?.account.id == mergingAccountId,
+                  dataEpoch == mergingDataEpoch else {
+                throw PayBackError.authSessionMissing
             }
-            return (source.memberId.uuidString, target.memberId.uuidString)
         }
 
+        guard unlinkedMemberId != targetMemberId,
+              let source = friends.first(where: { $0.memberId == unlinkedMemberId }),
+              let target = friends.first(where: { $0.memberId == targetMemberId }),
+              isMergeableUnlinkedFriend(source),
+              isMergeableUnlinkedFriend(target) else {
+            throw PayBackError.underlying(
+                message: "Only confirmed unlinked friends can be merged."
+            )
+        }
+        let mergeIds = (source: source.memberId.uuidString, target: target.memberId.uuidString)
+
+        try ensureCurrentMergingSession()
         try await accountService.mergeUnlinkedFriends(
             friendId1: mergeIds.target,
             friendId2: mergeIds.source
         )
+        try ensureCurrentMergingSession()
 
         // Keep the local source until the backend acknowledges the transaction and
         // returns a canonical friend snapshot. A failed hydration remains retryable.
         let remoteFriends = try await accountService.fetchFriends(
-            accountEmail: session.account.email.lowercased()
+            accountEmail: mergingAccountEmail
         )
-        await MainActor.run {
-            processFriendsUpdate(remoteFriends)
-        }
+        try ensureCurrentMergingSession()
+        processFriendsUpdate(remoteFriends)
+        try ensureCurrentMergingSession()
+
         await loadRemoteData()
+        try ensureCurrentMergingSession()
     }
 
     // MARK: - Account Linking Helpers
