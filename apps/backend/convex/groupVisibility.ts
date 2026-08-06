@@ -475,6 +475,7 @@ export class GroupVisibilityWriteBatch {
     );
     const effectiveValue = {
       ...value,
+      owner_email: value.owner_email.trim().toLowerCase(),
       members: scrubInactiveAccountMembers(value.members, [], {
         byMemberId: this.memberAccountCache,
         byAccountId: this.accountByIdCache
@@ -543,7 +544,11 @@ export class GroupVisibilityWriteBatch {
       convexValueSize(nextGroup) + visibilityPlanWriteBytes(nextGroup, plan)
     );
 
-    await this.ctx.db.patch(groupId, { ...value, members: nextGroup.members });
+    await this.ctx.db.patch(groupId, {
+      ...value,
+      ...(value.owner_email ? { owner_email: value.owner_email.trim().toLowerCase() } : {}),
+      members: nextGroup.members
+    });
     await this.applyVisibilityPlan(nextGroup, plan);
   }
 
@@ -764,6 +769,15 @@ export async function deleteGroupWithVisibility(
   const batch = new GroupVisibilityWriteBatch(ctx);
   await batch.delete(groupId);
   await batch.flush();
+}
+
+export async function patchGroupOwnerEmailForMaintenance(
+  ctx: MutationCtx,
+  group: Doc<"groups">,
+  ownerEmail: string
+): Promise<void> {
+  if (group.owner_email === ownerEmail) return;
+  await ctx.db.patch(group._id, { owner_email: ownerEmail });
 }
 
 export async function materializeGroupVisibilitySlice(

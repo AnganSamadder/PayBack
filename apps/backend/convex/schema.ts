@@ -5,6 +5,7 @@ export default defineSchema({
   accounts: defineTable({
     id: v.string(), // Keeping query-able ID, likely matching Auth provider ID
     email: v.string(),
+    normalized_email: v.optional(v.string()),
     display_name: v.string(),
     first_name: v.optional(v.string()),
     last_name: v.optional(v.string()),
@@ -26,16 +27,23 @@ export default defineSchema({
     updated_at: v.optional(v.number())
   })
     .index("by_email", ["email"])
+    .index("by_normalized_email", ["normalized_email"])
     .index("by_member_id", ["member_id"])
     .index("by_auth_id", ["id"]),
 
   account_deletion_receipts: defineTable({
     auth_subject: v.string(),
+    account_id: v.optional(v.id("accounts")),
+    account_email: v.optional(v.string()),
+    normalized_account_email: v.optional(v.string()),
     request_id: v.string(),
     deleted_at: v.number(),
     friendships_unlinked: v.number(),
     expenses_preserved: v.boolean()
-  }).index("by_auth_subject", ["auth_subject"]),
+  })
+    .index("by_auth_subject", ["auth_subject"])
+    .index("by_account_email", ["account_email"])
+    .index("by_normalized_account_email", ["normalized_account_email"]),
 
   account_deletion_progress: defineTable({
     auth_subject: v.string(),
@@ -45,6 +53,10 @@ export default defineSchema({
     member_ids: v.array(v.string()),
     request_id: v.string(),
     tombstone_email: v.string(),
+    deletion_mode: v.optional(v.union(v.literal("soft"), v.literal("hard"))),
+    hard_delete_status: v.optional(v.union(v.literal("pending"), v.literal("failed"))),
+    hard_delete_retry_count: v.optional(v.number()),
+    hard_delete_last_error: v.optional(v.string()),
     phase: v.union(
       v.literal("preflight_groups_owner_id"),
       v.literal("preflight_groups_account_id"),
@@ -96,6 +108,69 @@ export default defineSchema({
   })
     .index("by_auth_subject", ["auth_subject"])
     .index("by_account_id", ["account_id"]),
+
+  orphan_cleanup_jobs: defineTable({
+    email: v.string(),
+    source_email: v.optional(v.string()),
+    subject: v.string(),
+    account_id: v.optional(v.id("accounts")),
+    member_ids: v.array(v.string()),
+    requested_subject: v.optional(v.string()),
+    requested_account_id: v.optional(v.id("accounts")),
+    requested_member_ids: v.optional(v.array(v.string())),
+    mode: v.union(v.literal("precreate"), v.literal("hard")),
+    allow_live_account_hard_delete: v.optional(v.boolean()),
+    status: v.union(v.literal("pending"), v.literal("complete"), v.literal("failed")),
+    processed_count: v.number(),
+    retry_count: v.number(),
+    last_error: v.optional(v.string()),
+    account_scan_cursor: v.optional(v.string()),
+    account_scan_complete: v.optional(v.boolean()),
+    matched_account_id: v.optional(v.id("accounts")),
+    orphan_scan_phase: v.optional(
+      v.union(
+        v.literal("groups_source_email"),
+        v.literal("groups_email"),
+        v.literal("groups_subject"),
+        v.literal("expenses_source_email"),
+        v.literal("expenses_email"),
+        v.literal("expenses_subject"),
+        v.literal("complete")
+      )
+    ),
+    orphan_scan_cursor: v.optional(v.string()),
+    linked_scan_phase: v.optional(
+      v.union(
+        v.literal("aliases_source_email"),
+        v.literal("aliases_email"),
+        v.literal("source_email"),
+        v.literal("email"),
+        v.literal("subject"),
+        v.literal("complete")
+      )
+    ),
+    linked_scan_cursor: v.optional(v.string()),
+    member_scan_complete: v.optional(v.boolean()),
+    member_scan_index: v.optional(v.number()),
+    member_fence_complete: v.optional(v.boolean()),
+    member_fence_index: v.optional(v.number()),
+    member_fence_generation: v.optional(v.number()),
+    member_fence_release_pending: v.optional(v.boolean()),
+    cleanup_member_index: v.optional(v.number()),
+    metadata_refresh_complete: v.optional(v.boolean()),
+    created_at: v.number(),
+    updated_at: v.number()
+  }).index("by_email", ["email"]),
+
+  orphan_cleanup_member_fences: defineTable({
+    job_id: v.id("orphan_cleanup_jobs"),
+    member_id: v.string(),
+    generation: v.number(),
+    created_at: v.number()
+  })
+    .index("by_member_id", ["member_id"])
+    .index("by_job_id", ["job_id"])
+    .index("by_job_id_and_generation", ["job_id", "generation"]),
 
   friend_requests: defineTable({
     sender_id: v.id("accounts"),
@@ -365,8 +440,61 @@ export default defineSchema({
 
   janitor_state: defineTable({
     key: v.string(),
+    scan_phase: v.optional(
+      v.union(
+        v.literal("account_friends"),
+        v.literal("accounts"),
+        v.literal("groups"),
+        v.literal("expenses"),
+        v.literal("user_expenses"),
+        v.literal("group_visibility"),
+        v.literal("friend_requests"),
+        v.literal("account_sync_state")
+      )
+    ),
     account_friends_cursor: v.optional(v.string()),
+    accounts_cursor: v.optional(v.string()),
     groups_cursor: v.optional(v.string()),
+    expenses_cursor: v.optional(v.string()),
+    user_expenses_cursor: v.optional(v.string()),
+    group_visibility_cursor: v.optional(v.string()),
+    friend_requests_cursor: v.optional(v.string()),
+    account_sync_state_cursor: v.optional(v.string()),
+    updated_at: v.number()
+  }).index("by_key", ["key"]),
+
+  cleanup_email_materialization_state: defineTable({
+    key: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("backfilling"),
+      v.literal("ready"),
+      v.literal("failed")
+    ),
+    phase: v.union(
+      v.literal("accounts"),
+      v.literal("account_conflicts"),
+      v.literal("account_friends"),
+      v.literal("groups"),
+      v.literal("expenses"),
+      v.literal("link_requests"),
+      v.literal("invite_tokens"),
+      v.literal("friend_requests"),
+      v.literal("member_aliases"),
+      v.literal("account_deletion_progress"),
+      v.literal("account_deletion_receipts"),
+      v.literal("complete")
+    ),
+    cursor: v.optional(v.string()),
+    processed: v.number(),
+    retry_count: v.number(),
+    last_error: v.optional(v.string()),
+    updated_at: v.number()
+  }).index("by_key", ["key"]),
+
+  janitor_quarantine: defineTable({
+    key: v.string(),
+    reason: v.string(),
     updated_at: v.number()
   }).index("by_key", ["key"]),
 

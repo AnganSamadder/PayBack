@@ -610,7 +610,10 @@ export async function applyExpenseWriteBatch(
   for (const plan of plans) {
     const { operation } = plan;
     if (operation.kind === "insert") {
-      const expenseId = await ctx.db.insert("expenses", operation.expense);
+      const expenseId = await ctx.db.insert("expenses", {
+        ...operation.expense,
+        owner_email: operation.expense.owner_email.trim().toLowerCase()
+      });
       await applyVisibilityPlan(
         ctx,
         plan,
@@ -639,7 +642,12 @@ export async function applyExpenseWriteBatch(
     }
     if (operation.kind === "patch") {
       const updatedAt = plan.updatedAt;
-      await ctx.db.patch(operation.expense._id, { ...operation.patch, updated_at: updatedAt });
+      const ownerEmail = operation.patch.owner_email?.trim().toLowerCase();
+      await ctx.db.patch(operation.expense._id, {
+        ...operation.patch,
+        ...(ownerEmail ? { owner_email: ownerEmail } : {}),
+        updated_at: updatedAt
+      });
       await applyVisibilityPlan(ctx, plan, operation.expense._id, operation.expense.id, updatedAt);
       operationResults.push({
         kind: operation.kind,
@@ -683,4 +691,13 @@ export async function deleteUserExpenseRowWithRevision(
   await ctx.db.delete(row._id);
   await bumpAccountSyncRevisions(ctx, [accountId], "expenses");
   return true;
+}
+
+export async function patchExpenseOwnerEmailForMaintenance(
+  ctx: MutationCtx,
+  expense: Doc<"expenses">,
+  ownerEmail: string
+): Promise<void> {
+  if (expense.owner_email === ownerEmail) return;
+  await ctx.db.patch(expense._id, { owner_email: ownerEmail });
 }
