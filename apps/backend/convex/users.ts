@@ -1,6 +1,7 @@
 import {
   internalAction,
   internalMutation,
+  internalQuery,
   mutation,
   query,
   action,
@@ -1404,9 +1405,15 @@ export const updateLinkedMemberId = mutation({
 export const generateUploadUrl = action({
   args: {},
   handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    await ctx.runQuery(internal.users.requireActiveAccountForUpload, {});
     return await ctx.storage.generateUploadUrl();
+  }
+});
+
+export const requireActiveAccountForUpload = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    await getCurrentUserOrThrow(ctx);
   }
 });
 
