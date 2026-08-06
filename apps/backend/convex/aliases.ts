@@ -483,6 +483,28 @@ export function chargeLinkingQueries(budget: LinkingReadBudget, count: number) {
   accountMergeQueriesForLimit(budget, count);
 }
 
+export function reserveLinkingReadQuery(
+  budget: LinkingReadBudget,
+  requestedRows: number
+): number {
+  const remainingRows =
+    mergeCanonicalizationLimits.directScannedRows - budget.scannedRows + 1;
+  const remainingHardReadBytes =
+    mergeReadSafetyLimits.hardReadSafetyBytes - budget.estimatedReadBytes;
+  const byteReservedRows = Math.floor(
+    remainingHardReadBytes / mergeReadSafetyLimits.maximumDocumentReservationBytes
+  );
+  const pageSize = Math.min(
+    requestedRows,
+    mergeReadSafetyLimits.maximumPageRows,
+    remainingRows,
+    byteReservedRows
+  );
+  if (pageSize <= 0) throw mergeWorkLimitError();
+  chargeLinkingQueries(budget, 1);
+  return pageSize;
+}
+
 export function accountLinkingRows(
   budget: LinkingReadBudget,
   rows: readonly unknown[],

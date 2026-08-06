@@ -14,6 +14,7 @@ import {
   prepareClaimedFriendReferenceRewrite,
   prepareInviteMergeSourceInternal,
   reserveMergeWriteValuesForLimit,
+  reserveLinkingReadQuery,
   type CanonicalReferenceRewritePlan,
   type LinkingReadBudget,
   type PreparedInviteMergeSource
@@ -328,9 +329,9 @@ async function prepareBudgetedAliasInsert(
   const staleFenceDeletes = await prepareMemberIdentityCleanupFenceDeletes(
     ctx,
     normalizedAlias,
-    (rows) => {
-      chargeLinkingQueries(budget, 1);
-      accountLinkingRows(budget, rows);
+    {
+      beforeQuery: (maximumRows) => reserveLinkingReadQuery(budget, maximumRows),
+      afterQuery: (rows) => accountLinkingRows(budget, rows)
     }
   );
   reserveMergeWriteValuesForLimit(

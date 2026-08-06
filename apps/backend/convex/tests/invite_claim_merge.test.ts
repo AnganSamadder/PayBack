@@ -1,7 +1,15 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
-import { createLinkingReadBudget } from "../aliases";
+import {
+  accountLinkingRows,
+  createLinkingReadBudget,
+  reserveLinkingReadQuery
+} from "../aliases";
+import {
+  assertMemberIdentityNotCleanupFenced,
+  prepareMemberIdentityCleanupFenceDeletes
+} from "../identity";
 import { prepareClaimForUser } from "../inviteTokens";
 import schema from "../schema";
 import { modules } from "../test.setup";
@@ -133,6 +141,191 @@ async function insertLargeRewriteSurface(
 }
 
 describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
+  test.each([
+    ["query", { queryWork: 4096 }],
+    ["read byte", { estimatedReadBytes: 10 * 1024 * 1024 - 1 }]
+  ] as const)("rejects cleanup fence %s exhaustion before an unbudgeted read", async (_, seed) => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const fenceId = await t.run(async (ctx) => {
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "budgeted-fence@test.com",
+        subject: "budgeted_fence_auth",
+        member_ids: ["budgeted_fence_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: now,
+        updated_at: now
+      });
+      return await ctx.db.insert("orphan_cleanup_member_fences", {
+        job_id: jobId,
+        member_id: "budgeted_fence_member",
+        generation: 0,
+        created_at: now
+      });
+    });
+    const budget = Object.assign(createLinkingReadBudget(), seed);
+
+    await expect(
+      t.run((ctx) => {
+        const readFailingDb = new Proxy(ctx.db, {
+          get(target, property) {
+            if (property === "get" || property === "query") {
+              throw new Error(`Cleanup fence performed unbudgeted ${String(property)}`);
+            }
+            const value = Reflect.get(target, property);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+        });
+        return prepareMemberIdentityCleanupFenceDeletes(
+          { ...ctx, db: readFailingDb } as typeof ctx,
+          "budgeted_fence_member",
+          {
+            beforeQuery: (maximumRows) => reserveLinkingReadQuery(budget, maximumRows),
+            afterQuery: (rows) => accountLinkingRows(budget, rows)
+          }
+        );
+      })
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    expect(await t.run((ctx) => ctx.db.get(fenceId))).not.toBeNull();
+  });
+
+  test("uses the one safe cleanup-fence read slot remaining in the byte budget", async () => {
+    const t = convexTest(schema, modules);
+    const budget = createLinkingReadBudget();
+    budget.estimatedReadBytes = 8 * 1024 * 1024;
+    const reservedPageSizes: number[] = [];
+
+    const fences = await t.run((ctx) =>
+      prepareMemberIdentityCleanupFenceDeletes(ctx, "empty_budgeted_fence_member", {
+        beforeQuery: (maximumRows) => {
+          const pageSize = reserveLinkingReadQuery(budget, maximumRows);
+          reservedPageSizes.push(pageSize);
+          return pageSize;
+        },
+        afterQuery: (rows) => accountLinkingRows(budget, rows)
+      })
+    );
+
+    expect(fences).toEqual([]);
+    expect(reservedPageSizes).toEqual([1]);
+  });
+
+  test("pages nine cleanup fences before rejecting duplicate maintenance state", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "nine-fences@test.com",
+        subject: "nine_fences_auth",
+        member_ids: ["nine_fences_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: 1,
+        updated_at: 1
+      });
+      for (let index = 0; index < 9; index += 1) {
+        await ctx.db.insert("orphan_cleanup_member_fences", {
+          job_id: jobId,
+          member_id: "nine_fences_member",
+          generation: index,
+          created_at: index + 1
+        });
+      }
+    });
+    const budget = createLinkingReadBudget();
+    const pageSizes: number[] = [];
+
+    await expect(
+      t.run((ctx) =>
+        prepareMemberIdentityCleanupFenceDeletes(ctx, "nine_fences_member", {
+          beforeQuery: (maximumRows) => {
+            const pageSize = reserveLinkingReadQuery(budget, maximumRows);
+            pageSizes.push(pageSize);
+            return pageSize;
+          },
+          afterQuery: (rows) => accountLinkingRows(budget, rows)
+        })
+      )
+    ).rejects.toThrow("duplicate orphan cleanup fences");
+    expect(pageSizes).toEqual([5, 4]);
+  });
+
+  test("precharges one cached cleanup-job read for eight fences", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "cached-fences@test.com",
+        subject: "cached_fences_auth",
+        member_ids: ["cached_fences_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: 1,
+        updated_at: 1
+      });
+      for (let index = 0; index < 8; index += 1) {
+        await ctx.db.insert("orphan_cleanup_member_fences", {
+          job_id: jobId,
+          member_id: "cached_fences_member",
+          generation: index,
+          created_at: index + 1
+        });
+      }
+    });
+    const budget = createLinkingReadBudget();
+    const requestedRows: number[] = [];
+
+    const fences = await t.run((ctx) =>
+      prepareMemberIdentityCleanupFenceDeletes(ctx, "cached_fences_member", {
+        beforeQuery: (maximumRows) => {
+          requestedRows.push(maximumRows);
+          return reserveLinkingReadQuery(budget, maximumRows);
+        },
+        afterQuery: (rows) => accountLinkingRows(budget, rows)
+      })
+    );
+
+    expect(fences).toHaveLength(8);
+    expect(requestedRows).toEqual([9, 4, 1]);
+    expect(budget.queryWork).toBe(3);
+  });
+
+  test("keeps untracked cleanup-fence deletion behavior for non-merge callers", async () => {
+    const t = convexTest(schema, modules);
+    const fenceId = await t.run(async (ctx) => {
+      const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+        email: "untracked-fence@test.com",
+        subject: "untracked_fence_auth",
+        member_ids: ["untracked_fence_member"],
+        mode: "hard",
+        status: "complete",
+        processed_count: 1,
+        retry_count: 0,
+        member_fence_complete: true,
+        created_at: 1,
+        updated_at: 1
+      });
+      return await ctx.db.insert("orphan_cleanup_member_fences", {
+        job_id: jobId,
+        member_id: "untracked_fence_member",
+        generation: 0,
+        created_at: 1
+      });
+    });
+
+    await t.run((ctx) => assertMemberIdentityNotCleanupFenced(ctx, "untracked_fence_member"));
+    expect(await t.run((ctx) => ctx.db.get(fenceId))).toBeNull();
+  });
+
   test("accepts a claimed-token alias whose audit email is the creator", async () => {
     const t = convexTest(schema, modules);
     const now = Date.now();
