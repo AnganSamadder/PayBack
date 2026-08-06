@@ -1365,7 +1365,7 @@ async function processClearAllExpenseStep(
   const visibilityRow = await ctx.db
     .query("user_expenses")
     .withIndex("by_user_id", (q: any) => q.eq("user_id", user.id))
-    .filter((q: any) => q.lte(q.field("updated_at"), cutoff))
+    .filter((q: any) => q.lt(q.field("_creationTime"), cutoff + 1))
     .first();
   if (!visibilityRow) return { inProgress: false, processed: 0, cutoff };
 
