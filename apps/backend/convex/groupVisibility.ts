@@ -231,6 +231,8 @@ export type GroupVisibilityBatchOptions = {
   limits?: Partial<GroupVisibilityBatchLimits>;
   budget?: GroupVisibilityBatchBudgetHooks;
   dryRun?: boolean;
+  /** @internal Used by the opaque patch preparation API. */
+  deferSyncRevisions?: boolean;
 };
 
 type GroupVisibilityBatchBudget = {
@@ -259,9 +261,9 @@ function insertedDocumentSize(value: Record<string, unknown>): number {
 
 function visibilityPlanWriteBytes(
   group: Pick<Doc<"groups">, "_id" | "updated_at">,
-  plan: VisibilityPlan
+  plan: VisibilityPlan,
+  now: number
 ): number {
-  const now = Date.now();
   const insertBytes = plan.inserts.reduce(
     (total, accountId) =>
       total +
@@ -283,6 +285,53 @@ function visibilityPlanWriteBytes(
   return insertBytes + updateBytes + deleteBytes;
 }
 
+type PreparedGroupPatch = {
+  groupId: Id<"groups">;
+  patch: GroupPatch;
+  nextGroup: Doc<"groups">;
+  visibilityPlan: VisibilityPlan;
+  visibilityUpdatedAt: number;
+};
+
+const preparedGroupVisibilityPatchBatchBrand: unique symbol = Symbol(
+  "PreparedGroupVisibilityPatchBatch"
+);
+
+export type PreparedGroupVisibilityPatchBatch = {
+  readonly [preparedGroupVisibilityPatchBatchBrand]: true;
+  readonly patches: readonly PreparedGroupPatch[];
+  readonly revisionAccountIds: readonly Id<"accounts">[];
+};
+
+export type GroupVisibilityPatchOperation = {
+  groupId: Id<"groups">;
+  patch: GroupPatch;
+};
+
+async function applyPreparedGroupPatch(
+  ctx: MutationCtx,
+  prepared: PreparedGroupPatch
+): Promise<void> {
+  await ctx.db.patch(prepared.groupId, prepared.patch);
+  const { nextGroup: group, visibilityPlan: plan, visibilityUpdatedAt: now } = prepared;
+  for (const accountId of plan.inserts) {
+    await ctx.db.insert("group_visibility", {
+      account_id: accountId,
+      group_id: group._id,
+      group_updated_at: group.updated_at,
+      created_at: now,
+      updated_at: now
+    });
+  }
+  for (const row of plan.updates) {
+    await ctx.db.patch(row._id, {
+      group_updated_at: group.updated_at,
+      updated_at: now
+    });
+  }
+  for (const row of plan.deletes) await ctx.db.delete(row._id);
+}
+
 export class GroupVisibilityWriteBatch {
   private readonly budget: GroupVisibilityBatchBudget = {
     queries: 0,
@@ -294,9 +343,11 @@ export class GroupVisibilityWriteBatch {
   private readonly limits: GroupVisibilityBatchLimits;
   private readonly hooks: GroupVisibilityBatchBudgetHooks;
   private readonly dryRun: boolean;
+  private readonly deferSyncRevisions: boolean;
   private readonly memberAccountCache = new Map<string, Doc<"accounts"> | null>();
   private readonly accountByIdCache = new Map<string, Doc<"accounts"> | null>();
   private readonly revisionAccountIds = new Map<string, Id<"accounts">>();
+  private readonly preparedPatches: PreparedGroupPatch[] = [];
   private hasFlushed = false;
 
   constructor(
@@ -327,6 +378,7 @@ export class GroupVisibilityWriteBatch {
     };
     this.hooks = options.budget ?? {};
     this.dryRun = options.dryRun === true;
+    this.deferSyncRevisions = options.deferSyncRevisions === true;
   }
 
   private assertOpen(): void {
@@ -361,20 +413,20 @@ export class GroupVisibilityWriteBatch {
     const newRevisionAccountIds = uniqueAccountIds(revisionAccountIds).filter(
       (accountId) => !this.revisionAccountIds.has(String(accountId))
     );
-    const reservation = count + newRevisionAccountIds.length;
+    const revisionWrites = this.deferSyncRevisions ? 0 : newRevisionAccountIds.length;
+    const revisionBytes = this.deferSyncRevisions
+      ? 0
+      : newRevisionAccountIds.length * SYNC_STATE_WRITE_BYTE_RESERVATION;
+    const reservation = count + revisionWrites;
     this.budget.writes += reservation;
-    this.budget.writeBytes +=
-      writeBytes + newRevisionAccountIds.length * SYNC_STATE_WRITE_BYTE_RESERVATION;
+    this.budget.writeBytes += writeBytes + revisionBytes;
     if (this.budget.writes > this.limits.writes) {
       throw new Error("Group visibility batch exceeds the safe write limit");
     }
     if (this.budget.writeBytes > this.limits.writeBytes) {
       throw new Error("Group visibility batch exceeds the safe write byte limit");
     }
-    this.hooks.chargeWrites?.(
-      reservation,
-      writeBytes + newRevisionAccountIds.length * SYNC_STATE_WRITE_BYTE_RESERVATION
-    );
+    this.hooks.chargeWrites?.(reservation, writeBytes + revisionBytes);
     for (const accountId of newRevisionAccountIds) {
       this.revisionAccountIds.set(String(accountId), accountId);
     }
@@ -535,6 +587,9 @@ export class GroupVisibilityWriteBatch {
     );
     nextGroup = {
       ...nextGroup,
+      ...(value.owner_email
+        ? { owner_email: value.owner_email.trim().toLowerCase() }
+        : {}),
       members: scrubInactiveAccountMembers(nextGroup.members, previousGroup.members, {
         byMemberId: this.memberAccountCache,
         byAccountId: this.accountByIdCache
@@ -547,20 +602,35 @@ export class GroupVisibilityWriteBatch {
       ...visibleAccountIds,
       ...existingRows.map((row) => row.account_id)
     ]);
+    const visibilityUpdatedAt = Date.now();
+    const patch: GroupPatch = {
+      ...value,
+      ...(value.owner_email ? { owner_email: value.owner_email.trim().toLowerCase() } : {}),
+      members: nextGroup.members
+    };
     this.reserveWrites(
       1 + plan.inserts.length + plan.updates.length + plan.deletes.length,
       revisionAccountIds,
-      convexValueSize(nextGroup) + visibilityPlanWriteBytes(nextGroup, plan)
+      convexValueSize(nextGroup) + visibilityPlanWriteBytes(nextGroup, plan, visibilityUpdatedAt)
     );
 
-    if (!this.dryRun) {
-      await this.ctx.db.patch(groupId, {
-        ...value,
-        ...(value.owner_email ? { owner_email: value.owner_email.trim().toLowerCase() } : {}),
-        members: nextGroup.members
-      });
-      await this.applyVisibilityPlan(nextGroup, plan);
+    const prepared = { groupId, patch, nextGroup, visibilityPlan: plan, visibilityUpdatedAt };
+    if (this.dryRun) this.preparedPatches.push(prepared);
+    else await applyPreparedGroupPatch(this.ctx, prepared);
+  }
+
+  /** @internal */
+  takePreparedPatchBatch(): PreparedGroupVisibilityPatchBatch {
+    this.assertOpen();
+    if (!this.dryRun || !this.deferSyncRevisions) {
+      throw new Error("Only deferred patch batches can be prepared");
     }
+    this.hasFlushed = true;
+    return {
+      [preparedGroupVisibilityPatchBatchBrand]: true,
+      patches: this.preparedPatches,
+      revisionAccountIds: Array.from(this.revisionAccountIds.values())
+    };
   }
 
   async delete(groupId: Id<"groups">): Promise<void> {
@@ -627,6 +697,33 @@ export class GroupVisibilityWriteBatch {
       }
     }
   }
+}
+
+export async function prepareGroupVisibilityPatchBatch(
+  ctx: MutationCtx,
+  operations: readonly GroupVisibilityPatchOperation[],
+  options: Omit<GroupVisibilityBatchOptions, "dryRun" | "deferSyncRevisions"> = {}
+): Promise<PreparedGroupVisibilityPatchBatch> {
+  const batch = new GroupVisibilityWriteBatch(ctx, {
+    ...options,
+    dryRun: true,
+    deferSyncRevisions: true
+  });
+  for (const operation of operations) await batch.patch(operation.groupId, operation.patch);
+  return batch.takePreparedPatchBatch();
+}
+
+export function preparedGroupVisibilityPatchBatchRevisionAccountIds(
+  prepared: PreparedGroupVisibilityPatchBatch
+): readonly Id<"accounts">[] {
+  return prepared.revisionAccountIds;
+}
+
+export async function applyPreparedGroupVisibilityPatchBatch(
+  ctx: MutationCtx,
+  prepared: PreparedGroupVisibilityPatchBatch
+): Promise<void> {
+  for (const patch of prepared.patches) await applyPreparedGroupPatch(ctx, patch);
 }
 
 export async function deleteGroupVisibilityRowWithRevision(

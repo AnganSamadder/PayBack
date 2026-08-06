@@ -2,9 +2,11 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { Doc, Id } from "../_generated/dataModel";
 import {
+  applyPreparedExpenseWriteBatch,
   applyExpenseWriteBatch,
   MAX_EXPENSE_VIEWERS,
   MAX_EXPENSE_VISIBILITY_ROWS,
+  prepareExpenseWriteBatch,
   preflightExpenseWriteBatch
 } from "../expenseWrites";
 import schema from "../schema";
@@ -50,6 +52,61 @@ function expenseValue(ownerId: Id<"accounts">, id: string, updatedAt = 10): Expe
 }
 
 describe("central expense writes", () => {
+  test("applies a prepared expense batch without replanning or changing timestamps", async () => {
+    const t = convexTest(schema, modules);
+    const charges = { writes: 0, writeBytes: 0 };
+    const fixture = await t.run(async (ctx) => {
+      const ownerId = await insertAccount(ctx, "prepared_owner");
+      const expenseId = await ctx.db.insert(
+        "expenses",
+        expenseValue(ownerId, "prepared_apply", 10)
+      );
+      const expense = await ctx.db.get(expenseId);
+      if (!expense) throw new Error("Expected prepared expense");
+      const prepared = await prepareExpenseWriteBatch(
+        ctx,
+        [
+          {
+            kind: "patch",
+            expense,
+            patch: { description: "Prepared", updated_at: 42 },
+            viewerAccountIds: [ownerId]
+          }
+        ],
+        {
+          budget: {
+            chargeWrites: (count, bytes) => {
+              charges.writes += count;
+              charges.writeBytes += bytes;
+            }
+          }
+        }
+      );
+      const writeOnlyDb = new Proxy(ctx.db, {
+        get(target, property) {
+          if (property === "get" || property === "query") {
+            throw new Error(`Prepared expense apply attempted ${String(property)}`);
+          }
+          const value = Reflect.get(target, property);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+      });
+      await applyPreparedExpenseWriteBatch({ ...ctx, db: writeOnlyDb } as typeof ctx, prepared);
+      return { expenseId };
+    });
+
+    const state = await t.run(async (ctx) => ({
+      expense: await ctx.db.get(fixture.expenseId),
+      visibility: await ctx.db.query("user_expenses").collect(),
+      revisions: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(state.expense).toMatchObject({ description: "Prepared", updated_at: 42 });
+    expect(state.visibility).toMatchObject([{ expense_id: "prepared_apply", updated_at: 42 }]);
+    expect(state.revisions).toEqual([]);
+    expect(charges.writes).toBe(2);
+    expect(charges.writeBytes).toBeGreaterThan(0);
+  });
+
   test("preflight reports expense, visibility, and revision writes without applying them", async () => {
     const t = convexTest(schema, modules);
     const charges = { queries: 0, rows: 0, writes: 0, writeBytes: 0 };

@@ -1,15 +1,80 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import {
+  applyPreparedGroupVisibilityPatchBatch,
   deleteGroupWithVisibility,
   GroupVisibilityWriteBatch,
   insertGroupWithVisibility,
+  prepareGroupVisibilityPatchBatch,
   patchGroupWithVisibility
 } from "../groupVisibility";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
 describe("group visibility writes", () => {
+  test("applies prepared group patches without replanning and preserves planned timestamps", async () => {
+    const t = convexTest(schema, modules);
+    const charges = { writes: 0, writeBytes: 0 };
+    const fixture = await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "prepared_group_owner_auth",
+        email: "prepared-group-owner@test.com",
+        display_name: "Owner",
+        member_id: "prepared_group_owner_member",
+        created_at: 1
+      });
+      const groupId = await ctx.db.insert("groups", {
+        id: "prepared_group",
+        name: "Before",
+        members: [{ id: "prepared_group_owner_member", name: "Owner" }],
+        owner_email: "prepared-group-owner@test.com",
+        owner_account_id: "prepared_group_owner_auth",
+        owner_id: ownerId,
+        created_at: 1,
+        updated_at: 1
+      });
+      const prepared = await prepareGroupVisibilityPatchBatch(
+        ctx,
+        [{ groupId, patch: { name: "After", updated_at: 77 } }],
+        {
+          budget: {
+            chargeWrites: (count, bytes) => {
+              charges.writes += count;
+              charges.writeBytes += bytes;
+            }
+          }
+        }
+      );
+      const writeOnlyDb = new Proxy(ctx.db, {
+        get(target, property) {
+          if (property === "get" || property === "query") {
+            throw new Error(`Prepared group apply attempted ${String(property)}`);
+          }
+          const value = Reflect.get(target, property);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+      });
+      await applyPreparedGroupVisibilityPatchBatch(
+        { ...ctx, db: writeOnlyDb } as typeof ctx,
+        prepared
+      );
+      return { groupId };
+    });
+
+    const state = await t.run(async (ctx) => ({
+      group: await ctx.db.get(fixture.groupId),
+      visibility: await ctx.db.query("group_visibility").collect(),
+      revisions: await ctx.db.query("account_sync_state").collect()
+    }));
+    expect(state.group).toMatchObject({ name: "After", updated_at: 77 });
+    expect(state.visibility).toHaveLength(1);
+    expect(state.visibility[0]?.group_updated_at).toBe(77);
+    expect(state.visibility[0]?.created_at).toBe(state.visibility[0]?.updated_at);
+    expect(state.revisions).toEqual([]);
+    expect(charges.writes).toBe(2);
+    expect(charges.writeBytes).toBeGreaterThan(0);
+  });
+
   test("dry-run batches report the complete patch budget without writing", async () => {
     const t = convexTest(schema, modules);
     const charges = { queries: 0, rows: 0, writes: 0, writeBytes: 0 };

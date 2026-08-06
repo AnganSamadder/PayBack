@@ -6,6 +6,7 @@ import { getRandomAvatarColor } from "./utils";
 import {
   accountLinkingRows,
   applyCanonicalReferenceRewrite,
+  prepareCanonicalReferenceSyncRevisions,
   assertMergeWorstCaseReadWithinLimit,
   chargeLinkingQueries,
   collectSequentialLinkingRows,
@@ -17,6 +18,10 @@ import {
   type LinkingReadBudget,
   type PreparedInviteMergeSource
 } from "./aliases";
+import {
+  applyPreparedAccountSyncRevisionBatch,
+  type PreparedAccountSyncRevisionBatch
+} from "./syncState";
 import {
   deterministicLinkingError,
   IDENTITY_MATERIALIZATION_KEY,
@@ -894,6 +899,7 @@ function definedConvexValue(value: Record<string, unknown>): Value {
 export type LinkClaimPlan = {
   selectedFriendMerge?: PreparedInviteMergeSource;
   referenceRewrite: CanonicalReferenceRewritePlan;
+  syncRevisions: PreparedAccountSyncRevisionBatch;
   aliasInsert: AliasInsertPlan | null;
   staleFenceDeletes: Doc<"orphan_cleanup_member_fences">[];
   claimantAccountId: Id<"accounts">;
@@ -1081,6 +1087,14 @@ export async function prepareClaimForUser(
     creatorAccount,
     normalizeMemberIds([linkContext.targetMemberId, ...ownerLocalTargetAliases]),
     user,
+    budget
+  );
+  const syncRevisions = await prepareCanonicalReferenceSyncRevisions(
+    ctx,
+    [
+      ...(selectedFriendMerge ? [selectedFriendMerge.referenceRewrite] : []),
+      referenceRewrite
+    ],
     budget
   );
   const { aliasInsert, staleFenceDeletes } = await prepareBudgetedAliasInsert(
@@ -1305,6 +1319,7 @@ export async function prepareClaimForUser(
   return {
     selectedFriendMerge,
     referenceRewrite,
+    syncRevisions,
     aliasInsert,
     staleFenceDeletes,
     claimantAccountId: user._id,
@@ -1324,8 +1339,11 @@ export async function prepareClaimForUser(
 }
 
 export async function applyClaimForUser(ctx: MutationCtx, plan: LinkClaimPlan) {
-  await plan.selectedFriendMerge?.applyCanonicalRewrite();
+  if (plan.selectedFriendMerge) {
+    await applyCanonicalReferenceRewrite(ctx, plan.selectedFriendMerge.referenceRewrite);
+  }
   await applyCanonicalReferenceRewrite(ctx, plan.referenceRewrite);
+  await applyPreparedAccountSyncRevisionBatch(ctx, plan.syncRevisions);
   for (const fence of plan.staleFenceDeletes) await ctx.db.delete(fence._id);
   if (plan.aliasInsert) {
     await ctx.db.insert("member_aliases", plan.aliasInsert);

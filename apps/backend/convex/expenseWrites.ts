@@ -2,7 +2,12 @@ import { getConvexSize, type Value } from "convex/values";
 import type { PaginationResult } from "convex/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx } from "./_generated/server";
-import { bumpAccountSyncRevisions } from "./syncState";
+import {
+  applyPreparedAccountSyncRevisionBatch,
+  bumpAccountSyncRevisions,
+  prepareAccountSyncRevisionBatch,
+  preparedAccountSyncRevisionBatchMetrics
+} from "./syncState";
 
 export const MAX_EXPENSE_VIEWERS = 65;
 export const MAX_EXPENSE_VISIBILITY_ROWS = 128;
@@ -79,12 +84,6 @@ type PreparedOperation = {
   rowsByAccount: Map<string, VisibilityAccountRows>;
   rowsToDelete: Map<string, Doc<"user_expenses">>;
   revisionAccountIds: Set<Id<"accounts">>;
-};
-
-type PreparedRevisionWrite = {
-  accountId: Id<"accounts">;
-  existing: Doc<"account_sync_state"> | null;
-  nextValue: Omit<Doc<"account_sync_state">, "_id" | "_creationTime">;
 };
 
 type PreflightCache = {
@@ -473,38 +472,6 @@ async function applyVisibilityPlan(
   }
 }
 
-async function prepareRevisionWrites(
-  ctx: MutationCtx,
-  accountIds: readonly Id<"accounts">[],
-  budget: ReadBudget
-): Promise<PreparedRevisionWrite[]> {
-  const now = Date.now();
-  const writes: PreparedRevisionWrite[] = [];
-  for (const accountId of accountIds) {
-    chargeQuery(budget);
-    const matches = await ctx.db
-      .query("account_sync_state")
-      .withIndex("by_account_id", (query) => query.eq("account_id", accountId))
-      .take(2);
-    chargeRows(budget, matches as Value[]);
-    if (matches.length > 1) {
-      throw new Error(`Sync maintenance required: duplicate account state ${String(accountId)}`);
-    }
-    const existing = matches[0] ?? null;
-    writes.push({
-      accountId,
-      existing,
-      nextValue: {
-        account_id: accountId,
-        groups_revision: existing?.groups_revision ?? 0,
-        expenses_revision: (existing?.expenses_revision ?? 0) + 1,
-        updated_at: now
-      }
-    });
-  }
-  return writes;
-}
-
 function visibilityWriteBytes(plan: PreparedOperation): number {
   let bytes = Array.from(plan.rowsToDelete.values()).reduce(
     (total, row) => total + getConvexSize(row as Value),
@@ -548,35 +515,17 @@ function expenseWriteBytes(plan: PreparedOperation): number {
   return convexValueSize({ ...operation.expense, ...operation.patch, updated_at: plan.updatedAt });
 }
 
-function revisionWriteBytes(writes: readonly PreparedRevisionWrite[]): number {
-  return writes.reduce(
-    (total, write) =>
-      total +
-      (write.existing
-        ? convexValueSize({ ...write.existing, ...write.nextValue })
-        : insertedDocumentSize(write.nextValue)),
-    0
-  );
-}
+const preparedExpenseWriteBatchBrand: unique symbol = Symbol("PreparedExpenseWriteBatch");
 
-async function applyRevisionWrites(
-  ctx: MutationCtx,
-  writes: readonly PreparedRevisionWrite[]
-): Promise<void> {
-  for (const write of writes) {
-    if (write.existing) await ctx.db.patch(write.existing._id, write.nextValue);
-    else await ctx.db.insert("account_sync_state", write.nextValue);
-  }
-}
-
-type PreparedExpenseWriteBatch = {
-  plans: PreparedOperation[];
-  revisionWrites: PreparedRevisionWrite[];
-  writeCount: number;
-  writeBytes: number;
+export type PreparedExpenseWriteBatch = {
+  readonly [preparedExpenseWriteBatchBrand]: true;
+  readonly plans: readonly PreparedOperation[];
+  readonly revisionAccountIds: readonly Id<"accounts">[];
+  readonly writeCount: number;
+  readonly writeBytes: number;
 };
 
-async function prepareExpenseWriteBatch(
+export async function prepareExpenseWriteBatch(
   ctx: MutationCtx,
   operations: readonly ExpenseWriteOperation[],
   options: ExpenseWriteBatchOptions = {}
@@ -616,24 +565,53 @@ async function prepareExpenseWriteBatch(
       revisionAccountIds.set(String(accountId), accountId);
     }
   }
-  const revisionWrites = await prepareRevisionWrites(
-    ctx,
-    Array.from(revisionAccountIds.values()),
-    budget
-  );
-  writeCount += revisionWrites.length;
-  if (writeCount > MAX_EXPENSE_WRITE_WRITES) {
+  const revisionIds = Array.from(revisionAccountIds.values());
+  if (writeCount + revisionIds.length > MAX_EXPENSE_WRITE_WRITES) {
     throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_WRITES} writes`);
   }
-  const writeBytes =
-    plans.reduce((total, plan) => total + expenseWriteBytes(plan) + visibilityWriteBytes(plan), 0) +
-    revisionWriteBytes(revisionWrites);
+  const writeBytes = plans.reduce(
+    (total, plan) => total + expenseWriteBytes(plan) + visibilityWriteBytes(plan),
+    0
+  );
   if (writeBytes > MAX_EXPENSE_WRITE_BYTES) {
     throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_BYTES} write bytes`);
   }
   options.budget?.chargeWrites?.(writeCount, writeBytes);
 
-  return { plans, revisionWrites, writeCount, writeBytes };
+  return {
+    [preparedExpenseWriteBatchBrand]: true,
+    plans,
+    revisionAccountIds: revisionIds,
+    writeCount,
+    writeBytes
+  };
+}
+
+export function preparedExpenseWriteBatchRevisionAccountIds(
+  prepared: PreparedExpenseWriteBatch
+): readonly Id<"accounts">[] {
+  return prepared.revisionAccountIds;
+}
+
+async function prepareExpenseSyncRevisions(
+  ctx: MutationCtx,
+  prepared: PreparedExpenseWriteBatch,
+  options: ExpenseWriteBatchOptions
+) {
+  const revisions = await prepareAccountSyncRevisionBatch(
+    ctx,
+    { expenses: prepared.revisionAccountIds },
+    options.budget,
+    MAX_EXPENSE_WRITE_WRITES
+  );
+  const revisionMetrics = preparedAccountSyncRevisionBatchMetrics(revisions);
+  if (prepared.writeCount + revisionMetrics.writes > MAX_EXPENSE_WRITE_WRITES) {
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_WRITES} writes`);
+  }
+  if (prepared.writeBytes + revisionMetrics.writeBytes > MAX_EXPENSE_WRITE_BYTES) {
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_BYTES} write bytes`);
+  }
+  return revisions;
 }
 
 export async function preflightExpenseWriteBatch(
@@ -641,17 +619,16 @@ export async function preflightExpenseWriteBatch(
   operations: readonly ExpenseWriteOperation[],
   options: ExpenseWriteBatchOptions = {}
 ): Promise<void> {
-  await prepareExpenseWriteBatch(ctx, operations, options);
+  const prepared = await prepareExpenseWriteBatch(ctx, operations, options);
+  await prepareExpenseSyncRevisions(ctx, prepared, options);
 }
 
-export async function applyExpenseWriteBatch(
+export async function applyPreparedExpenseWriteBatch(
   ctx: MutationCtx,
-  operations: readonly ExpenseWriteOperation[]
+  prepared: PreparedExpenseWriteBatch
 ): Promise<ExpenseWriteBatchResult> {
-  const { plans, revisionWrites } = await prepareExpenseWriteBatch(ctx, operations);
-
   const operationResults: ExpenseWriteBatchResult["operations"] = [];
-  for (const plan of plans) {
+  for (const plan of prepared.plans) {
     const { operation } = plan;
     if (operation.kind === "insert") {
       const expenseId = await ctx.db.insert("expenses", {
@@ -714,8 +691,18 @@ export async function applyExpenseWriteBatch(
     });
   }
 
-  await applyRevisionWrites(ctx, revisionWrites);
-  return { operations: operationResults, revisionsBumped: revisionWrites.length };
+  return { operations: operationResults, revisionsBumped: 0 };
+}
+
+export async function applyExpenseWriteBatch(
+  ctx: MutationCtx,
+  operations: readonly ExpenseWriteOperation[]
+): Promise<ExpenseWriteBatchResult> {
+  const prepared = await prepareExpenseWriteBatch(ctx, operations);
+  const revisions = await prepareExpenseSyncRevisions(ctx, prepared, {});
+  const result = await applyPreparedExpenseWriteBatch(ctx, prepared);
+  const revisionsBumped = await applyPreparedAccountSyncRevisionBatch(ctx, revisions);
+  return { ...result, revisionsBumped };
 }
 
 export async function deleteUserExpenseRowWithRevision(

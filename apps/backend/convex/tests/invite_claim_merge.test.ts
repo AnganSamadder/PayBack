@@ -2247,7 +2247,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     expect(state.aliases).toEqual([]);
   });
 
-  test("rejects two individually safe invite rewrites when their aggregate work is unsafe", async () => {
+  test("applies two prepared invite rewrites with one combined sync revision per account", async () => {
     const t = convexTest(schema, modules);
     const now = Date.now();
 
@@ -2313,7 +2313,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
         id: "aggregate_two_rewrite_invite",
         mergeLocalFriendMemberId: "creator_local_duplicate"
       })
-    ).rejects.toThrow("Friend merge is too large to complete safely");
+    ).resolves.toMatchObject({ canonical_member_id: "claimer_member" });
 
     const state = await t.run(async (ctx) => ({
       token: await ctx.db
@@ -2353,20 +2353,25 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
       expenseVisibility: await ctx.db.query("user_expenses").collect(),
       syncStates: await ctx.db.query("account_sync_state").collect()
     }));
-    expect(state.token?.claimed_by).toBeUndefined();
-    expect(state.claimant?.alias_member_ids).toBeUndefined();
-    expect(state.aliases).toEqual([]);
-    expect(state.localFriend).not.toBeNull();
-    expect(state.creatorGroup?.members.map((member) => member.id)).toContain(
-      "claimer_legacy_member"
+    expect(state.token?.claimed_by).toBe("claimer_auth");
+    expect(state.claimant?.alias_member_ids).toContain("claimer_legacy_member");
+    expect(state.aliases).toMatchObject([
+      { alias_member_id: "claimer_legacy_member", canonical_member_id: "claimer_member" }
+    ]);
+    expect(state.localFriend).toBeNull();
+    expect(state.creatorGroup?.members.map((member) => member.id)).toContain("claimer_member");
+    expect(state.claimerGroup?.members.map((member) => member.id)).toContain("creator_member");
+    expect(state.creatorExpense?.participant_member_ids).toContain("claimer_member");
+    expect(state.claimerExpense?.participant_member_ids).toContain("creator_member");
+    expect(state.groupVisibility).toHaveLength(4);
+    expect(state.expenseVisibility).toHaveLength(4);
+    expect(state.syncStates).toHaveLength(2);
+    expect(new Set(state.syncStates.map((syncState) => String(syncState.account_id))).size).toBe(2);
+    expect(state.syncStates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ groups_revision: 1, expenses_revision: 1 }),
+        expect.objectContaining({ groups_revision: 1, expenses_revision: 1 })
+      ])
     );
-    expect(state.claimerGroup?.members.map((member) => member.id)).toContain(
-      "creator_local_duplicate"
-    );
-    expect(state.creatorExpense?.participant_member_ids).toContain("claimer_legacy_member");
-    expect(state.claimerExpense?.participant_member_ids).toContain("creator_local_duplicate");
-    expect(state.groupVisibility).toEqual([]);
-    expect(state.expenseVisibility).toEqual([]);
-    expect(state.syncStates).toEqual([]);
   }, 30_000);
 });
