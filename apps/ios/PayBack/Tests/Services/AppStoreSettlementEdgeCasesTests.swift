@@ -514,6 +514,62 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertTrue(sut.isSettlementPending(for: originalExpense.id))
     }
 
+    func testSettlementRetrySupersededByNewerMutationDoesNotInvokeBackendAgain() async throws {
+        sut.session = UserSession(
+            account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        )
+        let originalExpense = settlementExpense(description: "Dinner")
+        let unsettledExpense = settlementExpense(originalExpense, settled: false)
+        sut.expenses = [originalExpense]
+        await mockExpenseCloudService.enqueueSettlementFailure(.networkUnavailable)
+        await mockExpenseCloudService.enqueueSettlementSuccess(unsettledExpense)
+
+        let olderOperation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(originalExpense)
+        }
+        let olderRequestStarted = await waitForSettlementInvocation(count: 1)
+        XCTAssertTrue(olderRequestStarted)
+
+        let newerOperation = Task { @MainActor in
+            try await sut.unsettleExpenseForCurrentUser(originalExpense)
+        }
+        let newerRequestStarted = await waitForSettlementInvocation(count: 2)
+        XCTAssertTrue(newerRequestStarted)
+
+        try await newerOperation.value
+        try await olderOperation.value
+
+        let invocationCount = await mockExpenseCloudService.currentSettlementInvocationCount()
+        XCTAssertEqual(invocationCount, 2)
+        XCTAssertEqual(sut.expenses, [unsettledExpense])
+    }
+
+    func testSettlementRetryAfterAccountSwitchDoesNotInvokeBackendAgain() async throws {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "Account B")
+        let expenseA = settlementExpense(description: "Account A dinner")
+        let expenseB = settlementExpense(description: "Account B dinner")
+        sut.session = UserSession(account: accountA)
+        sut.expenses = [expenseA]
+        await mockExpenseCloudService.enqueueSettlementFailure(.networkUnavailable)
+
+        let operation = Task { @MainActor in
+            try await sut.settleExpenseForCurrentUser(expenseA)
+        }
+        let firstRequestStarted = await waitForSettlementInvocation(count: 1)
+        XCTAssertTrue(firstRequestStarted)
+
+        sut.session = UserSession(account: accountB)
+        sut.expenses = [expenseB]
+        mockPersistence.save(AppData(groups: [], expenses: [expenseB]))
+        try await operation.value
+
+        let invocationCount = await mockExpenseCloudService.currentSettlementInvocationCount()
+        XCTAssertEqual(invocationCount, 1)
+        XCTAssertEqual(sut.expenses, [expenseB])
+        XCTAssertEqual(mockPersistence.load().expenses, [expenseB])
+    }
+
     private func settlementExpense(description: String) -> Expense {
         Expense(
             groupId: UUID(),

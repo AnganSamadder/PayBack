@@ -1882,7 +1882,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
         do {
             let canonicalExpense = try await retryPolicy.execute {
-                try await self.expenseCloudService.setSettlementState(
+                guard self.isCurrentSettlementMutation(context) else {
+                    throw CancellationError()
+                }
+                return try await self.expenseCloudService.setSettlementState(
                     expenseId: expenseId,
                     memberIds: memberIds,
                     settled: settled
