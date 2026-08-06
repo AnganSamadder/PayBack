@@ -87,6 +87,37 @@ test("resolveLinkedAccountsForMemberIds rejects an oversized caller-visible frie
   ).rejects.toThrow("caller-visible identity surface exceeds");
 });
 
+test("resolveLinkedAccountsForMemberIds rejects a byte-heavy caller surface deterministically", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "caller_auth",
+      email: "caller@example.com",
+      display_name: "Caller",
+      member_id: "caller_member",
+      created_at: 1
+    });
+    for (let index = 0; index < 4; index += 1) {
+      await ctx.db.insert("account_friends", {
+        account_email: "caller@example.com",
+        member_id: `large_friend_${index}`,
+        name: `Friend ${index} ${"x".repeat(300_000)}`,
+        profile_avatar_color: "#123456",
+        has_linked_account: false,
+        status: "friend",
+        updated_at: 1
+      });
+    }
+  });
+  await markLookupMaterializationsReady(t);
+
+  await expect(
+    t
+      .withIdentity(identity("caller@example.com", "caller_auth"))
+      .query(api.users.resolveLinkedAccountsForMemberIds, { memberIds: ["caller_member"] })
+  ).rejects.toThrow("caller-visible identity surface exceeds");
+});
+
 test("resolveLinkedAccountsForMemberIds resolves an authorized shared-group alias", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
