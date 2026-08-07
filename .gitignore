@@ -31,8 +31,6 @@ xcuserdata/
 
 # CocoaPods
 Pods/
-*.xcworkspace
-!default.xcworkspace
 
 # Carthage
 Carthage/Build/
@@ -136,16 +134,11 @@ apps/ios/designs/
 # Helper Scripts
 node_modules/
 scripts/node_modules/
-bun.lock
 
 # Monorepo build artifacts
 apps/web/playwright-report/
 apps/web/test-results/
 apps/web/dist/
-
-# XcodeGen
-*.xcodeproj
-*.xcworkspace
 
 # Xcode/SwiftPM local checkouts (Xcode-managed, generated locally)
 LocalPackages/
