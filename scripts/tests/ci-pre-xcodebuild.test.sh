@@ -23,7 +23,8 @@ printf '%s\n' \
 	'exit 1' >"$TEST_BIN/bunx"
 printf '%s\n' \
 	'#!/bin/sh' \
-	'exit 0' >"$TEST_BIN/xcrun"
+	'echo "Simulator tooling is unavailable before the Test action" >&2' \
+	'exit 1' >"$TEST_BIN/xcrun"
 printf '%s\n' \
 	'#!/bin/sh' \
 	'exit 0' >"$TEST_ROOT/ci_scripts/bin/xcodebuild"
@@ -32,16 +33,15 @@ chmod +x "$TEST_BIN/bunx" "$TEST_BIN/xcrun" "$TEST_ROOT/ci_scripts/bin/xcodebuil
 run_prebuild() {
 	local tag="$1"
 	local output_file="$2"
-	env -u CI_PRIMARY_REPOSITORY_PATH \
+	env -u CI_PRIMARY_REPOSITORY_PATH -u CI_BUILD_NUMBER \
 		PATH="$TEST_BIN:$PATH" \
 		CI_TAG="$tag" \
-		CI_BUILD_NUMBER="123" \
 		CI_WORKFLOW="Beta Release" \
 		CI_XCODE_PROJECT="PayBack.xcodeproj" \
 		CI_XCODE_SCHEME="PayBack" \
-		CI_XCODEBUILD_ACTION="archive" \
+		CI_XCODEBUILD_ACTION="test" \
 		CI_PRODUCT_PLATFORM="iOS" \
-		bash "$TEST_ROOT/ci_scripts/ci_pre_xcodebuild.sh" >"$output_file" 2>&1
+		sh "$TEST_ROOT/ci_scripts/ci_pre_xcodebuild.sh" >"$output_file" 2>&1
 }
 
 OUTPUT_FILE="$TEMP_DIR/output.log"
