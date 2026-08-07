@@ -10,6 +10,8 @@ import Foundation
 /// | Release      | External TestFlight / App Store | ❌ | ❌ | Prod |
 enum AppConfig {
 
+    static let clerkPublishableKey = "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA=="
+
     // MARK: - Build Detection
 
     /// True when built with DEBUG compiler flag

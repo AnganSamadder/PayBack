@@ -10,6 +10,44 @@ import XCTest
 ///
 /// Related Requirements: R2
 final class SettlementLogicTests: XCTestCase {
+    func testGroupSettleModalKeepsFailedBatchVisibleWithActionableError() throws {
+        let payBackDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = payBackDirectory
+            .appendingPathComponent("Sources/Features/Groups/GroupDetailView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let settlementFunction = try XCTUnwrap(
+            source.components(separatedBy: "private func settleSelectedExpenses() async {").last?
+                .components(separatedBy: "// MARK: - AddGroupMemberSheet").first
+        )
+
+        XCTAssertTrue(source.contains(".alert(\"Unable to Settle Expenses\""))
+        XCTAssertTrue(settlementFunction.contains("settlementErrorMessage ="))
+        XCTAssertTrue(settlementFunction.contains("return"))
+        XCTAssertFalse(settlementFunction.contains("Continue settling remaining expenses"))
+    }
+
+    func testTotalToSettleUsesCurrentUsersUnsettledShareInsteadOfExpenseTotal() {
+        let me = UUID()
+        let other = UUID()
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Dinner",
+            totalAmount: 12.34,
+            paidByMemberId: other,
+            involvedMemberIds: [me, other],
+            splits: [
+                ExpenseSplit(memberId: me, amount: 6.17, isSettled: false),
+                ExpenseSplit(memberId: other, amount: 6.17, isSettled: false)
+            ]
+        )
+
+        let total = SettlementAmountLogic.totalToSettle(expenses: [expense]) { $0 == me }
+
+        XCTAssertEqual(total, 6.17, accuracy: 0.001)
+    }
 
     // MARK: - Test Helpers
 

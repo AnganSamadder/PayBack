@@ -42,6 +42,22 @@ private enum AddExpenseAlert: Identifiable {
             return "cannotSave-\(message)"
         }
     }
+
+    var title: String {
+        switch self {
+        case .duplicateExpense: return "Duplicate Expense?"
+        case .cannotSave: return "Can't Save Yet"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .duplicateExpense:
+            return "This looks like a duplicate of an existing expense in this group. Are you sure you want to save it?"
+        case .cannotSave(let message):
+            return message
+        }
+    }
 }
 
 struct AddExpenseView: View {
@@ -76,6 +92,7 @@ struct AddExpenseView: View {
     @State private var showSubexpenses: Bool = false
 
     @State private var showNotesSheet: Bool = false
+    @State private var notesText: String = ""
     @State private var activeAlert: AddExpenseAlert?
     @State private var showSwipeSaveConfirmOverlay: Bool = false
     @State private var isSaving: Bool = false
@@ -101,26 +118,6 @@ struct AddExpenseView: View {
     var body: some View {
         GeometryReader { geometry in
             mainContent(geometry: geometry)
-                .alert(item: $activeAlert) { alert in
-                    switch alert {
-                    case .duplicateExpense:
-                        return Alert(
-                            title: Text("Duplicate Expense?"),
-                            message: Text("This looks like a duplicate of an existing expense in this group. Are you sure you want to save it?"),
-                            primaryButton: .default(Text("Save Anyway")) {
-                                skipDupeCheck = true
-                                saveTapped()
-                            },
-                            secondaryButton: .cancel()
-                        )
-                    case .cannotSave(let message):
-                        return Alert(
-                            title: Text("Can't Save Yet"),
-                            message: Text(message),
-                            dismissButton: .default(Text("OK"))
-                        )
-                    }
-                }
                 .overlay(alignment: .bottom) {
                     if showSwipeSaveConfirmOverlay {
                         swipeSaveConfirmOverlay
@@ -134,10 +131,31 @@ struct AddExpenseView: View {
                 .offset(y: dragOffset)
                 .ignoresSafeArea()
                 .compositingGroup()
-                .dismissKeyboardOnTap()
                 .onAppear {
                     resolveInitialPayerIfNeeded()
                 }
+        }
+        .alert(
+            activeAlert?.title ?? "",
+            isPresented: Binding(
+                get: { activeAlert != nil },
+                set: { if !$0 { activeAlert = nil } }
+            )
+        ) {
+            switch activeAlert {
+            case .duplicateExpense:
+                Button("Cancel", role: .cancel) { }
+                Button("Save Anyway") {
+                    skipDupeCheck = true
+                    saveTapped()
+                }
+            case .cannotSave:
+                Button("OK") { }
+            case nil:
+                EmptyView()
+            }
+        } message: {
+            Text(activeAlert?.message ?? "")
         }
     }
 
@@ -323,7 +341,8 @@ struct AddExpenseView: View {
             contextKind: expenseContextKind,
             participantNames: Dictionary(uniqueKeysWithValues: participants.map { ($0.id, $0.name) }),
             // Filter out zero-amount subexpenses; a single item is semantically a plain expense
-            subexpenses: { let f = subexpenses.filter { $0.amount > 0.001 }; return f.count >= 2 ? f : nil }()
+            subexpenses: { let f = subexpenses.filter { $0.amount > 0.001 }; return f.count >= 2 ? f : nil }(),
+            notes: notesText
         )
 
         isSaving = true
@@ -335,7 +354,7 @@ struct AddExpenseView: View {
             close()
         } catch {
             Haptics.notify(.error)
-            activeAlert = .cannotSave(message: error.localizedDescription)
+            activeAlert = .cannotSave(message: AddExpenseFlowLogic.saveFailureMessage(for: error))
         }
     }
 
@@ -427,7 +446,13 @@ struct AddExpenseView: View {
 
             Spacer()
 
-            BottomMetaBubble(title: bottomMetaTitle, group: group, date: $date, showNotes: $showNotesSheet)
+            BottomMetaBubble(
+                title: bottomMetaTitle,
+                group: group,
+                date: $date,
+                showNotes: $showNotesSheet,
+                notes: $notesText
+            )
                 .frame(maxWidth: AppMetrics.AddExpense.contentMaxWidth)
                 .padding(.bottom, AppMetrics.AddExpense.bottomInnerPadding)
                 .padding(.bottom, 20)
@@ -643,7 +668,7 @@ private struct CenterEntryBubble: View {
     @Binding var showSubexpenses: Bool
 
     private let supported = ["USD","EUR","GBP","JPY","INR","CAD","AUD","BTC","ETH"]
-    @FocusState private var focusedSubexpenseId: UUID?
+    @State private var focusedSubexpenseId: UUID?
     @FocusState private var isDescriptionFocused: Bool
 
     var body: some View {
@@ -791,7 +816,7 @@ private struct SubexpensesEditor: View {
     @Binding var subexpenses: [Subexpense]
     @Binding var amountText: String
     let currency: String
-    var focusedId: FocusState<UUID?>.Binding
+    @Binding var focusedId: UUID?
 
     var body: some View {
         VStack(spacing: 8) {
@@ -803,7 +828,7 @@ private struct SubexpensesEditor: View {
                             SubexpenseRow(
                                 subexpense: $sub,
                                 currency: currency,
-                                focusedId: focusedId,
+                                focusedId: $focusedId,
                                 onDelete: {
                                     withAnimation(AppAnimation.springy) {
                                         subexpenses.removeAll { $0.id == sub.id }
@@ -818,7 +843,7 @@ private struct SubexpensesEditor: View {
                                         if index < subexpenses.count - 1 {
                                             // Move to next existing subexpense
                                             let nextId = subexpenses[index + 1].id
-                                            focusedId.wrappedValue = nextId
+                                            focusedId = nextId
                                             withAnimation {
                                                 proxy.scrollTo(nextId, anchor: .bottom)
                                             }
@@ -859,7 +884,7 @@ private struct SubexpensesEditor: View {
 
         if shouldFocus {
             // Set focus immediately
-            focusedId.wrappedValue = newSub.id
+            focusedId = newSub.id
         }
 
         // Scroll to new item after a brief delay to let view update
@@ -886,14 +911,13 @@ private struct SubexpensesEditor: View {
 private struct SubexpenseRow: View {
     @Binding var subexpense: Subexpense
     let currency: String
-    var focusedId: FocusState<UUID?>.Binding
+    @Binding var focusedId: UUID?
     let onDelete: () -> Void
     let onNext: () -> Void
     let onFocusLost: () -> Void
 
-    // Computed property to check if this row is focused
-    private var isThisRowFocused: Bool {
-        focusedId.wrappedValue == subexpense.id
+    private var isAmountFocused: Bool {
+        focusedId == subexpense.id
     }
 
     var body: some View {
@@ -909,14 +933,23 @@ private struct SubexpenseRow: View {
                     amount: $subexpense.amount,
                     currency: currency,
                     font: .system(size: 18, weight: .medium, design: .rounded),
-                    focusedId: focusedId,
-                    myId: subexpense.id
+                    onNext: onNext,
+                    externalFocus: Binding(
+                        get: { focusedId == subexpense.id },
+                        set: { isFocused in
+                            if isFocused {
+                                focusedId = subexpense.id
+                            } else if focusedId == subexpense.id {
+                                focusedId = nil
+                            }
+                        }
+                    )
                 )
 
                 Spacer()
 
                 // Delete button - sleek and themed
-                if isThisRowFocused || subexpense.amount > 0 {
+                if isAmountFocused || subexpense.amount > 0 {
                     Button(action: onDelete) {
                         Image(systemName: "xmark.circle.fill")
                             .font(.title3)
@@ -933,25 +966,8 @@ private struct SubexpenseRow: View {
                     .fill(Color(uiColor: .secondarySystemBackground))
             )
         }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                if isThisRowFocused {
-                    Button("Done") {
-                        focusedId.wrappedValue = nil
-                    }
-
-                    Spacer()
-
-                    Button("Next") {
-                        onNext()
-                    }
-                    .fontWeight(.semibold)
-                }
-            }
-        }
-        // Track when this row loses focus
-        .onChange(of: focusedId.wrappedValue) { oldVal, newVal in
-            if oldVal == subexpense.id && newVal != subexpense.id {
+        .onChange(of: focusedId) { oldValue, newValue in
+            if oldValue == subexpense.id, newValue != subexpense.id {
                 onFocusLost()
             }
         }
@@ -1214,6 +1230,30 @@ enum AddExpenseFlowLogic {
         return "Please fix the following before saving:\n\(details)"
     }
 
+    static func saveFailureMessage(for error: Error) -> String {
+        let normalizedMessage = error.localizedDescription.lowercased()
+        if normalizedMessage.contains("is not a confirmed friend") {
+            return "One or more participants are no longer confirmed friends. Reconnect them and try again."
+        }
+        if normalizedMessage.contains("identity maintenance required") {
+            return "PayBack is updating member links. Please wait a moment and try again."
+        }
+        let lostGroupAccessMessages = [
+            "group not found",
+            "forbidden: group access denied",
+            "not authorized for direct group",
+            "you are not a member of this group",
+            "expense group mismatch"
+        ]
+        if lostGroupAccessMessages.contains(where: normalizedMessage.contains) {
+            return "This group is no longer available to you. Go back and refresh your groups."
+        }
+
+        return error.userFacingMessage(
+            fallback: "We couldn't save this expense. Check your connection and try again."
+        )
+    }
+
     static func canSaveExpense(
         description: String,
         totalAmount: Double,
@@ -1394,7 +1434,6 @@ private struct SplitDetailView: View {
                 .accessibilityLabel("Done")
             }
         }
-        .dismissKeyboardOnTap()
     }
 
     private var participants: [GroupMember] {
@@ -1498,6 +1537,7 @@ private struct BottomMetaBubble: View {
     let group: SpendingGroup
     @Binding var date: Date
     @Binding var showNotes: Bool
+    @Binding var notes: String
 
     var body: some View {
         HStack(spacing: AppMetrics.AddExpense.bottomRowSpacing) {
@@ -1517,13 +1557,6 @@ private struct BottomMetaBubble: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
-            Button { /* camera placeholder */ } label: {
-                Image(systemName: "camera.fill")
-                    .symbolRenderingMode(.monochrome)
-                    .font(.title3)
-                    .foregroundColor(.primary)
-            }
-            .tint(.primary)
             Button { showNotes = true } label: {
                 Image(systemName: "note.text")
                     .symbolRenderingMode(.monochrome)
@@ -1536,16 +1569,20 @@ private struct BottomMetaBubble: View {
         .background(AppTheme.card)
         .clipShape(RoundedRectangle(cornerRadius: AppMetrics.AddExpense.bottomCornerRadius, style: .continuous))
         .sheet(isPresented: $showNotes) {
-            NavigationStack {
-                NotesEditor()
-            }
+            NotesEditor(text: $notes)
         }
     }
 }
 
 private struct NotesEditor: View {
     @Environment(\.dismiss) var dismiss
-    @State private var text: String = ""
+    @Binding var text: String
+    @State private var draft: String
+
+    init(text: Binding<String>) {
+        _text = text
+        _draft = State(initialValue: text.wrappedValue)
+    }
 
     var body: some View {
         NavigationStack {
@@ -1566,7 +1603,7 @@ private struct NotesEditor: View {
                 )
 
                 // Notes Input
-                TextEditor(text: $text)
+                TextEditor(text: $draft)
                     .frame(maxHeight: .infinity)
                     .padding(20)
                     .background(
@@ -1587,7 +1624,14 @@ private struct NotesEditor: View {
                         .padding(.bottom, 8)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        text = String(
+                            draft
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                                .prefix(2000)
+                        )
+                        dismiss()
+                    }
                         .fontWeight(.semibold)
                         .foregroundStyle(AppTheme.brand)
                         .padding(.bottom, 8)

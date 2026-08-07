@@ -221,13 +221,11 @@ final class ConvexInviteLinkDTOTests: XCTestCase {
             "error": null,
             "token": {
                 "id": "550e8400-e29b-41d4-a716-446655440000",
-                "creator_id": "user-abc",
                 "creator_email": "test@example.com",
                 "target_member_id": "661e8400-e29b-41d4-a716-446655440001",
                 "target_member_name": "Jane Doe",
                 "created_at": 1704067200000,
                 "expires_at": 1706745600000,
-                "claimed_by": null,
                 "claimed_at": null
             },
             "expense_preview": {
@@ -272,13 +270,11 @@ final class ConvexInviteLinkDTOTests: XCTestCase {
             "error": "Token already claimed",
             "token": {
                 "id": "550e8400-e29b-41d4-a716-446655440000",
-                "creator_id": "user-abc",
                 "creator_email": "test@example.com",
                 "target_member_id": "661e8400-e29b-41d4-a716-446655440001",
                 "target_member_name": "Jane Doe",
                 "created_at": 1704067200000,
                 "expires_at": 1706745600000,
-                "claimed_by": "claimer-456",
                 "claimed_at": 1705000000000
             },
             "expense_preview": null
@@ -290,7 +286,7 @@ final class ConvexInviteLinkDTOTests: XCTestCase {
         XCTAssertFalse(dto.is_valid)
         XCTAssertEqual(dto.error, "Token already claimed")
         XCTAssertNotNil(dto.token)
-        XCTAssertEqual(dto.token?.claimed_by, "claimer-456")
+        XCTAssertEqual(dto.token?.claimed_at, 1705000000000)
     }
 
     // MARK: - ConvexLinkAcceptResultDTO Tests

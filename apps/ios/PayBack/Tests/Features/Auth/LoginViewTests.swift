@@ -146,6 +146,36 @@ final class LoginViewTests: XCTestCase {
         XCTAssertFalse(signupCalled)
     }
 
+    func testPasswordResetViewsRenderWithCoordinatorDraftBindings() {
+        var code = "123"
+        var password = "NewPassword123!"
+        var confirmation = "NewPassword123!"
+
+        let codeView = CodeVerificationView(
+            code: Binding(get: { code }, set: { code = $0 }),
+            email: "reset@example.com",
+            isBusy: false,
+            errorMessage: nil,
+            title: "Reset your password",
+            onSubmit: { _ in },
+            onBack: {}
+        )
+        let passwordView = PasswordResetNewPasswordView(
+            password: Binding(get: { password }, set: { password = $0 }),
+            confirmation: Binding(get: { confirmation }, set: { confirmation = $0 }),
+            email: "reset@example.com",
+            isBusy: false,
+            errorMessage: nil,
+            onSubmit: { _ in },
+            onBack: {}
+        )
+
+        _ = codeView.body
+        _ = passwordView.body
+        XCTAssertNotNil(codeView)
+        XCTAssertNotNil(passwordView)
+    }
+
     // MARK: - SignupView Password Mismatch Tests
 
     func testSignupPasswordMismatch_ReturnsTrueWhenPasswordsDiffer() {

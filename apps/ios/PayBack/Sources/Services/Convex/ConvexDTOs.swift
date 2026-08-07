@@ -1,6 +1,121 @@
 // swiftlint:disable identifier_name
 import Foundation
 
+struct ConvexClearAllProgressDTO: Decodable, Sendable {
+    let inProgress: Bool
+    let processed: Int
+    let cutoff: Double
+}
+
+enum ConvexClearAllError: Error {
+    case stalled
+}
+
+struct ConvexSelfDeletionReceiptDTO: Decodable, Sendable {
+    let success: Bool
+    let inProgress: Bool
+    let state: String
+    let requestId: String
+    let deletedAt: Double
+    let friendshipsUnlinked: Int
+    let expensesPreserved: Bool
+    let phase: String
+    let progressToken: String
+    let processedCount: Int
+    let message: String
+
+    private enum CodingKeys: String, CodingKey {
+        case success
+        case inProgress
+        case state
+        case requestId
+        case deletedAt
+        case friendshipsUnlinked
+        case expensesPreserved
+        case phase
+        case progressToken
+        case processedCount
+        case message
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        success = try container.decode(Bool.self, forKey: .success)
+        state = try container.decode(String.self, forKey: .state)
+        requestId = try container.decode(String.self, forKey: .requestId)
+        deletedAt = try container.decode(Double.self, forKey: .deletedAt)
+        friendshipsUnlinked = try container.decode(Int.self, forKey: .friendshipsUnlinked)
+        expensesPreserved = try container.decode(Bool.self, forKey: .expensesPreserved)
+
+        // Defaults keep the client compatible while a backend deployment rolls out.
+        inProgress = try container.decodeIfPresent(Bool.self, forKey: .inProgress) ?? false
+        phase = try container.decodeIfPresent(String.self, forKey: .phase) ?? "complete"
+        progressToken = try container.decodeIfPresent(String.self, forKey: .progressToken)
+            ?? "legacy:\(requestId):\(deletedAt)"
+        processedCount = try container.decodeIfPresent(Int.self, forKey: .processedCount) ?? 0
+        message = try container.decodeIfPresent(String.self, forKey: .message) ?? ""
+    }
+}
+
+enum SelfDeletionProgressDriver {
+    static let clientCapability = "bounded_progress_v1"
+
+    static func run(
+        maximumSteps: Int = 4_096,
+        maximumNoProgressResponses: Int = 2,
+        next: () async throws -> ConvexSelfDeletionReceiptDTO
+    ) async throws -> ConvexSelfDeletionReceiptDTO {
+        guard maximumSteps > 0, maximumNoProgressResponses > 0 else {
+            throw PayBackError.underlying(message: "Account deletion retry limits are invalid.")
+        }
+
+        var previousProgressToken: String?
+        var noProgressResponses = 0
+
+        for _ in 0 ..< maximumSteps {
+            try Task.checkCancellation()
+            let receipt = try await next()
+
+            if receipt.success {
+                let isFinalState = receipt.state == "deleted" || receipt.state == "already_deleted"
+                guard
+                    !receipt.inProgress,
+                    receipt.expensesPreserved,
+                    isFinalState,
+                    receipt.phase == "complete",
+                    receipt.deletedAt > 0
+                else {
+                    throw PayBackError.underlying(message: "Account deletion returned an invalid final receipt.")
+                }
+                return receipt
+            }
+
+            guard receipt.inProgress else {
+                let message = receipt.message.isEmpty
+                    ? "Account deletion was not acknowledged."
+                    : receipt.message
+                throw PayBackError.underlying(message: message)
+            }
+
+            if previousProgressToken == receipt.progressToken {
+                noProgressResponses += 1
+                if noProgressResponses >= maximumNoProgressResponses {
+                    throw PayBackError.underlying(
+                        message: "Account deletion stopped making progress. Please try again."
+                    )
+                }
+            } else {
+                previousProgressToken = receipt.progressToken
+                noProgressResponses = 0
+            }
+        }
+
+        throw PayBackError.underlying(
+            message: "Account deletion did not finish within the safe retry limit. Please try again."
+        )
+    }
+}
+
 // MARK: - Expense DTOs
 
 /// Internal DTO for Convex expense data - used for mapping from backend to domain models
@@ -21,6 +136,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
     let participant_member_ids: [String]?
     let participants: [ConvexParticipantDTO]?
     let subexpenses: [ConvexSubexpenseDTO]?
+    let notes: String?
 
     init(
         id: String,
@@ -37,7 +153,8 @@ struct ConvexExpenseDTO: Decodable, Sendable {
         owner_account_id: String?,
         participant_member_ids: [String]?,
         participants: [ConvexParticipantDTO]?,
-        subexpenses: [ConvexSubexpenseDTO]?
+        subexpenses: [ConvexSubexpenseDTO]?,
+        notes: String? = nil
     ) {
         self.id = id
         self.group_id = group_id
@@ -54,6 +171,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
         self.participant_member_ids = participant_member_ids
         self.participants = participants
         self.subexpenses = subexpenses
+        self.notes = notes
     }
 
     /// Maps Convex DTO to domain Expense model
@@ -87,6 +205,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
             contextKind: contextKind,
             participantNames: participantNames,
             subexpenses: subexpenses?.map { $0.toSubexpense() },
+            notes: notes,
             ownerEmail: owner_email,
             ownerAccountId: owner_account_id
         )
@@ -478,8 +597,42 @@ struct ConvexInviteTokenDTO: Decodable, Sendable {
 struct ConvexInviteTokenValidationDTO: Decodable, Sendable {
     let is_valid: Bool
     let error: String?
-    let token: ConvexInviteTokenDTO?
+    let token: ConvexPublicInviteTokenDTO?
     let expense_preview: ConvexExpensePreviewDTO?
+}
+
+/// Public invite preview data. Stable auth subjects are intentionally not exposed.
+struct ConvexPublicInviteTokenDTO: Decodable, Sendable {
+    let id: String
+    let creator_email: String
+    let creator_name: String?
+    let creator_profile_image_url: String?
+    let target_member_id: String
+    let target_member_name: String
+    let created_at: Double
+    let expires_at: Double
+    let claimed_at: Double?
+
+    func toInviteToken() -> InviteToken? {
+        guard let id = UUID(uuidString: id),
+              let targetMemberId = UUID(uuidString: target_member_id) else {
+            return nil
+        }
+
+        return InviteToken(
+            id: id,
+            creatorId: "",
+            creatorEmail: creator_email,
+            creatorName: creator_name,
+            creatorProfileImageUrl: creator_profile_image_url,
+            targetMemberId: targetMemberId,
+            targetMemberName: target_member_name,
+            createdAt: Date(timeIntervalSince1970: created_at / 1000),
+            expiresAt: Date(timeIntervalSince1970: expires_at / 1000),
+            claimedBy: nil,
+            claimedAt: claimed_at.map { Date(timeIntervalSince1970: $0 / 1000) }
+        )
+    }
 }
 
 /// Internal DTO for expense preview in invite validation

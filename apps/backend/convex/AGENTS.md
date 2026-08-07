@@ -67,17 +67,55 @@ When an account is manually deleted from the Convex Dashboard:
 | `linked_account_id`    | Auth ID (Clerk subject)              | `by_linked_account_id`    |
 | `linked_account_email` | Email address                        | `by_linked_account_email` |
 | `linked_member_id`     | Canonical member ID (legacy imports) | `by_linked_member_id`     |
+| `link_state`           | Server provenance marker             | —                         |
 
 **IMPORTANT**: `linked_member_id` is mainly used for backwards compatibility with imports. Primary linking uses `linked_account_email` and `linked_account_id`.
+Successful invite/link-request claims must write `link_state: "linked"` on both users' friend rows.
+Client sync and bulk import cannot create this marker. During migration of older rows, preserve an
+unmarked link only when indexed claim/request or account-alias provenance proves the owner-account-
+member relationship, then rewrite the complete tuple from the live account.
+
+Global member aliases are trusted only when `materialization_source` is `account_alias` and
+`source_account_id` identifies the canonical account. Legacy unmarked rows stay quarantined until
+the identity migration corroborates them against that account's `alias_member_ids`; unproven rows
+must block readiness. Local friend merges belong in `account_friends.local_alias_member_ids`.
+
+Invite creation must bind `invite_tokens.target_friend_id` to the exact creator-owned unlinked
+friend row. Claim and link-request acceptance must revalidate that binding and the active creator,
+reject legacy unbound tokens, and rewrite only bounded creator-owned references.
+
+Current identity readiness is `member_identity_v3`; older markers never open mutation gates. During
+v3 rollout, unmarked aliases stay quarantined and compatibility may scan at most 512 accounts. Each
+migration page must preflight every conflict, duplicate, provenance tag, delete, and patch before any
+domain mutation; on failure only migration `last_error` may change.
+
+Public invite validation uses an allowlisted token DTO and creator-owned expenses through
+`expenses.by_owner_id`, with a hard preview cap and verified creator-owned `group_ref`. Do not expose
+raw invite-token documents or scan global expenses. Use the shared ghost predicate for both
+normalized `status` and `link_state`, and keep name-based identity repair endpoints disabled.
 
 ### Cleanup Functions
 
-| Function                      | Location     | When Called             | Behavior                                                  |
-| ----------------------------- | ------------ | ----------------------- | --------------------------------------------------------- |
-| `performHardDelete`           | `cleanup.ts` | API deletion endpoints  | DELETEs friend records pointing to deleted account        |
-| `hardCleanupOrphanedAccount`  | `users.ts`   | Janitor cron            | DELETEs orphaned data for a given email                   |
-| `cleanupOrphanedDataForEmail` | `users.ts`   | Account re-creation     | UNLINKS (soft) for account re-registration                |
-| `friends.list`                | `friends.ts` | Every friend list query | Validates links exist, returns unlinked state if orphaned |
+| Function                   | Location           | When Called             | Behavior                                                  |
+| -------------------------- | ------------------ | ----------------------- | --------------------------------------------------------- |
+| `beginHardDeleteAccount`   | `cleanup.ts`       | API deletion endpoints  | Starts bounded, resumable hard deletion                   |
+| `processOrphanCleanupStep` | `orphanCleanup.ts` | Re-creation and janitor | Processes one bounded orphan-cleanup step                 |
+| `advanceOrphanCleanupJob`  | `users.ts`         | Scheduled worker        | Reschedules the persisted orphan job until complete       |
+| `friends.list`             | `friends.ts`       | Every friend list query | Validates links exist, returns unlinked state if orphaned |
+
+Cleanup email identity is case-insensitive. `cleanupEmailMaterialization.ts` owns the versioned,
+bounded canonicalization pass for legacy email-bearing rows. New writes must store normalized
+lowercase identity emails. Account creation and email-selected admin deletion must wait for the
+`cleanup_email_canonicalization_v1` readiness stamp; never treat missing optional
+`accounts.normalized_email` as proof that no matching account exists.
+
+Orphan and hard-delete workers must remain resumable: persist scan/member cursors and perform
+bounded work per mutation. Before destructive orphan cleanup, install
+`orphan_cleanup_member_fences` for every discovered member ID. Runtime account/alias claim paths
+must call `assertMemberIdentityNotCleanupFenced`; late identity discovery pauses cleanup until the
+new IDs are fenced. Release fences in bounded batches on completion or terminal failure. Continue
+to re-check auth ID, document ID, normalized email, and target-local ownership in every destructive
+transaction.
 
 ### Janitor Cron (`janitor.ts`)
 
@@ -114,7 +152,8 @@ When changing any of the following, update tests and the runbook:
 
 ### Required behavior
 
-1. Enrich linked rows with canonical identity aliases (`alias_member_ids`) and `linked_member_id`.
+1. Resolve linked rows through server provenance, then enrich them with canonical identity aliases
+   (`alias_member_ids`) and `linked_member_id` from the live account.
 2. Build identity keys using linked account identifiers (`linked_account_email`, `linked_account_id`, `linked_member_id`) and alias membership.
 3. Deduplicate response rows by identity key with deterministic precedence:
    - linked row over unlinked

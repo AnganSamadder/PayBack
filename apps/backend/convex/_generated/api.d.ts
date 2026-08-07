@@ -16,6 +16,7 @@ import type * as crons from "../crons.js";
 import type * as debug from "../debug.js";
 import type * as expenses from "../expenses.js";
 import type * as fix_alias from "../fix_alias.js";
+import type * as friendLinkProvenance from "../friendLinkProvenance.js";
 import type * as friend_requests from "../friend_requests.js";
 import type * as friends from "../friends.js";
 import type * as groups from "../groups.js";
@@ -47,6 +48,7 @@ declare const fullApi: ApiFromModules<{
   debug: typeof debug;
   expenses: typeof expenses;
   fix_alias: typeof fix_alias;
+  friendLinkProvenance: typeof friendLinkProvenance;
   friend_requests: typeof friend_requests;
   friends: typeof friends;
   groups: typeof groups;

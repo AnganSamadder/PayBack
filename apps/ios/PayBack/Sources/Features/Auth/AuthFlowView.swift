@@ -80,6 +80,7 @@ struct AuthFlowView: View {
             .frame(maxWidth: 520)
         case .verification(let email, _):
             CodeVerificationView(
+                code: $coordinator.signupVerificationCode,
                 email: email,
                 isBusy: coordinator.isBusy,
                 errorMessage: coordinator.errorMessage,
@@ -93,6 +94,45 @@ struct AuthFlowView: View {
                 },
                 onResend: {
                     Task { await coordinator.resendVerificationCode() }
+                }
+            )
+            .frame(maxWidth: 520)
+        case .passwordResetCode(let email):
+            CodeVerificationView(
+                code: $coordinator.passwordResetCode,
+                email: email,
+                isBusy: coordinator.isBusy,
+                errorMessage: coordinator.errorMessage,
+                infoMessage: coordinator.infoMessage,
+                title: "Reset your password",
+                prompt: "Enter the 6-digit reset code sent to",
+                onSubmit: { code in
+                    Task { await coordinator.verifyPasswordResetCode(code) }
+                },
+                onBack: {
+                    withAnimation {
+                        coordinator.backToLoginFromPasswordReset()
+                    }
+                },
+                onResend: {
+                    Task { await coordinator.resendPasswordResetCode() }
+                }
+            )
+            .frame(maxWidth: 520)
+        case .passwordResetNewPassword(let email):
+            PasswordResetNewPasswordView(
+                password: $coordinator.passwordResetNewPassword,
+                confirmation: $coordinator.passwordResetConfirmPassword,
+                email: email,
+                isBusy: coordinator.isBusy,
+                errorMessage: coordinator.errorMessage,
+                onSubmit: { password in
+                    Task { await coordinator.completePasswordReset(newPassword: password) }
+                },
+                onBack: {
+                    withAnimation {
+                        coordinator.backToLoginAfterVerifiedPasswordReset()
+                    }
                 }
             )
             .frame(maxWidth: 520)
@@ -129,13 +169,13 @@ private struct AuthBackground: View {
             ZStack {
                 Circle()
                     .fill(Color.white.opacity(0.12))
+                    .frame(width: 420, height: 420)
                     .blur(radius: 90)
-                    .frame(width: 420)
                     .offset(x: -160, y: -220)
                 Circle()
                     .fill(Color.white.opacity(0.1))
+                    .frame(width: 380, height: 380)
                     .blur(radius: 80)
-                    .frame(width: 380)
                     .offset(x: 180, y: 260)
             }
         )

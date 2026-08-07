@@ -8,13 +8,29 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
     private var userEmail: String = "user@example.com"
     private var requesterId: String = "test-requester-123"
     private var requesterName: String = "Example User"
+    private var shouldSuspendCreate = false
+    private var shouldSuspendIncomingFetch = false
+    private var shouldSuspendAccept = false
+    private var createContinuation: CheckedContinuation<Void, Never>?
+    private var incomingFetchContinuation: CheckedContinuation<Void, Never>?
+    private var acceptContinuation: CheckedContinuation<Void, Never>?
+    private var createInvocationCount = 0
+    private var incomingFetchInvocationCount = 0
+    private var acceptInvocationCount = 0
 
     /// Create a new link request
     func createLinkRequest(
+        requestId: UUID,
         recipientEmail: String,
         targetMemberId: UUID,
         targetMemberName: String
     ) async throws -> LinkRequest {
+        createInvocationCount += 1
+        if shouldSuspendCreate {
+            await withCheckedContinuation { continuation in
+                createContinuation = continuation
+            }
+        }
         let requesterEmail = self.userEmail
         // Prevent self-linking (case-insensitive email comparison)
         let normalizedRequester = requesterEmail.lowercased().trimmingCharacters(in: .whitespaces)
@@ -36,7 +52,6 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
             throw PayBackError.linkDuplicateRequest
         }
 
-        let requestId = UUID()
         let createdAt = Date()
         let expiresAt = createdAt.addingTimeInterval(7 * 24 * 3600) // 7 days
 
@@ -61,6 +76,12 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
 
     /// Fetches all incoming link requests for the current user
     func fetchIncomingRequests() async throws -> [LinkRequest] {
+        incomingFetchInvocationCount += 1
+        if shouldSuspendIncomingFetch {
+            await withCheckedContinuation { continuation in
+                incomingFetchContinuation = continuation
+            }
+        }
         return requests.values.filter { req in
             req.recipientEmail.lowercased() == userEmail.lowercased() &&
             req.status == .pending &&
@@ -88,6 +109,12 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
 
     /// Accept a link request
     func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult {
+        acceptInvocationCount += 1
+        if shouldSuspendAccept {
+            await withCheckedContinuation { continuation in
+                acceptContinuation = continuation
+            }
+        }
         guard var request = requests[requestId] else {
             throw PayBackError.linkInvalid
         }
@@ -176,6 +203,18 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
 
     /// Reset the mock service state - test helper
     func reset() {
+        createContinuation?.resume()
+        incomingFetchContinuation?.resume()
+        acceptContinuation?.resume()
+        createContinuation = nil
+        incomingFetchContinuation = nil
+        acceptContinuation = nil
+        shouldSuspendCreate = false
+        shouldSuspendIncomingFetch = false
+        shouldSuspendAccept = false
+        createInvocationCount = 0
+        incomingFetchInvocationCount = 0
+        acceptInvocationCount = 0
         requests.removeAll()
         userEmail = "user@example.com"
         requesterId = "test-requester-123"
@@ -195,5 +234,47 @@ actor MockLinkRequestServiceForAppStore: LinkRequestService {
     /// Add a previous request directly - test helper
     func addPreviousRequest(_ request: LinkRequest) {
         requests[request.id] = request
+    }
+
+    func suspendNextCreate() {
+        shouldSuspendCreate = true
+    }
+
+    func resumeCreate() {
+        shouldSuspendCreate = false
+        createContinuation?.resume()
+        createContinuation = nil
+    }
+
+    func suspendNextIncomingFetch() {
+        shouldSuspendIncomingFetch = true
+    }
+
+    func resumeIncomingFetch() {
+        shouldSuspendIncomingFetch = false
+        incomingFetchContinuation?.resume()
+        incomingFetchContinuation = nil
+    }
+
+    func suspendNextAccept() {
+        shouldSuspendAccept = true
+    }
+
+    func resumeAccept() {
+        shouldSuspendAccept = false
+        acceptContinuation?.resume()
+        acceptContinuation = nil
+    }
+
+    func currentCreateInvocationCount() -> Int {
+        createInvocationCount
+    }
+
+    func currentIncomingFetchInvocationCount() -> Int {
+        incomingFetchInvocationCount
+    }
+
+    func currentAcceptInvocationCount() -> Int {
+        acceptInvocationCount
     }
 }

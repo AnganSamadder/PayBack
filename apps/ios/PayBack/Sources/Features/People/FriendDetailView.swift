@@ -1,5 +1,23 @@
 import SwiftUI
 
+enum FriendNameEditingLogic {
+    static func initialText(currentNickname: String?, fallbackName: String) -> String {
+        currentNickname ?? fallbackName
+    }
+
+    static func shouldShowRemoveNickname(isLinked: Bool, currentNickname: String?) -> Bool {
+        isLinked && currentNickname != nil
+    }
+
+    static func canSave(isLinked: Bool, text: String) -> Bool {
+        isLinked || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func displayError(from error: Error) -> PayBackError {
+        (error as? PayBackError) ?? .networkUnavailable
+    }
+}
+
 struct FriendDetailView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
@@ -20,7 +38,6 @@ struct FriendDetailView: View {
     @State private var preferNickname = false
     @State private var displayPreferenceSelection: String? = nil
     @State private var isSavingNickname = false
-    @State private var showMergeSheet = false
     @State private var showDeleteConfirmation = false
 
     init(friend: GroupMember, onBack: (() -> Void)? = nil, onExpenseSelected: ((Expense) -> Void)? = nil) {
@@ -129,10 +146,6 @@ struct FriendDetailView: View {
         } else {
             return [.groups]
         }
-    }
-
-    private var unlinkedFriends: [AccountFriend] {
-        store.friends.filter { !$0.hasLinkedAccount }
     }
 
     private var currentNickname: String? {
@@ -248,28 +261,6 @@ struct FriendDetailView: View {
             }
             .buttonStyle(.plain)
 
-            if !unlinkedFriends.isEmpty {
-                Button(action: {
-                    Haptics.selection()
-                    showMergeSheet = true
-                }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "person.2.circle")
-                            .font(.system(size: 16, weight: .semibold))
-
-                        Text("Merge with Existing Friend")
-                            .font(.system(.body, design: .rounded, weight: .semibold))
-                    }
-                    .foregroundStyle(AppTheme.brand)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(AppTheme.brand.opacity(0.1))
-                    )
-                }
-                .buttonStyle(.plain)
-            }
         }
     }
 
@@ -453,7 +444,10 @@ struct FriendDetailView: View {
                     }
                 }
 
-                if currentNickname != nil {
+                if FriendNameEditingLogic.shouldShowRemoveNickname(
+                    isLinked: isLinked,
+                    currentNickname: currentNickname
+                ) {
                     Button(action: {
                         Haptics.selection()
                         Task {
@@ -480,7 +474,10 @@ struct FriendDetailView: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .disabled(isSavingNickname)
+                    .disabled(
+                        isSavingNickname ||
+                        !FriendNameEditingLogic.canSave(isLinked: isLinked, text: nicknameText)
+                    )
                 }
 
                 Spacer()
@@ -508,51 +505,6 @@ struct FriendDetailView: View {
                 }
             }
         }
-    }
-
-    private var mergeSheet: some View {
-        NavigationStack {
-            List(unlinkedFriends) { friend in
-                Button {
-                    Task {
-                        await mergeWithFriend(friend)
-                    }
-                } label: {
-                    HStack(spacing: 12) {
-                        AvatarView(name: friend.name, size: 40, colorHex: friend.profileColorHex)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(friend.name)
-                                .font(.system(.body, design: .rounded, weight: .medium))
-                                .foregroundStyle(.primary)
-
-                            if let nickname = friend.nickname {
-                                Text(nickname)
-                                    .font(.system(.caption, design: .rounded))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        Spacer()
-
-                        Image(systemName: "arrow.merge")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(AppTheme.brand)
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-            .navigationTitle("Select Friend to Merge")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        showMergeSheet = false
-                    }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
     }
 
     // MARK: - Helper Functions
@@ -598,9 +550,26 @@ struct FriendDetailView: View {
         }()
 
         do {
-            try await store.updateFriendNickname(memberId: friend.id, nickname: normalizedNickname)
-            try await store.updateFriendPreferNickname(memberId: friend.id, prefer: preferNickname)
-            try await store.updateFriendDisplayPreference(memberId: friend.id, preference: displayPreference)
+            let accountFriendMemberId = accountFriend?.memberId ?? friend.id
+            if isLinked {
+                try await store.updateFriendNickname(
+                    memberId: accountFriendMemberId,
+                    nickname: normalizedNickname
+                )
+                try await store.updateFriendPreferNickname(
+                    memberId: accountFriendMemberId,
+                    prefer: preferNickname
+                )
+                try await store.updateFriendDisplayPreference(
+                    memberId: accountFriendMemberId,
+                    preference: displayPreference
+                )
+            } else {
+                try await store.renameUnlinkedFriend(
+                    memberId: accountFriendMemberId,
+                    to: nickname ?? ""
+                )
+            }
 
             await MainActor.run {
                 // Trigger success haptic
@@ -614,7 +583,7 @@ struct FriendDetailView: View {
                 // Trigger error haptic
                 Haptics.notify(.error)
 
-                self.linkError = .networkUnavailable
+                self.linkError = FriendNameEditingLogic.displayError(from: error)
                 self.showErrorAlert = true
                 self.isSavingNickname = false
             }
@@ -632,27 +601,6 @@ struct FriendDetailView: View {
         store.addImportedFriend(newFriend)
         await MainActor.run {
             Haptics.notify(.success)
-        }
-    }
-
-    private func mergeWithFriend(_ target: AccountFriend) async {
-        showMergeSheet = false
-        do {
-            try await store.mergeFriend(unlinkedMemberId: friend.id, into: target.memberId)
-            await MainActor.run {
-                Haptics.notify(.success)
-                handleBack() // Navigate back as the current "friend" (non-friend member) is now merged/gone
-            }
-        } catch {
-            await MainActor.run {
-                Haptics.notify(.error)
-                if let paybackError = error as? PayBackError {
-                    self.linkError = paybackError
-                } else {
-                    self.linkError = .networkUnavailable
-                }
-                self.showErrorAlert = true
-            }
         }
     }
 
@@ -706,9 +654,6 @@ struct FriendDetailView: View {
         }
         .sheet(isPresented: $isEditingNickname) {
             nicknameEditSheet
-        }
-        .sheet(isPresented: $showMergeSheet) {
-            mergeSheet
         }
         .alert("Error", isPresented: $showErrorAlert) {
             Button("OK", role: .cancel) { }
@@ -879,7 +824,10 @@ struct FriendDetailView: View {
                 // Nickname edit button
                 Button(action: {
                     Haptics.selection()
-                    nicknameText = currentNickname ?? ""
+                    nicknameText = FriendNameEditingLogic.initialText(
+                        currentNickname: currentNickname,
+                        fallbackName: friend.name
+                    )
                     preferNickname = accountFriend?.preferNickname ?? false
                     displayPreferenceSelection = accountFriend?.displayPreference
                     isEditingNickname = true

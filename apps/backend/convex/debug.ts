@@ -1,21 +1,24 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
 import { query, internalQuery, internalMutation, QueryCtx } from "./_generated/server";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
 
 export const fixMissingDirectFlags = internalMutation({
   args: {},
   handler: async (ctx) => {
     const groups = await ctx.db.query("groups").collect();
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     let updated = 0;
     for (const group of groups) {
       if (group.members.length === 2 && !group.is_direct) {
-        await ctx.db.patch(group._id, {
+        await groupVisibilityBatch.patch(group._id, {
           is_direct: true,
           updated_at: Date.now()
         });
         updated++;
       }
     }
+    await groupVisibilityBatch.flush();
     return { updated };
   }
 });
@@ -115,109 +118,10 @@ export const debugUserData = internalQuery({
 
 export const fixIdsByName = internalMutation({
   args: {},
-  handler: async (ctx) => {
-    const accounts = await ctx.db.query("accounts").collect();
-    let expensesUpdated = 0;
-    let aliasesCreated = 0;
-
-    for (const account of accounts) {
-      if (!account.member_id) continue;
-      const canonicalId = account.member_id;
-      const name = account.display_name;
-
-      const expenses = await ctx.db
-        .query("expenses")
-        .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
-        .collect();
-
-      for (const expense of expenses) {
-        let changed = false;
-        const patches: any = {};
-
-        // Check if paid_by_member_id matches account name but has diff ID
-        if (expense.paid_by_member_id !== canonicalId) {
-          const participant = expense.participants?.find(
-            (p: any) => p.member_id === expense.paid_by_member_id
-          );
-          if (participant && participant.name === name) {
-            const existingAlias = await ctx.db
-              .query("member_aliases")
-              .withIndex("by_alias_member_id", (q) =>
-                q.eq("alias_member_id", expense.paid_by_member_id)
-              )
-              .first();
-            if (!existingAlias) {
-              await ctx.db.insert("member_aliases", {
-                canonical_member_id: canonicalId,
-                alias_member_id: expense.paid_by_member_id,
-                account_email: account.email,
-                created_at: Date.now()
-              });
-              aliasesCreated++;
-            }
-            patches.paid_by_member_id = canonicalId;
-            changed = true;
-          }
-        }
-
-        // Check splits for similar mismatch
-        if (expense.splits) {
-          const newSplits = expense.splits.map((s: any) => {
-            if (s.member_id !== canonicalId) {
-              const p = expense.participants?.find((p: any) => p.member_id === s.member_id);
-              if (p && p.name === name) {
-                return { ...s, member_id: canonicalId };
-              }
-            }
-            return s;
-          });
-          if (JSON.stringify(newSplits) !== JSON.stringify(expense.splits)) {
-            patches.splits = newSplits;
-            changed = true;
-          }
-        }
-
-        // Check participants array
-        if (expense.participants) {
-          const newParticipants = expense.participants.map((p: any) => {
-            if (p.member_id !== canonicalId && p.name === name) {
-              return { ...p, member_id: canonicalId };
-            }
-            return p;
-          });
-          if (JSON.stringify(newParticipants) !== JSON.stringify(expense.participants)) {
-            patches.participants = newParticipants;
-            changed = true;
-          }
-        }
-
-        // Check involved_member_ids
-        if (expense.involved_member_ids) {
-          const aliasId = expense.participants?.find(
-            (p: any) => p.name === name && p.member_id !== canonicalId
-          )?.member_id;
-          if (aliasId) {
-            const newInvolved = expense.involved_member_ids.map((id: string) =>
-              id === aliasId ? canonicalId : id
-            );
-            const uniqueInvolved = Array.from(new Set(newInvolved));
-            if (JSON.stringify(uniqueInvolved) !== JSON.stringify(expense.involved_member_ids)) {
-              patches.involved_member_ids = uniqueInvolved;
-              changed = true;
-            }
-          }
-        }
-
-        if (changed) {
-          await ctx.db.patch(expense._id, {
-            ...patches,
-            updated_at: Date.now()
-          });
-          expensesUpdated++;
-        }
-      }
-    }
-    return { expensesUpdated, aliasesCreated };
+  handler: async () => {
+    throw new Error(
+      "Name-based identity repair is disabled; use an account-backed claim or owner-scoped merge"
+    );
   }
 });
 

@@ -1,6 +1,14 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { paginationOptsValidator } from "convex/server";
+import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { reconcileUserExpenses } from "./helpers";
+import {
+  assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
+  isAccountDeletionFenced,
+  resolveActiveExpenseParticipantAccounts
+} from "./helpers";
 import { checkRateLimit } from "./rateLimit";
 import {
   findAccountByAuthIdOrDocId,
@@ -9,18 +17,59 @@ import {
   normalizeMemberIds
 } from "./identity";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
+import { resolveProvenFriendLink } from "./friendLinkProvenance";
+import {
+  applyExpenseWriteBatch,
+  deleteUserExpenseRowWithRevision,
+  type ExpenseWriteOperation,
+  MAX_EXPENSE_VIEWERS,
+  MAX_EXPENSE_WRITE_OPERATIONS
+} from "./expenseWrites";
+import {
+  getAccountSyncRevision,
+  MAX_SYNC_PAGE_SIZE,
+  requireExpectedSyncRevision,
+  requireRevisionForContinuation,
+  requireSafeSyncPageSize,
+  requireSyncMaterializationReady,
+  syncV2NotReadyError
+} from "./syncState";
+import { USER_EXPENSE_REFS_MATERIALIZATION_KEY } from "./migrations/userExpenseRefs";
+
+function assertExpenseArgumentBounds(args: {
+  involved_member_ids: readonly string[];
+  splits: readonly unknown[];
+  participant_member_ids: readonly string[];
+  participants: readonly unknown[];
+  subexpenses?: readonly unknown[];
+}): void {
+  if (
+    args.involved_member_ids.length > MAX_EXPENSE_VIEWERS ||
+    args.splits.length > MAX_EXPENSE_VIEWERS ||
+    args.participant_member_ids.length > MAX_EXPENSE_VIEWERS ||
+    args.participants.length > MAX_EXPENSE_VIEWERS
+  ) {
+    throw new Error(`Expenses support at most ${MAX_EXPENSE_VIEWERS} participants`);
+  }
+  if ((args.subexpenses?.length ?? 0) > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw new Error(`Expenses support at most ${MAX_EXPENSE_WRITE_OPERATIONS} subexpenses`);
+  }
+}
+
+async function resolveExpenseViewerAccountIds(
+  ctx: any,
+  expense: Parameters<typeof resolveActiveExpenseParticipantAccounts>[1],
+  excludedAccountIds: ReadonlySet<string> = new Set()
+): Promise<Id<"accounts">[]> {
+  const accounts = await resolveActiveExpenseParticipantAccounts(ctx, expense, excludedAccountIds);
+  if (accounts.length > MAX_EXPENSE_VIEWERS) {
+    throw new Error(`Expenses support at most ${MAX_EXPENSE_VIEWERS} viewers`);
+  }
+  return accounts.map((account) => account._id);
+}
 
 async function getCurrentUser(ctx: any) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) {
-    throw new Error("Unauthenticated");
-  }
-  const user = await ctx.db
-    .query("accounts")
-    .withIndex("by_email", (q) => q.eq("email", identity.email!))
-    .unique();
-
-  return { identity, user };
+  return await getCurrentUserOrThrow(ctx);
 }
 
 function isEligibleDirectFriendRecord(friend: any): boolean {
@@ -118,6 +167,19 @@ async function requireGroupByClientIdWithAccess(
   }
   const callerEquivalentIds = await requireGroupAccess(ctx, user, group, precomputedEquivalentIds);
   return { group, callerEquivalentIds };
+}
+
+async function isExpenseAttachedToDeletingGroup(
+  ctx: any,
+  expense: Doc<"expenses">
+): Promise<boolean> {
+  const group = expense.group_ref
+    ? await ctx.db.get(expense.group_ref)
+    : await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (query: any) => query.eq("id", expense.group_id))
+        .unique();
+  return group?.deletion_token !== undefined;
 }
 
 function normalizeLinkedAccountId(value: string | undefined): string | undefined {
@@ -230,6 +292,81 @@ function requireMatchingMemberSets(values: {
   }
 }
 
+type ExpenseParticipant = Doc<"expenses">["participants"][number];
+
+export function expenseMemberIds(expense: Doc<"expenses">) {
+  return normalizeMemberIds([
+    expense.paid_by_member_id,
+    ...expense.involved_member_ids,
+    ...expense.participant_member_ids,
+    ...expense.splits.map((split) => split.member_id),
+    ...expense.participants.map((participant) => participant.member_id)
+  ]);
+}
+
+async function prepareDeletionSafeExpenseParticipants(
+  ctx: any,
+  values: {
+    existing: Doc<"expenses"> | null;
+    participants: ExpenseParticipant[];
+    referencedMemberIds: string[];
+    inactiveMemberIds: Set<string>;
+  }
+) {
+  const inactiveMemberIds = new Set(Array.from(values.inactiveMemberIds, normalizeMemberId));
+  const existingMemberIds = new Set(
+    values.existing ? expenseMemberIds(values.existing) : ([] as string[])
+  );
+  const existingAccountIds = new Set<string>();
+  for (const memberId of existingMemberIds) {
+    const account = await findAccountByMemberId(ctx.db, memberId);
+    if (account) existingAccountIds.add(account.id);
+  }
+
+  const assertCanReference = (account: any, normalizedMemberId: string) => {
+    if (!isAccountDeletionFenced(account)) return;
+    const existed =
+      existingMemberIds.has(normalizedMemberId) || existingAccountIds.has(String(account.id));
+    if (!existed) assertAccountCanAcceptChanges(account);
+    inactiveMemberIds.add(normalizedMemberId);
+    if (account.member_id) inactiveMemberIds.add(normalizeMemberId(account.member_id));
+  };
+
+  for (const memberId of normalizeMemberIds(values.referencedMemberIds)) {
+    const account = await findAccountByMemberId(ctx.db, memberId);
+    assertCanReference(account, memberId);
+  }
+
+  const participants: ExpenseParticipant[] = [];
+  for (const participant of values.participants) {
+    const normalizedMemberId = normalizeMemberId(participant.member_id);
+    let account = participant.linked_account_id
+      ? await findAccountByAuthIdOrDocId(ctx.db, participant.linked_account_id)
+      : null;
+    if (!account && participant.linked_account_email?.trim()) {
+      account = await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q: any) =>
+          q.eq("email", participant.linked_account_email!.trim().toLowerCase())
+        )
+        .unique();
+    }
+    account ??= await findAccountByMemberId(ctx.db, normalizedMemberId);
+    assertCanReference(account, normalizedMemberId);
+
+    if (inactiveMemberIds.has(normalizedMemberId) || isAccountDeletionFenced(account)) {
+      participants.push({
+        member_id: account?.member_id ? normalizeMemberId(account.member_id) : normalizedMemberId,
+        name: "Deleted User"
+      });
+    } else {
+      participants.push({ ...participant, member_id: normalizedMemberId });
+    }
+  }
+
+  return { participants, inactiveMemberIds };
+}
+
 function computedSettledFromSplits(splits: { is_settled: boolean }[]) {
   return splits.length > 0 && splits.every((split) => split.is_settled);
 }
@@ -255,6 +392,7 @@ export const create = mutation({
     ),
     group_id: v.string(),
     description: v.string(),
+    notes: v.optional(v.union(v.string(), v.null())),
     date: v.number(),
     total_amount: v.number(),
     paid_by_member_id: v.string(),
@@ -279,7 +417,6 @@ export const create = mutation({
         linked_account_email: v.optional(v.string())
       })
     ),
-    linked_participants: v.optional(v.any()),
     subexpenses: v.optional(
       v.array(
         v.object({
@@ -294,7 +431,14 @@ export const create = mutation({
     const { identity, user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
+    assertExpenseArgumentBounds(args);
     await checkRateLimit(ctx, identity.subject, "expenses:create", 10);
+    const notesWereProvided = args.notes !== undefined;
+    const trimmedNotes = args.notes?.trim();
+    if (trimmedNotes && trimmedNotes.length > 2000) {
+      throw new Error("Notes must be 2000 characters or fewer");
+    }
+    const normalizedNotes = trimmedNotes && trimmedNotes.length > 0 ? trimmedNotes : undefined;
 
     const existing = await ctx.db
       .query("expenses")
@@ -308,10 +452,26 @@ export const create = mutation({
       member_id: normalizeMemberId(split.member_id)
     }));
     const normalizedParticipantMemberIds = normalizeMemberIds(args.participant_member_ids);
-    const normalizedParticipants = args.participants.map((participant) => ({
+    const normalizedParticipantInput = args.participants.map((participant) => ({
       ...participant,
       member_id: normalizeMemberId(participant.member_id)
     }));
+    const existingInactiveParticipantMemberIds = new Set(
+      (existing?.inactive_participant_member_ids ?? []).map(normalizeMemberId)
+    );
+    const preparedParticipants = await prepareDeletionSafeExpenseParticipants(ctx, {
+      existing,
+      participants: normalizedParticipantInput,
+      referencedMemberIds: [
+        normalizedPaidBy,
+        ...normalizedInvolved,
+        ...normalizedParticipantMemberIds,
+        ...normalizedSplits.map((split) => split.member_id)
+      ],
+      inactiveMemberIds: existingInactiveParticipantMemberIds
+    });
+    const normalizedParticipants = preparedParticipants.participants;
+    const inactiveParticipantMemberIds = preparedParticipants.inactiveMemberIds;
     const requestedContextKind = args.context_kind;
     const existingGroup = existing?.group_ref ? await ctx.db.get(existing.group_ref) : null;
     const inferredExistingContextKind = existing
@@ -372,6 +532,8 @@ export const create = mutation({
         }
       }
 
+      assertAccountCanAcceptChanges(linkedAccount);
+
       if (cacheKey) {
         linkedAccountCache.set(cacheKey, linkedAccount ?? null);
       }
@@ -380,7 +542,8 @@ export const create = mutation({
 
     const buildParticipantEmails = async ({
       participants,
-      involvedMemberIds
+      involvedMemberIds,
+      inactiveMemberIds = new Set()
     }: {
       participants: {
         member_id: string;
@@ -389,9 +552,11 @@ export const create = mutation({
         linked_account_email?: string;
       }[];
       involvedMemberIds: string[];
+      inactiveMemberIds?: ReadonlySet<string>;
     }): Promise<string[]> => {
       const participantEmailSet = new Set<string>([user.email.toLowerCase()]);
       for (const participant of participants) {
+        if (inactiveMemberIds.has(normalizeMemberId(participant.member_id))) continue;
         const participantAccount = await resolveLinkedAccount({
           linkedAccountEmail: participant.linked_account_email,
           linkedAccountId: participant.linked_account_id,
@@ -402,7 +567,9 @@ export const create = mutation({
         }
       }
       for (const memberId of involvedMemberIds) {
+        if (inactiveMemberIds.has(normalizeMemberId(memberId))) continue;
         const account = await findAccountByMemberId(ctx.db, memberId);
+        assertAccountCanAcceptChanges(account);
         if (account?.email) {
           participantEmailSet.add(String(account.email).trim().toLowerCase());
         }
@@ -442,15 +609,24 @@ export const create = mutation({
     const buildOwnerFriendIdentityRows = async () => {
       const ownerFriendRows = await ctx.db
         .query("account_friends")
-        .withIndex("by_account_email", (q) => q.eq("account_email", user.email))
-        .collect();
+        .withIndex("by_account_email", (q) =>
+          q.eq("account_email", user.email.trim().toLowerCase())
+        )
+        .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+      if (ownerFriendRows.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+        throw new Error(
+          `Direct expense validation supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} friends`
+        );
+      }
 
       const ownerFriendIdentityRows: { friend: any; identityIds: Set<string> }[] = [];
       for (const friend of ownerFriendRows) {
         const identityIds = new Set<string>();
-        const friendIdentitySeeds = [friend.member_id, friend.linked_member_id].filter(
-          (value): value is string => typeof value === "string" && value.length > 0
-        );
+        const friendIdentitySeeds = [
+          friend.member_id,
+          friend.linked_member_id,
+          ...(friend.local_alias_member_ids || [])
+        ].filter((value): value is string => typeof value === "string" && value.length > 0);
 
         for (const seedId of friendIdentitySeeds) {
           const equivalentIds = await getEquivalentIdSet(seedId);
@@ -598,7 +774,9 @@ export const create = mutation({
         callerEquivalentIds
       );
       group = groupAccess.group;
+      if (group.deletion_token) throw new Error("Group deletion is in progress");
       callerEquivalentIds = groupAccess.callerEquivalentIds;
+      assertAccountCanAcceptChanges(await ctx.db.get(group.owner_id as Id<"accounts">));
       contextKind =
         requestedContextKind === "grouped_individual"
           ? "grouped_individual"
@@ -651,13 +829,30 @@ export const create = mutation({
             continue;
           }
 
-          const matchingFriend = ownerFriendIdentityRows.find(
-            ({ friend, identityIds }: any) =>
-              isEligibleDirectFriendRecord(friend) && intersects(identityIds, memberEquivalentIds)
+          const registeredMemberAccount = await findAccountByMemberId(ctx.db, memberId);
+          assertAccountCanAcceptChanges(registeredMemberAccount);
+          const candidateFriendRows = ownerFriendIdentityRows.filter(({ identityIds }: any) =>
+            intersects(identityIds, memberEquivalentIds)
           );
+          let matchingFriend: (typeof ownerFriendIdentityRows)[number] | undefined;
+
+          if (registeredMemberAccount) {
+            for (const candidate of candidateFriendRows) {
+              const provenLink = await resolveProvenFriendLink(ctx, candidate.friend);
+              if (provenLink?.account._id === registeredMemberAccount._id) {
+                matchingFriend = candidate;
+                break;
+              }
+            }
+          } else {
+            matchingFriend = candidateFriendRows.find(({ friend }: any) =>
+              isEligibleDirectFriendRecord(friend)
+            );
+          }
 
           if (!matchingFriend) {
             if (
+              !registeredMemberAccount &&
               directCounterpartyRows.length === 1 &&
               intersects(directCounterpartyRows[0].identityIds, memberEquivalentIds)
             ) {
@@ -665,7 +860,7 @@ export const create = mutation({
             }
 
             const normalizedGroupMemberName = normalizePersonName(groupMember?.name);
-            if (normalizedGroupMemberName) {
+            if (!registeredMemberAccount && normalizedGroupMemberName) {
               const byNameMatches = ownerFriendIdentityRows.filter(
                 ({ friend }: any) =>
                   isEligibleDirectFriendRecord(friend) &&
@@ -711,15 +906,14 @@ export const create = mutation({
           canonicalizeParticipants(existing.participants) ||
         canonicalizeSubexpenses(args.subexpenses) !==
           canonicalizeSubexpenses(existing.subexpenses) ||
-        JSON.stringify(args.linked_participants ?? null) !==
-          JSON.stringify(existing.linked_participants ?? null) ||
         (args.is_payback_generated_mock_data ?? false) !==
           (existing.is_payback_generated_mock_data ?? false);
 
       if (!callerOwnsExpense) {
-        const callerTouchesExpense = existing.splits.some((split: any) =>
-          callerEquivalentIds.has(normalizeMemberId(split.member_id))
-        );
+        const callerTouchesExpense = existing.splits.some((split: any) => {
+          const memberId = normalizeMemberId(split.member_id);
+          return !inactiveParticipantMemberIds.has(memberId) && callerEquivalentIds.has(memberId);
+        });
         if (!callerTouchesExpense) {
           throw new Error("Forbidden: expense access denied");
         }
@@ -748,7 +942,9 @@ export const create = mutation({
           throw new Error("Cannot unsettle a settled split");
         }
 
-        const callerOwnsSplit = callerEquivalentIds.has(existingMemberId);
+        const callerOwnsSplit =
+          !inactiveParticipantMemberIds.has(existingMemberId) &&
+          callerEquivalentIds.has(existingMemberId);
         if (!callerOwnsExpense) {
           if (isStructuralChange) {
             throw new Error("Forbidden: only owner can edit expense structure");
@@ -784,20 +980,19 @@ export const create = mutation({
           ? args.subexpenses
           : undefined
         : existing.subexpenses;
-      const nextLinkedParticipants = callerOwnsExpense
-        ? args.linked_participants
-        : existing.linked_participants;
       const nextMockData = callerOwnsExpense
         ? (args.is_payback_generated_mock_data ?? existing.is_payback_generated_mock_data)
         : existing.is_payback_generated_mock_data;
       const participantEmails = await buildParticipantEmails({
         participants: nextParticipants,
-        involvedMemberIds: nextInvolvedMemberIds
+        involvedMemberIds: nextInvolvedMemberIds,
+        inactiveMemberIds: inactiveParticipantMemberIds
       });
       const isSettled = computedSettledFromSplits(validatedSplits);
-      await ctx.db.patch(existing._id, {
+      const expensePatch = {
         context_kind: contextKind,
         description: callerOwnsExpense ? args.description : existing.description,
+        notes: callerOwnsExpense && notesWereProvided ? normalizedNotes : existing.notes,
         date: callerOwnsExpense ? args.date : existing.date,
         total_amount: callerOwnsExpense ? args.total_amount : existing.total_amount,
         paid_by_member_id: callerOwnsExpense ? normalizedPaidBy : existing.paid_by_member_id,
@@ -808,22 +1003,18 @@ export const create = mutation({
         participants: nextParticipants,
         participant_member_ids: nextParticipantMemberIds,
         participant_emails: participantEmails,
-        linked_participants: nextLinkedParticipants,
+        linked_participants: undefined,
         subexpenses: nextSubexpenses,
         is_payback_generated_mock_data: nextMockData,
         updated_at: Date.now()
+      };
+      const viewerAccountIds = await resolveExpenseViewerAccountIds(ctx, {
+        ...existing,
+        ...expensePatch
       });
-
-      const participantUsers = await Promise.all(
-        participantEmails.map((email) =>
-          ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q) => q.eq("email", email))
-            .unique()
-        )
-      );
-      const participantUserIds = participantUsers.filter((u) => u !== null).map((u) => u!.id);
-      await reconcileUserExpenses(ctx, args.id, participantUserIds);
+      await applyExpenseWriteBatch(ctx, [
+        { kind: "patch", expense: existing, patch: expensePatch, viewerAccountIds }
+      ]);
 
       return existing._id;
     }
@@ -833,43 +1024,35 @@ export const create = mutation({
       involvedMemberIds: normalizedInvolved
     });
     const isSettled = computedSettledFromSplits(normalizedSplits);
-    const expenseId = await ctx.db.insert("expenses", {
+    const expenseInsert = {
       id: args.id,
       group_id: args.group_id,
       context_kind: contextKind,
       group_ref: group?._id,
       description: args.description,
+      notes: normalizedNotes,
       date: args.date,
       total_amount: args.total_amount,
       paid_by_member_id: normalizedPaidBy,
       involved_member_ids: normalizedInvolved,
       splits: normalizedSplits,
       is_settled: isSettled,
-      owner_email: user.email,
+      owner_email: user.email.trim().toLowerCase(),
       owner_account_id: user.id,
       owner_id: user._id,
       participant_member_ids: normalizedParticipantMemberIds,
       participants: normalizedParticipants,
       participant_emails: participantEmails,
-      linked_participants: args.linked_participants,
       subexpenses: args.subexpenses && args.subexpenses.length >= 2 ? args.subexpenses : undefined,
       is_payback_generated_mock_data: args.is_payback_generated_mock_data ?? false,
       created_at: Date.now(),
       updated_at: Date.now()
-    });
-
-    const participantUsers = await Promise.all(
-      participantEmails.map((email) =>
-        ctx.db
-          .query("accounts")
-          .withIndex("by_email", (q) => q.eq("email", email))
-          .unique()
-      )
-    );
-    const participantUserIds = participantUsers.filter((u) => u !== null).map((u) => u!.id);
-    await reconcileUserExpenses(ctx, args.id, participantUserIds);
-
-    return expenseId;
+    };
+    const viewerAccountIds = await resolveExpenseViewerAccountIds(ctx, expenseInsert);
+    const result = await applyExpenseWriteBatch(ctx, [
+      { kind: "insert", expense: expenseInsert, viewerAccountIds }
+    ]);
+    return result.operations[0].expenseId;
   }
 });
 
@@ -884,17 +1067,27 @@ export const setSettlementState = mutation({
     if (!user) throw new Error("User not found");
 
     await checkRateLimit(ctx, identity.subject, "expenses:setSettlementState", 20);
+    if ((args.memberIds?.length ?? 0) > MAX_EXPENSE_VIEWERS) {
+      throw new Error(`Settlement supports at most ${MAX_EXPENSE_VIEWERS} members`);
+    }
 
     const expense = await loadExpenseByClientId(ctx, args.expenseId);
     const callerEquivalentIds = await buildUserEquivalentMemberIds(ctx.db, user);
     const callerOwnsExpense = isExpenseOwner(expense, user);
-    const callerIsPayer = callerEquivalentIds.has(normalizeMemberId(expense.paid_by_member_id));
+    const inactiveParticipantMemberIds = new Set(
+      (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
+    );
+    const normalizedPaidByMemberId = normalizeMemberId(expense.paid_by_member_id);
+    const callerIsPayer =
+      !inactiveParticipantMemberIds.has(normalizedPaidByMemberId) &&
+      callerEquivalentIds.has(normalizedPaidByMemberId);
 
     // Access gate: reject non-participants before revealing any split-level details.
     if (!callerOwnsExpense && !callerIsPayer) {
-      const callerHasSplit = expense.splits.some((split: any) =>
-        callerEquivalentIds.has(normalizeMemberId(split.member_id))
-      );
+      const callerHasSplit = expense.splits.some((split: any) => {
+        const memberId = normalizeMemberId(split.member_id);
+        return !inactiveParticipantMemberIds.has(memberId) && callerEquivalentIds.has(memberId);
+      });
       if (!callerHasSplit) {
         throw new Error("Forbidden: not a participant in this expense");
       }
@@ -907,13 +1100,19 @@ export const setSettlementState = mutation({
     );
 
     if (requestedMemberIds.size === 0) {
-      if (callerOwnsExpense || callerIsPayer) {
+      if (callerOwnsExpense) {
         for (const memberId of splitMemberIds) {
           requestedMemberIds.add(memberId);
         }
+      } else if (callerIsPayer) {
+        for (const memberId of splitMemberIds) {
+          if (!inactiveParticipantMemberIds.has(memberId)) {
+            requestedMemberIds.add(memberId);
+          }
+        }
       } else {
         for (const memberId of splitMemberIds) {
-          if (callerEquivalentIds.has(memberId)) {
+          if (!inactiveParticipantMemberIds.has(memberId) && callerEquivalentIds.has(memberId)) {
             requestedMemberIds.add(memberId);
           }
         }
@@ -928,9 +1127,18 @@ export const setSettlementState = mutation({
       if (!splitMemberIdSet.has(memberId)) {
         throw new Error(`Split not found for member ${memberId}`);
       }
-      if (!callerOwnsExpense && !callerIsPayer && !callerEquivalentIds.has(memberId)) {
-        throw new Error("Forbidden: cannot settle another member's split");
+      if (!callerOwnsExpense) {
+        if (inactiveParticipantMemberIds.has(memberId)) {
+          throw new Error("Forbidden: cannot settle an inactive participant split");
+        }
+        if (!callerIsPayer && !callerEquivalentIds.has(memberId)) {
+          throw new Error("Forbidden: cannot settle another member's split");
+        }
       }
+    }
+
+    if (await isExpenseAttachedToDeletingGroup(ctx, expense)) {
+      throw new Error("Group deletion is in progress");
     }
 
     const nextSplits = expense.splits.map((split: any) => {
@@ -947,11 +1155,13 @@ export const setSettlementState = mutation({
     const nextIsSettled = computedSettledFromSplits(nextSplits);
     const updatedAt = Date.now();
 
-    await ctx.db.patch(expense._id, {
+    const patch = {
       splits: nextSplits,
       is_settled: nextIsSettled,
       updated_at: updatedAt
-    });
+    };
+    const viewerAccountIds = await resolveExpenseViewerAccountIds(ctx, expense);
+    await applyExpenseWriteBatch(ctx, [{ kind: "patch", expense, patch, viewerAccountIds }]);
 
     return {
       ...expense,
@@ -969,6 +1179,7 @@ export const listByGroup = query({
     if (!user) return [];
 
     const { group } = await requireGroupByClientIdWithAccess(ctx, user, args.group_id);
+    if (group.deletion_token) return [];
 
     const expenses = await ctx.db
       .query("expenses")
@@ -996,6 +1207,9 @@ export const listByGroupPaginated = query({
       return { items: [], nextCursor: null };
     }
     await requireGroupAccess(ctx, user, group);
+    if (group.deletion_token) {
+      return { items: [], nextCursor: null };
+    }
 
     const result = await ctx.db
       .query("expenses")
@@ -1034,7 +1248,57 @@ export const list = query({
       })
     );
 
-    return expenses.filter((e) => e !== null);
+    const visibleExpenses = await Promise.all(
+      expenses.map(async (expense) => {
+        if (!expense || (await isExpenseAttachedToDeletingGroup(ctx, expense))) return null;
+        return expense;
+      })
+    );
+    return visibleExpenses.filter((expense) => expense !== null);
+  }
+});
+
+export const listV2 = query({
+  args: {
+    paginationOpts: paginationOptsValidator,
+    expectedRevision: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    requireSafeSyncPageSize(args.paginationOpts.numItems);
+    requireRevisionForContinuation(args.paginationOpts.cursor, args.expectedRevision);
+    await requireSyncMaterializationReady(ctx.db, USER_EXPENSE_REFS_MATERIALIZATION_KEY);
+    const revision = await getAccountSyncRevision(ctx.db, user._id, "expenses");
+    requireExpectedSyncRevision(revision, args.expectedRevision);
+
+    const visibilityPage = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_account_ref_and_updated_at", (query) => query.eq("account_ref", user._id))
+      .order("desc")
+      .paginate({
+        ...args.paginationOpts,
+        maximumRowsRead: MAX_SYNC_PAGE_SIZE,
+        maximumBytesRead: 1024 * 1024
+      } as typeof args.paginationOpts);
+    const page: Doc<"expenses">[] = [];
+    for (const visibility of visibilityPage.page) {
+      if (!visibility.expense_ref) {
+        throw syncV2NotReadyError("expense visibility is missing its canonical reference");
+      }
+      const expense = await ctx.db.get(visibility.expense_ref);
+      if (!expense || expense.id !== visibility.expense_id) {
+        throw syncV2NotReadyError("expense visibility is inconsistent");
+      }
+      if (await isExpenseAttachedToDeletingGroup(ctx, expense)) continue;
+      page.push(expense);
+    }
+    return {
+      page,
+      continueCursor: visibilityPage.continueCursor,
+      isDone: visibilityPage.isDone,
+      revision
+    };
   }
 });
 
@@ -1064,8 +1328,7 @@ export const deleteExpense = mutation({
       throw new Error("Not authorized to delete this expense");
     }
 
-    await reconcileUserExpenses(ctx, args.id, []);
-    await ctx.db.delete(expense._id);
+    await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense }]);
   }
 });
 
@@ -1075,13 +1338,17 @@ export const deleteExpenses = mutation({
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    if (args.ids.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(`Expense deletion supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} IDs`);
+    }
 
     const userMemberIds = new Set([
       ...(user.member_id ? [user.member_id] : []),
       ...(user.alias_member_ids ?? [])
     ]);
 
-    for (const id of args.ids) {
+    const operations: ExpenseWriteOperation[] = [];
+    for (const id of new Set(args.ids)) {
       const expense = await ctx.db
         .query("expenses")
         .withIndex("by_client_id", (q) => q.eq("id", id))
@@ -1096,50 +1363,125 @@ export const deleteExpenses = mutation({
         continue;
       }
 
-      await reconcileUserExpenses(ctx, id, []);
-      await ctx.db.delete(expense._id);
+      operations.push({ kind: "delete" as const, expense });
     }
+    await applyExpenseWriteBatch(ctx, operations);
   }
 });
 
 // Clear ALL expenses for the current user
+const clearAllProgressValidator = v.object({
+  inProgress: v.boolean(),
+  processed: v.number(),
+  cutoff: v.number()
+});
+
+type ClearAllProgress = {
+  inProgress: boolean;
+  processed: number;
+  cutoff: number;
+};
+
+function assertConsistentExpenseOwner(expense: Doc<"expenses">, user: Doc<"accounts">): void {
+  if (
+    expense.owner_id !== user._id ||
+    expense.owner_account_id !== user.id ||
+    expense.owner_email.trim().toLowerCase() !== user.email.trim().toLowerCase()
+  ) {
+    throw new Error(`Expense ${expense.id} has conflicting ownership metadata`);
+  }
+}
+
+async function processClearAllExpenseStep(
+  ctx: any,
+  user: Doc<"accounts">,
+  cutoff: number
+): Promise<ClearAllProgress> {
+  const ownedExpense = await ctx.db
+    .query("expenses")
+    .withIndex("by_owner_id", (q: any) => q.eq("owner_id", user._id))
+    .filter((q: any) => q.lte(q.field("created_at"), cutoff))
+    .first();
+  if (ownedExpense) {
+    assertConsistentExpenseOwner(ownedExpense, user);
+    await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense: ownedExpense }]);
+    return { inProgress: true, processed: 1, cutoff };
+  }
+
+  const visibilityRow = await ctx.db
+    .query("user_expenses")
+    .withIndex("by_user_id", (q: any) => q.eq("user_id", user.id))
+    .filter((q: any) => q.lt(q.field("_creationTime"), cutoff + 1))
+    .first();
+  if (!visibilityRow) return { inProgress: false, processed: 0, cutoff };
+
+  let expense = visibilityRow.expense_ref ? await ctx.db.get(visibilityRow.expense_ref) : null;
+  if (!expense) {
+    const matches = await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (query: any) => query.eq("id", visibilityRow.expense_id))
+      .take(2);
+    if (matches.length > 1) throw new Error(`Expense ${visibilityRow.expense_id} is not unique`);
+    expense = matches[0] ?? null;
+  }
+  if (!expense) {
+    await deleteUserExpenseRowWithRevision(ctx, visibilityRow, user._id);
+    return { inProgress: true, processed: 1, cutoff };
+  }
+
+  if (expense.owner_id === user._id) assertConsistentExpenseOwner(expense, user);
+  await applyExpenseWriteBatch(ctx, [
+    {
+      kind: "visibility",
+      expense,
+      viewerAccountIds: await resolveExpenseViewerAccountIds(ctx, expense, new Set([user.id]))
+    }
+  ]);
+  return { inProgress: true, processed: 1, cutoff };
+}
+
+async function scheduleExpenseClearContinuation(
+  ctx: any,
+  user: Doc<"accounts">,
+  result: ClearAllProgress
+): Promise<void> {
+  if (!result.inProgress) return;
+  await ctx.scheduler.runAfter(0, internal.expenses.clearAllForUserBatch, {
+    accountId: user._id,
+    cutoff: result.cutoff
+  });
+}
+
+// Compatibility endpoint for deployed clients that decode a null mutation result.
 export const clearAllForUser = mutation({
   args: {},
+  returns: v.null(),
   handler: async (ctx) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    const result = await processClearAllExpenseStep(ctx, user, Date.now());
+    await scheduleExpenseClearContinuation(ctx, user, result);
+    return null;
+  }
+});
 
-    // Get all expenses owned by this user
-    const ownedExpenses = await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-      .collect();
+export const clearAllForUserV2 = mutation({
+  args: { cutoff: v.optional(v.number()) },
+  returns: clearAllProgressValidator,
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    return await processClearAllExpenseStep(ctx, user, args.cutoff ?? Date.now());
+  }
+});
 
-    const byEmail = await ctx.db
-      .query("expenses")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
-      .collect();
-
-    // Merge and dedupe by client UUID so we can reconcile user_expenses correctly.
-    const ownedExpenseByClientId = new Map<string, any>();
-    ownedExpenses.forEach((expense) => ownedExpenseByClientId.set(expense.id, expense));
-    byEmail.forEach((expense) => ownedExpenseByClientId.set(expense.id, expense));
-
-    // Delete all owned expenses and fully reconcile fan-out rows.
-    for (const expense of ownedExpenseByClientId.values()) {
-      await reconcileUserExpenses(ctx, expense.id, []);
-      await ctx.db.delete(expense._id);
-    }
-
-    // Also remove this user from user_expenses visibility rows for shared expenses.
-    const viewerExpenseRows = await ctx.db
-      .query("user_expenses")
-      .withIndex("by_user_id", (q) => q.eq("user_id", user.id))
-      .collect();
-    for (const row of viewerExpenseRows) {
-      await ctx.db.delete(row._id);
-    }
-
+export const clearAllForUserBatch = internalMutation({
+  args: { accountId: v.id("accounts"), cutoff: v.number() },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.accountId);
+    if (!user) return null;
+    const result = await processClearAllExpenseStep(ctx, user, args.cutoff);
+    await scheduleExpenseClearContinuation(ctx, user, result);
     return null;
   }
 });
@@ -1162,17 +1504,23 @@ export const clearDebugDataForUser = mutation({
       .withIndex("by_is_payback_generated_mock_data", (q) =>
         q.eq("is_payback_generated_mock_data", true)
       )
-      .collect();
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    if (debugExpenses.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(
+        `Debug cleanup requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
+      );
+    }
 
     let deleted = 0;
+    const operations: ExpenseWriteOperation[] = [];
     for (const expense of debugExpenses) {
       const isOwner = membershipIds.has(normalizeMemberId(expense.paid_by_member_id));
       if (!isOwner) continue;
 
-      await reconcileUserExpenses(ctx, expense.id, []);
-      await ctx.db.delete(expense._id);
+      operations.push({ kind: "delete" as const, expense });
       deleted += 1;
     }
+    await applyExpenseWriteBatch(ctx, operations);
 
     return null;
   }

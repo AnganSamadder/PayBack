@@ -176,7 +176,8 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
 
     // MARK: - Delete Operations Tests
 
-    func testDeleteGroups_RemovesFromStore() {
+    @MainActor
+    func testDeleteGroups_RemovesFromStore() async throws {
         let group = SpendingGroup(
             id: UUID(),
             name: "To Delete",
@@ -187,7 +188,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
 
         XCTAssertTrue(store.groups.contains { $0.id == group.id })
 
-        store.deleteGroups(at: IndexSet(integer: store.groups.firstIndex(where: { $0.id == group.id })!))
+        try await store.deleteGroups(at: IndexSet(integer: store.groups.firstIndex(where: { $0.id == group.id })!))
 
         XCTAssertFalse(store.groups.contains { $0.id == group.id })
     }

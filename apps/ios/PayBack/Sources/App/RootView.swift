@@ -230,6 +230,12 @@ struct RootView: View {
                 pendingInviteToken = nil
             }
         }
+        .onChange(of: store.session?.account.id) { _, _ in
+            resetAccountScopedPresentation()
+        }
+        .onChange(of: store.dataEpoch) { _, _ in
+            resetAccountScopedPresentation()
+        }
         .onAppear {
             // Handle any pending token when view appears
             if let tokenId = pendingInviteToken {
@@ -261,6 +267,18 @@ struct RootView: View {
             showAddOverlay = false
             showExpandingCircle = false
         }
+        circleSize = 64
+    }
+
+    private func resetAccountScopedPresentation() {
+        tabNavigationState.resetAllToRoot()
+        showAddOverlay = false
+        showPickerUI = false
+        showExpandingCircle = false
+        selectedGroupForNewExpense = nil
+        backgroundSnapshot = nil
+        showInviteClaim = false
+        inviteTokenToShow = nil
         circleSize = 64
     }
 

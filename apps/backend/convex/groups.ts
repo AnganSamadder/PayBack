@@ -1,53 +1,310 @@
-import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { paginationOptsValidator } from "convex/server";
+import { Doc } from "./_generated/dataModel";
+import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
 import { normalizeMemberId } from "./identity";
-import { reconcileUserExpenses } from "./helpers";
+import {
+  assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
+  isAccountDeletionFenced
+} from "./helpers";
+import {
+  deleteGroupVisibilityRowWithRevision,
+  deleteGroupWithVisibility,
+  GroupVisibilityWriteBatch,
+  insertGroupWithVisibility,
+  patchGroupWithVisibility
+} from "./groupVisibility";
+import {
+  applyExpenseWriteBatch,
+  type ExpenseWriteOperation,
+  MAX_EXPENSE_WRITE_OPERATIONS
+} from "./expenseWrites";
+import { expenseMemberIds } from "./expenses";
+import {
+  getAccountSyncRevision,
+  MAX_SYNC_PAGE_SIZE,
+  requireExpectedSyncRevision,
+  requireRevisionForContinuation,
+  requireSafeSyncPageSize,
+  requireSyncMaterializationReady,
+  syncV2NotReadyError
+} from "./syncState";
+import { GROUP_VISIBILITY_MATERIALIZATION_KEY } from "./migrations/groupVisibility";
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) {
-    throw new Error("Unauthenticated");
-  }
-  const user = await ctx.db
-    .query("accounts")
-    .withIndex("by_email", (q: any) => q.eq("email", identity.email!))
-    .unique();
-
-  return { identity, user };
+  return await getCurrentUserOrThrow(ctx);
 }
 
 function isGroupOwner(group: any, user: any): boolean {
-  return (
-    group.owner_id === user._id ||
-    group.owner_account_id === user.id ||
-    group.owner_email === user.email
-  );
+  return group.owner_id === user._id;
 }
 
-async function deleteGroupWithExpenses(ctx: any, group: any) {
-  const expenseByDocId = new Map<string, any>();
+function assertGroupWritable(group: Doc<"groups">): void {
+  if (group.deletion_token) throw new Error("Group deletion is in progress");
+}
+
+async function fenceGroupForDeletion(
+  ctx: any,
+  group: Doc<"groups">
+): Promise<{ group: Doc<"groups">; deletionToken: string }> {
+  if (group.deletion_token) {
+    return { group, deletionToken: group.deletion_token };
+  }
+  const deletionToken = crypto.randomUUID();
+  await patchGroupWithVisibility(ctx, group._id, { deletion_token: deletionToken });
+  return { group: { ...group, deletion_token: deletionToken }, deletionToken };
+}
+
+async function collectGroupExpenses(ctx: any, group: Doc<"groups">): Promise<Doc<"expenses">[]> {
+  const expenseByDocId = new Map<string, Doc<"expenses">>();
 
   const byGroupRef = await ctx.db
     .query("expenses")
     .withIndex("by_group_ref", (q: any) => q.eq("group_ref", group._id))
-    .collect();
-  byGroupRef.forEach((expense: any) => expenseByDocId.set(expense._id, expense));
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+  if (byGroupRef.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw new Error(`Group mutation supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`);
+  }
+  byGroupRef.forEach((expense: Doc<"expenses">) => expenseByDocId.set(expense._id, expense));
 
   const byGroupId = await ctx.db
     .query("expenses")
     .withIndex("by_group_id", (q: any) => q.eq("group_id", group.id))
-    .collect();
-  byGroupId.forEach((expense: any) => expenseByDocId.set(expense._id, expense));
+    .filter((q: any) => q.eq(q.field("group_ref"), undefined))
+    .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+  if (byGroupId.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw new Error(`Group mutation supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`);
+  }
+  byGroupId.forEach((expense: Doc<"expenses">) => expenseByDocId.set(expense._id, expense));
 
-  for (const expense of expenseByDocId.values()) {
-    await reconcileUserExpenses(ctx, expense.id, []);
-    await ctx.db.delete(expense._id);
+  if (expenseByDocId.size > MAX_EXPENSE_WRITE_OPERATIONS) {
+    throw new Error(`Group mutation supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`);
+  }
+  return Array.from(expenseByDocId.values());
+}
+
+async function deleteGroupWithExpenses(
+  ctx: any,
+  group: any,
+  groupVisibilityBatch?: GroupVisibilityWriteBatch,
+  expenseOperations?: ExpenseWriteOperation[]
+) {
+  const groupExpenses = await collectGroupExpenses(ctx, group);
+  const deleteOperations: ExpenseWriteOperation[] = groupExpenses.map((expense) => ({
+    kind: "delete",
+    expense
+  }));
+  if (expenseOperations) {
+    if (expenseOperations.length + deleteOperations.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(
+        `Group deletion requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} expenses`
+      );
+    }
+    expenseOperations.push(...deleteOperations);
+  } else {
+    await applyExpenseWriteBatch(ctx, deleteOperations);
   }
 
-  await ctx.db.delete(group._id);
+  if (groupVisibilityBatch) {
+    await groupVisibilityBatch.delete(group._id);
+  } else {
+    await deleteGroupWithVisibility(ctx, group._id);
+  }
+}
+
+async function processGroupCascadeStep(ctx: any, group: Doc<"groups">): Promise<boolean> {
+  const byGroupRef = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_ref", (query: any) => query.eq("group_ref", group._id))
+    .first();
+  if (byGroupRef) {
+    await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense: byGroupRef }]);
+    return false;
+  }
+
+  const byGroupId = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_id", (query: any) => query.eq("group_id", group.id))
+    .filter((query: any) => query.eq(query.field("group_ref"), undefined))
+    .first();
+  if (byGroupId) {
+    await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense: byGroupId }]);
+    return false;
+  }
+
+  await deleteGroupWithVisibility(ctx, group._id);
+  return true;
+}
+
+async function scheduleGroupCascade(
+  ctx: any,
+  group: Doc<"groups">,
+  ownerAccountId: Doc<"accounts">["_id"],
+  deletionToken: string
+): Promise<void> {
+  await ctx.scheduler.runAfter(0, internal.groups.deleteGroupCascadeBatch, {
+    groupId: group._id,
+    ownerAccountId,
+    deletionToken
+  });
+}
+
+const MAX_SYNCHRONOUS_GROUP_CASCADE_EXPENSES = 8;
+const MAX_SYNCHRONOUS_GROUP_CASCADES = 8;
+
+async function boundedGroupExpenseCount(
+  ctx: any,
+  group: Doc<"groups">,
+  limit: number
+): Promise<number | null> {
+  const expenses = new Set<string>();
+  const byGroupRef = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_ref", (query: any) => query.eq("group_ref", group._id))
+    .take(limit + 1);
+  if (byGroupRef.length > limit) return null;
+  for (const expense of byGroupRef) expenses.add(String(expense._id));
+
+  const byGroupId = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_id", (query: any) => query.eq("group_id", group.id))
+    .filter((query: any) => query.eq(query.field("group_ref"), undefined))
+    .take(limit + 1);
+  for (const expense of byGroupId) expenses.add(String(expense._id));
+  return expenses.size <= limit ? expenses.size : null;
+}
+
+const MAX_GROUP_MEMBERS = 64;
+const GROUP_IDENTITY_READ_LIMITS = {
+  rows: 256,
+  queries: 512,
+  bytes: 8 * 1024 * 1024
+} as const;
+type GroupMemberInput = {
+  id: string;
+  name: string;
+  profile_image_url?: string;
+  profile_avatar_color?: string;
+  is_current_user?: boolean;
+};
+
+async function prepareGroupMembers(
+  ctx: any,
+  incomingMembers: GroupMemberInput[],
+  existingMembers: GroupMemberInput[] = []
+) {
+  if (incomingMembers.length > MAX_GROUP_MEMBERS) {
+    throw new Error(`Groups cannot contain more than ${MAX_GROUP_MEMBERS} members`);
+  }
+  if (existingMembers.length > MAX_GROUP_MEMBERS) {
+    throw new Error("The stored group exceeds the 64-member safety limit");
+  }
+
+  const readBudget = { rows: 0, queries: 0, bytes: 0 };
+  const accountCache = new Map<string, any | null>();
+  const accountRead = (rows: readonly unknown[]) => {
+    readBudget.rows += rows.length;
+    readBudget.bytes += rows.reduce<number>((total, row) => total + getConvexSize(row as Value), 0);
+    if (
+      readBudget.rows > GROUP_IDENTITY_READ_LIMITS.rows ||
+      readBudget.bytes > GROUP_IDENTITY_READ_LIMITS.bytes
+    ) {
+      throw new Error("Group member identity lookup is too large to complete safely");
+    }
+  };
+  const chargeQuery = () => {
+    readBudget.queries += 1;
+    if (readBudget.queries > GROUP_IDENTITY_READ_LIMITS.queries) {
+      throw new Error("Group member identity lookup is too large to complete safely");
+    }
+  };
+  const resolveAccount = async (memberId: string) => {
+    let currentMemberId = normalizeMemberId(memberId);
+    const visited = new Set<string>();
+    for (let depth = 0; depth < 20; depth += 1) {
+      if (!currentMemberId || visited.has(currentMemberId)) return null;
+      const cached = accountCache.get(currentMemberId);
+      if (cached !== undefined) return cached;
+      visited.add(currentMemberId);
+
+      chargeQuery();
+      const account = await ctx.db
+        .query("accounts")
+        .withIndex("by_member_id", (q: any) => q.eq("member_id", currentMemberId))
+        .first();
+      accountRead(account ? [account] : []);
+      if (account) {
+        for (const visitedId of visited) accountCache.set(visitedId, account);
+        return account;
+      }
+
+      chargeQuery();
+      const alias = await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id_and_source", (q: any) =>
+          q.eq("alias_member_id", currentMemberId).eq("materialization_source", "account_alias")
+        )
+        .first();
+      accountRead(alias ? [alias] : []);
+      if (!alias) {
+        for (const visitedId of visited) accountCache.set(visitedId, null);
+        return null;
+      }
+      currentMemberId = normalizeMemberId(alias.canonical_member_id);
+    }
+    return null;
+  };
+  const resolveIdentity = async (memberId: string) => {
+    const normalizedMemberId = normalizeMemberId(memberId);
+    if (!normalizedMemberId) throw new Error("Group member IDs cannot be empty");
+    const account = await resolveAccount(normalizedMemberId);
+    const canonicalMemberId = account?.member_id
+      ? normalizeMemberId(account.member_id)
+      : normalizedMemberId;
+    return {
+      account,
+      canonicalMemberId,
+      key: account ? `account:${account.id}` : `member:${canonicalMemberId}`
+    };
+  };
+
+  const existingByIdentity = new Map<string, GroupMemberInput>();
+  for (const member of existingMembers) {
+    const identity = await resolveIdentity(member.id);
+    existingByIdentity.set(identity.key, member);
+  }
+
+  const normalizedByIdentity = new Map<string, GroupMemberInput>();
+  for (const member of incomingMembers) {
+    const identity = await resolveIdentity(member.id);
+    const existingMember = existingByIdentity.get(identity.key);
+    let normalizedMember: GroupMemberInput;
+    if (isAccountDeletionFenced(identity.account)) {
+      if (!existingMember) assertAccountCanAcceptChanges(identity.account);
+      normalizedMember = {
+        id: identity.canonicalMemberId,
+        name: "Deleted User"
+      };
+    } else {
+      normalizedMember = {
+        ...member,
+        id: identity.canonicalMemberId,
+        name: member.name.trim() || "Unknown"
+      };
+    }
+
+    const prior = normalizedByIdentity.get(identity.key);
+    if (!prior || (!prior.is_current_user && normalizedMember.is_current_user)) {
+      normalizedByIdentity.set(identity.key, normalizedMember);
+    }
+  }
+
+  return Array.from(normalizedByIdentity.values());
 }
 
 export const create = mutation({
@@ -81,11 +338,12 @@ export const create = mutation({
         if (!isGroupOwner(existing, user)) {
           throw new Error("Forbidden: cannot update a group you do not own");
         }
+        assertGroupWritable(existing);
 
-        // If it exists, update it instead of creating a duplicate
-        await ctx.db.patch(existing._id, {
+        const members = await prepareGroupMembers(ctx, args.members, existing.members);
+        await patchGroupWithVisibility(ctx, existing._id, {
           name: args.name,
-          members: args.members,
+          members,
           is_direct: args.is_direct ?? existing.is_direct,
           is_payback_generated_mock_data:
             args.is_payback_generated_mock_data ?? existing.is_payback_generated_mock_data,
@@ -96,11 +354,12 @@ export const create = mutation({
       }
     }
 
-    const groupId = await ctx.db.insert("groups", {
+    const members = await prepareGroupMembers(ctx, args.members);
+    const groupId = await insertGroupWithVisibility(ctx, {
       id: args.id || crypto.randomUUID(),
       name: args.name,
-      members: args.members,
-      owner_email: user.email,
+      members,
+      owner_email: user.email.trim().toLowerCase(),
       owner_account_id: user.id,
       owner_id: user._id,
       is_direct: args.is_direct ?? false,
@@ -145,9 +404,15 @@ export async function listInternal(ctx: any) {
 
   // Merge results
   const groupMap = new Map();
-  groupsByOwnerId.forEach((g: any) => groupMap.set(g._id, g));
-  groupsByEmail.forEach((g: any) => groupMap.set(g._id, g));
-  groupsByMembership.forEach((g: any) => groupMap.set(g._id, g));
+  groupsByOwnerId.forEach((g: any) => {
+    if (!g.deletion_token) groupMap.set(g._id, g);
+  });
+  groupsByEmail.forEach((g: any) => {
+    if (!g.deletion_token) groupMap.set(g._id, g);
+  });
+  groupsByMembership.forEach((g: any) => {
+    if (!g.deletion_token) groupMap.set(g._id, g);
+  });
 
   return Array.from(groupMap.values());
 }
@@ -156,6 +421,47 @@ export const list = query({
   args: {},
   handler: async (ctx) => {
     return await listInternal(ctx);
+  }
+});
+
+export const listV2 = query({
+  args: {
+    paginationOpts: paginationOptsValidator,
+    expectedRevision: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    requireSafeSyncPageSize(args.paginationOpts.numItems);
+    requireRevisionForContinuation(args.paginationOpts.cursor, args.expectedRevision);
+    await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
+    const revision = await getAccountSyncRevision(ctx.db, user._id, "groups");
+    requireExpectedSyncRevision(revision, args.expectedRevision);
+
+    const visibilityPage = await ctx.db
+      .query("group_visibility")
+      .withIndex("by_account_id_and_group_updated_at", (query) => query.eq("account_id", user._id))
+      .order("desc")
+      .paginate({
+        ...args.paginationOpts,
+        maximumRowsRead: MAX_SYNC_PAGE_SIZE,
+        maximumBytesRead: 1024 * 1024
+      } as typeof args.paginationOpts);
+    const page: Doc<"groups">[] = [];
+    for (const visibility of visibilityPage.page) {
+      const group = await ctx.db.get(visibility.group_id);
+      if (!group) {
+        throw syncV2NotReadyError("group visibility references a missing group");
+      }
+      if (group.deletion_token) continue;
+      page.push(group);
+    }
+    return {
+      page,
+      continueCursor: visibilityPage.continueCursor,
+      isDone: visibilityPage.isDone,
+      revision
+    };
   }
 });
 
@@ -188,7 +494,7 @@ export const get = query({
       .withIndex("by_client_id", (q) => q.eq("id", args.id))
       .first();
 
-    if (!group) return null;
+    if (!group || group.deletion_token) return null;
 
     // Auth check
     if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
@@ -206,6 +512,67 @@ export const get = query({
     }
 
     return group;
+  }
+});
+
+export const removeMemberAndExpenses = mutation({
+  args: {
+    id: v.string(),
+    memberId: v.string()
+  },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+
+    const group = await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (query) => query.eq("id", args.id))
+      .unique();
+    if (!group) throw new Error("Group not found");
+    if (!isGroupOwner(group, user)) {
+      throw new Error("Not authorized to remove members from this group");
+    }
+    assertGroupWritable(group);
+
+    const targetMemberIds = new Set(
+      (await getAllEquivalentMemberIds(ctx.db, args.memberId)).map(normalizeMemberId)
+    );
+    const callerMemberIds = new Set(
+      (await getAllEquivalentMemberIds(ctx.db, user.member_id ?? user.id)).map(normalizeMemberId)
+    );
+    if (Array.from(targetMemberIds).some((memberId) => callerMemberIds.has(memberId))) {
+      throw new Error("Cannot remove the current user from a group");
+    }
+
+    const removedMember = group.members.find((member) =>
+      targetMemberIds.has(normalizeMemberId(member.id))
+    );
+    if (!removedMember) throw new Error("Member not found in group");
+
+    const remainingMembers = group.members.filter(
+      (member) => !targetMemberIds.has(normalizeMemberId(member.id))
+    );
+    const remainingOtherMembers = remainingMembers.filter(
+      (member) => !callerMemberIds.has(normalizeMemberId(member.id))
+    );
+
+    if (remainingOtherMembers.length === 0) {
+      await deleteGroupWithExpenses(ctx, group);
+      return null;
+    }
+
+    const affectedExpenses = (await collectGroupExpenses(ctx, group)).filter((expense) =>
+      expenseMemberIds(expense).some((memberId) => targetMemberIds.has(memberId))
+    );
+    await applyExpenseWriteBatch(
+      ctx,
+      affectedExpenses.map((expense) => ({ kind: "delete", expense }))
+    );
+    await patchGroupWithVisibility(ctx, group._id, {
+      members: remainingMembers,
+      updated_at: Date.now()
+    });
+    return null;
   }
 });
 
@@ -228,7 +595,16 @@ export const deleteGroup = mutation({
       throw new Error("Not authorized to delete this group");
     }
 
-    await deleteGroupWithExpenses(ctx, group);
+    if (
+      (await boundedGroupExpenseCount(ctx, group, MAX_SYNCHRONOUS_GROUP_CASCADE_EXPENSES)) !== null
+    ) {
+      await deleteGroupWithExpenses(ctx, group);
+    } else {
+      const fenced = await fenceGroupForDeletion(ctx, group);
+      if (!(await processGroupCascadeStep(ctx, fenced.group))) {
+        await scheduleGroupCascade(ctx, fenced.group, user._id, fenced.deletionToken);
+      }
+    }
   }
 });
 
@@ -238,8 +614,14 @@ export const deleteGroups = mutation({
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
-
-    for (const id of args.ids) {
+    if (args.ids.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(`Group deletion supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} IDs`);
+    }
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
+    const expenseOperations: ExpenseWriteOperation[] = [];
+    let synchronousGroups = 0;
+    let synchronousExpenses = 0;
+    for (const id of new Set(args.ids)) {
       const group = await ctx.db
         .query("groups")
         .withIndex("by_client_id", (q) => q.eq("id", id))
@@ -252,85 +634,163 @@ export const deleteGroups = mutation({
         continue;
       }
 
-      await deleteGroupWithExpenses(ctx, group);
+      const remainingExpenseCapacity = MAX_SYNCHRONOUS_GROUP_CASCADE_EXPENSES - synchronousExpenses;
+      const expenseCount =
+        synchronousGroups < MAX_SYNCHRONOUS_GROUP_CASCADES && remainingExpenseCapacity >= 0
+          ? await boundedGroupExpenseCount(ctx, group, remainingExpenseCapacity)
+          : null;
+      if (expenseCount === null) {
+        const fenced = await fenceGroupForDeletion(ctx, group);
+        await scheduleGroupCascade(ctx, fenced.group, user._id, fenced.deletionToken);
+        continue;
+      }
+      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch, expenseOperations);
+      synchronousGroups += 1;
+      synchronousExpenses += expenseCount;
     }
+    await applyExpenseWriteBatch(ctx, expenseOperations);
+    await groupVisibilityBatch.flush();
   }
 });
 
-// Clear ALL groups for the current user (nuclear option)
+export const deleteGroupCascadeBatch = internalMutation({
+  args: {
+    groupId: v.id("groups"),
+    ownerAccountId: v.id("accounts"),
+    deletionToken: v.string()
+  },
+  handler: async (ctx, args) => {
+    const group = await ctx.db.get(args.groupId);
+    if (!group) return null;
+    if (group.deletion_token !== args.deletionToken) return null;
+    if (group.owner_id !== args.ownerAccountId) {
+      throw new Error("Group ownership changed during deletion");
+    }
+    if (!(await processGroupCascadeStep(ctx, group))) {
+      await scheduleGroupCascade(ctx, group, args.ownerAccountId, args.deletionToken);
+    }
+    return null;
+  }
+});
+
+// Clear all groups in durable, bounded units.
+const clearAllProgressValidator = v.object({
+  inProgress: v.boolean(),
+  processed: v.number(),
+  cutoff: v.number()
+});
+
+type ClearAllProgress = {
+  inProgress: boolean;
+  processed: number;
+  cutoff: number;
+};
+
+async function clearAllMembershipIds(ctx: any, user: Doc<"accounts">): Promise<Set<string>> {
+  const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+    ctx.db,
+    user.member_id ?? user.id
+  );
+  const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+  return new Set([
+    normalizeMemberId(canonicalMemberId),
+    ...equivalentIds.map(normalizeMemberId),
+    ...(user.alias_member_ids ?? []).map(normalizeMemberId)
+  ]);
+}
+
+async function processClearAllGroupStep(
+  ctx: any,
+  user: Doc<"accounts">,
+  cutoff: number
+): Promise<ClearAllProgress> {
+  const ownedGroup = await ctx.db
+    .query("groups")
+    .withIndex("by_owner_id", (q: any) => q.eq("owner_id", user._id))
+    .filter((q: any) => q.lte(q.field("created_at"), cutoff))
+    .first();
+  if (ownedGroup) {
+    const fenced = await fenceGroupForDeletion(ctx, ownedGroup);
+    await processGroupCascadeStep(ctx, fenced.group);
+    return { inProgress: true, processed: 1, cutoff };
+  }
+
+  const visibilityRow = await ctx.db
+    .query("group_visibility")
+    .withIndex("by_account_id_and_group_updated_at", (q: any) => q.eq("account_id", user._id))
+    .filter((q: any) => q.lte(q.field("created_at"), cutoff))
+    .first();
+  if (!visibilityRow) return { inProgress: false, processed: 0, cutoff };
+
+  const group = await ctx.db.get(visibilityRow.group_id);
+  if (!group) {
+    await deleteGroupVisibilityRowWithRevision(ctx, visibilityRow);
+    return { inProgress: true, processed: 1, cutoff };
+  }
+  if (group.owner_id === user._id) {
+    return { inProgress: false, processed: 0, cutoff };
+  }
+
+  const membershipIds = await clearAllMembershipIds(ctx, user);
+  const remainingMembers = group.members.filter(
+    (member) => !membershipIds.has(normalizeMemberId(member.id))
+  );
+  if (remainingMembers.length === group.members.length) {
+    await deleteGroupVisibilityRowWithRevision(ctx, visibilityRow);
+    return { inProgress: true, processed: 1, cutoff };
+  }
+
+  await patchGroupWithVisibility(ctx, group._id, {
+    members: remainingMembers,
+    updated_at: Date.now()
+  });
+  return { inProgress: true, processed: 1, cutoff };
+}
+
+async function scheduleGroupClearContinuation(
+  ctx: any,
+  user: Doc<"accounts">,
+  result: ClearAllProgress
+): Promise<void> {
+  if (!result.inProgress) return;
+  await ctx.scheduler.runAfter(0, internal.groups.clearAllForUserBatch, {
+    accountId: user._id,
+    cutoff: result.cutoff
+  });
+}
+
+// Compatibility endpoint for deployed clients that decode a null mutation result.
 export const clearAllForUser = mutation({
   args: {},
+  returns: v.null(),
   handler: async (ctx) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
+    const result = await processClearAllGroupStep(ctx, user, Date.now());
+    await scheduleGroupClearContinuation(ctx, user, result);
+    return null;
+  }
+});
 
-    // Resolve all member IDs that represent this user so we can leave shared groups too.
-    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-      ctx.db,
-      user.member_id ?? user.id
-    );
-    const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-    const membershipIds = new Set([
-      normalizeMemberId(canonicalMemberId),
-      ...equivalentIds.map((id) => normalizeMemberId(id)),
-      ...(user.alias_member_ids || []).map((id: string) => normalizeMemberId(id))
-    ]);
+export const clearAllForUserV2 = mutation({
+  args: { cutoff: v.optional(v.number()) },
+  returns: clearAllProgressValidator,
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
+    return await processClearAllGroupStep(ctx, user, args.cutoff ?? Date.now());
+  }
+});
 
-    // 1) Delete groups owned by the current user.
-    const ownedGroups = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", user.id))
-      .collect();
-
-    const byEmail = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", user.email))
-      .collect();
-
-    // Merge and dedupe
-    const ownedGroupIdSet = new Set<string>();
-    ownedGroups.forEach((g) => ownedGroupIdSet.add(g._id));
-    byEmail.forEach((g) => ownedGroupIdSet.add(g._id));
-    const ownedGroupMap = new Map<string, any>();
-    ownedGroups.forEach((g) => ownedGroupMap.set(g._id, g));
-    byEmail.forEach((g) => ownedGroupMap.set(g._id, g));
-
-    // Delete owned groups and cascade-delete their expenses.
-    for (const group of ownedGroupMap.values()) {
-      await deleteGroupWithExpenses(ctx, group);
-    }
-
-    // 2) Leave any remaining shared groups where this user is still a member.
-    // Note: Inefficient full scan, but acceptable for "nuclear" infrequent op.
-    const allGroups = await ctx.db.query("groups").collect();
-    let sharedGroupsUpdated = 0;
-    let emptySharedGroupsDeleted = 0;
-
-    for (const group of allGroups) {
-      if (ownedGroupIdSet.has(group._id)) continue;
-
-      const hasViewerMembership = group.members.some((member: any) =>
-        membershipIds.has(normalizeMemberId(member.id))
-      );
-      if (!hasViewerMembership) continue;
-
-      const remainingMembers = group.members.filter(
-        (member: any) => !membershipIds.has(normalizeMemberId(member.id))
-      );
-
-      if (remainingMembers.length === 0) {
-        await deleteGroupWithExpenses(ctx, group);
-        emptySharedGroupsDeleted += 1;
-        continue;
-      }
-
-      await ctx.db.patch(group._id, {
-        members: remainingMembers,
-        updated_at: Date.now()
-      });
-      sharedGroupsUpdated += 1;
-    }
-
+export const clearAllForUserBatch = internalMutation({
+  args: { accountId: v.id("accounts"), cutoff: v.number() },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.accountId);
+    if (!user) return null;
+    const result = await processClearAllGroupStep(ctx, user, args.cutoff);
+    await scheduleGroupClearContinuation(ctx, user, result);
     return null;
   }
 });
@@ -340,6 +800,8 @@ export const clearDebugDataForUser = mutation({
   handler: async (ctx) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
+    const expenseOperations: ExpenseWriteOperation[] = [];
 
     const canonicalMemberId = await resolveCanonicalMemberIdInternal(
       ctx.db,
@@ -353,16 +815,24 @@ export const clearDebugDataForUser = mutation({
       .withIndex("by_is_payback_generated_mock_data", (q) =>
         q.eq("is_payback_generated_mock_data", true)
       )
-      .collect();
+      .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
+    if (debugGroups.length > MAX_EXPENSE_WRITE_OPERATIONS) {
+      throw new Error(
+        `Debug cleanup requires resumable processing above ${MAX_EXPENSE_WRITE_OPERATIONS} groups`
+      );
+    }
 
     let deleted = 0;
     for (const group of debugGroups) {
       const isOwner = membershipIds.has(normalizeMemberId(group.owner_id as any));
       if (!isOwner) continue;
 
-      await deleteGroupWithExpenses(ctx, group);
+      await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch, expenseOperations);
       deleted += 1;
     }
+
+    await applyExpenseWriteBatch(ctx, expenseOperations);
+    await groupVisibilityBatch.flush();
 
     return null;
   }
@@ -395,10 +865,21 @@ export const leaveGroup = mutation({
       (m: any) => !membershipIds.has(normalizeMemberId(m.id))
     );
 
-    if (normalizedNewMembers.length === 0) {
-      await deleteGroupWithExpenses(ctx, group);
+    if (normalizedNewMembers.length === 0 && isGroupOwner(group, user)) {
+      if (
+        (await boundedGroupExpenseCount(ctx, group, MAX_SYNCHRONOUS_GROUP_CASCADE_EXPENSES)) !==
+        null
+      ) {
+        await deleteGroupWithExpenses(ctx, group);
+      } else {
+        const fenced = await fenceGroupForDeletion(ctx, group);
+        if (!(await processGroupCascadeStep(ctx, fenced.group))) {
+          await scheduleGroupCascade(ctx, fenced.group, user._id, fenced.deletionToken);
+        }
+      }
     } else {
-      await ctx.db.patch(group._id, {
+      assertGroupWritable(group);
+      await patchGroupWithVisibility(ctx, group._id, {
         members: normalizedNewMembers,
         updated_at: Date.now()
       });

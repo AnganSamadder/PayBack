@@ -316,6 +316,51 @@ final class PIIRedactionTests: XCTestCase {
         }
     }
 
+    func test_appStoreAuthDebugPrintsAreDebugOnly() throws {
+        let payBackDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = payBackDirectory
+            .appendingPathComponent("Sources/Services/State/AppStore.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        var debugOnlyBranches: [Bool] = []
+        var unguardedLines: [Int] = []
+
+        for (offset, rawLine) in source.components(separatedBy: .newlines).enumerated() {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#if ") {
+                debugOnlyBranches.append(line == "#if DEBUG")
+            } else if line.hasPrefix("#elseif ") {
+                debugOnlyBranches[debugOnlyBranches.count - 1] = line == "#elseif DEBUG"
+            } else if line == "#else" {
+                debugOnlyBranches[debugOnlyBranches.count - 1] = false
+            } else if line == "#endif" {
+                debugOnlyBranches.removeLast()
+            } else if line.contains("print(\"[AuthDebug]") && !debugOnlyBranches.contains(true) {
+                unguardedLines.append(offset + 1)
+            }
+        }
+
+        XCTAssertTrue(
+            unguardedLines.isEmpty,
+            "Auth debug logs must be compiled out of release builds; unguarded lines: \(unguardedLines)"
+        )
+    }
+
+    func test_groupDetailDoesNotLogFinancialDetails() throws {
+        let payBackDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = payBackDirectory
+            .appendingPathComponent("Sources/Features/Groups/GroupDetailView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("print("), "Group details must not be written to stdout")
+    }
+
     // MARK: - Combined PII Redaction Tests
 
     func test_redaction_handlesMultiplePIITypes() {

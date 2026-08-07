@@ -126,6 +126,7 @@ final class TabBarTests: XCTestCase {
 
     func test_resetAllToRoot_clearsAllPaths() {
         var state = makePopulatedNavigationState()
+        state.selectedTab = .profile
         let previousFriendsToken = state.friendsRootResetToken
         let previousGroupsToken = state.groupsRootResetToken
         let previousActivityToken = state.activityRootResetToken
@@ -137,6 +138,7 @@ final class TabBarTests: XCTestCase {
         XCTAssertTrue(state.groupsPath.isEmpty)
         XCTAssertTrue(state.activityPath.isEmpty)
         XCTAssertTrue(state.profilePath.isEmpty)
+        XCTAssertEqual(state.selectedTab, .friends)
         XCTAssertEqual(state.activitySegment, 0)
         XCTAssertNotEqual(state.friendsRootResetToken, previousFriendsToken)
         XCTAssertNotEqual(state.groupsRootResetToken, previousGroupsToken)

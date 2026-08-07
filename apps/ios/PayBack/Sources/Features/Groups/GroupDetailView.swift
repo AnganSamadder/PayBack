@@ -13,10 +13,8 @@ struct GroupDetailView: View {
     @State private var showAddMemberSheet = false
     @State private var showUnsettledAlert = false
     @State private var showLeaveConfirmation = false
-    @State private var memberToMerge: GroupMember?
-    @State private var showMergeSheet = false
-    @State private var showMergeErrorAlert = false
-    @State private var mergeErrorMessage = ""
+    @State private var isUpdatingGroup = false
+    @State private var groupOperationErrorMessage: String?
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
@@ -78,9 +76,20 @@ struct GroupDetailView: View {
                     .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
                 }
                 .background(Color.clear)
-            } else {
+                .allowsHitTesting(!isUpdatingGroup)
+            } else if !isUpdatingGroup {
                 // Group was deleted, go back
                 Color.clear.onAppear { handleBack() }
+            }
+
+            if isUpdatingGroup {
+                ZStack {
+                    Color.black.opacity(0.08)
+                        .ignoresSafeArea()
+                    ProgressView("Updating group…")
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
             }
         }
         .navigationTitle("Group Details")
@@ -106,9 +115,6 @@ struct GroupDetailView: View {
                     .presentationDetents([.medium, .large])
             }
         }
-        .sheet(isPresented: $showMergeSheet) {
-            mergeSheet
-        }
         .confirmationDialog(
             "Remove Member",
             isPresented: $showMemberDeleteConfirmation,
@@ -116,8 +122,20 @@ struct GroupDetailView: View {
             presenting: memberToDelete
         ) { member in
             Button("Remove \"\(member.name)\"", role: .destructive) {
+                guard !isUpdatingGroup else { return }
                 Haptics.notify(.warning)
-                store.removeMemberFromGroup(groupId: groupId, memberId: member.id)
+                isUpdatingGroup = true
+                Task {
+                    do {
+                        try await store.removeMemberFromGroup(groupId: groupId, memberId: member.id)
+                        isUpdatingGroup = false
+                    } catch {
+                        isUpdatingGroup = false
+                        groupOperationErrorMessage = error.userFacingMessage(
+                            fallback: "The member could not be removed from the cloud. Your local data was restored. Check your connection and try again."
+                        )
+                    }
+                }
                 memberToDelete = nil
             }
             Button("Cancel", role: .cancel) {
@@ -133,18 +151,38 @@ struct GroupDetailView: View {
         }
         .alert("Leave Group?", isPresented: $showLeaveConfirmation) {
             Button("Leave", role: .destructive) {
-                store.leaveGroup(groupId)
-                // Back navigation is triggered automatically when group becomes nil
-                // (see the else branch: Color.clear.onAppear { handleBack() })
+                guard !isUpdatingGroup else { return }
+                isUpdatingGroup = true
+                Task {
+                    do {
+                        try await store.leaveGroup(groupId)
+                        isUpdatingGroup = false
+                    } catch {
+                        isUpdatingGroup = false
+                        groupOperationErrorMessage = error.userFacingMessage(
+                            fallback: "The group could not be left in the cloud. Your local data was restored. Check your connection and try again."
+                        )
+                    }
+                }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Are you sure you want to leave this group?")
         }
-        .alert("Unable to Merge", isPresented: $showMergeErrorAlert) {
-            Button("OK", role: .cancel) { }
+        .alert(
+            "Unable to Update Group",
+            isPresented: Binding(
+                get: { groupOperationErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { groupOperationErrorMessage = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                groupOperationErrorMessage = nil
+            }
         } message: {
-            Text(mergeErrorMessage)
+            Text(groupOperationErrorMessage ?? "Please try again.")
         }
     }
 
@@ -480,16 +518,6 @@ struct GroupDetailView: View {
                                         Label("Add Friend", systemImage: "person.badge.plus")
                                     }
 
-                                    if !store.friends.filter({
-                                        !$0.hasLinkedAccount && !store.areSamePerson($0.memberId, member.id)
-                                    }).isEmpty {
-                                        Button {
-                                            memberToMerge = member
-                                            showMergeSheet = true
-                                        } label: {
-                                            Label("Merge with Existing Friend", systemImage: "person.2.circle")
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -499,97 +527,6 @@ struct GroupDetailView: View {
             }
         }
         .padding(.horizontal, AppMetrics.FriendDetail.contentHorizontalPadding)
-    }
-
-    private var mergeCandidates: [AccountFriend] {
-        guard let memberToMerge else { return [] }
-        return store.friends
-            .filter { !$0.hasLinkedAccount && !store.areSamePerson($0.memberId, memberToMerge.id) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    private var mergeSheet: some View {
-        NavigationStack {
-            Group {
-                if mergeCandidates.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "person.2.slash")
-                            .font(.system(size: 24))
-                            .foregroundStyle(.secondary)
-                        Text("No Merge Candidates")
-                            .font(.system(.headline, design: .rounded, weight: .semibold))
-                            .foregroundStyle(.primary)
-                        Text("Add an unlinked friend first, then try merging again.")
-                            .font(.system(.subheadline, design: .rounded))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(24)
-                } else {
-                    List(mergeCandidates) { candidate in
-                        Button {
-                            Task {
-                                await mergeSelectedMember(into: candidate)
-                            }
-                        } label: {
-                            HStack(spacing: 12) {
-                                AvatarView(name: candidate.name, size: 40, colorHex: candidate.profileColorHex)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(candidate.name)
-                                        .font(.system(.body, design: .rounded, weight: .medium))
-                                        .foregroundStyle(.primary)
-
-                                    if let nickname = candidate.nickname {
-                                        Text(nickname)
-                                            .font(.system(.caption, design: .rounded))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-
-                                Spacer()
-
-                                Image(systemName: "arrow.merge")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(AppTheme.brand)
-                            }
-                            .padding(.vertical, 4)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Merge Member")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        memberToMerge = nil
-                        showMergeSheet = false
-                    }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private func mergeSelectedMember(into target: AccountFriend) async {
-        guard let memberToMerge else { return }
-
-        showMergeSheet = false
-        do {
-            try await store.mergeFriend(unlinkedMemberId: memberToMerge.id, into: target.memberId)
-            await MainActor.run {
-                self.memberToMerge = nil
-                Haptics.notify(.success)
-            }
-        } catch {
-            await MainActor.run {
-                self.memberToMerge = nil
-                self.mergeErrorMessage = (error as? LocalizedError)?.errorDescription ?? "Could not merge this member right now."
-                self.showMergeErrorAlert = true
-                Haptics.notify(.error)
-            }
-        }
     }
 
     // MARK: - Expenses Section
@@ -749,7 +686,13 @@ private struct SettleConfirmationView: View {
 
                             Spacer()
 
-                            Text(selectedExpenses.reduce(0) { $0 + $1.totalAmount }, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                            Text(
+                                SettlementAmountLogic.totalToSettle(
+                                    expenses: selectedExpenses,
+                                    isCurrentUser: store.isMe
+                                ),
+                                format: .currency(code: Locale.current.currency?.identifier ?? "USD")
+                            )
                                 .font(.system(.title2, design: .rounded, weight: .bold))
                                 .foregroundStyle(AppTheme.brand)
                         }
@@ -942,6 +885,8 @@ private struct SettleModal: View {
 
     @State private var selectedExpenseIds: Set<UUID> = []
     @State private var showConfirmationPage = false
+    @State private var settlementErrorMessage: String?
+    @State private var isSettling = false
 
     var body: some View {
         NavigationStack {
@@ -980,6 +925,7 @@ private struct SettleModal: View {
                         dismiss()
                     }
                     .foregroundStyle(AppTheme.navigationHeaderAccent)
+                    .disabled(isSettling)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -989,6 +935,7 @@ private struct SettleModal: View {
                         }
                         .foregroundStyle(AppTheme.brand)
                         .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .disabled(isSettling)
                     }
                 }
             }
@@ -1003,6 +950,18 @@ private struct SettleModal: View {
                 )
                 .environmentObject(store)
             }
+            .alert("Unable to Settle Expenses", isPresented: Binding(
+                get: { settlementErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { settlementErrorMessage = nil }
+                }
+            )) {
+                Button("OK", role: .cancel) {
+                    settlementErrorMessage = nil
+                }
+            } message: {
+                Text(settlementErrorMessage ?? "Please try again.")
+            }
         }
     }
 
@@ -1014,26 +973,14 @@ private struct SettleModal: View {
             return mySplits.contains { !$0.isSettled }
         }
 
-        print("📊 Expense Analysis:")
-        print("   - Total expenses in group: \(allExpenses.count)")
-        print("   - Unsettled expenses: \(filtered.count)")
-
-        for expense in allExpenses {
-            let mySplits = expense.splits.filter { store.isMe($0.memberId) }
-            let currentUserSettled = !mySplits.contains { !$0.isSettled }
-            print("   - Expense: \(expense.description)")
-            print("     * Fully settled: \(expense.isSettled)")
-            print("     * Current user settled: \(currentUserSettled)")
-            print("     * Can settle: \(store.canSettleExpenseForSelf(expense))")
-        }
-
         return filtered
     }
 
     var selectedTotal: Double {
-        unsettledExpenses
-            .filter { selectedExpenseIds.contains($0.id) }
-            .reduce(0) { $0 + $1.totalAmount }
+        SettlementAmountLogic.totalToSettle(
+            expenses: unsettledExpenses.filter { selectedExpenseIds.contains($0.id) },
+            isCurrentUser: store.isMe
+        )
     }
 
     var selectedExpenses: [Expense] {
@@ -1198,18 +1145,41 @@ private struct SettleModal: View {
 
     @MainActor
     private func settleSelectedExpenses() async {
-        for expenseId in selectedExpenseIds {
-            guard let expense = unsettledExpenses.first(where: { $0.id == expenseId }),
-                  store.canSettleExpenseForSelf(expense) else { continue }
+        guard !isSettling else { return }
+        let expensesToSettle = selectedExpenses.sorted { $0.id.uuidString < $1.id.uuidString }
+        guard !expensesToSettle.isEmpty else {
+            showConfirmationPage = false
+            return
+        }
+
+        isSettling = true
+        var settledCount = 0
+        for expense in expensesToSettle {
+            guard store.canSettleExpenseForSelf(expense) else {
+                isSettling = false
+                showConfirmationPage = false
+                settlementErrorMessage = "One or more expenses changed before they could be settled. Review the remaining selections and try again."
+                return
+            }
             do {
                 try await store.settleExpenseForCurrentUser(expense)
+                settledCount += 1
+                selectedExpenseIds.remove(expense.id)
             } catch {
-                #if DEBUG
-                print("⚠️ Settlement failed for expense \(expenseId): \(error.localizedDescription)")
-                #endif
-                // Continue settling remaining expenses even if one fails
+                isSettling = false
+                showConfirmationPage = false
+                let reason = error.userFacingMessage(
+                    fallback: "The cloud update failed. Check your connection and try again."
+                )
+                if settledCount == 0 {
+                    settlementErrorMessage = "No expenses were settled. \(reason)"
+                } else {
+                    settlementErrorMessage = "Settled \(settledCount) of \(expensesToSettle.count) expenses. The remaining expenses are still selected. \(reason)"
+                }
+                return
             }
         }
+        isSettling = false
         selectedExpenseIds.removeAll()
         dismiss()
     }

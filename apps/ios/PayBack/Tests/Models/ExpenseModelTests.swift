@@ -80,6 +80,23 @@ final class ExpenseModelTests: XCTestCase {
         XCTAssertEqual(expense.participantNames?[member2], "Bob")
     }
 
+    func testExpenseNotesSurviveCodableRoundTrip() throws {
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Dinner",
+            totalAmount: 42,
+            paidByMemberId: UUID(),
+            involvedMemberIds: [],
+            splits: [],
+            notes: "  Vegetarian option requested  "
+        )
+
+        let data = try JSONEncoder().encode(expense)
+        let decoded = try JSONDecoder().decode(Expense.self, from: data)
+
+        XCTAssertEqual(decoded.notes, "Vegetarian option requested")
+    }
+
     func testExpenseSettlement() {
         var expense = Expense(
             id: UUID(),

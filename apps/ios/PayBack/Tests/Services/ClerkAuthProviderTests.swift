@@ -34,15 +34,8 @@ final class ClerkAuthProviderTests: XCTestCase {
     }
 
     func testClerkAuthResult_IsSendable() {
-        // This test ensures the type conforms to Sendable
-        let result = ClerkAuthResult(jwt: "token", userId: "user")
-
-        Task {
-            let _ = result.jwt
-            let _ = result.userId
-        }
-
-        XCTAssertTrue(true) // Compilation success proves Sendable conformance
+        func requireSendable<T: Sendable>(_: T.Type) {}
+        requireSendable(ClerkAuthResult.self)
     }
 
     // MARK: - ClerkAuthError Tests
@@ -159,6 +152,74 @@ final class ClerkAuthProviderTests: XCTestCase {
         XCTAssertEqual(token, specialJWT)
     }
 
+    // MARK: - Session Token Tests
+
+    @MainActor
+    func testLoginFromCache_WithoutActiveSession_ThrowsNoSession() async {
+        let provider = ClerkAuthProvider { _ in nil }
+
+        await XCTAssertThrowsErrorAsync(try await provider.loginFromCache()) { error in
+            XCTAssertEqual(error as? ClerkAuthError, .noSession)
+        }
+    }
+
+    @MainActor
+    func testLoginFromCache_WithMissingToken_ThrowsNoToken() async {
+        let provider = ClerkAuthProvider { _ in
+            ClerkSessionToken(sessionId: "session-123", jwt: nil)
+        }
+
+        await XCTAssertThrowsErrorAsync(try await provider.loginFromCache()) { error in
+            XCTAssertEqual(error as? ClerkAuthError, .noToken)
+        }
+    }
+
+    @MainActor
+    func testLoginFromCache_WithWhitespaceToken_ThrowsNoToken() async {
+        let provider = ClerkAuthProvider { _ in
+            ClerkSessionToken(sessionId: "session-123", jwt: "  \n ")
+        }
+
+        await XCTAssertThrowsErrorAsync(try await provider.loginFromCache()) { error in
+            XCTAssertEqual(error as? ClerkAuthError, .noToken)
+        }
+    }
+
+    @MainActor
+    func testLoginFromCache_RequestsConfiguredTemplate() async throws {
+        var requestedTemplate: String?
+        let provider = ClerkAuthProvider(jwtTemplate: "custom-template") { template in
+            requestedTemplate = template
+            return ClerkSessionToken(sessionId: "session-123", jwt: "jwt-123")
+        }
+
+        _ = try await provider.loginFromCache()
+
+        XCTAssertEqual(requestedTemplate, "custom-template")
+    }
+
+    @MainActor
+    func testLoginFromCache_ReturnsSessionToken() async throws {
+        let provider = ClerkAuthProvider { _ in
+            ClerkSessionToken(sessionId: "session-123", jwt: "jwt-123")
+        }
+
+        let result = try await provider.loginFromCache()
+
+        XCTAssertEqual(result.jwt, "jwt-123")
+        XCTAssertEqual(result.userId, "session-123")
+    }
+
+    @MainActor
+    func testLoginFromCache_PropagatesTokenError() async {
+        struct TokenError: Error {}
+        let provider = ClerkAuthProvider { _ in throw TokenError() }
+
+        await XCTAssertThrowsErrorAsync(try await provider.loginFromCache()) { error in
+            XCTAssertTrue(error is TokenError)
+        }
+    }
+
     // MARK: - Error Handling Tests
 
     func testClerkAuthError_CanBeCaught() {
@@ -192,5 +253,20 @@ final class ClerkAuthProviderTests: XCTestCase {
 
         XCTAssertTrue(isNoSession(.noSession))
         XCTAssertFalse(isNoSession(.noToken))
+    }
+}
+
+@MainActor
+private func XCTAssertThrowsErrorAsync<T>(
+    _ expression: @autoclosure () async throws -> T,
+    _ errorHandler: (Error) -> Void,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("Expected expression to throw", file: file, line: line)
+    } catch {
+        errorHandler(error)
     }
 }

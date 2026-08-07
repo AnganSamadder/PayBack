@@ -28,6 +28,7 @@ final class AppStoreLinkingTests: XCTestCase {
             groupCloudService: mockGroupCloudService,
             linkRequestService: mockLinkRequestService,
             inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
             skipClerkInit: true
         )
     }
@@ -386,8 +387,7 @@ final class AppStoreLinkingTests: XCTestCase {
             linkedAccountEmail: "alice@example.com"
         )
 
-        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
-        try await Task.sleep(nanoseconds: 200_000_000)
+        sut.addImportedFriend(linkedFriend)
 
         // When/Then - should throw
         await XCTAssertThrowsError(
@@ -415,8 +415,7 @@ final class AppStoreLinkingTests: XCTestCase {
             linkedAccountEmail: "alice@example.com"
         )
 
-        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [aliceFriend])
-        try await Task.sleep(nanoseconds: 200_000_000)
+        sut.addImportedFriend(aliceFriend)
 
         // When/Then - trying to link Bob to Alice's email should throw
         await XCTAssertThrowsError(
@@ -466,6 +465,406 @@ final class AppStoreLinkingTests: XCTestCase {
         await XCTAssertThrowsError(
             try await sut.claimInviteToken(tokenId)
         )
+    }
+
+    // MARK: - Manual Friend Merge Tests
+
+    func testMergeableUnlinkedFriendsExcludesPendingAndLinkedRows() {
+        let eligible = AccountFriend(memberId: UUID(), name: "Eligible", status: "friend")
+        let pending = AccountFriend(memberId: UUID(), name: "Pending", status: "pending")
+        let linked = AccountFriend(
+            memberId: UUID(),
+            name: "Linked",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "linked@example.com",
+            status: "friend"
+        )
+        sut.friends = [eligible, pending, linked]
+
+        XCTAssertEqual(sut.mergeableUnlinkedFriends.map(\.memberId), [eligible.memberId])
+    }
+
+    func testMergeableUnlinkedFriendsIncludesManualRows() {
+        let manual = AccountFriend(memberId: UUID(), name: "Imported Friend", status: "manual")
+        sut.friends = [manual]
+
+        XCTAssertEqual(sut.mergeableUnlinkedFriends.map(\.memberId), [manual.memberId])
+    }
+
+    func testMergeFriend_PreservesLocalSourceWhenBackendRejects() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let source = AccountFriend(memberId: UUID(), name: "Duplicate", status: "friend")
+        let target = AccountFriend(memberId: UUID(), name: "Canonical", status: "friend")
+        sut.friends = [source, target]
+        await mockAccountService.setShouldFail(true)
+
+        await XCTAssertThrowsError(
+            try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+        )
+
+        XCTAssertTrue(sut.friends.contains(where: { $0.memberId == source.memberId }))
+    }
+
+    func testMergeFriend_RoutesTwoOwnedUnlinkedFriendsToLocalMergeEndpoint() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let source = AccountFriend(memberId: UUID(), name: "Duplicate", status: "friend")
+        let target = AccountFriend(memberId: UUID(), name: "Canonical", status: "friend")
+        sut.friends = [source, target]
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [source, target])
+
+        try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+
+        let localMerge = await mockAccountService.latestMergeUnlinkedFriendsCall()
+        let compatibilityMerge = await mockAccountService.latestMergeMemberIdsCall()
+        XCTAssertEqual(localMerge?.target, target.memberId.uuidString)
+        XCTAssertEqual(localMerge?.source, source.memberId.uuidString)
+        XCTAssertNil(compatibilityMerge)
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == source.memberId }))
+        let canonical = try XCTUnwrap(sut.friends.first(where: { $0.memberId == target.memberId }))
+        XCTAssertTrue(canonical.aliasMemberIds?.contains(source.memberId) == true)
+    }
+
+    func testMergeFriend_HydrationFailureKeepsRetryableLocalState() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let source = AccountFriend(memberId: UUID(), name: "Duplicate", status: "friend")
+        let target = AccountFriend(memberId: UUID(), name: "Canonical", status: "friend")
+        sut.friends = [source, target]
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [source, target])
+        await mockAccountService.failNextFriendFetch()
+
+        await XCTAssertThrowsError(
+            try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+        )
+        XCTAssertTrue(sut.friends.contains(where: { $0.memberId == source.memberId }))
+
+        try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+        XCTAssertFalse(sut.friends.contains(where: { $0.memberId == source.memberId }))
+        XCTAssertTrue(sut.friends.contains(where: { $0.memberId == target.memberId }))
+    }
+
+    func testMergeFriend_RejectsLinkedTargetBeforeBackendSubmission() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let source = AccountFriend(memberId: UUID(), name: "Duplicate", status: "friend")
+        let target = AccountFriend(
+            memberId: UUID(),
+            name: "Canonical",
+            hasLinkedAccount: true,
+            linkedAccountId: "canonical-account",
+            linkedAccountEmail: "canonical@example.com",
+            status: "friend"
+        )
+        sut.friends = [source, target]
+        await XCTAssertThrowsError(
+            try await sut.mergeFriend(unlinkedMemberId: source.memberId, into: target.memberId)
+        )
+
+        let compatibilityMerge = await mockAccountService.latestMergeMemberIdsCall()
+        let localMerge = await mockAccountService.latestMergeUnlinkedFriendsCall()
+        XCTAssertNil(compatibilityMerge)
+        XCTAssertNil(localMerge)
+    }
+
+    func testMergeFriend_RejectsGroupOnlySourceBeforeBackendSubmission() async throws {
+        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+
+        let groupOnlySource = UUID()
+        let target = AccountFriend(memberId: UUID(), name: "Canonical", status: "friend")
+        sut.friends = [target]
+
+        await XCTAssertThrowsError(
+            try await sut.mergeFriend(unlinkedMemberId: groupOnlySource, into: target.memberId)
+        )
+
+        let compatibilityMerge = await mockAccountService.latestMergeMemberIdsCall()
+        let localMerge = await mockAccountService.latestMergeUnlinkedFriendsCall()
+        XCTAssertNil(compatibilityMerge)
+        XCTAssertNil(localMerge)
+    }
+
+    // MARK: - Unlinked Friend Rename Tests
+
+    func testRenameUnlinkedFriendUpdatesEquivalentCachedNamesAndCloudSnapshots() async throws {
+        let account = UserAccount(
+            id: "test-123",
+            email: "test@example.com",
+            displayName: "Example User"
+        )
+        let currentUserId = UUID()
+        let canonicalId = UUID()
+        let aliasId = UUID()
+        let group = SpendingGroup(
+            name: "Old Name",
+            members: [
+                GroupMember(id: currentUserId, name: "Example User", isCurrentUser: true),
+                GroupMember(id: aliasId, name: "Old Name")
+            ],
+            isDirect: true
+        )
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 20,
+            paidByMemberId: currentUserId,
+            involvedMemberIds: [currentUserId, aliasId],
+            splits: [
+                ExpenseSplit(memberId: currentUserId, amount: 10),
+                ExpenseSplit(memberId: aliasId, amount: 10)
+            ],
+            participantNames: [
+                currentUserId: "Example User",
+                aliasId: "Old Name"
+            ]
+        )
+        let friend = AccountFriend(
+            memberId: canonicalId,
+            name: "Old Name",
+            hasLinkedAccount: false,
+            status: "friend",
+            aliasMemberIds: [aliasId]
+        )
+
+        sut.currentUser = GroupMember(
+            id: currentUserId,
+            name: "Example User",
+            isCurrentUser: true
+        )
+        sut.session = UserSession(account: account)
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [friend])
+        await mockGroupCloudService.addGroup(group)
+        await mockExpenseCloudService.addExpense(expense)
+        await mockExpenseCloudService.setUpsertDelaysNanoseconds([250_000_000])
+        await sut.loadRemoteData()
+
+        for _ in 0..<100 {
+            if await mockExpenseCloudService.currentUpsertInvocationCount() > 0 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let initialUpsertInvocationCount = await mockExpenseCloudService.currentUpsertInvocationCount()
+        XCTAssertEqual(initialUpsertInvocationCount, 1)
+
+        try await sut.renameUnlinkedFriend(memberId: canonicalId, to: "  New Name  ")
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(sut.friends.first?.name, "New Name")
+        XCTAssertEqual(
+            sut.groups.first?.members.first(where: { $0.id == aliasId })?.name,
+            "New Name"
+        )
+        XCTAssertEqual(sut.groups.first?.name, "New Name")
+        XCTAssertEqual(sut.expenses.first?.participantNames?[aliasId], "New Name")
+
+        let syncedFriends = await mockAccountService.latestSyncedFriends(
+            accountEmail: account.email
+        )
+        XCTAssertEqual(syncedFriends?.first?.name, "New Name")
+
+        let syncedGroups = try await mockGroupCloudService.fetchGroups()
+        XCTAssertEqual(
+            syncedGroups.first?.members.first(where: { $0.id == aliasId })?.name,
+            "New Name"
+        )
+        let syncedExpenses = try await mockExpenseCloudService.fetchExpenses()
+        XCTAssertEqual(syncedExpenses.first?.participantNames?[aliasId], "New Name")
+    }
+
+    func testRemoteLoadStartedBeforeSignOutCannotRestoreSignedOutData() async throws {
+        let account = UserAccount(
+            id: "old-account",
+            email: "old@example.com",
+            displayName: "Old User"
+        )
+        let staleGroup = SpendingGroup(
+            name: "Old Account Group",
+            members: [
+                GroupMember(name: "One"),
+                GroupMember(name: "Two"),
+                GroupMember(name: "Three")
+            ]
+        )
+        sut.session = UserSession(account: account)
+        await mockGroupCloudService.queueFetches(
+            groups: [[staleGroup]],
+            delaysNanoseconds: [250_000_000]
+        )
+
+        let load = Task { await sut.loadRemoteData() }
+        for _ in 0..<100 {
+            if await mockGroupCloudService.currentFetchInvocationCount() == 1 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        await sut.signOut()
+        await load.value
+
+        XCTAssertNil(sut.session)
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertTrue(sut.expenses.isEmpty)
+        XCTAssertTrue(sut.friends.isEmpty)
+    }
+
+    func testNewerOverlappingRemoteLoadWinsOverOlderSnapshot() async throws {
+        let account = UserAccount(
+            id: "test-account",
+            email: "test@example.com",
+            displayName: "Example User"
+        )
+        let members = [
+            GroupMember(name: "One"),
+            GroupMember(name: "Two"),
+            GroupMember(name: "Three")
+        ]
+        let staleGroup = SpendingGroup(name: "Stale Group", members: members)
+        let freshGroup = SpendingGroup(name: "Fresh Group", members: members)
+        sut.session = UserSession(account: account)
+        await mockGroupCloudService.queueFetches(
+            groups: [[staleGroup], [freshGroup]],
+            delaysNanoseconds: [250_000_000, 0]
+        )
+
+        let olderLoad = Task { await sut.loadRemoteData() }
+        for _ in 0..<100 {
+            if await mockGroupCloudService.currentFetchInvocationCount() == 1 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let newerLoad = Task { await sut.loadRemoteData() }
+
+        await newerLoad.value
+        await olderLoad.value
+
+        XCTAssertEqual(sut.groups.map(\.name), ["Fresh Group"])
+    }
+
+    func testRenameUnlinkedFriendResolvesImportedGroupMemberPointerWithoutAliasMetadata() async throws {
+        let account = UserAccount(
+            id: "test-123",
+            email: "test@example.com",
+            displayName: "Example User"
+        )
+        let currentUserId = UUID()
+        let friendMemberId = UUID()
+        let importedGroupMemberId = UUID()
+        let group = SpendingGroup(
+            name: "Old Name",
+            members: [
+                GroupMember(id: currentUserId, name: "Example User", isCurrentUser: true),
+                GroupMember(
+                    id: importedGroupMemberId,
+                    name: "Old Name",
+                    accountFriendMemberId: friendMemberId
+                )
+            ],
+            isDirect: true
+        )
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 20,
+            paidByMemberId: currentUserId,
+            involvedMemberIds: [currentUserId, importedGroupMemberId],
+            splits: [
+                ExpenseSplit(memberId: currentUserId, amount: 10),
+                ExpenseSplit(memberId: importedGroupMemberId, amount: 10)
+            ],
+            participantNames: [
+                currentUserId: "Example User",
+                importedGroupMemberId: "Old Name"
+            ]
+        )
+        let friend = AccountFriend(
+            memberId: friendMemberId,
+            name: "Old Name",
+            hasLinkedAccount: false,
+            status: "friend"
+        )
+
+        sut.currentUser = GroupMember(
+            id: currentUserId,
+            name: "Example User",
+            isCurrentUser: true
+        )
+        sut.session = UserSession(account: account)
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [friend])
+        await mockGroupCloudService.addGroup(group)
+        await mockExpenseCloudService.addExpense(expense)
+        await sut.loadRemoteData()
+
+        try await sut.renameUnlinkedFriend(memberId: friendMemberId, to: "New Name")
+
+        XCTAssertEqual(sut.groups.first?.members.last?.name, "New Name")
+        XCTAssertEqual(sut.groups.first?.name, "New Name")
+        XCTAssertEqual(sut.expenses.first?.participantNames?[importedGroupMemberId], "New Name")
+    }
+
+    func testMergePreviewResolvesImportedGroupMemberPointerWithoutAliasMetadata() {
+        let friendMemberId = UUID()
+        let importedGroupMemberId = UUID()
+        let group = SpendingGroup(
+            name: "Trip",
+            members: [
+                GroupMember(
+                    id: importedGroupMemberId,
+                    name: "Friend",
+                    accountFriendMemberId: friendMemberId
+                )
+            ]
+        )
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 20,
+            paidByMemberId: importedGroupMemberId,
+            involvedMemberIds: [importedGroupMemberId],
+            splits: [ExpenseSplit(memberId: importedGroupMemberId, amount: 20)]
+        )
+
+        sut.friends = [AccountFriend(memberId: friendMemberId, name: "Friend", status: "friend")]
+        sut.groups = [group]
+        sut.expenses = [expense]
+
+        let identityMemberIds = sut.accountFriendIdentityMemberIds(for: [friendMemberId])
+        let expenseCount = MergeFriendsLogic.combinedExpenseCount(
+            expenses: sut.expenses,
+            memberIds: Array(identityMemberIds),
+            areSamePerson: sut.areSamePerson
+        )
+
+        XCTAssertEqual(expenseCount, 1)
+    }
+
+    func testRenameUnlinkedFriendRejectsLinkedFriendWithoutChangingNickname() async throws {
+        let account = UserAccount(
+            id: "test-123",
+            email: "test@example.com",
+            displayName: "Example User"
+        )
+        let linked = AccountFriend(
+            memberId: UUID(),
+            name: "Real Name",
+            nickname: "Nickname",
+            hasLinkedAccount: true,
+            linkedAccountId: "linked-account",
+            linkedAccountEmail: "linked@example.com",
+            status: "friend"
+        )
+        sut.session = UserSession(account: account)
+        sut.friends = [linked]
+
+        await XCTAssertThrowsError(
+            try await sut.renameUnlinkedFriend(memberId: linked.memberId, to: "Changed")
+        )
+
+        XCTAssertEqual(sut.friends.first?.name, "Real Name")
+        XCTAssertEqual(sut.friends.first?.nickname, "Nickname")
     }
 
     // MARK: - Validate Invite Token Tests

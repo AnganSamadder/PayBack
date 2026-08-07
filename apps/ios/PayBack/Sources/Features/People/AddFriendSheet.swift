@@ -9,20 +9,70 @@ struct AddFriendSheet: View {
         case byEmail = "By Email"
     }
 
-    enum SearchState: Equatable {
+    enum SubmissionState: Equatable {
         case idle
-        case searching
-        case found(UserAccount)
-        case notFound
+        case sending
         case error(String)
+    }
+
+    static func shouldShowSubmissionStatus(
+        mode: AddMode,
+        state: SubmissionState
+    ) -> Bool {
+        switch state {
+        case .error:
+            true
+        case .idle, .sending:
+            mode == .byEmail
+        }
+    }
+
+    struct EmailDraft {
+        private(set) var memberId: UUID
+        private var attemptedRecipientEmail: String?
+
+        init(memberId: UUID = UUID()) {
+            self.memberId = memberId
+        }
+
+        mutating func friend(named name: String, recipientEmail: String) -> GroupMember {
+            let normalizedEmail = Self.normalize(recipientEmail)
+            rotateIdentityIfNeeded(for: normalizedEmail)
+            attemptedRecipientEmail = normalizedEmail
+            return GroupMember(id: memberId, name: name)
+        }
+
+        mutating func recipientEmailChanged(to email: String) {
+            rotateIdentityIfNeeded(for: Self.normalize(email))
+        }
+
+        mutating func reset() {
+            memberId = UUID()
+            attemptedRecipientEmail = nil
+        }
+
+        private mutating func rotateIdentityIfNeeded(for normalizedEmail: String) {
+            guard let attemptedRecipientEmail,
+                  attemptedRecipientEmail != normalizedEmail else {
+                return
+            }
+
+            memberId = UUID()
+            self.attemptedRecipientEmail = nil
+        }
+
+        private static func normalize(_ email: String) -> String {
+            email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
     }
 
     @State private var mode: AddMode = .byName
     @State private var name: String = ""
     @State private var email: String = ""
-    @State private var searchState: SearchState = .idle
+    @State private var submissionState: SubmissionState = .idle
     @State private var showSuccessMessage: Bool = false
     @State private var successMessage: String = ""
+    @State private var emailDraft = EmailDraft()
 
     var body: some View {
         NavigationStack {
@@ -41,9 +91,10 @@ struct AddFriendSheet: View {
 
                         // Reset state when switching modes
                         withAnimation(AppAnimation.fade) {
-                            searchState = .idle
+                            submissionState = .idle
                             name = ""
                             email = ""
+                            emailDraft.reset()
                         }
                     }
                 }
@@ -56,9 +107,8 @@ struct AddFriendSheet: View {
                     emailInputSection
                 }
 
-                // Search results section (only for email mode)
-                if mode == .byEmail {
-                    searchResultsSection
+                if Self.shouldShowSubmissionStatus(mode: mode, state: submissionState) {
+                    submissionStatusSection
                 }
             }
             .navigationTitle("Add Friend")
@@ -92,6 +142,9 @@ struct AddFriendSheet: View {
             TextField("Friend's Name", text: $name)
                 .textContentType(.name)
                 .autocapitalization(.words)
+                .onChange(of: name) { _, _ in
+                    clearSubmissionError()
+                }
         } header: {
             Text("Friend's Name")
         } footer: {
@@ -109,87 +162,48 @@ struct AddFriendSheet: View {
                     .textContentType(.emailAddress)
                     .autocapitalization(.none)
                     .keyboardType(.emailAddress)
-                    .disabled(searchState == .searching)
+                    .disabled(submissionState == .sending)
+                    .onChange(of: email) { _, newEmail in
+                        if submissionState != .sending {
+                            submissionState = .idle
+                            emailDraft.recipientEmailChanged(to: newEmail)
+                        }
+                    }
 
-                if searchState == .searching {
+                if submissionState == .sending {
                     ProgressView()
                         .progressViewStyle(.circular)
                 }
             }
+            TextField("Their Name", text: $name)
+                .textContentType(.name)
+                .autocapitalization(.words)
+                .disabled(submissionState == .sending)
+                .onChange(of: name) { _, _ in
+                    clearSubmissionError()
+                }
         } header: {
-            Text("Friend's Email")
+            Text("Friend Details")
         } footer: {
-            Text("Search for a friend by email. If they have an account, you can send them a link request.")
+            Text("We'll send a private link request. They can accept it now or after creating a PayBack account.")
         }
     }
 
-    // MARK: - Search Results Section
+    // MARK: - Submission Status
 
     @ViewBuilder
-    private var searchResultsSection: some View {
-        switch searchState {
+    private var submissionStatusSection: some View {
+        switch submissionState {
         case .idle:
             EmptyView()
 
-        case .searching:
+        case .sending:
             Section {
                 HStack {
                     ProgressView()
-                    Text("Searching...")
+                    Text("Sending...")
                         .foregroundStyle(.secondary)
                 }
-            }
-
-        case .found(let account):
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Account Found")
-                                .font(.headline)
-                                .foregroundStyle(.green)
-                            Text(account.displayName)
-                                .font(.subheadline)
-                            Text(account.email)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } icon: {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .font(.title2)
-                    }
-                }
-                .padding(.vertical, 4)
-            } header: {
-                Text("Search Result")
-            } footer: {
-                Text("Send a link request to connect with this account.")
-            }
-
-        case .notFound:
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("No Account Found")
-                                .font(.headline)
-                                .foregroundStyle(.orange)
-                            Text("No PayBack account exists with this email.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    } icon: {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .foregroundStyle(.orange)
-                            .font(.title2)
-                    }
-                }
-                .padding(.vertical, 4)
-            } header: {
-                Text("Search Result")
-            } footer: {
-                Text("You can add them by name instead, and they can link their account later.")
             }
 
         case .error(let message):
@@ -212,7 +226,7 @@ struct AddFriendSheet: View {
                 }
                 .padding(.vertical, 4)
             } header: {
-                Text("Search Result")
+                Text(mode == .byEmail ? "Link Request" : "Friend")
             }
         }
     }
@@ -229,35 +243,29 @@ struct AddFriendSheet: View {
             .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
         case .byEmail:
-            switch searchState {
-            case .idle:
-                Button("Search") {
-                    searchForAccount()
-                }
-                .disabled(email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-            case .searching:
-                ProgressView()
-
-            case .found:
+            switch submissionState {
+            case .idle, .error:
                 Button("Send Link Request") {
                     sendLinkRequest()
                 }
+                .disabled(
+                    email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
 
-            case .notFound:
-                Button("Add as Name") {
-                    addFriendByNameFromEmail()
-                }
-
-            case .error:
-                Button("Retry") {
-                    searchForAccount()
-                }
+            case .sending:
+                ProgressView()
             }
         }
     }
 
     // MARK: - Actions
+
+    private func clearSubmissionError() {
+        if case .error = submissionState {
+            submissionState = .idle
+        }
+    }
 
     private func addFriendByName() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -268,14 +276,14 @@ struct AddFriendSheet: View {
         // Check if trying to add self
         if store.isCurrentUser(candidate) {
             Haptics.notify(.error)
-            searchState = .error("You cannot add yourself as a friend.")
+            submissionState = .error("You cannot add yourself as a friend.")
             return
         }
 
         // Check for duplicate
         if store.friendMembers.contains(where: { $0.name.lowercased() == trimmed.lowercased() }) {
             Haptics.notify(.error)
-            searchState = .error("A friend with this name already exists.")
+            submissionState = .error("A friend with this name already exists.")
             return
         }
 
@@ -293,113 +301,50 @@ struct AddFriendSheet: View {
         showSuccessMessage = true
     }
 
-    private func searchForAccount() {
-        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedEmail.isEmpty else { return }
-
-        // Trigger selection haptic
-        Haptics.selection()
-
-        withAnimation(AppAnimation.fade) {
-            searchState = .searching
-        }
-
-        Task {
-            do {
-                // Use AccountService to lookup account
-                let accountService = Dependencies.current.accountService
-
-                if let account = try await accountService.lookupAccount(byEmail: trimmedEmail) {
-                    await MainActor.run {
-                        Haptics.notify(.success)
-                        withAnimation(AppAnimation.fade) {
-                            searchState = .found(account)
-                        }
-                    }
-                } else {
-                    await MainActor.run {
-                        Haptics.notify(.warning)
-                        withAnimation(AppAnimation.fade) {
-                            searchState = .notFound
-                        }
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    Haptics.notify(.error)
-                    withAnimation(AppAnimation.fade) {
-                        if let paybackError = error as? PayBackError {
-                            searchState = .error(paybackError.errorDescription ?? "An error occurred.")
-                        } else {
-                            searchState = .error(error.localizedDescription)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     private func sendLinkRequest() {
-        guard case .found(let account) = searchState else { return }
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedEmail.isEmpty, !trimmedName.isEmpty else { return }
 
         // Trigger selection haptic
         Haptics.selection()
 
-        // Create a temporary member for this friend
-        let friendMember = GroupMember(name: account.displayName)
+        // A failed request can be retried after its friend sync already reached
+        // the backend, so the draft identity must remain stable for this sheet.
+        let friendMember = emailDraft.friend(
+            named: trimmedName,
+            recipientEmail: trimmedEmail
+        )
 
         withAnimation(AppAnimation.fade) {
-            searchState = .searching
+            submissionState = .sending
         }
 
         Task {
             do {
-                try await store.sendLinkRequest(toEmail: account.email, forFriend: friendMember)
+                try await store.sendLinkRequest(toEmail: trimmedEmail, forFriend: friendMember)
 
                 await MainActor.run {
+                    _ = store.directGroup(with: friendMember)
                     Haptics.notify(.success)
-                    successMessage = "Link request sent to \(account.displayName)."
+                    successMessage = "Link request sent. They'll see it when they use PayBack."
                     showSuccessMessage = true
                 }
             } catch {
                 await MainActor.run {
                     Haptics.notify(.error)
                     withAnimation(AppAnimation.fade) {
-                        if let paybackError = error as? PayBackError {
-                            searchState = .error(paybackError.errorDescription ?? "Failed to send link request.")
-                        } else {
-                            searchState = .error("Failed to send link request: \(error.localizedDescription)")
-                        }
+                        submissionState = .error(
+                            error.userFacingMessage(
+                                fallback: "We couldn't send the link request. Please try again."
+                            )
+                        )
                     }
                 }
             }
         }
     }
 
-    private func addFriendByNameFromEmail() {
-        // Extract name from email (part before @)
-        let emailParts = email.split(separator: "@")
-        let defaultName = emailParts.first.map(String.init) ?? "Friend"
-
-        // Use the default name or let user see it was added
-        let candidate = GroupMember(name: defaultName)
-
-        // Check if trying to add self
-        if store.isCurrentUser(candidate) {
-            searchState = .error("You cannot add yourself as a friend.")
-            return
-        }
-
-        // Create direct group with the friend
-        _ = store.directGroup(with: candidate)
-
-        // Register as a confirmed friend so they appear on the Friends tab
-        let newFriend = AccountFriend(memberId: candidate.id, name: defaultName, status: "friend")
-        store.addImportedFriend(newFriend)
-
-        successMessage = "Added \(defaultName) as a friend. They can link their account later."
-        showSuccessMessage = true
-    }
 }
 
 // MARK: - Preview

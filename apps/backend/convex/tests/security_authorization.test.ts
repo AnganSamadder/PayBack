@@ -1,8 +1,8 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import schema from "../schema";
-import { modules } from "./setup";
+import { modules } from "../test.setup";
 
 function identity(email: string, subject: string) {
   return {
@@ -440,6 +440,135 @@ describe("Security Authorization", () => {
     expect(account?.member_id).toBe("member_original");
   });
 
+  test("users.updateLinkedMemberId rejects an empty legacy canonical ID", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "empty_legacy_id",
+        email: "empty-legacy@test.com",
+        display_name: "Empty Legacy",
+        created_at: Date.now()
+      });
+    });
+
+    const userCtx = t.withIdentity(identity("empty-legacy@test.com", "empty_legacy_id"));
+    await expect(
+      userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "  " })
+    ).rejects.toThrow("member_id is required");
+
+    const account = await t.run((ctx) =>
+      ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", "empty_legacy_id"))
+        .unique()
+    );
+    expect(account?.member_id).toBeUndefined();
+  });
+
+  test("users.updateLinkedMemberId rejects a canonical ID already used as an alias", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "alias_legacy_id",
+        email: "alias-legacy@test.com",
+        display_name: "Alias Legacy",
+        created_at: Date.now()
+      });
+      await ctx.db.insert("member_aliases", {
+        account_email: "historical@test.com",
+        alias_member_id: "claimed_member",
+        canonical_member_id: "existing_canonical",
+        materialization_source: "account_alias",
+        source_account_id: "existing_auth",
+        created_at: Date.now()
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
+    });
+
+    const userCtx = t.withIdentity(identity("alias-legacy@test.com", "alias_legacy_id"));
+    await expect(
+      userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "claimed_member" })
+    ).rejects.toThrow("member_id already used as alias");
+
+    const account = await t.run((ctx) =>
+      ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", "alias_legacy_id"))
+        .unique()
+    );
+    expect(account?.member_id).toBeUndefined();
+  });
+
+  test("users.updateLinkedMemberId ignores a legacy v1 ready marker", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "v1_legacy_id",
+        email: "v1-legacy@test.com",
+        display_name: "V1 Legacy",
+        created_at: Date.now()
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v1",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
+    });
+
+    const userCtx = t.withIdentity(identity("v1-legacy@test.com", "v1_legacy_id"));
+    await expect(
+      userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "new_canonical" })
+    ).rejects.toThrow("Identity maintenance required");
+  });
+
+  test("users.updateLinkedMemberId materializes aliases during legacy bootstrap", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "legacy_user_id",
+        email: "legacy-user@test.com",
+        display_name: "Legacy User",
+        created_at: Date.now(),
+        alias_member_ids: ["Legacy_Alias"]
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
+    });
+
+    const userCtx = t.withIdentity(identity("legacy-user@test.com", "legacy_user_id"));
+    await userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "Canonical_Member" });
+
+    const state = await t.run(async (ctx) => ({
+      account: await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) => q.eq("email", "legacy-user@test.com"))
+        .unique(),
+      alias: await ctx.db
+        .query("member_aliases")
+        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", "legacy_alias"))
+        .unique()
+    }));
+    expect(state.account).toMatchObject({
+      member_id: "canonical_member",
+      alias_member_ids: ["legacy_alias"]
+    });
+    expect(state.alias).toMatchObject({
+      canonical_member_id: "canonical_member",
+      account_email: "legacy-user@test.com"
+    });
+  });
+
   test("users.resolveLinkedAccountsForMemberIds only returns caller-visible identities", async () => {
     const t = convexTest(schema, modules);
 
@@ -479,6 +608,18 @@ describe("Security Authorization", () => {
         updated_at: Date.now(),
         is_direct: false
       });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
+      await ctx.db.insert("sync_materialization_state", {
+        key: "group_visibility_v1",
+        status: "ready",
+        processed: 0,
+        updated_at: Date.now()
+      });
     });
 
     const callerCtx = t.withIdentity(identity("caller@test.com", "caller_id"));
@@ -494,11 +635,11 @@ describe("Security Authorization", () => {
     });
   });
 
-  test("aliases.mergeMemberIds does not trust forged accountEmail", async () => {
+  test("aliases.mergeMemberIds performs only an owner-scoped local friend merge", async () => {
     const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
-      await ctx.db.insert("accounts", {
+      const attacker = await ctx.db.insert("accounts", {
         id: "attacker_id",
         email: "attacker@test.com",
         display_name: "Attacker",
@@ -512,6 +653,42 @@ describe("Security Authorization", () => {
         created_at: Date.now(),
         member_id: "victim_member"
       });
+      await ctx.db.insert("account_friends", {
+        account_email: "attacker@test.com",
+        member_id: "source_member",
+        name: "Duplicate",
+        profile_avatar_color: "#000000",
+        has_linked_account: false,
+        updated_at: Date.now()
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "attacker@test.com",
+        member_id: "target_member",
+        name: "Canonical",
+        profile_avatar_color: "#111111",
+        has_linked_account: false,
+        updated_at: Date.now()
+      });
+      await ctx.db.insert("groups", {
+        id: "attacker_group",
+        name: "Attacker Group",
+        members: [
+          { id: "attacker_member", name: "Attacker", is_current_user: true },
+          { id: "source_member", name: "Duplicate" }
+        ],
+        owner_email: "attacker@test.com",
+        owner_account_id: "attacker_id",
+        owner_id: attacker,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        is_direct: false
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
     });
 
     const attackerCtx = t.withIdentity(identity("attacker@test.com", "attacker_id"));
@@ -522,9 +699,87 @@ describe("Security Authorization", () => {
       accountEmail: "victim@test.com"
     });
 
-    const aliases = await t.run(async (ctx) => ctx.db.query("member_aliases").collect());
-    expect(aliases).toHaveLength(1);
-    expect(aliases[0].account_email).toBe("attacker@test.com");
+    const state = await t.run(async (ctx) => ({
+      aliases: await ctx.db.query("member_aliases").collect(),
+      friends: await ctx.db.query("account_friends").collect(),
+      groups: await ctx.db.query("groups").collect()
+    }));
+    const canonical = state.friends.find((friend) => friend.member_id === "target_member");
+    const group = state.groups.find((candidate) => candidate.id === "attacker_group");
+
+    expect(state.aliases).toHaveLength(0);
+    expect(canonical?.local_alias_member_ids).toEqual(["source_member"]);
+    expect(state.friends.some((friend) => friend.member_id === "source_member")).toBe(false);
+    expect(group?.members.map((member) => member.id)).toContain("target_member");
+    expect(group?.members.map((member) => member.id)).not.toContain("source_member");
+  });
+
+  test("aliases.mergeMemberIds rejects group-only and arbitrary identities atomically", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.run(async (ctx) => {
+      const caller = await ctx.db.insert("accounts", {
+        id: "caller_id",
+        email: "caller@test.com",
+        display_name: "Caller",
+        created_at: Date.now(),
+        member_id: "caller_member"
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "caller@test.com",
+        member_id: "owned_target",
+        name: "Owned Target",
+        profile_avatar_color: "#111111",
+        has_linked_account: false,
+        updated_at: Date.now()
+      });
+      await ctx.db.insert("groups", {
+        id: "caller_group",
+        name: "Caller Group",
+        members: [
+          { id: "caller_member", name: "Caller", is_current_user: true },
+          { id: "group_only_source", name: "Group Only" }
+        ],
+        owner_email: "caller@test.com",
+        owner_account_id: "caller_id",
+        owner_id: caller,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        is_direct: false
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: Date.now()
+      });
+    });
+
+    const callerCtx = t.withIdentity(identity("caller@test.com", "caller_id"));
+    await expect(
+      callerCtx.mutation(api.aliases.mergeMemberIds, {
+        sourceId: "group_only_source",
+        targetCanonicalId: "owned_target"
+      })
+    ).rejects.toThrow("Friend with member_id group_only_source not found");
+    await expect(
+      callerCtx.mutation(api.aliases.mergeMemberIds, {
+        sourceId: "arbitrary_source",
+        targetCanonicalId: "arbitrary_target"
+      })
+    ).rejects.toThrow();
+
+    const state = await t.run(async (ctx) => ({
+      aliases: await ctx.db.query("member_aliases").collect(),
+      friends: await ctx.db.query("account_friends").collect(),
+      groups: await ctx.db.query("groups").collect()
+    }));
+    const target = state.friends.find((friend) => friend.member_id === "owned_target");
+    const group = state.groups.find((candidate) => candidate.id === "caller_group");
+
+    expect(state.aliases).toHaveLength(0);
+    expect(target?.local_alias_member_ids).toBeUndefined();
+    expect(group?.members.map((member) => member.id)).toContain("group_only_source");
   });
 
   test("aliases.mergeUnlinkedFriends does not allow forged accountEmail", async () => {
@@ -1070,7 +1325,7 @@ describe("Security Authorization", () => {
     expect(victim).not.toBeNull();
   });
 
-  test("friend_requests uses auth account id for linked_account_id", async () => {
+  test("friend_requests acceptance uses auth account id for linked_account_id", async () => {
     const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
@@ -1092,6 +1347,10 @@ describe("Security Authorization", () => {
 
     const senderCtx = t.withIdentity(identity("sender@test.com", "sender_auth_id"));
     await senderCtx.mutation(api.friend_requests.send, { email: "recipient@test.com" });
+    const request = await t.run((ctx) => ctx.db.query("friend_requests").unique());
+    expect(request).not.toBeNull();
+    const recipientCtx = t.withIdentity(identity("recipient@test.com", "recipient_auth_id"));
+    await recipientCtx.mutation(api.friend_requests.accept, { requestId: request!._id });
 
     const senderFriendRows = await t.run(async (ctx) =>
       ctx.db
@@ -1102,5 +1361,63 @@ describe("Security Authorization", () => {
 
     expect(senderFriendRows).toHaveLength(1);
     expect(senderFriendRows[0].linked_account_id).toBe("recipient_auth_id");
+  });
+
+  test("debug.fixIdsByName is retired and cannot rewrite identity from matching names", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "owner_auth",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: now,
+        member_id: "owner_canonical"
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: now
+      });
+      await ctx.db.insert("expenses", {
+        id: "name_only_repair_expense",
+        group_id: "name_only_group",
+        description: "Must remain unchanged",
+        date: now,
+        total_amount: 10,
+        paid_by_member_id: "untrusted_same_name_id",
+        involved_member_ids: ["untrusted_same_name_id"],
+        splits: [
+          {
+            id: "name_only_split",
+            member_id: "untrusted_same_name_id",
+            amount: 10,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        participant_member_ids: ["untrusted_same_name_id"],
+        participants: [{ member_id: "untrusted_same_name_id", name: "Owner" }],
+        participant_emails: ["owner@test.com"],
+        created_at: now,
+        updated_at: now
+      });
+    });
+
+    await expect(t.mutation(internal.debug.fixIdsByName, {})).rejects.toThrow(
+      "Name-based identity repair is disabled"
+    );
+    const expense = await t.run((ctx) =>
+      ctx.db
+        .query("expenses")
+        .withIndex("by_client_id", (q) => q.eq("id", "name_only_repair_expense"))
+        .unique()
+    );
+    expect(expense?.paid_by_member_id).toBe("untrusted_same_name_id");
+    expect(expense?.splits[0].member_id).toBe("untrusted_same_name_id");
   });
 });

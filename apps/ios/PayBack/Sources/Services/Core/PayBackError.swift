@@ -224,3 +224,20 @@ extension PayBackError: LocalizedError {
         }
     }
 }
+
+extension Error {
+    func userFacingMessage(fallback: String) -> String {
+        guard let payBackError = self as? PayBackError else {
+            return fallback
+        }
+
+        switch payBackError {
+        case .api, .underlying, .configurationMissing, .groupInvalidConfiguration:
+            return fallback
+        case .authInvalidCredentials:
+            return "The email or password is incorrect."
+        default:
+            return payBackError.errorDescription ?? fallback
+        }
+    }
+}

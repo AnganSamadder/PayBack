@@ -17,6 +17,8 @@ protocol AccountService: Actor {
     func updateProfile(colorHex: String?, imageUrl: String?) async throws -> String?
     func updateSettings(preferNicknames: Bool, preferWholeNames: Bool) async throws
     func uploadProfileImage(_ data: Data) async throws -> String
+    func uploadProfileImage(_ data: Data, expectedAccountId: String) async throws -> String
+    func clearFriends() async throws
 
     /// Checks if the user is authenticated on the backend
     func checkAuthentication() async throws -> Bool
@@ -32,6 +34,12 @@ protocol AccountService: Actor {
 
     /// Deletes the current user's account (unlinks from friends, keeps expenses, signs out)
     func selfDeleteAccount() async throws
+
+    /// Returns whether the authenticated identity has a durable deletion receipt.
+    func hasCompletedSelfDeletion() async throws -> Bool
+
+    /// Returns durable backend deletion state so interrupted deletion can resume after relaunch.
+    func selfDeletionStatus() async throws -> AccountSelfDeletionStatus
 
     /// Monitors the current user's session status in real-time
     nonisolated func monitorSession() -> AsyncStream<UserAccount?>
@@ -57,6 +65,28 @@ protocol AccountService: Actor {
     /// Performs a bulk import of friends, groups, and expenses
     func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult
     #endif
+}
+
+extension AccountService {
+    func clearFriends() async throws {}
+
+    func uploadProfileImage(_ data: Data, expectedAccountId: String) async throws -> String {
+        try await uploadProfileImage(data)
+    }
+
+    func hasCompletedSelfDeletion() async throws -> Bool { false }
+
+    func selfDeletionStatus() async throws -> AccountSelfDeletionStatus {
+        AccountSelfDeletionStatus(
+            completed: try await hasCompletedSelfDeletion(),
+            inProgress: false
+        )
+    }
+}
+
+struct AccountSelfDeletionStatus: Sendable, Equatable {
+    let completed: Bool
+    let inProgress: Bool
 }
 
 struct LinkedAccountInfo: Codable, Sendable, Equatable {

@@ -1,8 +1,25 @@
 import { internalMutation } from "./_generated/server";
+import { Doc } from "./_generated/dataModel";
+import type { PaginationOptions } from "convex/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { reconcileUserExpenses } from "./helpers";
-import { findAccountByAuthIdOrDocId, findAccountByMemberId } from "./identity";
+import { resolveActiveExpenseParticipantAccounts } from "./helpers";
+import { applyExpenseWriteBatch, type ExpenseWriteOperation } from "./expenseWrites";
+import {
+  assertIdentityMaterializationReady,
+  assertMemberIdentityNotCleanupFenced,
+  applyPreflightedAccountAliasMaterialization,
+  ensureAccountAliasMaterialization,
+  findAccountByAuthIdOrDocId,
+  findAccountByMemberId,
+  IDENTITY_MATERIALIZATION_KEY,
+  MAX_LIVE_ACCOUNT_ALIASES,
+  MAX_ALIAS_ROWS_PER_MEMBER_ID,
+  normalizeMemberId,
+  normalizeMemberIds,
+  preflightNormalizedAccountAliasMaterialization
+} from "./identity";
+import { GroupVisibilityWriteBatch } from "./groupVisibility";
 
 function normalizeEmail(value: string | undefined | null): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -11,51 +28,19 @@ function normalizeEmail(value: string | undefined | null): string | undefined {
 }
 
 async function deriveExpenseParticipantEmails(ctx: any, expense: any): Promise<string[]> {
-  const emailSet = new Set<string>();
-  const ownerEmail = normalizeEmail(expense.owner_email);
-  if (ownerEmail) {
-    emailSet.add(ownerEmail);
-  }
-
-  for (const participant of expense.participants ?? []) {
-    let account: any | null = null;
-    const linkedEmail = normalizeEmail(participant.linked_account_email);
-    const linkedAccountId =
-      typeof participant.linked_account_id === "string"
-        ? participant.linked_account_id.trim()
-        : undefined;
-
-    if (linkedEmail) {
-      account = await ctx.db
-        .query("accounts")
-        .withIndex("by_email", (q: any) => q.eq("email", linkedEmail))
-        .unique();
-    }
-    if (!account && linkedAccountId) {
-      account = await findAccountByAuthIdOrDocId(ctx.db, linkedAccountId);
-    }
-    if (!account && typeof participant.member_id === "string") {
-      account = await findAccountByMemberId(ctx.db, participant.member_id);
-    }
-    if (account?.email) {
-      const normalized = normalizeEmail(account.email);
-      if (normalized) {
-        emailSet.add(normalized);
-      }
-    }
-  }
-
-  for (const memberId of expense.participant_member_ids ?? []) {
-    const account = await findAccountByMemberId(ctx.db, memberId);
-    if (account?.email) {
-      const normalized = normalizeEmail(account.email);
-      if (normalized) {
-        emailSet.add(normalized);
-      }
-    }
-  }
-
-  return Array.from(emailSet);
+  const accounts = (
+    await resolveActiveExpenseParticipantAccounts(ctx, {
+      ...expense,
+      participant_emails: []
+    })
+  ).filter((account) => account.status !== "deleting" && account.status !== "deleted");
+  return Array.from(
+    new Set(
+      accounts
+        .map((account) => normalizeEmail(account.email))
+        .filter((email): email is string => email !== undefined)
+    )
+  );
 }
 
 function canonicalEmailArray(values: string[] | undefined): string[] {
@@ -73,6 +58,187 @@ function arraysEqual(lhs: string[], rhs: string[]): boolean {
   return true;
 }
 
+const MAX_EXPENSE_REPAIR_BATCH_SIZE = 64;
+const MAX_EXPENSE_PAGE_BYTES = 4 * 1024 * 1024;
+const MAX_NAME_REPAIR_ACCOUNT_BATCH_SIZE = 2;
+const MAX_NAME_REPAIR_EXPENSES_PER_BATCH = 256;
+const MAX_REPAIR_ROWS_PER_ACCOUNT = 128;
+
+type ExpensePatchOperation = Extract<ExpenseWriteOperation, { kind: "patch" }>;
+type ExpenseVisibilityOperation = Extract<ExpenseWriteOperation, { kind: "visibility" }>;
+type ExpenseMaintenanceOperation = ExpensePatchOperation | ExpenseVisibilityOperation;
+type BoundedPaginationOptions = PaginationOptions & {
+  maximumRowsRead: number;
+  maximumBytesRead: number;
+};
+
+function expensePageLimit(limit: number | undefined): number {
+  const resolved = limit ?? 32;
+  validateExpenseRepairBatchSize(resolved);
+  return resolved;
+}
+
+function expensePaginationOptions(
+  cursor: string | undefined,
+  limit: number
+): BoundedPaginationOptions {
+  return {
+    cursor: cursor ?? null,
+    numItems: limit,
+    maximumRowsRead: limit,
+    maximumBytesRead: MAX_EXPENSE_PAGE_BYTES
+  };
+}
+
+function validateExpenseRepairBatchSize(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_EXPENSE_REPAIR_BATCH_SIZE) {
+    throw new Error(`limit must be an integer between 1 and ${MAX_EXPENSE_REPAIR_BATCH_SIZE}`);
+  }
+}
+
+function validateNameRepairAccountBatchSize(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_NAME_REPAIR_ACCOUNT_BATCH_SIZE) {
+    throw new Error(`limit must be an integer between 1 and ${MAX_NAME_REPAIR_ACCOUNT_BATCH_SIZE}`);
+  }
+}
+
+function expenseReferencesMemberId(expense: Doc<"expenses">, memberId: string): boolean {
+  const normalizedMemberId = normalizeMemberId(memberId);
+  return (
+    normalizeMemberId(expense.paid_by_member_id) === normalizedMemberId ||
+    expense.involved_member_ids.some(
+      (candidate) => normalizeMemberId(candidate) === normalizedMemberId
+    ) ||
+    expense.participant_member_ids.some(
+      (candidate) => normalizeMemberId(candidate) === normalizedMemberId
+    ) ||
+    expense.splits.some((split) => normalizeMemberId(split.member_id) === normalizedMemberId) ||
+    expense.participants.some(
+      (participant) => normalizeMemberId(participant.member_id) === normalizedMemberId
+    )
+  );
+}
+
+async function expensePatchOperation(
+  ctx: any,
+  expense: Doc<"expenses">,
+  patch: ExpensePatchOperation["patch"]
+): Promise<ExpensePatchOperation> {
+  const nextExpense = { ...expense, ...patch };
+  const viewerAccounts = await resolveActiveExpenseParticipantAccounts(ctx, nextExpense);
+  return {
+    kind: "patch",
+    expense,
+    patch,
+    viewerAccountIds: viewerAccounts.map((account) => account._id)
+  };
+}
+
+async function expenseVisibilityOperation(
+  ctx: any,
+  expense: Doc<"expenses">
+): Promise<ExpenseVisibilityOperation> {
+  const viewerAccounts = await resolveActiveExpenseParticipantAccounts(ctx, expense);
+  return {
+    kind: "visibility",
+    expense,
+    viewerAccountIds: viewerAccounts.map((account) => account._id)
+  };
+}
+
+async function rewriteExpenseMemberIdPreservingRevocation(
+  ctx: any,
+  expense: Doc<"expenses">,
+  oldMemberId: string,
+  newMemberId: string
+): Promise<{
+  outcome: "unchanged" | "rewritten" | "skipped_revocation_collision";
+  operation?: ExpenseMaintenanceOperation;
+}> {
+  const normalizedOldMemberId = normalizeMemberId(oldMemberId);
+  const normalizedNewMemberId = normalizeMemberId(newMemberId);
+  const inactiveMemberIds = new Set(
+    (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
+  );
+  const oldIdentityIsInactive = inactiveMemberIds.has(normalizedOldMemberId);
+  const newIdentityIsInactive = inactiveMemberIds.has(normalizedNewMemberId);
+  const oldIdentityIsReferenced =
+    oldIdentityIsInactive || expenseReferencesMemberId(expense, normalizedOldMemberId);
+  const newIdentityIsReferenced =
+    newIdentityIsInactive || expenseReferencesMemberId(expense, normalizedNewMemberId);
+
+  if (
+    normalizedOldMemberId !== normalizedNewMemberId &&
+    oldIdentityIsReferenced &&
+    newIdentityIsReferenced &&
+    oldIdentityIsInactive !== newIdentityIsInactive
+  ) {
+    const participantEmails = await deriveExpenseParticipantEmails(ctx, expense);
+    if (
+      !arraysEqual(
+        canonicalEmailArray(expense.participant_emails),
+        canonicalEmailArray(participantEmails)
+      )
+    ) {
+      return {
+        outcome: "skipped_revocation_collision",
+        operation: await expensePatchOperation(ctx, expense, {
+          participant_emails: participantEmails,
+          updated_at: Date.now()
+        })
+      };
+    }
+    return {
+      outcome: "skipped_revocation_collision",
+      operation: await expenseVisibilityOperation(ctx, expense)
+    };
+  }
+
+  if (!oldIdentityIsReferenced || normalizedOldMemberId === normalizedNewMemberId) {
+    return { outcome: "unchanged" };
+  }
+
+  const replaceMemberId = (candidate: string) =>
+    normalizeMemberId(candidate) === normalizedOldMemberId ? normalizedNewMemberId : candidate;
+  const inactiveParticipantMemberIds = Array.from(
+    new Set(
+      (expense.inactive_participant_member_ids ?? []).map((memberId) => replaceMemberId(memberId))
+    )
+  );
+  const nextExpense: Doc<"expenses"> = {
+    ...expense,
+    paid_by_member_id: replaceMemberId(expense.paid_by_member_id),
+    involved_member_ids: expense.involved_member_ids.map(replaceMemberId),
+    splits: expense.splits.map((split) => ({
+      ...split,
+      member_id: replaceMemberId(split.member_id)
+    })),
+    participants: expense.participants.map((participant) => ({
+      ...participant,
+      member_id: replaceMemberId(participant.member_id)
+    })),
+    participant_member_ids: expense.participant_member_ids.map(replaceMemberId),
+    inactive_participant_member_ids: inactiveParticipantMemberIds,
+    updated_at: Date.now()
+  };
+  const participantEmails = await deriveExpenseParticipantEmails(ctx, nextExpense);
+  nextExpense.participant_emails = participantEmails;
+
+  return {
+    outcome: "rewritten",
+    operation: await expensePatchOperation(ctx, expense, {
+      paid_by_member_id: nextExpense.paid_by_member_id,
+      involved_member_ids: nextExpense.involved_member_ids,
+      splits: nextExpense.splits,
+      participants: nextExpense.participants,
+      participant_member_ids: nextExpense.participant_member_ids,
+      inactive_participant_member_ids: nextExpense.inactive_participant_member_ids,
+      participant_emails: nextExpense.participant_emails,
+      updated_at: nextExpense.updated_at
+    })
+  };
+}
+
 /**
  * Creates member_aliases records for existing linked accounts.
  *
@@ -84,45 +250,63 @@ function arraysEqual(lhs: string[], rhs: string[]): boolean {
  * Also preserves original_nickname from nickname field before linking.
  */
 export const createMemberAliasesFromClaimedTokens = internalMutation({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error("limit must be an integer between 1 and 100");
+    }
+    await assertIdentityMaterializationReady(ctx.db);
     const claimedTokens = await ctx.db
       .query("invite_tokens")
       .filter((q) => q.neq(q.field("claimed_by"), undefined))
-      .collect();
+      .paginate({ cursor: args.cursor ?? null, numItems: limit });
 
     let aliasesCreated = 0;
     let nicknamesPreserved = 0;
 
-    for (const token of claimedTokens) {
+    for (const token of claimedTokens.page) {
       if (!token.claimed_by) continue;
 
       const claimantAccount = await ctx.db
         .query("accounts")
-        .filter((q) => q.eq(q.field("id"), token.claimed_by))
-        .first();
+        .withIndex("by_auth_id", (q) => q.eq("id", token.claimed_by!))
+        .unique();
 
       if (!claimantAccount?.member_id) continue;
 
-      const canonicalId = claimantAccount.member_id;
-      const aliasId = token.target_member_id;
+      const canonicalId = normalizeMemberId(claimantAccount.member_id);
+      const aliasId = normalizeMemberId(token.target_member_id);
 
       if (canonicalId === aliasId) continue;
 
-      const existingAlias = await ctx.db
-        .query("member_aliases")
-        .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", aliasId))
-        .first();
-
-      if (existingAlias) continue;
-
-      await ctx.db.insert("member_aliases", {
-        canonical_member_id: canonicalId,
-        alias_member_id: aliasId,
-        account_email: token.creator_email,
-        created_at: token.claimed_at || Date.now()
+      const aliases = normalizeMemberIds([
+        ...(claimantAccount.alias_member_ids ?? []),
+        aliasId
+      ]).filter((memberId) => memberId !== canonicalId);
+      if (aliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+        throw new Error(`Account ${claimantAccount.id} has too many aliases`);
+      }
+      const created = await ensureAccountAliasMaterialization(
+        ctx,
+        {
+          id: claimantAccount.id,
+          email: claimantAccount.email,
+          member_id: canonicalId
+        },
+        aliasId,
+        token.claimed_at || Date.now()
+      );
+      await ctx.db.patch(claimantAccount._id, {
+        alias_member_ids: aliases,
+        updated_at: Date.now()
       });
-      aliasesCreated++;
+      if (created) {
+        aliasesCreated++;
+      }
 
       const creatorFriend = await ctx.db
         .query("account_friends")
@@ -140,13 +324,20 @@ export const createMemberAliasesFromClaimedTokens = internalMutation({
       }
     }
 
-    return { aliasesCreated, nicknamesPreserved, tokensProcessed: claimedTokens.length };
+    return {
+      aliasesCreated,
+      nicknamesPreserved,
+      tokensProcessed: claimedTokens.page.length,
+      cursor: claimedTokens.continueCursor,
+      isDone: claimedTokens.isDone
+    };
   }
 });
 
 export const backfillProfileColors = internalMutation({
   args: {},
   handler: async (ctx) => {
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     // Backfill accounts
     const accounts = await ctx.db.query("accounts").collect();
     let accountsUpdated = 0;
@@ -185,10 +376,11 @@ export const backfillProfileColors = internalMutation({
       });
 
       if (groupChanged) {
-        await ctx.db.patch(group._id, { members: newMembers });
+        await groupVisibilityBatch.patch(group._id, { members: newMembers });
         groupsUpdated++;
       }
     }
+    await groupVisibilityBatch.flush();
 
     return { accountsUpdated, friendsUpdated, groupsUpdated };
   }
@@ -266,11 +458,11 @@ export const fixLinkedMemberIds = internalMutation({
         );
 
         if (matchingMember) {
+          await assertMemberIdentityNotCleanupFenced(ctx, matchingMember.id);
           await ctx.db.patch(account._id, {
             member_id: matchingMember.id,
             updated_at: Date.now()
           });
-          console.log(`Fixed member_id for ${account.email}: ${matchingMember.id}`);
           fixed++;
           break;
         }
@@ -286,79 +478,66 @@ export const fixLinkedMemberIds = internalMutation({
  * This can happen when expenses were created before the account was properly linked.
  */
 export const fixExpenseMemberIds = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const accounts = await ctx.db.query("accounts").collect();
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? MAX_NAME_REPAIR_ACCOUNT_BATCH_SIZE;
+    validateNameRepairAccountBatchSize(limit);
+    const accountsPage = await ctx.db
+      .query("accounts")
+      .paginate(expensePaginationOptions(args.cursor, limit));
     let expensesFixed = 0;
+    let expensesSkipped = 0;
+    let expensesScanned = 0;
+    const expenseOperations: ExpenseMaintenanceOperation[] = [];
 
-    for (const account of accounts) {
+    for (const account of accountsPage.page) {
       if (!account.member_id) continue;
 
-      // Get all groups owned by this account
-      const groups = await ctx.db
-        .query("groups")
-        .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
-        .collect();
-
-      // Collect all member IDs from groups to identify "old" member IDs used for this account
-      const knownMemberIds = new Set<string>();
-      for (const group of groups) {
-        for (const member of group.members) {
-          // If member name matches display name, it's the user
-          if (member.name.toLowerCase() === account.display_name.toLowerCase()) {
-            knownMemberIds.add(member.id);
-          }
-        }
-      }
-
-      // Get expenses owned by this account
       const expenses = await ctx.db
         .query("expenses")
         .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
-        .collect();
+        .take(MAX_REPAIR_ROWS_PER_ACCOUNT + 1);
+      if (expenses.length > MAX_REPAIR_ROWS_PER_ACCOUNT) {
+        throw new Error(`Identity maintenance required: too many expenses for ${account.email}`);
+      }
+      expensesScanned += expenses.length;
+      if (expensesScanned > MAX_NAME_REPAIR_EXPENSES_PER_BATCH) {
+        throw new Error("Identity maintenance required: expense repair batch exceeds read budget");
+      }
 
       for (const expense of expenses) {
-        let needsPatch = false;
-        const patches: any = {};
+        const payerMemberId = normalizeMemberId(expense.paid_by_member_id);
+        if (payerMemberId === normalizeMemberId(account.member_id)) continue;
+        const userParticipant = expense.participants.find(
+          (participant) =>
+            participant.name.toLowerCase() === account.display_name.toLowerCase() &&
+            normalizeMemberId(participant.member_id) === payerMemberId
+        );
+        if (!userParticipant) continue;
 
-        // Fix paid_by_member_id if it's not the linked_member_id but is in knownMemberIds
-        // OR if it matches none of the group members (orphaned ID)
-        if (expense.paid_by_member_id !== account.member_id) {
-          // Check if it was the user who paid (name-based matching in participants)
-          const userParticipant = expense.participants?.find(
-            (p: any) => p.name.toLowerCase() === account.display_name.toLowerCase()
-          );
-
-          if (userParticipant && userParticipant.member_id !== account.member_id) {
-            // This expense's participant is the user, update the member ID
-            patches.paid_by_member_id = account.member_id;
-            patches.involved_member_ids = expense.involved_member_ids.map((id: string) =>
-              id === expense.paid_by_member_id ? account.member_id : id
-            );
-            patches.splits = expense.splits.map((s: any) => ({
-              ...s,
-              member_id: s.member_id === expense.paid_by_member_id ? account.member_id : s.member_id
-            }));
-            patches.participants = expense.participants.map((p: any) => ({
-              ...p,
-              member_id: p.member_id === expense.paid_by_member_id ? account.member_id : p.member_id
-            }));
-            patches.participant_member_ids = expense.participant_member_ids.map((id: string) =>
-              id === expense.paid_by_member_id ? account.member_id : id
-            );
-            needsPatch = true;
-          }
-        }
-
-        if (needsPatch) {
-          await ctx.db.patch(expense._id, patches);
-          console.log(`Fixed expense ${expense.id} for ${account.email}`);
-          expensesFixed++;
-        }
+        const rewrite = await rewriteExpenseMemberIdPreservingRevocation(
+          ctx,
+          expense,
+          expense.paid_by_member_id,
+          account.member_id
+        );
+        if (rewrite.operation) expenseOperations.push(rewrite.operation);
+        if (rewrite.outcome === "rewritten") expensesFixed++;
+        if (rewrite.outcome === "skipped_revocation_collision") expensesSkipped++;
       }
     }
+    await applyExpenseWriteBatch(ctx, expenseOperations);
 
-    return { expensesFixed };
+    return {
+      expensesFixed,
+      expensesSkipped,
+      expensesScanned,
+      continueCursor: accountsPage.isDone ? undefined : accountsPage.continueCursor,
+      isDone: accountsPage.isDone
+    };
   }
 });
 
@@ -370,95 +549,74 @@ export const fixAllExpenseMemberIds = internalMutation({
   args: {
     old_member_id: v.string(),
     new_member_id: v.string(),
-    account_email: v.string()
+    account_email: v.string(),
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
   },
   handler: async (ctx, args) => {
+    const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     const { old_member_id, new_member_id, account_email } = args;
-
-    // Get ALL expenses for this account
-    const expenses = await ctx.db
+    const limit = args.limit ?? 32;
+    validateExpenseRepairBatchSize(limit);
+    const expensesPage = await ctx.db
       .query("expenses")
       .withIndex("by_owner_email", (q) => q.eq("owner_email", account_email))
-      .collect();
+      .paginate(expensePaginationOptions(args.cursor, limit));
 
     let fixed = 0;
-
-    for (const expense of expenses) {
-      const patches: any = { updated_at: Date.now() };
-      let needsPatch = false;
-
-      // Fix paid_by_member_id
-      if (expense.paid_by_member_id === old_member_id) {
-        patches.paid_by_member_id = new_member_id;
-        needsPatch = true;
-      }
-
-      // Fix involved_member_ids
-      if (expense.involved_member_ids.includes(old_member_id)) {
-        patches.involved_member_ids = expense.involved_member_ids.map((id: string) =>
-          id === old_member_id ? new_member_id : id
-        );
-        needsPatch = true;
-      }
-
-      // Fix splits
-      const hasOldSplit = expense.splits.some((s: any) => s.member_id === old_member_id);
-      if (hasOldSplit) {
-        patches.splits = expense.splits.map((s: any) => ({
-          ...s,
-          member_id: s.member_id === old_member_id ? new_member_id : s.member_id
-        }));
-        needsPatch = true;
-      }
-
-      // Fix participants
-      const hasOldParticipant = expense.participants?.some(
-        (p: any) => p.member_id === old_member_id
+    let skipped = 0;
+    const expenseOperations: ExpenseMaintenanceOperation[] = [];
+    for (const expense of expensesPage.page) {
+      const rewrite = await rewriteExpenseMemberIdPreservingRevocation(
+        ctx,
+        expense,
+        old_member_id,
+        new_member_id
       );
-      if (hasOldParticipant) {
-        patches.participants = expense.participants.map((p: any) => ({
-          ...p,
-          member_id: p.member_id === old_member_id ? new_member_id : p.member_id
-        }));
-        needsPatch = true;
-      }
-
-      // Fix participant_member_ids
-      if (expense.participant_member_ids?.includes(old_member_id)) {
-        patches.participant_member_ids = expense.participant_member_ids.map((id: string) =>
-          id === old_member_id ? new_member_id : id
-        );
-        needsPatch = true;
-      }
-
-      if (needsPatch) {
-        await ctx.db.patch(expense._id, patches);
-        console.log(`Fixed expense ${expense.id}`);
-        fixed++;
-      }
+      if (rewrite.operation) expenseOperations.push(rewrite.operation);
+      if (rewrite.outcome === "rewritten") fixed++;
+      if (rewrite.outcome === "skipped_revocation_collision") skipped++;
     }
-
-    // Also fix groups
-    const groups = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_email", (q) => q.eq("owner_email", account_email))
-      .collect();
 
     let groupsFixed = 0;
-    for (const group of groups) {
-      const hasOldMember = group.members.some((m: any) => m.id === old_member_id);
-      if (hasOldMember) {
-        const newMembers = group.members.map((m: any) => ({
-          ...m,
-          id: m.id === old_member_id ? new_member_id : m.id
-        }));
-        await ctx.db.patch(group._id, { members: newMembers, updated_at: Date.now() });
-        console.log(`Fixed group ${group.id}`);
-        groupsFixed++;
+    if (!args.cursor) {
+      const groups = await ctx.db
+        .query("groups")
+        .withIndex("by_owner_email", (q) => q.eq("owner_email", account_email))
+        .take(MAX_REPAIR_ROWS_PER_ACCOUNT + 1);
+      if (groups.length > MAX_REPAIR_ROWS_PER_ACCOUNT) {
+        throw new Error(`Identity maintenance required: too many groups for ${account_email}`);
+      }
+      for (const group of groups) {
+        const hasOldMember = group.members.some(
+          (member) => normalizeMemberId(member.id) === normalizeMemberId(old_member_id)
+        );
+        if (hasOldMember) {
+          const newMembers = group.members.map((member) => ({
+            ...member,
+            id:
+              normalizeMemberId(member.id) === normalizeMemberId(old_member_id)
+                ? normalizeMemberId(new_member_id)
+                : member.id
+          }));
+          await groupVisibilityBatch.patch(group._id, {
+            members: newMembers,
+            updated_at: Date.now()
+          });
+          groupsFixed++;
+        }
       }
     }
+    await groupVisibilityBatch.flush();
+    await applyExpenseWriteBatch(ctx, expenseOperations);
 
-    return { expensesFixed: fixed, groupsFixed };
+    return {
+      expensesFixed: fixed,
+      expensesSkipped: skipped,
+      groupsFixed,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
+    };
   }
 });
 
@@ -512,6 +670,7 @@ export const setLinkedMemberId = internalMutation({
 
     const previousId = user.member_id;
 
+    await assertMemberIdentityNotCleanupFenced(ctx, args.linked_member_id);
     await ctx.db.patch(user._id, {
       member_id: args.linked_member_id,
       updated_at: Date.now()
@@ -532,56 +691,44 @@ export const setLinkedMemberId = internalMutation({
  * for cross-account visibility.
  */
 export const backfillParticipantEmails = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const expenses = await ctx.db.query("expenses").collect();
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = expensePageLimit(args.limit);
+    const expensesPage = await ctx.db
+      .query("expenses")
+      .order("asc")
+      .paginate(expensePaginationOptions(args.cursor, limit));
     let updated = 0;
+    const operations: ExpenseMaintenanceOperation[] = [];
 
-    for (const expense of expenses) {
-      // Build participant_emails from participants array + owner
-      const emails: string[] = [];
-
-      // Add owner email
-      if (expense.owner_email && !emails.includes(expense.owner_email)) {
-        emails.push(expense.owner_email);
-      }
-
-      // Add linked participant emails
-      for (const p of expense.participants || []) {
-        if (p.linked_account_email && !emails.includes(p.linked_account_email)) {
-          emails.push(p.linked_account_email);
-        }
-      }
+    for (const expense of expensesPage.page) {
+      const emails = await deriveExpenseParticipantEmails(ctx, expense);
 
       // Only update if emails changed
       const currentEmails = expense.participant_emails || [];
       const hasNewEmails = emails.some((e) => !currentEmails.includes(e));
 
       if (hasNewEmails || emails.length !== currentEmails.length) {
-        await ctx.db.patch(expense._id, {
-          participant_emails: emails,
-          updated_at: Date.now()
-        });
-        const visibilityUsers = await Promise.all(
-          emails.map((email) =>
-            ctx.db
-              .query("accounts")
-              .withIndex("by_email", (q: any) => q.eq("email", email))
-              .unique()
-          )
+        operations.push(
+          await expensePatchOperation(ctx, expense, {
+            participant_emails: emails,
+            updated_at: Date.now()
+          })
         );
-        const visibilityUserIds = visibilityUsers
-          .filter((account): account is NonNullable<typeof account> => account !== null)
-          .map((account) => account.id);
-        await reconcileUserExpenses(ctx, expense.id, visibilityUserIds);
         updated++;
-        console.log(
-          `Backfilled participant_emails for expense ${expense.id}: ${emails.join(", ")}`
-        );
       }
     }
+    await applyExpenseWriteBatch(ctx, operations);
 
-    return { updated };
+    return {
+      processed: expensesPage.page.length,
+      updated,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
+    };
   }
 });
 
@@ -590,127 +737,106 @@ export const backfillParticipantEmails = internalMutation({
  * This is more thorough than the simple backfill.
  */
 export const backfillParticipantEmailsAdvanced = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    // Build a map of member_id -> account email
-    const accounts = await ctx.db.query("accounts").collect();
-    const memberIdToEmail = new Map<string, string>();
-
-    for (const account of accounts) {
-      if (account.member_id) {
-        memberIdToEmail.set(account.member_id, account.email);
-        console.log(`Member ${account.member_id} -> ${account.email}`);
-      }
-    }
-
-    const expenses = await ctx.db.query("expenses").collect();
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = expensePageLimit(args.limit);
+    const expensesPage = await ctx.db
+      .query("expenses")
+      .order("asc")
+      .paginate(expensePaginationOptions(args.cursor, limit));
     let updated = 0;
+    const memberMappings = new Set<string>();
+    const operations: ExpenseMaintenanceOperation[] = [];
 
-    for (const expense of expenses) {
-      const emails = new Set<string>();
-
-      // Add owner email
-      if (expense.owner_email) {
-        emails.add(expense.owner_email);
-      }
-
-      // Add linked participant emails from lookup
-      for (const memberId of expense.involved_member_ids) {
-        const email = memberIdToEmail.get(memberId);
-        if (email) {
-          emails.add(email);
+    for (const expense of expensesPage.page) {
+      const inactiveMemberIds = new Set(
+        (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
+      );
+      const activeAccounts = await resolveActiveExpenseParticipantAccounts(ctx, {
+        ...expense,
+        participant_emails: []
+      });
+      const accountByMemberId = new Map<string, (typeof activeAccounts)[number]>();
+      for (const account of activeAccounts) {
+        const memberIds = normalizeMemberIds([
+          ...(account.member_id ? [account.member_id] : []),
+          ...(account.alias_member_ids ?? [])
+        ]);
+        for (const memberId of memberIds) {
+          accountByMemberId.set(memberId, account);
+          memberMappings.add(`${memberId}\u0000${account.email}`);
         }
       }
 
-      const emailArray = Array.from(emails);
+      const emailArray = Array.from(
+        new Set(activeAccounts.map((account) => account.email.trim().toLowerCase()))
+      );
       const currentEmails = expense.participant_emails || [];
+      const canonicalCurrentEmails = canonicalEmailArray(currentEmails);
+      const canonicalNextEmails = canonicalEmailArray(emailArray);
 
-      // Check if we have new emails to add
-      const hasNewEmails = emailArray.some((e) => !currentEmails.includes(e));
-
-      if (hasNewEmails || emailArray.length > currentEmails.length) {
+      if (!arraysEqual(canonicalCurrentEmails, canonicalNextEmails)) {
         // Also update participant info with linked account details
         const updatedParticipants = expense.participants.map((p: any) => {
-          const email = memberIdToEmail.get(p.member_id);
-          const account = accounts.find((a) => a.email === email);
+          if (inactiveMemberIds.has(normalizeMemberId(p.member_id))) return p;
+          const account = accountByMemberId.get(normalizeMemberId(p.member_id));
           if (account) {
             return {
               ...p,
               name: account.display_name,
               linked_account_id: account.id,
-              linked_account_email: account.email
+              linked_account_email: account.email.trim().toLowerCase()
             };
           }
           return p;
         });
 
-        await ctx.db.patch(expense._id, {
-          participant_emails: emailArray,
-          participants: updatedParticipants,
-          updated_at: Date.now()
-        });
-        const visibilityUsers = await Promise.all(
-          emailArray.map((email) =>
-            ctx.db
-              .query("accounts")
-              .withIndex("by_email", (q: any) => q.eq("email", email))
-              .unique()
-          )
+        operations.push(
+          await expensePatchOperation(ctx, expense, {
+            participant_emails: emailArray,
+            participants: updatedParticipants,
+            updated_at: Date.now()
+          })
         );
-        const visibilityUserIds = visibilityUsers
-          .filter((account): account is NonNullable<typeof account> => account !== null)
-          .map((account) => account.id);
-        await reconcileUserExpenses(ctx, expense.id, visibilityUserIds);
         updated++;
-        console.log(`Updated expense ${expense.id} with emails: ${emailArray.join(", ")}`);
       }
     }
+    await applyExpenseWriteBatch(ctx, operations);
 
-    return { updated, memberMappings: memberIdToEmail.size };
+    return {
+      processed: expensesPage.page.length,
+      updated,
+      memberMappings: memberMappings.size,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
+    };
   }
 });
 
 export const backfillUserExpenses = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const expenses = await ctx.db.query("expenses").collect();
-    let processed = 0;
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = expensePageLimit(args.limit);
+    const expensesPage = await ctx.db
+      .query("expenses")
+      .order("asc")
+      .paginate(expensePaginationOptions(args.cursor, limit));
+    const operations = await Promise.all(
+      expensesPage.page.map((expense) => expenseVisibilityOperation(ctx, expense))
+    );
+    await applyExpenseWriteBatch(ctx, operations);
 
-    for (const expense of expenses) {
-      // 1. Collect User IDs (Owner + derived participants)
-      const userIds = new Set<string>();
-      if (expense.owner_account_id) {
-        userIds.add(expense.owner_account_id);
-      }
-
-      // Add linked accounts from participants array
-      if (expense.participants) {
-        for (const p of expense.participants) {
-          if (p.linked_account_id) {
-            userIds.add(p.linked_account_id);
-          }
-        }
-      }
-
-      // Resolve participant_emails to accounts
-      if (expense.participant_emails) {
-        for (const email of expense.participant_emails) {
-          const account = await ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q) => q.eq("email", email))
-            .unique();
-          if (account) {
-            userIds.add(account.id);
-          }
-        }
-      }
-
-      // 2. Reconcile
-      await reconcileUserExpenses(ctx, expense.id, Array.from(userIds));
-      processed++;
-    }
-
-    return { processed };
+    return {
+      processed: expensesPage.page.length,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
+    };
   }
 });
 
@@ -721,14 +847,22 @@ export const backfillUserExpenses = internalMutation({
  * 3) reconcile `user_expenses` visibility rows from the rebuilt participant emails
  */
 export const repairExpenseSettlementAndVisibility = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const expenses = await ctx.db.query("expenses").collect();
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = expensePageLimit(args.limit);
+    const expensesPage = await ctx.db
+      .query("expenses")
+      .order("asc")
+      .paginate(expensePaginationOptions(args.cursor, limit));
 
     let patchedCount = 0;
     let reconciledCount = 0;
+    const operations: ExpenseMaintenanceOperation[] = [];
 
-    for (const expense of expenses) {
+    for (const expense of expensesPage.page) {
       const computedSettled =
         Array.isArray(expense.splits) &&
         expense.splits.length > 0 &&
@@ -742,33 +876,27 @@ export const repairExpenseSettlementAndVisibility = internalMutation({
         expense.is_settled !== computedSettled ||
         !arraysEqual(canonicalCurrentEmails, canonicalNextEmails)
       ) {
-        await ctx.db.patch(expense._id, {
-          is_settled: computedSettled,
-          participant_emails: canonicalNextEmails,
-          updated_at: Date.now()
-        });
+        operations.push(
+          await expensePatchOperation(ctx, expense, {
+            is_settled: computedSettled,
+            participant_emails: canonicalNextEmails,
+            updated_at: Date.now()
+          })
+        );
         patchedCount += 1;
+      } else {
+        operations.push(await expenseVisibilityOperation(ctx, expense));
       }
-
-      const participantUsers = await Promise.all(
-        canonicalNextEmails.map((email) =>
-          ctx.db
-            .query("accounts")
-            .withIndex("by_email", (q: any) => q.eq("email", email))
-            .unique()
-        )
-      );
-      const participantUserIds = participantUsers
-        .filter((user): user is NonNullable<typeof user> => user !== null)
-        .map((user) => user.id);
-      await reconcileUserExpenses(ctx, expense.id, participantUserIds);
       reconciledCount += 1;
     }
+    await applyExpenseWriteBatch(ctx, operations);
 
     return {
-      processed: expenses.length,
+      processed: expensesPage.page.length,
       patched: patchedCount,
-      reconciled: reconciledCount
+      reconciled: reconciledCount,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
     };
   }
 });
@@ -876,15 +1004,23 @@ export const backfillFirstLastNames = internalMutation({
  * Run via:  npx convex run --no-push migrations:backfillExpenseContextKind
  */
 export const backfillExpenseContextKind = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const expenses = await ctx.db.query("expenses").collect();
+  args: {
+    cursor: v.optional(v.string()),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const limit = expensePageLimit(args.limit);
+    const expensesPage = await ctx.db
+      .query("expenses")
+      .order("asc")
+      .paginate(expensePaginationOptions(args.cursor, limit));
 
     let skipped = 0;
     let patchedDirect = 0;
     let patchedGroup = 0;
+    const operations: ExpensePatchOperation[] = [];
 
-    for (const expense of expenses) {
+    for (const expense of expensesPage.page) {
       if (expense.context_kind) {
         skipped++;
         continue;
@@ -909,10 +1045,12 @@ export const backfillExpenseContextKind = internalMutation({
         }
       }
 
-      await ctx.db.patch(expense._id, {
-        context_kind: contextKind,
-        updated_at: Date.now()
-      });
+      operations.push(
+        await expensePatchOperation(ctx, expense, {
+          context_kind: contextKind,
+          updated_at: Date.now()
+        })
+      );
 
       if (contextKind === "direct") {
         patchedDirect++;
@@ -920,12 +1058,590 @@ export const backfillExpenseContextKind = internalMutation({
         patchedGroup++;
       }
     }
+    await applyExpenseWriteBatch(ctx, operations);
 
     return {
-      total: expenses.length,
+      total: expensesPage.page.length,
+      processed: expensesPage.page.length,
       skipped,
       patchedDirect,
-      patchedGroup
+      patchedGroup,
+      continueCursor: expensesPage.isDone ? undefined : expensesPage.continueCursor,
+      isDone: expensesPage.isDone
+    };
+  }
+});
+
+/**
+ * Resumable identity rollout. Each call performs at most batchSize alias operations and
+ * records its own cursor. The ready marker is written only after both tables are complete.
+ */
+export const runIdentityMaterializationMigration = internalMutation({
+  args: {
+    batchSize: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    const batchSize = args.batchSize ?? 64;
+    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 128) {
+      throw new Error("batchSize must be an integer between 1 and 128");
+    }
+
+    let state: any = await ctx.db
+      .query("identity_materialization_state")
+      .withIndex("by_key", (q) => q.eq("key", IDENTITY_MATERIALIZATION_KEY))
+      .unique();
+    if (!state) {
+      const stateId = await ctx.db.insert("identity_materialization_state", {
+        key: IDENTITY_MATERIALIZATION_KEY,
+        status: "pending",
+        phase: "aliases",
+        updated_at: Date.now()
+      });
+      state = await ctx.db.get(stateId);
+    }
+    if (state.status === "ready") {
+      return { status: "ready" as const, phase: "complete" as const, lastError: undefined };
+    }
+
+    if (state.phase === "aliases") {
+      const page = await ctx.db.query("member_aliases").paginate({
+        cursor: state.cursor ?? null,
+        numItems: batchSize
+      });
+      const normalizedPage = page.page.map((row) => ({
+        row,
+        aliasMemberId: normalizeMemberId(row.alias_member_id),
+        canonicalMemberId: normalizeMemberId(row.canonical_member_id)
+      }));
+      const pageIds = new Set(page.page.map((row) => String(row._id)));
+      const pageCanonicalOwners = new Map<string, string>();
+      for (const entry of normalizedPage) {
+        const pageCanonical = pageCanonicalOwners.get(entry.aliasMemberId);
+        if (pageCanonical && pageCanonical !== entry.canonicalMemberId) {
+          const lastError = `Conflicting alias ownership for ${entry.aliasMemberId}`;
+          await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+          return { status: "pending" as const, phase: "aliases" as const, lastError };
+        }
+        pageCanonicalOwners.set(entry.aliasMemberId, entry.canonicalMemberId);
+      }
+
+      const deleteIds = new Set<Doc<"member_aliases">["_id"]>();
+      const survivorPatches = new Map<
+        Doc<"member_aliases">["_id"],
+        { alias_member_id: string; canonical_member_id: string; account_email: string }
+      >();
+      for (const aliasMemberId of pageCanonicalOwners.keys()) {
+        const indexedRows = await ctx.db
+          .query("member_aliases")
+          .withIndex("by_alias_member_id", (q) => q.eq("alias_member_id", aliasMemberId))
+          .take(MAX_ALIAS_ROWS_PER_MEMBER_ID + 1);
+        const rowsById = new Map<string, Doc<"member_aliases">>();
+        for (const row of indexedRows) rowsById.set(String(row._id), row);
+        for (const entry of normalizedPage) {
+          if (entry.aliasMemberId === aliasMemberId) {
+            rowsById.set(String(entry.row._id), entry.row);
+          }
+        }
+        const candidateRows = Array.from(rowsById.values());
+        if (candidateRows.length > MAX_ALIAS_ROWS_PER_MEMBER_ID) {
+          const lastError = `Too many alias rows for ${aliasMemberId}`;
+          await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+          return { status: "pending" as const, phase: "aliases" as const, lastError };
+        }
+        const canonicalIds = new Set(
+          candidateRows.map((row) => normalizeMemberId(row.canonical_member_id))
+        );
+        if (canonicalIds.size > 1) {
+          const lastError = `Conflicting alias ownership for ${aliasMemberId}`;
+          await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+          return { status: "pending" as const, phase: "aliases" as const, lastError };
+        }
+
+        const rowsBySource = new Map<string | null, Doc<"member_aliases">[]>();
+        for (const row of candidateRows) {
+          const sourceKey = row.source_account_id ?? null;
+          const sourceRows = rowsBySource.get(sourceKey) ?? [];
+          sourceRows.push(row);
+          rowsBySource.set(sourceKey, sourceRows);
+        }
+        for (const sourceRows of rowsBySource.values()) {
+          sourceRows.sort(
+            (left, right) =>
+              left._creationTime - right._creationTime ||
+              String(left._id).localeCompare(String(right._id))
+          );
+          const survivor = sourceRows[0];
+          for (const duplicate of sourceRows.slice(1)) {
+            if (pageIds.has(String(duplicate._id))) deleteIds.add(duplicate._id);
+          }
+          if (pageIds.has(String(survivor._id))) {
+            survivorPatches.set(survivor._id, {
+              alias_member_id: aliasMemberId,
+              canonical_member_id: normalizeMemberId(survivor.canonical_member_id),
+              account_email: survivor.account_email.trim().toLowerCase()
+            });
+          }
+        }
+      }
+
+      for (const deleteId of deleteIds) await ctx.db.delete(deleteId);
+      for (const [survivorId, patch] of survivorPatches) {
+        if (!deleteIds.has(survivorId)) await ctx.db.patch(survivorId, patch);
+      }
+      await ctx.db.patch(state._id, {
+        phase: page.isDone ? "accounts" : "aliases",
+        cursor: page.isDone ? undefined : page.continueCursor,
+        last_error: undefined,
+        updated_at: Date.now()
+      });
+      return {
+        status: "pending" as const,
+        phase: page.isDone ? ("accounts" as const) : ("aliases" as const),
+        lastError: undefined
+      };
+    }
+
+    const persistError = async (
+      phase: "accounts" | "alias_provenance" | "account_aliases",
+      lastError: string
+    ) => {
+      await ctx.db.patch(state._id, { last_error: lastError, updated_at: Date.now() });
+      return { status: "pending" as const, phase, lastError };
+    };
+
+    if (state.phase === "accounts") {
+      const page = await ctx.db.query("accounts").paginate({
+        cursor: state.cursor ?? null,
+        numItems: batchSize
+      });
+      const normalizedAccounts = page.page.map((account) => {
+        const canonicalMemberId = account.member_id
+          ? normalizeMemberId(account.member_id)
+          : undefined;
+        const aliases = normalizeMemberIds(account.alias_member_ids).filter(
+          (alias) => alias !== canonicalMemberId
+        );
+        return { account, canonicalMemberId, aliases };
+      });
+
+      const canonicalOwners = new Map<string, Doc<"accounts">["_id"]>();
+      for (const normalizedAccount of normalizedAccounts) {
+        const { account, canonicalMemberId, aliases } = normalizedAccount;
+        if (aliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+          return await persistError(
+            "accounts",
+            `Identity maintenance required: account ${account.id} has ${aliases.length} aliases; maximum is ${MAX_LIVE_ACCOUNT_ALIASES}`
+          );
+        }
+        if (!canonicalMemberId) {
+          if (aliases.length > 0) {
+            return await persistError(
+              "accounts",
+              `Identity maintenance required: account ${account.id} has aliases without a canonical member_id`
+            );
+          }
+          continue;
+        }
+
+        const pageOwner = canonicalOwners.get(canonicalMemberId);
+        if (pageOwner && pageOwner !== account._id) {
+          return await persistError(
+            "accounts",
+            `Conflicting canonical account identity ${canonicalMemberId}`
+          );
+        }
+        canonicalOwners.set(canonicalMemberId, account._id);
+
+        const collisions = await ctx.db
+          .query("accounts")
+          .withIndex("by_member_id", (q) => q.eq("member_id", canonicalMemberId))
+          .take(2);
+        if (collisions.some((candidate) => candidate._id !== account._id)) {
+          return await persistError(
+            "accounts",
+            `Conflicting canonical account identity ${canonicalMemberId}`
+          );
+        }
+      }
+
+      for (const { account, canonicalMemberId, aliases } of normalizedAccounts) {
+        await ctx.db.patch(account._id, {
+          member_id: canonicalMemberId,
+          alias_member_ids: aliases,
+          updated_at: Date.now()
+        });
+      }
+      await ctx.db.patch(state._id, {
+        phase: page.isDone ? "alias_provenance" : "accounts",
+        cursor: page.isDone ? undefined : page.continueCursor,
+        current_account_id: undefined,
+        next_account_cursor: undefined,
+        alias_offset: undefined,
+        last_error: undefined,
+        updated_at: Date.now()
+      });
+      return {
+        status: "pending" as const,
+        phase: page.isDone ? ("alias_provenance" as const) : ("accounts" as const),
+        lastError: undefined
+      };
+    }
+
+    if (state.phase === "alias_provenance") {
+      const page = await ctx.db.query("member_aliases").paginate({
+        cursor: state.cursor ?? null,
+        numItems: batchSize
+      });
+      const resolvedPage: Array<{
+        row: Doc<"member_aliases">;
+        aliasMemberId: string;
+        canonicalMemberId: string;
+        canonicalAccount: Doc<"accounts">;
+      }> = [];
+      const provenancePageIds = new Set(page.page.map((row) => String(row._id)));
+      for (const alias of page.page) {
+        const aliasMemberId = normalizeMemberId(alias.alias_member_id);
+        const canonicalMemberId = normalizeMemberId(alias.canonical_member_id);
+        const canonicalAccounts = await ctx.db
+          .query("accounts")
+          .withIndex("by_member_id", (q) => q.eq("member_id", canonicalMemberId))
+          .take(2);
+        const canonicalAccount = canonicalAccounts.length === 1 ? canonicalAccounts[0] : null;
+        const isCorroborated =
+          canonicalAccount !== null &&
+          normalizeMemberIds(canonicalAccount.alias_member_ids).includes(aliasMemberId);
+        if (!isCorroborated) {
+          return await persistError(
+            "alias_provenance",
+            `Unproven legacy alias ${aliasMemberId}; migrate it to an owner-local friend alias or remove it`
+          );
+        }
+
+        const canonicalShadow = await ctx.db
+          .query("accounts")
+          .withIndex("by_member_id", (q) => q.eq("member_id", aliasMemberId))
+          .first();
+        if (canonicalShadow) {
+          return await persistError(
+            "alias_provenance",
+            `Alias ${aliasMemberId} shadows canonical account identity ${aliasMemberId}`
+          );
+        }
+
+        resolvedPage.push({
+          row: alias,
+          aliasMemberId,
+          canonicalMemberId,
+          canonicalAccount
+        });
+      }
+
+      const pageProvenanceOwners = new Map<
+        string,
+        { canonicalMemberId: string; sourceAccountId: string }
+      >();
+      for (const entry of resolvedPage) {
+        const existingOwner = pageProvenanceOwners.get(entry.aliasMemberId);
+        if (
+          existingOwner &&
+          (existingOwner.canonicalMemberId !== entry.canonicalMemberId ||
+            existingOwner.sourceAccountId !== entry.canonicalAccount.id)
+        ) {
+          return await persistError(
+            "alias_provenance",
+            `Conflicting alias ownership for ${entry.aliasMemberId}`
+          );
+        }
+        pageProvenanceOwners.set(entry.aliasMemberId, {
+          canonicalMemberId: entry.canonicalMemberId,
+          sourceAccountId: entry.canonicalAccount.id
+        });
+      }
+
+      const provenanceDeleteIds = new Set<Doc<"member_aliases">["_id"]>();
+      const provenancePatches = new Map<
+        Doc<"member_aliases">["_id"],
+        {
+          canonical_member_id: string;
+          alias_member_id: string;
+          account_email: string;
+          materialization_source: "account_alias";
+          source_account_id: string;
+        }
+      >();
+      const provenanceGroups = new Map<string, typeof resolvedPage>();
+      for (const entry of resolvedPage) {
+        const key = `${entry.canonicalAccount.id}\u0000${entry.aliasMemberId}`;
+        const entries = provenanceGroups.get(key) ?? [];
+        entries.push(entry);
+        provenanceGroups.set(key, entries);
+      }
+      for (const entries of provenanceGroups.values()) {
+        const { canonicalAccount, aliasMemberId, canonicalMemberId } = entries[0];
+        const sourceRows = await ctx.db
+          .query("member_aliases")
+          .withIndex("by_source_account_and_alias", (q) =>
+            q.eq("source_account_id", canonicalAccount.id).eq("alias_member_id", aliasMemberId)
+          )
+          .take(MAX_ALIAS_ROWS_PER_MEMBER_ID + 1);
+        const rowsById = new Map<string, Doc<"member_aliases">>();
+        for (const sourceRow of sourceRows) rowsById.set(String(sourceRow._id), sourceRow);
+        for (const entry of entries) rowsById.set(String(entry.row._id), entry.row);
+        const convergingRows = Array.from(rowsById.values());
+        if (convergingRows.length > MAX_ALIAS_ROWS_PER_MEMBER_ID) {
+          return await persistError("alias_provenance", `Too many alias rows for ${aliasMemberId}`);
+        }
+        if (
+          convergingRows.some(
+            (row) => normalizeMemberId(row.canonical_member_id) !== canonicalMemberId
+          )
+        ) {
+          return await persistError(
+            "alias_provenance",
+            `Conflicting alias ownership for ${aliasMemberId}`
+          );
+        }
+        convergingRows.sort(
+          (left, right) =>
+            left._creationTime - right._creationTime ||
+            String(left._id).localeCompare(String(right._id))
+        );
+        const survivor = convergingRows[0];
+        for (const duplicate of convergingRows.slice(1)) {
+          if (provenancePageIds.has(String(duplicate._id))) {
+            provenanceDeleteIds.add(duplicate._id);
+          }
+        }
+        if (provenancePageIds.has(String(survivor._id))) {
+          provenancePatches.set(survivor._id, {
+            canonical_member_id: canonicalMemberId,
+            alias_member_id: aliasMemberId,
+            account_email: canonicalAccount.email.trim().toLowerCase(),
+            materialization_source: "account_alias",
+            source_account_id: canonicalAccount.id
+          });
+        }
+      }
+
+      for (const deleteId of provenanceDeleteIds) await ctx.db.delete(deleteId);
+      for (const [survivorId, patch] of provenancePatches) {
+        if (!provenanceDeleteIds.has(survivorId)) await ctx.db.patch(survivorId, patch);
+      }
+      await ctx.db.patch(state._id, {
+        phase: page.isDone ? "account_aliases" : "alias_provenance",
+        cursor: page.isDone ? undefined : page.continueCursor,
+        last_error: undefined,
+        updated_at: Date.now()
+      });
+      return {
+        status: "pending" as const,
+        phase: page.isDone ? ("account_aliases" as const) : ("alias_provenance" as const),
+        lastError: undefined
+      };
+    }
+
+    if (!state.current_account_id) {
+      const page = await ctx.db.query("accounts").paginate({
+        cursor: state.cursor ?? null,
+        numItems: batchSize
+      });
+      if (page.page.length === 0) {
+        await ctx.db.patch(state._id, {
+          status: "ready",
+          phase: "complete",
+          cursor: undefined,
+          current_account_id: undefined,
+          next_account_cursor: undefined,
+          alias_offset: undefined,
+          last_error: undefined,
+          updated_at: Date.now()
+        });
+        return { status: "ready" as const, phase: "complete" as const, lastError: undefined };
+      }
+
+      const normalizedAccounts = page.page.map((account) => {
+        const canonicalMemberId = account.member_id
+          ? normalizeMemberId(account.member_id)
+          : undefined;
+        const aliases = normalizeMemberIds(account.alias_member_ids).filter(
+          (alias) => alias !== canonicalMemberId
+        );
+        return { account, canonicalMemberId, aliases };
+      });
+      const aliasCount = normalizedAccounts.reduce(
+        (total, normalizedAccount) => total + normalizedAccount.aliases.length,
+        0
+      );
+
+      if (aliasCount <= batchSize) {
+        const materializations: Array<
+          Awaited<ReturnType<typeof preflightNormalizedAccountAliasMaterialization>>
+        > = [];
+        try {
+          const pageAliasOwners = new Map<
+            string,
+            { canonicalMemberId: string; accountId: string }
+          >();
+          for (const { account, canonicalMemberId, aliases } of normalizedAccounts) {
+            if (aliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+              throw new Error(
+                `Identity maintenance required: account ${account.id} has ${aliases.length} aliases; maximum is ${MAX_LIVE_ACCOUNT_ALIASES}`
+              );
+            }
+            if (!canonicalMemberId && aliases.length > 0) {
+              throw new Error(
+                `Identity maintenance required: account ${account.id} has aliases without a canonical member_id`
+              );
+            }
+            if (!canonicalMemberId) continue;
+            const accountIdentity = {
+              id: account.id,
+              email: account.email,
+              member_id: canonicalMemberId
+            };
+            for (const alias of aliases) {
+              const pageOwner = pageAliasOwners.get(alias);
+              if (
+                pageOwner &&
+                (pageOwner.canonicalMemberId !== canonicalMemberId ||
+                  pageOwner.accountId !== account.id)
+              ) {
+                throw new Error(`Conflicting account alias ownership for ${alias}`);
+              }
+              pageAliasOwners.set(alias, { canonicalMemberId, accountId: account.id });
+              materializations.push(
+                await preflightNormalizedAccountAliasMaterialization(ctx, accountIdentity, alias)
+              );
+            }
+          }
+          for (const materialization of materializations) {
+            await applyPreflightedAccountAliasMaterialization(ctx, materialization);
+          }
+        } catch (error) {
+          const lastError =
+            error instanceof Error ? error.message : "Unknown identity maintenance error";
+          return await persistError("account_aliases", lastError);
+        }
+
+        if (page.isDone) {
+          await ctx.db.patch(state._id, {
+            status: "ready",
+            phase: "complete",
+            cursor: undefined,
+            current_account_id: undefined,
+            next_account_cursor: undefined,
+            alias_offset: undefined,
+            last_error: undefined,
+            updated_at: Date.now()
+          });
+          return { status: "ready" as const, phase: "complete" as const, lastError: undefined };
+        }
+        await ctx.db.patch(state._id, {
+          cursor: page.continueCursor,
+          last_error: undefined,
+          updated_at: Date.now()
+        });
+        return {
+          status: "pending" as const,
+          phase: "account_aliases" as const,
+          lastError: undefined
+        };
+      }
+    }
+
+    let account: Doc<"accounts"> | null = state.current_account_id
+      ? await ctx.db.get(state.current_account_id as Doc<"accounts">["_id"])
+      : null;
+    let nextAccountCursor = state.next_account_cursor;
+    if (!account) {
+      const page = await ctx.db.query("accounts").paginate({
+        cursor: state.cursor ?? null,
+        numItems: 1
+      });
+      account = page.page[0] ?? null;
+      nextAccountCursor = page.continueCursor;
+      if (!account) {
+        await ctx.db.patch(state._id, {
+          status: "ready",
+          phase: "complete",
+          cursor: undefined,
+          current_account_id: undefined,
+          next_account_cursor: undefined,
+          alias_offset: undefined,
+          last_error: undefined,
+          updated_at: Date.now()
+        });
+        return { status: "ready" as const, phase: "complete" as const, lastError: undefined };
+      }
+    }
+
+    const canonicalMemberId = account.member_id ? normalizeMemberId(account.member_id) : undefined;
+    const aliases = normalizeMemberIds(account.alias_member_ids).filter(
+      (alias) => alias !== canonicalMemberId
+    );
+    if (aliases.length > MAX_LIVE_ACCOUNT_ALIASES) {
+      return await persistError(
+        "account_aliases",
+        `Identity maintenance required: account ${account.id} has ${aliases.length} aliases; maximum is ${MAX_LIVE_ACCOUNT_ALIASES}`
+      );
+    }
+    if (!canonicalMemberId && aliases.length > 0) {
+      return await persistError(
+        "account_aliases",
+        `Identity maintenance required: account ${account.id} has aliases without a canonical member_id`
+      );
+    }
+
+    const aliasOffset = state.current_account_id ? (state.alias_offset ?? 0) : 0;
+    const batch = aliases.slice(aliasOffset, aliasOffset + batchSize);
+    if (canonicalMemberId) {
+      const accountIdentity = {
+        id: account.id,
+        email: account.email,
+        member_id: canonicalMemberId
+      };
+      try {
+        const materializations: Array<
+          Awaited<ReturnType<typeof preflightNormalizedAccountAliasMaterialization>>
+        > = [];
+        for (const alias of batch) {
+          materializations.push(
+            await preflightNormalizedAccountAliasMaterialization(ctx, accountIdentity, alias)
+          );
+        }
+        for (const materialization of materializations) {
+          await applyPreflightedAccountAliasMaterialization(ctx, materialization);
+        }
+      } catch (error) {
+        const lastError =
+          error instanceof Error ? error.message : "Unknown identity maintenance error";
+        return await persistError("account_aliases", lastError);
+      }
+    }
+
+    const nextOffset = aliasOffset + batch.length;
+    if (nextOffset < aliases.length) {
+      await ctx.db.patch(state._id, {
+        current_account_id: account._id,
+        next_account_cursor: nextAccountCursor,
+        alias_offset: nextOffset,
+        last_error: undefined,
+        updated_at: Date.now()
+      });
+    } else {
+      await ctx.db.patch(state._id, {
+        cursor: nextAccountCursor,
+        current_account_id: undefined,
+        next_account_cursor: undefined,
+        alias_offset: undefined,
+        last_error: undefined,
+        updated_at: Date.now()
+      });
+    }
+    return {
+      status: "pending" as const,
+      phase: "account_aliases" as const,
+      lastError: undefined
     };
   }
 });

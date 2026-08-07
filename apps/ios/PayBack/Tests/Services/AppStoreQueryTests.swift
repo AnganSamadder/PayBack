@@ -508,7 +508,7 @@ final class AppStoreQueryTests: XCTestCase {
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
 
         // When - try to delete with invalid offset
-        sut.deleteGroups(at: IndexSet(integer: 999))
+        try await sut.deleteGroups(at: IndexSet(integer: 999))
 
         // Then - should not crash
         XCTAssertEqual(sut.groups.count, 1)

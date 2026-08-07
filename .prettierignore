@@ -21,3 +21,4 @@ coverage/
 TestResults.xcresult
 playwright-report/
 test-results/
+.simulator-artifacts/

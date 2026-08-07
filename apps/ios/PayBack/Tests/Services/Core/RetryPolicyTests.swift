@@ -601,22 +601,38 @@ final class RetryPolicyTests: XCTestCase {
     }
 
     func testInit_zeroBaseDelay_noDelayBetweenRetries() async {
-        let policy = RetryPolicy(maxAttempts: 3, baseDelay: 0.0)
-        var attemptTimes: [Date] = []
+        actor DelayRecorder {
+            private var delays: [TimeInterval] = []
+
+            func record(_ seconds: TimeInterval) {
+                delays.append(seconds)
+            }
+
+            func snapshot() -> [TimeInterval] {
+                delays
+            }
+        }
+
+        let recorder = DelayRecorder()
+        let policy = RetryPolicy(
+            maxAttempts: 3,
+            baseDelay: 0.0,
+            sleeper: { seconds in
+                await recorder.record(seconds)
+            }
+        )
+        var attemptCount = 0
 
         do {
             _ = try await policy.execute {
-                attemptTimes.append(Date())
+                attemptCount += 1
                 throw PayBackError.networkUnavailable
             }
             XCTFail("Should have thrown error")
         } catch {
-            XCTAssertEqual(attemptTimes.count, 3)
-            // Delays should be minimal (near zero)
-            if attemptTimes.count >= 2 {
-                let delay = attemptTimes[1].timeIntervalSince(attemptTimes[0])
-                XCTAssertLessThan(delay, 0.1, "Delay should be minimal with zero base delay")
-            }
+            let observedDelays = await recorder.snapshot()
+            XCTAssertEqual(attemptCount, 3)
+            XCTAssertEqual(observedDelays, [0.0, 0.0])
         }
     }
 

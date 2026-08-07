@@ -483,6 +483,93 @@ Failure impact:
 
 - Friend-of-friend participants (for example, Bob in a shared group) can appear as unintended direct friends.
 
+### 8.13 Bulk import link provenance
+
+`bulkImport` may restore local data but must not establish registered-account identity.
+
+Rules:
+
+1. Ignore client-provided linked account IDs/emails when creating or promoting friend links.
+2. Preserve a link when the existing server row has `link_state: "linked"` and its persisted
+   `linked_account_id` resolves to an active account, provided the friend identity matches the
+   account canonical ID or a trusted materialized account alias.
+3. During the legacy-marker transition, an unmarked row may be promoted only when indexed server
+   provenance ties the owner, friend identity, and active linked account through a completed invite,
+   accepted link request, or trusted account-alias materialization.
+4. Canonicalize the preserved account ID, email, and member ID from the live `accounts` row; never
+   preserve the client or legacy tuple verbatim.
+5. Every successful invite claim and link-request acceptance must stamp both directions with
+   `link_state: "linked"`.
+6. New, legacy-unproven, deleted-account, and invalid links import as `link_state: "unlinked"`.
+7. Never create `member_aliases` from bulk import.
+8. Derive expense participant metadata, `participant_emails`, and `user_expenses` fanout only from
+   the authenticated account and server-proven linked friends; never trust participant payload IDs/emails.
+
+Failure impact:
+
+- A crafted backup could otherwise impersonate a registered account, poison global identity
+  resolution, or grant another user visibility into imported expenses.
+
+### 8.14 Trusted alias and invite provenance
+
+1. Runtime global alias resolution trusts only `member_aliases` rows stamped with
+   `materialization_source: "account_alias"` and `source_account_id`.
+2. Legacy unmarked alias rows are quarantined. Migration may stamp them only when exactly one direct
+   canonical account corroborates the alias in `accounts.alias_member_ids`; otherwise readiness stays
+   blocked.
+3. Owner-local friend merges use `account_friends.local_alias_member_ids`; repair/debug/import paths
+   must not mint global aliases from names or historical rows.
+4. Every invite token must bind `target_friend_id` to the creator-owned unlinked friend row. Claim
+   revalidates the active creator, bound row ownership/identity/state, and token email; legacy unbound
+   tokens are rejected with recreation guidance.
+5. Invite claims rewrite only a bounded creator-owned identity surface and fail atomically when the
+   bound is exceeded. Never collect and rewrite the global groups table during a claim.
+6. Identity readiness uses `member_identity_v3`; v1/v2 markers never satisfy current mutation gates.
+   Pending reads may use trusted alias indexes and at most 512 accounts, but never unmarked aliases.
+7. Every migration page must finish validation and conflict planning before alias/account writes,
+   deletes, or provenance tags. A returned validation error may update only migration `last_error`.
+8. Public invite validation returns an allowlisted token DTO and previews only bounded expenses
+   owned by the token creator. Foreign groups, client-ID collisions, and over-cap previews must not
+   expose names, balances, or counts; do not expose a raw public token query.
+9. Ghost detection must use the shared normalized predicate over both `link_state` and `status`.
+   Status-only ghost imports persist `link_state: "ghost"`, normalized status, and no account tuple.
+10. Name-only repair is forbidden. Retired repair endpoints must fail without reading or rewriting
+    identity-bearing expense data.
+
+### 8.15 Historical participant revocation
+
+When friend cleanup retains an expense for accounting history:
+
+1. Preserve the original split amount and participant display name so splits continue to sum to
+   `total_amount`.
+2. Persist every canonical/alias ID for the removed identity in
+   `expenses.inactive_participant_member_ids`.
+3. Visibility reconciliation and participant-email rebuilding must exclude inactive member
+   surfaces, even when preserved splits or participant rows still resolve to an active account.
+   Do not exclude the account wholesale: expense ownership and a distinct active member surface
+   remain authoritative.
+4. `expenses:setSettlementState` must not use inactive splits for authorization. An account with a
+   distinct active split may settle only that active split; the historical inactive split remains
+   immutable to that participant.
+5. Inactive markers are durable per expense. Ordinary updates and friend relinking must not clear
+   them or restore revoked `user_expenses` visibility. A relinked identity may participate in new
+   expenses; any future reactivation of an existing expense must be an explicit authorized flow.
+6. Active participant closure is the union of non-inactive payer, `participant_member_ids`,
+   `involved_member_ids`, split, and participant-row member IDs. Cleanup and maintenance must not
+   delete history or remove visibility merely because one legacy identity surface is sparse. The
+   authoritative owner tuple counts as one distinct party even when its only member IDs are
+   inactive historical aliases.
+7. Identity repair batches must cap aggregate reads across all accounts in a page; a per-account cap
+   alone is not a safe Convex work bound.
+8. Expense visibility resolves exactly one authoritative owner from `owner_id`,
+   `owner_account_id`, and `owner_email`. Conflicting present fields are a maintenance error and
+   must abort before participant emails or `user_expenses` rows change.
+
+Failure impact:
+
+- Historical identity fields can otherwise regrant expense visibility or settlement authority after
+  a friend has been removed.
+
 ## 9) Security Hardening Set (Provenance: 2026-02-20)
 
 ### 9.1 Group upsert authorization
@@ -523,6 +610,13 @@ All group deletions (`deleteGroup`, `deleteGroups`, clear/leave flows removing w
 
 - In authenticated sessions, self-friend detection must be ID/link based only.
 - Name-equality fallback is allowed only for no-session/local contexts.
+
+### 9.7 Group member removal atomicity
+
+- Removing a member and deleting that member's affected group expenses must run in one authenticated Convex mutation.
+- The mutation must verify group ownership, resolve member aliases, and reconcile expense visibility in the same transaction.
+- iOS must await that single mutation; never sequence a group upsert followed by separate expense deletions.
+- Optimistic rollback must be account/data-epoch fenced and must not overwrite a concurrently updated group snapshot.
 
 ## 10) Convex Environment Routing (iOS Build Pipeline)
 
@@ -587,6 +681,21 @@ Required fields:
 3. Signup password: `.textContentType(.newPassword)`.
 4. Signup confirm password: `.textContentType(.password)` and submit label `.join`.
 5. Verification code: `.textContentType(.oneTimeCode)` with keyboard-dismiss affordance.
+
+### 11.3 Native password reset continuity
+
+Password reset must remain inside the Clerk native sign-in attempt:
+
+1. Start with identifier-first sign-in, then send `reset_password_email_code`.
+2. Verify only a prepared reset-code factor and require Clerk status `needs_new_password`.
+3. Set the new password only from `needs_new_password`, sign out other sessions, and require `complete` for automatic authentication.
+4. Hand the completed Clerk session through `AppStore.completeAuthenticationAndWait` so Convex and local session state are ready before showing authenticated UI.
+5. Keep reset email, code, and password drafts in `AuthCoordinator` while their Clerk checkpoint remains valid.
+6. Password-reset initiation and resend must show the same generic notice whether Clerk accepts or rejects the identifier; do not reveal account existence through request-stage UI.
+7. After Clerk reaches `needs_new_password`, never navigate backward to code verification. An explicit back-to-sign-in action must abandon the verified attempt and clear code/password secrets.
+8. Serialize reset requests with the shared busy state and always clear busy state on success, error, or cancellation.
+9. Show stage-specific generic errors; never expose raw provider details or PII.
+10. If Clerk accepts the password but returns `needs_second_factor` or `needs_client_trust`, return to login with an accurate success/recovery message; never label the accepted password update as failed.
 
 ## 12) Add Expense UX Continuity (iOS, provenance: 2026-02-20)
 

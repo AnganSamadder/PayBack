@@ -2,7 +2,7 @@ import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
-import { modules } from "./setup";
+import { modules } from "../test.setup";
 
 function identityFor(email: string, subject: string) {
   return {
@@ -90,6 +90,8 @@ test("expenses:create allows direct expense when involved member is an alias of 
       has_linked_account: true,
       linked_account_id: "friend_auth_id",
       linked_account_email: "friend@example.com",
+      linked_member_id: "friend_canonical",
+      link_state: "linked",
       status: "accepted",
       updated_at: now
     });
@@ -214,6 +216,7 @@ test("expenses:create allows direct expense when friend is linked via linked_mem
       has_linked_account: true,
       linked_account_id: "friend_auth_id",
       linked_account_email: "friend@example.com",
+      link_state: "linked",
       status: "accepted",
       updated_at: now
     });
@@ -281,6 +284,8 @@ test("expenses:create allows direct expense when linked account carries legacy a
       has_linked_account: true,
       linked_account_id: "friend_auth_id",
       linked_account_email: "friend@example.com",
+      linked_member_id: "friend_canonical",
+      link_state: "linked",
       status: "accepted",
       updated_at: now
     });
@@ -317,7 +322,7 @@ test("expenses:create allows direct expense when linked account carries legacy a
   expect(expenses.length).toBe(1);
 });
 
-test("expenses:create allows direct expense when legacy friend row has no linked fields but member_id is in account alias_member_ids", async () => {
+test("expenses:create rejects a registered identity backed only by an unlinked alias row", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
 
@@ -368,19 +373,17 @@ test("expenses:create allows direct expense when legacy friend row has no linked
 
   const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
 
-  const result = await ownerCtx.mutation(
-    api.expenses.create,
-    buildDirectExpenseArgs({
-      expenseId: "direct_expense_legacy_alias_only",
-      groupId: "direct_group_legacy_alias_only",
-      ownerMemberId: "owner_member",
-      otherMemberId: "friend_canonical"
-    })
-  );
-
-  expect(result).toBeDefined();
-  const expenses = await t.run(async (ctx) => await ctx.db.query("expenses").collect());
-  expect(expenses.length).toBe(1);
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildDirectExpenseArgs({
+        expenseId: "direct_expense_legacy_alias_only",
+        groupId: "direct_group_legacy_alias_only",
+        ownerMemberId: "owner_member",
+        otherMemberId: "friend_canonical"
+      })
+    )
+  ).rejects.toThrow("not a confirmed friend");
 });
 
 test("expenses:create allows direct expense when legacy friend status is an empty string", async () => {
@@ -473,6 +476,8 @@ test("expenses:create allows direct expense when linked_account_id stores accoun
       profile_avatar_color: "#445566",
       has_linked_account: true,
       linked_account_id: String(friendDocId),
+      linked_member_id: "friend_canonical",
+      link_state: "linked",
       status: "friend",
       updated_at: now
     });
@@ -509,7 +514,7 @@ test("expenses:create allows direct expense when linked_account_id stores accoun
   expect(expenses.length).toBe(1);
 });
 
-test("expenses:create allows direct expense for legacy name-only friend rows and resolves participant email from member id", async () => {
+test("expenses:create allows name fallback only for an unregistered manual identity", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
 
@@ -524,13 +529,6 @@ test("expenses:create allows direct expense for legacy name-only friend rows and
   });
 
   await t.run(async (ctx) => {
-    await ctx.db.insert("accounts", {
-      id: "friend_auth_id",
-      email: "friend@example.com",
-      display_name: "Angan Samadder",
-      member_id: "friend_canonical",
-      created_at: now
-    });
     // Legacy drift: friend table keeps the old member_id and no link metadata.
     await ctx.db.insert("account_friends", {
       account_email: "owner@example.com",
@@ -577,10 +575,10 @@ test("expenses:create allows direct expense for legacy name-only friend rows and
       .unique()
   );
   expect(expense).toBeDefined();
-  expect(expense?.participant_emails).toContain("friend@example.com");
+  expect(expense?.participant_emails).toEqual(["owner@example.com"]);
 });
 
-test("expenses:create allows direct expense for valid 1:1 direct group even when friend rows are missing", async () => {
+test("expenses:create rejects a registered counterparty proven only by direct-group membership", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
 
@@ -620,25 +618,145 @@ test("expenses:create allows direct expense for valid 1:1 direct group even when
 
   const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
 
-  const result = await ownerCtx.mutation(
-    api.expenses.create,
-    buildDirectExpenseArgs({
-      expenseId: "direct_expense_no_friend_row",
-      groupId: "direct_group_no_friend_row",
-      ownerMemberId: "owner_member",
-      otherMemberId: "friend_member"
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildDirectExpenseArgs({
+        expenseId: "direct_expense_no_friend_row",
+        groupId: "direct_group_no_friend_row",
+        ownerMemberId: "owner_member",
+        otherMemberId: "friend_member"
+      })
+    )
+  ).rejects.toThrow("not a confirmed friend");
+});
+
+test("expenses:create rejects pending linked metadata for a registered counterparty", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  const ownerDocId = await t.run(async (ctx) =>
+    ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now
     })
   );
 
-  expect(result).toBeDefined();
-  const expense = await t.run(async (ctx) =>
-    ctx.db
-      .query("expenses")
-      .withIndex("by_client_id", (q) => q.eq("id", "direct_expense_no_friend_row"))
-      .unique()
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "friend_auth_id",
+      email: "friend@example.com",
+      display_name: "Friend",
+      member_id: "friend_member",
+      created_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: true,
+      linked_account_id: "friend_auth_id",
+      linked_account_email: "friend@example.com",
+      status: "request_sent",
+      updated_at: now
+    });
+    await ctx.db.insert("groups", {
+      id: "direct_group_pending_friend",
+      name: "Owner + Pending Friend",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "friend_member", name: "Friend" }
+      ],
+      owner_email: "owner@example.com",
+      owner_account_id: "owner_auth_id",
+      owner_id: ownerDocId,
+      is_direct: true,
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildDirectExpenseArgs({
+        expenseId: "direct_expense_pending_friend",
+        groupId: "direct_group_pending_friend",
+        ownerMemberId: "owner_member",
+        otherMemberId: "friend_member"
+      })
+    )
+  ).rejects.toThrow("not a confirmed friend");
+});
+
+test("expenses:create allows a registered counterparty with a server-proven linked friend row", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  const ownerDocId = await t.run(async (ctx) =>
+    ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now
+    })
   );
-  expect(expense).toBeDefined();
-  expect(expense?.participant_emails).toContain("friend@example.com");
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "friend_auth_id",
+      email: "friend@example.com",
+      display_name: "Friend",
+      member_id: "friend_member",
+      created_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: true,
+      linked_account_id: "friend_auth_id",
+      linked_account_email: "friend@example.com",
+      linked_member_id: "friend_member",
+      link_state: "linked",
+      status: "friend",
+      updated_at: now
+    });
+    await ctx.db.insert("groups", {
+      id: "direct_group_proven_friend",
+      name: "Owner + Friend",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "friend_member", name: "Friend" }
+      ],
+      owner_email: "owner@example.com",
+      owner_account_id: "owner_auth_id",
+      owner_id: ownerDocId,
+      is_direct: true,
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildDirectExpenseArgs({
+        expenseId: "direct_expense_proven_friend",
+        groupId: "direct_group_proven_friend",
+        ownerMemberId: "owner_member",
+        otherMemberId: "friend_member"
+      })
+    )
+  ).resolves.toBeDefined();
 });
 
 test("expenses:create rejects direct expense when involved member is not a friend", async () => {

@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import Foundation
 import Network
-import Clerk
+import ClerkKit
 
 #if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
@@ -17,15 +17,17 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
 struct RootViewWithStore: View {
     @StateObject private var store = AppStore()
-    @Environment(\.clerk) private var clerk
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var networkMonitor = NetworkMonitor()
     @State private var pendingInviteToken: UUID?
+    @State private var accountDeletionRecoveryError: String?
 
     var body: some View {
         Group {
             // Use store's state instead of local state to avoid view lifecycle delays
-            if store.isCheckingAuth {
+            if store.isAccountDeletionBlocking {
+                accountDeletionRecoveryView
+            } else if store.isCheckingAuth {
                 // Show loading state while checking for existing session
                 ZStack {
                     LinearGradient(
@@ -52,6 +54,8 @@ struct RootViewWithStore: View {
                          AppConfig.markTiming("Loading Screen appeared")
                     }
                 }
+            } else if store.isAuthenticationSessionRecoveryBlocking {
+                authenticationSessionRecoveryView
             } else if store.session != nil {
                 RootView(pendingInviteToken: $pendingInviteToken)
                     .onAppear {
@@ -92,6 +96,137 @@ struct RootViewWithStore: View {
                     title: Text("Account Deleted"),
                     message: Text("Your account has been deleted. If this was a mistake, please contact support."),
                     dismissButton: .default(Text("OK"))
+                )
+            }
+        }
+    }
+
+    private var authenticationSessionRecoveryView: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.18, green: 0.22, blue: 0.56),
+                    Color(red: 0.41, green: 0.13, blue: 0.6),
+                    Color(red: 0.06, green: 0.55, blue: 0.7)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 20) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.system(size: 52, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .accessibilityHidden(true)
+
+                VStack(spacing: 8) {
+                    Text("Couldn't Restore Your Session")
+                        .font(.title2.bold())
+                        .multilineTextAlignment(.center)
+                    Text(store.authenticationSessionRecoveryMessage ?? "Check your connection and try again.")
+                        .font(.body)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white.opacity(0.82))
+                }
+                .foregroundStyle(.white)
+
+                Button {
+                    Task { await store.checkSession() }
+                } label: {
+                    Text("Retry")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.white)
+                .foregroundStyle(Color(red: 0.25, green: 0.18, blue: 0.55))
+            }
+            .padding(32)
+            .frame(maxWidth: 520)
+        }
+    }
+
+    private var accountDeletionRecoveryView: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.18, green: 0.22, blue: 0.56),
+                    Color(red: 0.41, green: 0.13, blue: 0.6),
+                    Color(red: 0.06, green: 0.55, blue: 0.7)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 20) {
+                Image(systemName: "person.crop.circle.badge.minus")
+                    .font(.system(size: 52, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .accessibilityHidden(true)
+
+                VStack(spacing: 8) {
+                    Text("Finish Deleting Your Account")
+                        .font(.title2.bold())
+                        .multilineTextAlignment(.center)
+                    Text(accountDeletionRecoveryDescription)
+                        .font(.body)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white.opacity(0.82))
+                }
+                .foregroundStyle(.white)
+
+                if store.accountDeletionState == .deletingBackendAccount ||
+                    store.accountDeletionState == .deletingAuthenticationAccount {
+                    ProgressView("Finishing account deletion…")
+                        .tint(.white)
+                        .foregroundStyle(.white)
+                } else {
+                    Button(action: retryAccountDeletion) {
+                        Text("Retry Account Deletion")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.white)
+                    .foregroundStyle(Color(red: 0.25, green: 0.18, blue: 0.55))
+                }
+
+                if let recoveryError = accountDeletionRecoveryError ?? store.accountDeletionRecoveryErrorMessage {
+                    Text(recoveryError)
+                        .font(.footnote)
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .accessibilityLabel("Account deletion error: \(recoveryError)")
+                }
+            }
+            .padding(32)
+            .frame(maxWidth: 520)
+        }
+    }
+
+    private var accountDeletionRecoveryDescription: String {
+        switch store.accountDeletionState {
+        case .deletingBackendAccount, .awaitingBackendDeletion:
+            "Your account deletion is in progress. Finish deleting your PayBack data and sign-in account before continuing."
+        case .deletingAuthenticationAccount, .awaitingAuthenticationDeletion:
+            "Your PayBack data is deleted. Finish removing your sign-in account before continuing."
+        case .idle:
+            "Finish deleting your PayBack account before continuing."
+        }
+    }
+
+    private func retryAccountDeletion() {
+        accountDeletionRecoveryError = nil
+        Task {
+            do {
+                try await store.selfDeleteAccount()
+            } catch {
+                accountDeletionRecoveryError = error.userFacingMessage(
+                    fallback: "We couldn't finish deleting your sign-in account. Check your connection and try again."
                 )
             }
         }
@@ -220,32 +355,43 @@ extension NWInterface.InterfaceType {
 @main
 struct PayBackApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @State private var clerk = Clerk.shared
+    @State private var clerk: Clerk
 
     #if !PAYBACK_CI_NO_CONVEX
-    let convexClient: ConvexClientWithAuth<ClerkAuthResult>
+    let convexClient: ConvexClientWithAuth<ClerkAuthResult>?
     #endif
 
     init() {
         // Start performance tracking
         AppConfig.markAppStart()
 
+        let clerk = Clerk.configure(
+            publishableKey: AppConfig.clerkPublishableKey
+        )
+        _clerk = State(initialValue: clerk)
+
         // Log startup configuration
         AppConfig.logStartupInfo()
         AppConfig.markTiming("Configuration logged")
 
         #if !PAYBACK_CI_NO_CONVEX
-        let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
-        AppConfig.markTiming("ClerkAuthProvider created")
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            let authProvider = ClerkAuthProvider(jwtTemplate: "convex")
+            AppConfig.markTiming("ClerkAuthProvider created")
 
-        convexClient = ConvexClientWithAuth(
-            deploymentUrl: ConvexConfig.deploymentUrl,
-            authProvider: authProvider
-        )
-        AppConfig.markTiming("ConvexClient created")
+            let client = ConvexClientWithAuth(
+                deploymentUrl: ConvexConfig.deploymentUrl,
+                authProvider: authProvider
+            )
+            convexClient = client
+            AppConfig.markTiming("ConvexClient created")
 
-        Dependencies.configure(client: convexClient)
-        AppConfig.markTiming("Dependencies configured")
+            Dependencies.configure(client: client)
+            AppConfig.markTiming("Dependencies configured")
+        } else {
+            convexClient = nil
+            AppConfig.markTiming("Convex bootstrap skipped for unit tests")
+        }
         #else
         AppConfig.markTiming("Convex disabled for CI")
         #endif
@@ -259,7 +405,7 @@ struct PayBackApp: App {
     var body: some Scene {
         WindowGroup {
             RootViewWithStore()
-                .environment(\.clerk, clerk)
+                .environment(clerk)
                 .tint(AppTheme.brand)
         }
     }

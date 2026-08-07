@@ -66,54 +66,130 @@ final class UIViewsMinimalTests: XCTestCase {
         XCTAssertNotEqual(byName, byEmail)
     }
 
-    func test_addFriendSheet_searchState_equality() {
-        let idle1 = AddFriendSheet.SearchState.idle
-        let idle2 = AddFriendSheet.SearchState.idle
+    func test_addFriendSheet_submissionState_equality() {
+        let idle1 = AddFriendSheet.SubmissionState.idle
+        let idle2 = AddFriendSheet.SubmissionState.idle
         XCTAssertEqual(idle1, idle2)
 
-        let searching1 = AddFriendSheet.SearchState.searching
-        let searching2 = AddFriendSheet.SearchState.searching
-        XCTAssertEqual(searching1, searching2)
+        let sending1 = AddFriendSheet.SubmissionState.sending
+        let sending2 = AddFriendSheet.SubmissionState.sending
+        XCTAssertEqual(sending1, sending2)
 
-        let notFound1 = AddFriendSheet.SearchState.notFound
-        let notFound2 = AddFriendSheet.SearchState.notFound
-        XCTAssertEqual(notFound1, notFound2)
-
-        let error1 = AddFriendSheet.SearchState.error("Test error")
-        let error2 = AddFriendSheet.SearchState.error("Test error")
+        let error1 = AddFriendSheet.SubmissionState.error("Test error")
+        let error2 = AddFriendSheet.SubmissionState.error("Test error")
         XCTAssertEqual(error1, error2)
-
-        let account = UserAccount(id: "test-id", email: "test@example.com", displayName: "Example User")
-        let found1 = AddFriendSheet.SearchState.found(account)
-        let found2 = AddFriendSheet.SearchState.found(account)
-        XCTAssertEqual(found1, found2)
     }
 
-    func test_addFriendSheet_searchState_inequality() {
-        let idle = AddFriendSheet.SearchState.idle
-        let searching = AddFriendSheet.SearchState.searching
-        XCTAssertNotEqual(idle, searching)
-
-        let notFound = AddFriendSheet.SearchState.notFound
-        XCTAssertNotEqual(idle, notFound)
-
-        let error = AddFriendSheet.SearchState.error("Test")
+    func test_addFriendSheet_submissionState_inequality() {
+        let idle = AddFriendSheet.SubmissionState.idle
+        let sending = AddFriendSheet.SubmissionState.sending
+        let error = AddFriendSheet.SubmissionState.error("Test")
+        XCTAssertNotEqual(idle, sending)
         XCTAssertNotEqual(idle, error)
     }
 
-    func test_addFriendSheet_searchState_differentErrors() {
-        let error1 = AddFriendSheet.SearchState.error("Error 1")
-        let error2 = AddFriendSheet.SearchState.error("Error 2")
+    func test_addFriendSheet_submissionState_differentErrors() {
+        let error1 = AddFriendSheet.SubmissionState.error("Error 1")
+        let error2 = AddFriendSheet.SubmissionState.error("Error 2")
         XCTAssertNotEqual(error1, error2)
     }
 
-    func test_addFriendSheet_searchState_differentAccounts() {
-        let account1 = UserAccount(id: "test-id-1", email: "test1@example.com", displayName: "User 1")
-        let account2 = UserAccount(id: "test-id-2", email: "test2@example.com", displayName: "User 2")
+    func test_addFriendSheet_nameModeShowsErrorsButNotEmailProgress() {
+        XCTAssertTrue(
+            AddFriendSheet.shouldShowSubmissionStatus(
+                mode: .byName,
+                state: .error("A friend with this name already exists.")
+            )
+        )
+        XCTAssertFalse(
+            AddFriendSheet.shouldShowSubmissionStatus(mode: .byName, state: .idle)
+        )
+        XCTAssertFalse(
+            AddFriendSheet.shouldShowSubmissionStatus(mode: .byName, state: .sending)
+        )
+    }
 
-        let found1 = AddFriendSheet.SearchState.found(account1)
-        let found2 = AddFriendSheet.SearchState.found(account2)
-        XCTAssertNotEqual(found1, found2)
+    func test_mergeFriends_combinedExpenseCountDeduplicatesAndResolvesAliases() {
+        let sourceId = UUID()
+        let sourceAliasId = UUID()
+        let targetId = UUID()
+        let unrelatedId = UUID()
+        let sharedExpense = Expense(
+            groupId: UUID(),
+            description: "Shared",
+            totalAmount: 30,
+            paidByMemberId: sourceId,
+            involvedMemberIds: [sourceId, targetId],
+            splits: []
+        )
+        let aliasExpense = Expense(
+            groupId: UUID(),
+            description: "Alias",
+            totalAmount: 10,
+            paidByMemberId: sourceAliasId,
+            involvedMemberIds: [sourceAliasId],
+            splits: []
+        )
+        let unrelatedExpense = Expense(
+            groupId: UUID(),
+            description: "Other",
+            totalAmount: 5,
+            paidByMemberId: unrelatedId,
+            involvedMemberIds: [unrelatedId],
+            splits: []
+        )
+
+        let count = MergeFriendsLogic.combinedExpenseCount(
+            expenses: [sharedExpense, aliasExpense, unrelatedExpense],
+            memberIds: [sourceId, targetId]
+        ) { lhs, rhs in
+            lhs == rhs || Set([lhs, rhs]) == Set([sourceId, sourceAliasId])
+        }
+
+        XCTAssertEqual(count, 2)
+    }
+
+    func test_friendNameEditing_removeNicknameIsLimitedToLinkedFriends() {
+        XCTAssertTrue(
+            FriendNameEditingLogic.shouldShowRemoveNickname(
+                isLinked: true,
+                currentNickname: "Nickname"
+            )
+        )
+        XCTAssertFalse(
+            FriendNameEditingLogic.shouldShowRemoveNickname(
+                isLinked: false,
+                currentNickname: "Legacy nickname"
+            )
+        )
+        XCTAssertFalse(
+            FriendNameEditingLogic.shouldShowRemoveNickname(
+                isLinked: true,
+                currentNickname: nil
+            )
+        )
+    }
+
+    func test_friendNameEditing_requiresNonemptyUnlinkedName() {
+        XCTAssertFalse(FriendNameEditingLogic.canSave(isLinked: false, text: "   \n"))
+        XCTAssertTrue(FriendNameEditingLogic.canSave(isLinked: false, text: "New Name"))
+    }
+
+    func test_friendNameEditing_allowsBlankLinkedNicknameForRemoval() {
+        XCTAssertTrue(FriendNameEditingLogic.canSave(isLinked: true, text: ""))
+    }
+
+    func test_friendNameEditing_preservesSpecificPayBackErrors() {
+        let validationError = PayBackError.underlying(message: "Enter a name for this friend.")
+
+        XCTAssertEqual(
+            FriendNameEditingLogic.displayError(from: validationError).errorDescription,
+            validationError.errorDescription
+        )
+        XCTAssertEqual(
+            FriendNameEditingLogic.displayError(from: NSError(domain: "test", code: 1)).errorDescription,
+            PayBackError.networkUnavailable.errorDescription
+        )
     }
 
     // MARK: - ActivityView Tests
@@ -346,6 +422,61 @@ final class UIViewsMinimalTests: XCTestCase {
             • Fix your split values.
             """
         )
+    }
+
+    func test_addExpenseFlowLogic_saveFailureMessage_hidesUnknownCloudDetails() {
+        let error = NSError(
+            domain: "ConvexInternal",
+            code: 500,
+            userInfo: [NSLocalizedDescriptionKey: "mutation failed for private@example.com with token secret-token"]
+        )
+
+        let message = AddExpenseFlowLogic.saveFailureMessage(for: error)
+
+        XCTAssertEqual(message, "We couldn't save this expense. Check your connection and try again.")
+        XCTAssertFalse(message.contains("private@example.com"))
+        XCTAssertFalse(message.contains("secret-token"))
+    }
+
+    func test_addExpenseFlowLogic_saveFailureMessage_preservesSafeDomainMessage() {
+        let message = AddExpenseFlowLogic.saveFailureMessage(for: PayBackError.networkUnavailable)
+
+        XCTAssertEqual(message, PayBackError.networkUnavailable.errorDescription)
+    }
+
+    func test_addExpenseFlowLogic_saveFailureMessage_mapsAllowlistedCloudRejections() {
+        let cases = [
+            (
+                "Server Error: Cannot create direct expense: Member Private Name is not a confirmed friend.",
+                "One or more participants are no longer confirmed friends. Reconnect them and try again."
+            ),
+            (
+                "Server Error: Forbidden: group access denied",
+                "This group is no longer available to you. Go back and refresh your groups."
+            ),
+            (
+                "Server Error: Group not found",
+                "This group is no longer available to you. Go back and refresh your groups."
+            ),
+            (
+                "Server Error: Identity maintenance required: indexed identity migration is not complete; try again later",
+                "PayBack is updating member links. Please wait a moment and try again."
+            )
+        ]
+
+        for (serverMessage, expectedMessage) in cases {
+            let error = NSError(
+                domain: "ConvexError",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: serverMessage]
+            )
+
+            XCTAssertEqual(
+                AddExpenseFlowLogic.saveFailureMessage(for: error),
+                expectedMessage,
+                "Failed to sanitize allowlisted rejection: \(serverMessage)"
+            )
+        }
     }
 
     func test_addExpenseFlowLogic_swipeUpBehavior_showConfirmWhenEnabled() {

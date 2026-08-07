@@ -2,7 +2,7 @@ import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
-import { modules } from "./setup";
+import { modules } from "../test.setup";
 
 function identityFor(email: string, subject: string) {
   return {
@@ -56,6 +56,8 @@ async function seedGroupedIndividualFixture() {
       has_linked_account: true,
       linked_account_id: "alice_auth_id",
       linked_account_email: "alice@example.com",
+      linked_member_id: "alice_member",
+      link_state: "linked",
       status: "accepted",
       updated_at: now
     });
@@ -68,6 +70,7 @@ async function seedGroupedIndividualFixture() {
       has_linked_account: true,
       linked_account_id: "bob_auth_id",
       linked_account_email: "bob@example.com",
+      link_state: "linked",
       status: "accepted",
       updated_at: now
     });
@@ -93,9 +96,10 @@ async function seedGroupedIndividualFixture() {
 function buildGroupedIndividualArgs(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: "grouped_expense_1",
-    context_kind: "grouped_individual",
+    context_kind: "grouped_individual" as const,
     group_id: "11111111-1111-4111-8111-111111111111",
     description: "Team dinner",
+    notes: "Vegetarian option requested",
     date: 1_700_000_000_000,
     total_amount: 90,
     paid_by_member_id: "owner_member",
@@ -142,6 +146,7 @@ test("expenses:create stores grouped_individual expense without group_ref and fa
 
   expect(expense).toBeDefined();
   expect(expense?.context_kind).toBe("grouped_individual");
+  expect(expense?.notes).toBe("Vegetarian option requested");
   expect(expense?.group_id).toBe("11111111-1111-4111-8111-111111111111");
   expect(expense?.group_ref).toBeUndefined();
   expect(expense?.participant_emails).toEqual(
@@ -151,6 +156,46 @@ test("expenses:create stores grouped_individual expense without group_ref and fa
   expect(userExpenses.map((row) => row.user_id).sort()).toEqual(
     ["alice_auth_id", "bob_auth_id", "owner_auth_id"].sort()
   );
+});
+
+test("expenses:create preserves notes when a legacy owner payload omits the field", async () => {
+  const t = await seedGroupedIndividualFixture();
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+  const initialArgs = buildGroupedIndividualArgs();
+
+  await ownerCtx.mutation(api.expenses.create, initialArgs);
+  const { notes: _omittedNotes, ...legacyArgs } = initialArgs;
+  await ownerCtx.mutation(api.expenses.create, {
+    ...legacyArgs,
+    description: "Updated by an older client"
+  });
+
+  const expense = await t.run(async (ctx) =>
+    ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "grouped_expense_1"))
+      .unique()
+  );
+  expect(expense?.notes).toBe("Vegetarian option requested");
+});
+
+test("expenses:create clears notes only when an owner explicitly sends null", async () => {
+  const t = await seedGroupedIndividualFixture();
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+
+  await ownerCtx.mutation(api.expenses.create, buildGroupedIndividualArgs());
+  await ownerCtx.mutation(api.expenses.create, {
+    ...buildGroupedIndividualArgs(),
+    notes: null
+  });
+
+  const expense = await t.run(async (ctx) =>
+    ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "grouped_expense_1"))
+      .unique()
+  );
+  expect(expense?.notes).toBeUndefined();
 });
 
 test("expenses:create rejects grouped_individual expense when caller is not included", async () => {
