@@ -3,17 +3,13 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { internal } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 async function finishScheduled(t: ReturnType<typeof convexTest>) {
-  await (
-    t.finishAllScheduledFunctions as (
-      advanceTimers: () => void,
-      maxIterations: number
-    ) => Promise<void>
-  )(vi.runAllTimers, 100);
+  await finishScheduledFunctions(t);
 }
 
 test("janitor queues resumable cleanup for an orphaned owner", async () => {

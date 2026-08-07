@@ -4,6 +4,7 @@ import { api, internal } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
 import { enqueueOrphanCleanupJob } from "../users";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
 
 function identity(email: string, subject: string) {
   return {
@@ -19,12 +20,7 @@ function identity(email: string, subject: string) {
 }
 
 async function finishScheduled(t: ReturnType<typeof convexTest>) {
-  await (
-    t.finishAllScheduledFunctions as (
-      advanceTimers: () => void,
-      maxIterations: number
-    ) => Promise<void>
-  )(vi.runAllTimers, 250);
+  await finishScheduledFunctions(t, 250);
 }
 
 beforeEach(() => vi.useFakeTimers());

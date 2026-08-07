@@ -87,9 +87,11 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
     var hasLinkedAccount: Bool
     var linkedAccountId: String?
     var linkedAccountEmail: String?
+    var linkedMemberId: UUID?
     var profileImageUrl: String?
     var profileColorHex: String?
     var status: String?
+    var linkState: String?
     var aliasMemberIds: [UUID]?
 
     var id: UUID { memberId }
@@ -204,9 +206,11 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         hasLinkedAccount: Bool = false,
         linkedAccountId: String? = nil,
         linkedAccountEmail: String? = nil,
+        linkedMemberId: UUID? = nil,
         profileImageUrl: String? = nil,
         profileColorHex: String? = nil,
         status: String? = nil,
+        linkState: String? = nil,
         aliasMemberIds: [UUID]? = nil
     ) {
         self.memberId = memberId
@@ -221,9 +225,11 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         self.hasLinkedAccount = hasLinkedAccount
         self.linkedAccountId = linkedAccountId
         self.linkedAccountEmail = linkedAccountEmail
+        self.linkedMemberId = linkedMemberId
         self.profileImageUrl = profileImageUrl
         self.profileColorHex = profileColorHex
         self.status = status
+        self.linkState = linkState
         self.aliasMemberIds = aliasMemberIds
     }
 
@@ -240,9 +246,11 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         case hasLinkedAccount
         case linkedAccountId
         case linkedAccountEmail
+        case linkedMemberId
         case profileImageUrl
         case profileColorHex
         case status
+        case linkState = "link_state"
         case aliasMemberIds = "alias_member_ids"
     }
 
@@ -260,9 +268,11 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         hasLinkedAccount = try container.decode(Bool.self, forKey: .hasLinkedAccount)
         linkedAccountId = try container.decodeIfPresent(String.self, forKey: .linkedAccountId)
         linkedAccountEmail = try container.decodeIfPresent(String.self, forKey: .linkedAccountEmail)
+        linkedMemberId = try container.decodeIfPresent(UUID.self, forKey: .linkedMemberId)
         profileImageUrl = try container.decodeIfPresent(String.self, forKey: .profileImageUrl)
         profileColorHex = try container.decodeIfPresent(String.self, forKey: .profileColorHex)
         status = try container.decodeIfPresent(String.self, forKey: .status)
+        linkState = try container.decodeIfPresent(String.self, forKey: .linkState)
         aliasMemberIds = try container.decodeIfPresent([UUID].self, forKey: .aliasMemberIds)
     }
 
@@ -280,9 +290,11 @@ struct AccountFriend: Identifiable, Codable, Hashable, Sendable {
         try container.encode(hasLinkedAccount, forKey: .hasLinkedAccount)
         try container.encodeIfPresent(linkedAccountId, forKey: .linkedAccountId)
         try container.encodeIfPresent(linkedAccountEmail, forKey: .linkedAccountEmail)
+        try container.encodeIfPresent(linkedMemberId, forKey: .linkedMemberId)
         try container.encodeIfPresent(profileImageUrl, forKey: .profileImageUrl)
         try container.encodeIfPresent(profileColorHex, forKey: .profileColorHex)
         try container.encodeIfPresent(status, forKey: .status)
+        try container.encodeIfPresent(linkState, forKey: .linkState)
         try container.encodeIfPresent(aliasMemberIds, forKey: .aliasMemberIds)
     }
 }

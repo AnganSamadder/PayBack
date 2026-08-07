@@ -6,21 +6,34 @@ import Foundation
 actor MockInviteLinkServiceForTests: InviteLinkService {
     private var tokens: [UUID: InviteToken] = [:]
     private var claims: Set<UUID> = []
+    private var pendingClaimError: Error?
+    private var suspendedClaimError: Error?
+    private var claimAttemptWaiters: [CheckedContinuation<Void, Never>] = []
+    private var claimErrorContinuation: CheckedContinuation<Void, Never>?
+    private var claimAttemptCount = 0
+    private var claimsSuspendedAfterCommit: Set<UUID> = []
+    private var claimCommitWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
+    private var claimResumeContinuations: [UUID: CheckedContinuation<Void, Never>] = [:]
+    private(set) var lastClaimedTokenId: UUID?
+    private(set) var lastClaimMergeLocalFriendMemberId: UUID?
     private let mockCreatorId: String
     private let mockCreatorEmail: String
     private let mockClaimerId: String
     private let mockClaimerEmail: String
+    private let mockClaimerCanonicalMemberId: UUID
 
     init(
         creatorId: String = "test-creator-123",
         creatorEmail: String = "creator@example.com",
         claimerId: String = "test-claimer-456",
-        claimerEmail: String = "claimer@example.com"
+        claimerEmail: String = "claimer@example.com",
+        claimerCanonicalMemberId: UUID = UUID()
     ) {
         self.mockCreatorId = creatorId
         self.mockCreatorEmail = creatorEmail
         self.mockClaimerId = claimerId
         self.mockClaimerEmail = claimerEmail
+        self.mockClaimerCanonicalMemberId = claimerCanonicalMemberId
     }
 
     // MARK: - InviteLinkService Protocol Implementation
@@ -108,9 +121,29 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         )
     }
 
-    func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
+    func claimInviteToken(
+        _ tokenId: UUID,
+        mergeLocalFriendMemberId: UUID?
+    ) async throws -> LinkAcceptResult {
+        claimAttemptCount += 1
+        let attemptWaiters = claimAttemptWaiters
+        claimAttemptWaiters.removeAll()
+        attemptWaiters.forEach { $0.resume() }
+
+        if let error = suspendedClaimError {
+            suspendedClaimError = nil
+            await withCheckedContinuation { continuation in
+                claimErrorContinuation = continuation
+            }
+            throw error
+        }
+
         guard var token = tokens[tokenId] else {
             throw PayBackError.linkInvalid
+        }
+
+        if let pendingClaimError {
+            throw pendingClaimError
         }
 
         // Prevent claiming your own invite in tests that model creator/claimer identity.
@@ -137,9 +170,26 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
         token.claimedAt = now
         tokens[tokenId] = token
         claims.insert(tokenId)
+        lastClaimedTokenId = tokenId
+        lastClaimMergeLocalFriendMemberId = mergeLocalFriendMemberId
 
-        return LinkAcceptResult(
-            linkedMemberId: token.targetMemberId,
+        let waiters = claimCommitWaiters.removeValue(forKey: tokenId) ?? []
+        waiters.forEach { $0.resume() }
+        if claimsSuspendedAfterCommit.contains(tokenId) {
+            await withCheckedContinuation { continuation in
+                claimResumeContinuations[tokenId] = continuation
+            }
+        }
+
+        return claimResult(for: token)
+    }
+
+    private func claimResult(for token: InviteToken) -> LinkAcceptResult {
+        LinkAcceptResult(
+            targetMemberId: token.targetMemberId,
+            canonicalMemberId: mockClaimerCanonicalMemberId,
+            aliasMemberIds: [token.targetMemberId],
+            contractVersion: 2,
             linkedAccountId: mockClaimerId,
             linkedAccountEmail: mockClaimerEmail
         )
@@ -185,6 +235,72 @@ actor MockInviteLinkServiceForTests: InviteLinkService {
     func reset() {
         tokens.removeAll()
         claims.removeAll()
+        pendingClaimError = nil
+        suspendedClaimError = nil
+        claimAttemptWaiters.forEach { $0.resume() }
+        claimAttemptWaiters.removeAll()
+        claimErrorContinuation?.resume()
+        claimErrorContinuation = nil
+        claimAttemptCount = 0
+        claimsSuspendedAfterCommit.removeAll()
+        claimCommitWaiters.values.flatMap { $0 }.forEach { $0.resume() }
+        claimCommitWaiters.removeAll()
+        claimResumeContinuations.values.forEach { $0.resume() }
+        claimResumeContinuations.removeAll()
+        lastClaimedTokenId = nil
+        lastClaimMergeLocalFriendMemberId = nil
+    }
+
+    func setClaimError(_ error: Error?) {
+        pendingClaimError = error
+    }
+
+    func suspendNextClaim(with error: Error) {
+        suspendedClaimError = error
+    }
+
+    func waitUntilClaimAttempted() async {
+        guard claimAttemptCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            claimAttemptWaiters.append(continuation)
+        }
+    }
+
+    func resumeSuspendedClaim() {
+        claimErrorContinuation?.resume()
+        claimErrorContinuation = nil
+    }
+
+    func claimAttempts() -> Int {
+        claimAttemptCount
+    }
+
+    func suspendClaimAfterCommit(_ tokenId: UUID) {
+        claimsSuspendedAfterCommit.insert(tokenId)
+    }
+
+    func waitUntilClaimCommitted(_ tokenId: UUID) async {
+        guard !claims.contains(tokenId) else { return }
+        await withCheckedContinuation { continuation in
+            claimCommitWaiters[tokenId, default: []].append(continuation)
+        }
+    }
+
+    func resumeClaimAfterCommit(_ tokenId: UUID) {
+        claimsSuspendedAfterCommit.remove(tokenId)
+        claimResumeContinuations.removeValue(forKey: tokenId)?.resume()
+    }
+
+    func claimedTokenId() -> UUID? {
+        lastClaimedTokenId
+    }
+
+    func claimedMergeLocalFriendMemberId() -> UUID? {
+        lastClaimMergeLocalFriendMemberId
+    }
+
+    func claimerCanonicalMemberId() -> UUID {
+        mockClaimerCanonicalMemberId
     }
 
     /// Get token for testing (test helper)

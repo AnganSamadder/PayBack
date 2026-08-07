@@ -14,10 +14,13 @@ final class AccountLinkingSecurityTests: XCTestCase {
 
     var inviteLinkService: MockInviteLinkService!
     var linkRequestService: MockLinkRequestService!
+    private let claimerCanonicalMemberId = UUID(uuidString: "75FFBE0E-1F33-42DC-B9A9-83B5DCBB67ED")!
 
     override func setUp() {
         super.setUp()
-        inviteLinkService = MockInviteLinkService()
+        inviteLinkService = MockInviteLinkService(
+            mockAccountMemberId: claimerCanonicalMemberId
+        )
         linkRequestService = MockLinkRequestService()
     }
 
@@ -111,6 +114,10 @@ final class AccountLinkingSecurityTests: XCTestCase {
         let result = try await inviteLinkService.claimInviteToken(inviteLink.token.id)
 
         // Assert
-        XCTAssertEqual(result.linkedMemberId, targetMemberId, "Member ID should be correctly mapped from token")
+        XCTAssertEqual(result.targetMemberId, targetMemberId, "Target member ID should map from the token")
+        XCTAssertEqual(result.canonicalMemberId, claimerCanonicalMemberId)
+        XCTAssertEqual(result.aliasMemberIds, [targetMemberId])
+        XCTAssertEqual(result.contractVersion, 2)
+        XCTAssertEqual(result.linkedMemberId, result.canonicalMemberId)
     }
 }

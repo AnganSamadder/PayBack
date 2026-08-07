@@ -13,26 +13,62 @@ const REVISION_READ_LIMITS = {
 
 export type SyncRevisionKind = "groups" | "expenses";
 
+export type SyncRevisionAccountSets = {
+  groups?: readonly Id<"accounts">[];
+  expenses?: readonly Id<"accounts">[];
+};
+
+export type SyncRevisionBatchBudgetHooks = {
+  chargeQueries?: (count: number) => void;
+  chargeRows?: (rows: readonly Value[]) => void;
+  chargeWrites?: (count: number, bytes: number) => void;
+};
+
+type PreparedSyncRevisionWrite = {
+  existing: Doc<"account_sync_state"> | null;
+  nextValue: Omit<Doc<"account_sync_state">, "_id" | "_creationTime">;
+};
+
+const preparedSyncRevisionBatchBrand: unique symbol = Symbol("PreparedAccountSyncRevisionBatch");
+
+export type PreparedAccountSyncRevisionBatch = {
+  readonly [preparedSyncRevisionBatchBrand]: true;
+  readonly writes: readonly PreparedSyncRevisionWrite[];
+};
+
+export function preparedAccountSyncRevisionBatchMetrics(
+  prepared: PreparedAccountSyncRevisionBatch
+): { writes: number; writeBytes: number } {
+  return {
+    writes: prepared.writes.length,
+    writeBytes: prepared.writes.reduce((total, write) => total + syncRevisionWriteBytes(write), 0)
+  };
+}
+
 type RevisionReadBudget = {
   rows: number;
   queries: number;
   bytes: number;
 };
 
-function chargeRevisionQuery(budget: RevisionReadBudget): void {
+function chargeRevisionQuery(
+  budget: RevisionReadBudget,
+  maxQueries: number = REVISION_READ_LIMITS.queries
+): void {
   budget.queries += 1;
-  if (budget.queries > REVISION_READ_LIMITS.queries) {
+  if (budget.queries > maxQueries) {
     throw new Error("Sync revision read budget exceeded");
   }
 }
 
 function chargeRevisionRows(
   budget: RevisionReadBudget,
-  rows: readonly Doc<"account_sync_state">[]
+  rows: readonly Doc<"account_sync_state">[],
+  maxRows: number = REVISION_READ_LIMITS.rows
 ): void {
   budget.rows += rows.length;
   budget.bytes += rows.reduce<number>((total, row) => total + getConvexSize(row as Value), 0);
-  if (budget.rows > REVISION_READ_LIMITS.rows || budget.bytes > REVISION_READ_LIMITS.bytes) {
+  if (budget.rows > maxRows || budget.bytes > REVISION_READ_LIMITS.bytes) {
     throw new Error("Sync revision read budget exceeded");
   }
 }
@@ -43,56 +79,79 @@ function uniqueAccountIds(accountIds: readonly Id<"accounts">[]): Id<"accounts">
   );
 }
 
+function syncRevisionWriteBytes(write: PreparedSyncRevisionWrite): number {
+  const value = write.existing ? { ...write.existing, ...write.nextValue } : write.nextValue;
+  return getConvexSize(value as Value) + (write.existing ? 0 : 512);
+}
+
+export async function prepareAccountSyncRevisionBatch(
+  ctx: MutationCtx,
+  accounts: SyncRevisionAccountSets,
+  hooks: SyncRevisionBatchBudgetHooks = {},
+  maxAccounts = MAX_SYNC_REVISION_ACCOUNTS
+): Promise<PreparedAccountSyncRevisionBatch> {
+  const groups = new Map(
+    uniqueAccountIds(accounts.groups ?? []).map((accountId) => [String(accountId), accountId])
+  );
+  const expenses = new Map(
+    uniqueAccountIds(accounts.expenses ?? []).map((accountId) => [String(accountId), accountId])
+  );
+  const accountIds = new Map([...groups, ...expenses]);
+  if (accountIds.size > maxAccounts) {
+    throw new Error(`Cannot bump sync revisions for more than ${maxAccounts} accounts`);
+  }
+
+  const budget: RevisionReadBudget = { rows: 0, queries: 0, bytes: 0 };
+  const now = Date.now();
+  const writes: PreparedSyncRevisionWrite[] = [];
+  for (const [key, accountId] of accountIds) {
+    chargeRevisionQuery(budget, maxAccounts);
+    hooks.chargeQueries?.(1);
+    const matches = await ctx.db
+      .query("account_sync_state")
+      .withIndex("by_account_id", (query) => query.eq("account_id", accountId))
+      .take(2);
+    chargeRevisionRows(budget, matches, maxAccounts * 2);
+    hooks.chargeRows?.(matches as Value[]);
+    if (matches.length > 1) {
+      throw new Error(`Sync maintenance required: duplicate account state ${String(accountId)}`);
+    }
+    const existing = matches[0] ?? null;
+    writes.push({
+      existing,
+      nextValue: {
+        account_id: accountId,
+        groups_revision: (existing?.groups_revision ?? 0) + (groups.has(key) ? 1 : 0),
+        expenses_revision: (existing?.expenses_revision ?? 0) + (expenses.has(key) ? 1 : 0),
+        updated_at: now
+      }
+    });
+  }
+  hooks.chargeWrites?.(
+    writes.length,
+    writes.reduce((total, write) => total + syncRevisionWriteBytes(write), 0)
+  );
+  return { [preparedSyncRevisionBatchBrand]: true, writes };
+}
+
+export async function applyPreparedAccountSyncRevisionBatch(
+  ctx: MutationCtx,
+  prepared: PreparedAccountSyncRevisionBatch
+): Promise<number> {
+  for (const write of prepared.writes) {
+    if (write.existing) await ctx.db.patch(write.existing._id, write.nextValue);
+    else await ctx.db.insert("account_sync_state", write.nextValue);
+  }
+  return prepared.writes.length;
+}
+
 export async function bumpAccountSyncRevisions(
   ctx: MutationCtx,
   accountIds: readonly Id<"accounts">[],
   kind: SyncRevisionKind
 ): Promise<number> {
-  const uniqueIds = uniqueAccountIds(accountIds);
-  if (uniqueIds.length > MAX_SYNC_REVISION_ACCOUNTS) {
-    throw new Error(
-      `Cannot bump sync revisions for more than ${MAX_SYNC_REVISION_ACCOUNTS} accounts`
-    );
-  }
-  if (uniqueIds.length === 0) return 0;
-
-  const budget: RevisionReadBudget = { rows: 0, queries: 0, bytes: 0 };
-  const states: Array<{
-    accountId: Id<"accounts">;
-    existing: Doc<"account_sync_state"> | null;
-  }> = [];
-  for (const accountId of uniqueIds) {
-    chargeRevisionQuery(budget);
-    const matches = await ctx.db
-      .query("account_sync_state")
-      .withIndex("by_account_id", (query) => query.eq("account_id", accountId))
-      .take(2);
-    chargeRevisionRows(budget, matches);
-    if (matches.length > 1) {
-      throw new Error(`Sync maintenance required: duplicate account state ${String(accountId)}`);
-    }
-    states.push({ accountId, existing: matches[0] ?? null });
-  }
-
-  const now = Date.now();
-  for (const { accountId, existing } of states) {
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        groups_revision: existing.groups_revision + (kind === "groups" ? 1 : 0),
-        expenses_revision: existing.expenses_revision + (kind === "expenses" ? 1 : 0),
-        updated_at: now
-      });
-    } else {
-      await ctx.db.insert("account_sync_state", {
-        account_id: accountId,
-        groups_revision: kind === "groups" ? 1 : 0,
-        expenses_revision: kind === "expenses" ? 1 : 0,
-        updated_at: now
-      });
-    }
-  }
-
-  return uniqueIds.length;
+  const prepared = await prepareAccountSyncRevisionBatch(ctx, { [kind]: accountIds });
+  return await applyPreparedAccountSyncRevisionBatch(ctx, prepared);
 }
 
 export async function isSyncMaterializationReady(

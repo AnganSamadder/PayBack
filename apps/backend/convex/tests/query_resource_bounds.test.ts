@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
 
 function identity(email: string, subject: string) {
   return {
@@ -89,7 +90,11 @@ test("friend merge rejects aggregate friend-row bytes before writing", async () 
 
 type ClaimChannel = "invite" | "request";
 
-async function setupAggregateClaimFixture(channel: ClaimChannel, largeFriendCount: number) {
+async function setupAggregateClaimFixture(
+  channel: ClaimChannel,
+  largeFriendCount: number,
+  numericPayloadLength = 70_000
+) {
   const t = convexTest(schema, modules);
   const now = Date.now();
   const creatorEmail = "claim-creator@example.com";
@@ -158,7 +163,7 @@ async function setupAggregateClaimFixture(channel: ClaimChannel, largeFriendCoun
       updated_at: now
     });
 
-    const numericPayload = Array.from({ length: 70_000 }, (_, index) => index);
+    const numericPayload = Array.from({ length: numericPayloadLength }, (_, index) => index);
     for (let index = 0; index < 3; index += 1) {
       await ctx.db.insert("expenses", {
         id: `claim_reference_expense_${index}`,
@@ -245,9 +250,9 @@ async function runAggregateClaim(
 }
 
 test.each<ClaimChannel>(["invite", "request"])(
-  "%s claim accepts aggregate reads immediately below the exact-byte budget",
+  "%s claim accepts work below the full transaction budget",
   async (channel) => {
-    const fixture = await setupAggregateClaimFixture(channel, 3);
+    const fixture = await setupAggregateClaimFixture(channel, 2, 20_000);
 
     await expect(runAggregateClaim(fixture, channel)).resolves.toMatchObject({
       canonical_member_id: fixture.canonicalMemberId,
@@ -291,7 +296,7 @@ test.each<ClaimChannel>(["invite", "request"])(
 );
 
 test.each<ClaimChannel>(["invite", "request"])(
-  "%s claim rejects aggregate reads above the exact-byte budget without any writes",
+  "%s claim rejects work above the full transaction budget without any writes",
   async (channel) => {
     const fixture = await setupAggregateClaimFixture(channel, 4);
 
@@ -913,7 +918,7 @@ test("friends:clearAllForUser deletes in bounded resumable batches", async () =>
       })
     );
 
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await finishScheduledFunctions(t);
     const afterContinuation = await t.run((ctx) =>
       ctx.db
         .query("account_friends")

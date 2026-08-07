@@ -4,6 +4,7 @@ import { api, internal } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
 import { enqueueOrphanCleanupJob } from "../users";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
 
 function adminIdentity() {
   return {
@@ -36,12 +37,7 @@ describe("Hard Delete Cleanup", () => {
   afterEach(() => vi.useRealTimers());
 
   async function finishScheduled(t: ReturnType<typeof convexTest>) {
-    await (
-      t.finishAllScheduledFunctions as (
-        advanceTimers: () => void,
-        maxIterations: number
-      ) => Promise<void>
-    )(vi.runAllTimers, 2_000);
+    await finishScheduledFunctions(t, 2_000);
   }
 
   test("admin missing-account cleanup resumes orphan deletion", async () => {
@@ -984,12 +980,7 @@ describe("Hard Delete Cleanup", () => {
         mode: "hard"
       });
     });
-    await (
-      t.finishAllScheduledFunctions as (
-        advanceTimers: () => void,
-        maxIterations: number
-      ) => Promise<void>
-    )(vi.runAllTimers, 1_000);
+    await finishScheduledFunctions(t, 1_000);
 
     expect(await t.run((ctx) => ctx.db.query("account_friends").collect())).toEqual([]);
     expect(await t.run((ctx) => ctx.db.query("member_aliases").collect())).toEqual([]);

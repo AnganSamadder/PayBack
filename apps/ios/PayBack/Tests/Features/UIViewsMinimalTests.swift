@@ -149,6 +149,31 @@ final class UIViewsMinimalTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
+    func test_mergeFriends_reconciledSelectionClearsIneligibleFriend() {
+        let selected = AccountFriend(memberId: UUID(), name: "Selected", status: "friend")
+        let eligible = AccountFriend(memberId: UUID(), name: "Eligible", status: "friend")
+
+        let reconciled = MergeFriendsLogic.reconciledSelection(
+            selected,
+            eligibleFriends: [eligible]
+        )
+
+        XCTAssertNil(reconciled)
+    }
+
+    func test_mergeFriends_reconciledSelectionRefreshesEligibleFriend() {
+        let memberId = UUID()
+        let selected = AccountFriend(memberId: memberId, name: "Old Name", status: "friend")
+        let refreshed = AccountFriend(memberId: memberId, name: "New Name", status: "friend")
+
+        let reconciled = MergeFriendsLogic.reconciledSelection(
+            selected,
+            eligibleFriends: [refreshed]
+        )
+
+        XCTAssertEqual(reconciled, refreshed)
+    }
+
     func test_friendNameEditing_removeNicknameIsLimitedToLinkedFriends() {
         XCTAssertTrue(
             FriendNameEditingLogic.shouldShowRemoveNickname(

@@ -17,6 +17,44 @@ function authIdentity(email: string, subject: string) {
   };
 }
 
+async function setupInvitePreviewFixture(
+  t: ReturnType<typeof convexTest>,
+  inviteId: string,
+  localAliasMemberIds: string[] = []
+) {
+  const now = Date.now();
+  return await t.run(async (ctx) => {
+    const creatorId = await ctx.db.insert("accounts", {
+      id: "creator_auth",
+      email: "creator@example.com",
+      display_name: "Creator",
+      created_at: now,
+      member_id: "creator_member"
+    });
+    const targetFriendId = await ctx.db.insert("account_friends", {
+      account_email: "creator@example.com",
+      member_id: "preview_target",
+      local_alias_member_ids: localAliasMemberIds,
+      name: "Target",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      link_state: "unlinked",
+      updated_at: now
+    });
+    await ctx.db.insert("invite_tokens", {
+      id: inviteId,
+      creator_id: "creator_auth",
+      creator_email: "creator@example.com",
+      target_member_id: "preview_target",
+      target_friend_id: targetFriendId,
+      target_member_name: "Target",
+      created_at: now,
+      expires_at: now + 60_000
+    });
+    return { creatorId, now };
+  });
+}
+
 test("bulk import cannot link accounts or grant historical expense visibility", async () => {
   const t = convexTest(schema, modules);
 
@@ -617,6 +655,112 @@ test.each(["invite", "link request"] as const)(
     expect(await t.run((ctx) => ctx.db.query("member_aliases").collect())).toEqual([]);
   }
 );
+
+test("invite claim defers stale cleanup fence deletion until preflight succeeds", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const fenceId = await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "stale_fence_creator_auth",
+      email: "stale-fence-creator@example.com",
+      display_name: "Creator",
+      created_at: now,
+      member_id: "stale_fence_creator_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "stale_fence_claimer_auth",
+      email: "stale-fence-claimer@example.com",
+      display_name: "Claimer",
+      created_at: now,
+      member_id: "stale_fence_claimer_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+    const targetFriendId = await ctx.db.insert("account_friends", {
+      account_email: "stale-fence-creator@example.com",
+      member_id: "stale_fence_legacy_member",
+      name: "Claimer",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      link_state: "unlinked",
+      status: "manual",
+      updated_at: now
+    });
+    await ctx.db.insert("invite_tokens", {
+      id: "stale_fence_invite",
+      creator_id: "stale_fence_creator_auth",
+      creator_email: "stale-fence-creator@example.com",
+      target_member_id: "stale_fence_legacy_member",
+      target_friend_id: targetFriendId,
+      target_member_name: "Claimer",
+      created_at: now,
+      expires_at: now + 60_000
+    });
+    const jobId = await ctx.db.insert("orphan_cleanup_jobs", {
+      email: "stale-orphan@example.com",
+      subject: "stale_orphan_auth",
+      member_ids: ["stale_fence_legacy_member"],
+      mode: "hard",
+      status: "complete",
+      processed_count: 1,
+      retry_count: 0,
+      member_fence_complete: true,
+      created_at: now,
+      updated_at: now
+    });
+    return await ctx.db.insert("orphan_cleanup_member_fences", {
+      job_id: jobId,
+      member_id: "stale_fence_legacy_member",
+      generation: 0,
+      created_at: now
+    });
+  });
+
+  const claimer = t.withIdentity(
+    authIdentity("stale-fence-claimer@example.com", "stale_fence_claimer_auth")
+  );
+  await expect(
+    claimer.mutation(api.inviteTokens.claim, { id: "stale_fence_invite" })
+  ).resolves.toMatchObject({ canonical_member_id: "stale_fence_claimer_member" });
+
+  const state = await t.run(async (ctx) => ({
+    fence: await ctx.db.get(fenceId),
+    token: await ctx.db
+      .query("invite_tokens")
+      .withIndex("by_client_id", (q) => q.eq("id", "stale_fence_invite"))
+      .unique(),
+    claimer: await ctx.db
+      .query("accounts")
+      .withIndex("by_auth_id", (q) => q.eq("id", "stale_fence_claimer_auth"))
+      .unique(),
+    targetFriend: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q
+          .eq("account_email", "stale-fence-creator@example.com")
+          .eq("member_id", "stale_fence_legacy_member")
+      )
+      .unique(),
+    aliases: await ctx.db.query("member_aliases").collect()
+  }));
+  expect(state.fence).toBeNull();
+  expect(state.token?.claimed_by).toBe("stale_fence_claimer_auth");
+  expect(state.claimer?.alias_member_ids).toContain("stale_fence_legacy_member");
+  expect(state.targetFriend).toMatchObject({
+    has_linked_account: true,
+    link_state: "linked"
+  });
+  expect(state.aliases).toMatchObject([
+    {
+      alias_member_id: "stale_fence_legacy_member",
+      canonical_member_id: "stale_fence_claimer_member"
+    }
+  ]);
+});
 
 test("friends:upsert cannot create linked metadata from a client payload", async () => {
   const t = convexTest(schema, modules);
@@ -1532,6 +1676,316 @@ test("unauthenticated invite validation omits foreign expense and group previews
   expect(result.token).not.toHaveProperty("claimed_by");
 }, 30_000);
 
+test("invite validation includes alias-only history across legacy owner indexes", async () => {
+  const t = convexTest(schema, modules);
+  const { creatorId, now } = await setupInvitePreviewFixture(t, "alias_only_preview", [
+    "preview_target_alias"
+  ]);
+
+  await t.run(async (ctx) => {
+    const group = await ctx.db.insert("groups", {
+      id: "alias_group",
+      name: "Alias Group",
+      members: [
+        { id: "creator_member", name: "Creator", is_current_user: true },
+        { id: "preview_target_alias", name: "Target" }
+      ],
+      owner_email: "creator@example.com",
+      owner_account_id: "creator_auth",
+      owner_id: creatorId,
+      created_at: now,
+      updated_at: now
+    });
+    await ctx.db.insert("expenses", {
+      id: "alias_only_expense",
+      group_id: "alias_group",
+      group_ref: group,
+      description: "Alias-only dinner",
+      date: now,
+      total_amount: 20,
+      paid_by_member_id: "creator_member",
+      involved_member_ids: ["creator_member", "preview_target_alias"],
+      splits: [
+        { id: "creator_split", member_id: "creator_member", amount: 5, is_settled: false },
+        {
+          id: "alias_split",
+          member_id: "preview_target_alias",
+          amount: 15,
+          is_settled: false
+        }
+      ],
+      is_settled: false,
+      owner_email: "creator@example.com",
+      owner_account_id: "creator_auth",
+      owner_id: creatorId,
+      participant_member_ids: ["creator_member", "preview_target_alias"],
+      participants: [
+        { member_id: "creator_member", name: "Creator" },
+        { member_id: "preview_target_alias", name: "Target" }
+      ],
+      participant_emails: ["creator@example.com"],
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  const result = await t.query(api.inviteTokens.validate, { id: "alias_only_preview" });
+  expect(result).toMatchObject({
+    is_valid: true,
+    expense_preview: {
+      expense_count: 1,
+      group_names: ["Alias Group"],
+      total_balance: -15
+    }
+  });
+});
+
+test("invite validation aggregates every unsettled canonical and alias split", async () => {
+  const t = convexTest(schema, modules);
+  const { creatorId, now } = await setupInvitePreviewFixture(t, "mixed_split_preview", [
+    "preview_target_alias"
+  ]);
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("expenses", {
+      id: "mixed_split_expense",
+      group_id: "mixed_split_group",
+      description: "Mixed identity dinner",
+      date: now,
+      total_amount: 40,
+      paid_by_member_id: "creator_member",
+      involved_member_ids: ["creator_member", "preview_target", "preview_target_alias"],
+      splits: [
+        { id: "creator_split", member_id: "creator_member", amount: 5, is_settled: false },
+        { id: "canonical_split", member_id: "preview_target", amount: 10, is_settled: false },
+        {
+          id: "alias_unsettled_split",
+          member_id: "preview_target_alias",
+          amount: 20,
+          is_settled: false
+        },
+        {
+          id: "alias_settled_split",
+          member_id: "preview_target_alias",
+          amount: 5,
+          is_settled: true
+        }
+      ],
+      is_settled: false,
+      owner_email: "creator@example.com",
+      owner_account_id: "creator_auth",
+      owner_id: creatorId,
+      participant_member_ids: ["creator_member", "preview_target", "preview_target_alias"],
+      participants: [
+        { member_id: "creator_member", name: "Creator" },
+        { member_id: "preview_target", name: "Target" },
+        { member_id: "preview_target_alias", name: "Target Alias" }
+      ],
+      participant_emails: ["creator@example.com"],
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  const result = await t.query(api.inviteTokens.validate, { id: "mixed_split_preview" });
+  expect(result.expense_preview).toMatchObject({ expense_count: 1, total_balance: -30 });
+});
+
+test("invite validation dedupes expenses returned by multiple creator owner indexes", async () => {
+  const t = convexTest(schema, modules);
+  const { creatorId, now } = await setupInvitePreviewFixture(t, "deduped_owner_preview");
+
+  await t.run(async (ctx) => {
+    const insertExpense = async (id: string, amount: number, settledAmount = 0) => {
+      await ctx.db.insert("expenses", {
+        id,
+        group_id: "owner_index_group",
+        description: id,
+        date: now,
+        total_amount: amount,
+        paid_by_member_id: "preview_target",
+        involved_member_ids: ["preview_target", "creator_member"],
+        splits: [
+          { id: `${id}_split`, member_id: "creator_member", amount, is_settled: false },
+          {
+            id: `${id}_settled_split`,
+            member_id: "creator_member",
+            amount: settledAmount,
+            is_settled: true
+          }
+        ],
+        is_settled: false,
+        owner_email: "creator@example.com",
+        owner_account_id: "creator_auth",
+        owner_id: creatorId,
+        participant_member_ids: ["preview_target", "creator_member"],
+        participants: [
+          { member_id: "preview_target", name: "Target" },
+          { member_id: "creator_member", name: "Creator" }
+        ],
+        participant_emails: ["creator@example.com"],
+        created_at: now,
+        updated_at: now
+      });
+    };
+
+    await insertExpense("all_owner_indexes", 4, 100);
+    await insertExpense("second_all_owner_indexes", 6);
+  });
+
+  const result = await t.query(api.inviteTokens.validate, { id: "deduped_owner_preview" });
+  expect(result.expense_preview).toMatchObject({ expense_count: 2, total_balance: 10 });
+});
+
+test("invite validation excludes expenses and groups with conflicting owner tuples", async () => {
+  const t = convexTest(schema, modules);
+  const { creatorId, now } = await setupInvitePreviewFixture(t, "conflicting_owner_preview");
+
+  await t.run(async (ctx) => {
+    const visibleGroup = await ctx.db.insert("groups", {
+      id: "visible_group",
+      name: "Visible Group",
+      members: [
+        { id: "creator_member", name: "Creator", is_current_user: true },
+        { id: "preview_target", name: "Target" }
+      ],
+      owner_email: "creator@example.com",
+      owner_account_id: "creator_auth",
+      owner_id: creatorId,
+      created_at: now,
+      updated_at: now
+    });
+    const conflictingGroup = await ctx.db.insert("groups", {
+      id: "conflicting_group",
+      name: "Foreign Secret Group",
+      members: [
+        { id: "foreign_member", name: "Foreign", is_current_user: true },
+        { id: "preview_target", name: "Target" }
+      ],
+      owner_email: "foreign@example.com",
+      owner_account_id: "foreign_auth",
+      owner_id: creatorId,
+      created_at: now,
+      updated_at: now
+    });
+
+    const insertExpense = async (
+      id: string,
+      groupId: string,
+      groupRef: typeof visibleGroup,
+      amount: number,
+      ownerEmail: string,
+      ownerAccountId: string
+    ) => {
+      await ctx.db.insert("expenses", {
+        id,
+        group_id: groupId,
+        group_ref: groupRef,
+        description: id,
+        date: now,
+        total_amount: amount,
+        paid_by_member_id: "preview_target",
+        involved_member_ids: ["preview_target", "creator_member"],
+        splits: [{ id: `${id}_split`, member_id: "creator_member", amount, is_settled: false }],
+        is_settled: false,
+        owner_email: ownerEmail,
+        owner_account_id: ownerAccountId,
+        owner_id: creatorId,
+        participant_member_ids: ["preview_target", "creator_member"],
+        participants: [
+          { member_id: "preview_target", name: "Target" },
+          { member_id: "creator_member", name: "Creator" }
+        ],
+        participant_emails: [ownerEmail],
+        created_at: now,
+        updated_at: now
+      });
+    };
+
+    await insertExpense(
+      "visible_expense",
+      "visible_group",
+      visibleGroup,
+      5,
+      "creator@example.com",
+      "creator_auth"
+    );
+    await insertExpense(
+      "conflicting_expense",
+      "conflicting_group",
+      conflictingGroup,
+      100,
+      "foreign@example.com",
+      "foreign_auth"
+    );
+  });
+
+  const result = await t.query(api.inviteTokens.validate, { id: "conflicting_owner_preview" });
+  expect(result.expense_preview).toEqual({
+    expense_count: 1,
+    group_names: ["Visible Group"],
+    total_balance: 5
+  });
+  expect(JSON.stringify(result)).not.toContain("Foreign Secret Group");
+});
+
+test("invite validation omits preview when the target alias closure exceeds the claim cap", async () => {
+  const t = convexTest(schema, modules);
+  await setupInvitePreviewFixture(
+    t,
+    "oversized_alias_preview",
+    Array.from({ length: 257 }, (_, index) => `preview_alias_${index}`)
+  );
+
+  const result = await t.query(api.inviteTokens.validate, { id: "oversized_alias_preview" });
+  expect(result).toMatchObject({ is_valid: true, expense_preview: null });
+});
+
+test("invite validation omits preview before numeric-heavy documents exceed its byte budget", async () => {
+  const t = convexTest(schema, modules);
+  const { creatorId, now } = await setupInvitePreviewFixture(t, "byte_bounded_preview");
+  const numericSubexpenses = Array.from({ length: 4_000 }, (_, index) => ({
+    id: `numeric_component_${index}`,
+    amount: 9_007_199_254_000 - index
+  }));
+
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 11; index += 1) {
+      await ctx.db.insert("expenses", {
+        id: `numeric_heavy_expense_${index}`,
+        group_id: "numeric_heavy_group",
+        description: `Numeric-heavy expense ${index}`,
+        notes: "x".repeat(600_000),
+        date: now,
+        total_amount: 1,
+        paid_by_member_id: "preview_target",
+        involved_member_ids: ["preview_target"],
+        splits: [
+          {
+            id: `numeric_heavy_split_${index}`,
+            member_id: "preview_target",
+            amount: 1,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "creator@example.com",
+        owner_account_id: "creator_auth",
+        owner_id: creatorId,
+        participant_member_ids: ["preview_target"],
+        participants: [{ member_id: "preview_target", name: "Target" }],
+        participant_emails: ["creator@example.com"],
+        subexpenses: numericSubexpenses,
+        created_at: now,
+        updated_at: now
+      });
+    }
+  });
+
+  const result = await t.query(api.inviteTokens.validate, { id: "byte_bounded_preview" });
+  expect(result).toMatchObject({ is_valid: true, expense_preview: null });
+}, 30_000);
+
 test("unauthenticated invite validation omits preview when creator expense scope exceeds its cap", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
@@ -1651,7 +2105,7 @@ test("invite claim fails atomically when legacy friend lookup exceeds its bound"
   });
   await expect(
     claimer.mutation(api.inviteTokens.claim, { id: "bounded_lookup_invite" })
-  ).rejects.toThrow("too many friend identities");
+  ).rejects.toThrow("Friend merge is too large to complete safely");
 
   const state = await t.run(async (ctx) => ({
     token: await ctx.db

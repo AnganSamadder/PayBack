@@ -189,10 +189,10 @@ struct GroupDetailView: View {
     private func expenseRow(_ exp: Expense) -> some View {
         let otherSplits = exp.splits.filter { !isMe($0.memberId) }
         let allOthersSettled = !otherSplits.isEmpty && otherSplits.allSatisfy(\.isSettled)
-        let mySplits = exp.splits.filter { isMe($0.memberId) }
+        let mySplitSummary = SettlementAmountLogic.identitySummary(for: exp, matchesIdentity: isMe)
         let mySettled = isMe(exp.paidByMemberId)
             ? allOthersSettled
-            : !mySplits.isEmpty && mySplits.allSatisfy(\.isSettled)
+            : mySplitSummary.isFullySettled
 
         return HStack {
             VStack(alignment: .leading) {
@@ -234,13 +234,13 @@ struct GroupDetailView: View {
                             .font(.caption)
                             .foregroundStyle(.green)
                     }
-                } else if let mySplit = exp.splits.first(where: { isMe($0.memberId) }) {
-                    if mySplit.isSettled {
-                        Text("You paid \(currency(mySplit.amount))")
+                } else if mySplitSummary.hasMatchingSplits {
+                    if mySplitSummary.isFullySettled {
+                        Text("You paid \(currency(mySplitSummary.relationshipAmount))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("You owe \(currency(mySplit.amount))")
+                        Text("You owe \(currency(mySplitSummary.relationshipAmount))")
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
@@ -302,9 +302,10 @@ struct GroupDetailView: View {
             }
 
             // If member owes money (their split is not settled), debit them
-            if let split = exp.splits.first(where: { isMemberMatch($0.memberId, member) }), !split.isSettled {
-                owes += split.amount
+            let splitSummary = SettlementAmountLogic.identitySummary(for: exp) {
+                isMemberMatch($0, member)
             }
+            owes += splitSummary.unsettledAmount
         }
         return paidByMember - owes
     }
@@ -321,8 +322,7 @@ struct GroupDetailView: View {
         return expenses.contains { exp in
             // I owe someone: unsettled split in an expense I didn't pay
             if !isMe(exp.paidByMemberId),
-               let split = exp.splits.first(where: { isMe($0.memberId) }),
-               !split.isSettled {
+               SettlementAmountLogic.identitySummary(for: exp, matchesIdentity: isMe).unsettledAmount > 0 {
                 return true
             }
             // Someone owes me: I paid and others still have unsettled splits

@@ -1,6 +1,12 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
+import {
+  accountMergeQueriesForLimit,
+  assertMergeIdentityMaterializationReady,
+  createMergeReadBudget,
+  findBudgetedManualMergeAccount
+} from "../aliases";
 import schema from "../schema";
 import { modules } from "../test.setup";
 
@@ -43,6 +49,7 @@ type FriendEligibilityOverrides = {
 type EligibilityScenarioOptions = {
   omitSource?: boolean;
   sourceIdentity?: "registered" | "account_alias";
+  sourceAliases?: string[];
   targetAliases?: string[];
   identityStatus?: "pending" | "ready";
 };
@@ -131,6 +138,7 @@ async function createEligibilityScenario(
         linked_account_id: source.linked ? "source_linked_auth" : undefined,
         linked_account_email: source.linked ? "source-linked@test.com" : undefined,
         linked_member_id: source.linked ? "source_linked_member" : undefined,
+        local_alias_member_ids: options.sourceAliases,
         status: source.status,
         link_state: source.linkState,
         updated_at: now
@@ -187,6 +195,210 @@ describe("mergeUnlinkedFriends eligibility", () => {
     await expect(
       mergeEligibilityScenario({}, {}, undefined, { identityStatus: "pending" })
     ).rejects.toThrow("Identity maintenance required");
+  });
+
+  test("bounds the legacy normalized friend fallback before any writes", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "owner_auth",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: now,
+        member_id: "owner_member"
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: now
+      });
+      for (let index = 0; index < 255; index += 1) {
+        await ctx.db.insert("account_friends", {
+          account_email: "owner@test.com",
+          member_id: `unrelated_${index}`,
+          name: `Unrelated ${index}`,
+          profile_avatar_color: "#333333",
+          has_linked_account: false,
+          updated_at: now
+        });
+      }
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@test.com",
+        member_id: "LEGACY_TARGET",
+        name: "Legacy Target",
+        profile_avatar_color: "#111111",
+        has_linked_account: false,
+        updated_at: now
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@test.com",
+        member_id: "local_source",
+        name: "Local Source",
+        profile_avatar_color: "#222222",
+        has_linked_account: false,
+        updated_at: now
+      });
+    });
+
+    const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+    await expect(
+      ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        friendId1: "legacy_target",
+        friendId2: "local_source"
+      })
+    ).rejects.toThrow("too large");
+
+    const friends = await t.run(async (ctx) =>
+      ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", "owner@test.com"))
+        .collect()
+    );
+    expect(friends).toHaveLength(257);
+    expect(friends.some((friend) => friend.member_id === "LEGACY_TARGET")).toBe(true);
+    expect(friends.some((friend) => friend.member_id === "local_source")).toBe(true);
+  });
+
+  test("bounds the owner conflict scan before canonical reference rewrites", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+
+    await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "owner_auth",
+        email: "owner@test.com",
+        display_name: "Owner",
+        created_at: now,
+        member_id: "owner_member"
+      });
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: now
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@test.com",
+        member_id: "canonical_friend",
+        name: "Canonical",
+        profile_avatar_color: "#111111",
+        has_linked_account: false,
+        updated_at: now
+      });
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@test.com",
+        member_id: "local_source",
+        name: "Local Source",
+        profile_avatar_color: "#222222",
+        has_linked_account: false,
+        updated_at: now
+      });
+      for (let index = 0; index < 255; index += 1) {
+        await ctx.db.insert("account_friends", {
+          account_email: "owner@test.com",
+          member_id: `unrelated_${index}`,
+          name: `Unrelated ${index}`,
+          profile_avatar_color: "#333333",
+          has_linked_account: false,
+          updated_at: now
+        });
+      }
+      await ctx.db.insert("groups", {
+        id: "owned_group",
+        name: "Owned Group",
+        members: [
+          { id: "owner_member", name: "Owner", is_current_user: true },
+          { id: "local_source", name: "Local Source" }
+        ],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: ownerId,
+        created_at: now,
+        updated_at: now
+      });
+    });
+
+    const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+    await expect(
+      ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        friendId1: "canonical_friend",
+        friendId2: "local_source"
+      })
+    ).rejects.toThrow("too large");
+
+    const snapshot = await t.run(async (ctx) => ({
+      friends: await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email", (q) => q.eq("account_email", "owner@test.com"))
+        .collect(),
+      group: await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", "owned_group"))
+        .unique()
+    }));
+    expect(snapshot.friends).toHaveLength(257);
+    expect(snapshot.group?.members.map((member) => member.id)).toContain("local_source");
+    expect(snapshot.group?.members.map((member) => member.id)).not.toContain("canonical_friend");
+  });
+
+  test("stops the owner conflict scan at the friend-record boundary", async () => {
+    const { t } = await createEligibilityScenario();
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let index = 0; index < 300; index += 1) {
+        await ctx.db.insert("account_friends", {
+          account_email: "owner@test.com",
+          member_id: `unrelated_boundary_${index}`,
+          name: `Unrelated ${index}`,
+          profile_avatar_color: "#333333",
+          has_linked_account: false,
+          updated_at: now
+        });
+      }
+    });
+
+    const { createMergeReadBudget, mergeAccountFriendIntoCanonicalInternal } =
+      await import("../aliases");
+    const budget = await t.run(async (ctx) => {
+      const readBudget = createMergeReadBudget();
+      try {
+        await mergeAccountFriendIntoCanonicalInternal(ctx, {
+          accountEmail: "owner@test.com",
+          sourceMemberId: "local_alias",
+          targetMemberId: "canonical_friend",
+          readBudget
+        });
+      } catch {
+        return readBudget;
+      }
+      throw new Error("expected merge to exceed the friend-record boundary");
+    });
+
+    expect(budget.scannedRows).toBeLessThanOrEqual(265);
+  });
+
+  test("charges manual-merge account and materialization pre-reads to one budget", async () => {
+    const { t } = await createEligibilityScenario();
+    const budget = createMergeReadBudget();
+    budget.queryWork = 4094;
+    const user = await t.run((ctx) =>
+      findBudgetedManualMergeAccount(
+        ctx,
+        { subject: "owner_auth", email: "owner@test.com" },
+        budget
+      )
+    );
+    expect(user.id).toBe("owner_auth");
+    expect(budget.queryWork).toBe(4095);
+
+    await t.run((ctx) => assertMergeIdentityMaterializationReady(ctx, budget));
+    expect(budget.queryWork).toBe(4096);
+    expect(() => accountMergeQueriesForLimit(budget, 1)).toThrow(
+      "Friend merge is too large to complete safely"
+    );
   });
 
   test.each(["pending", " ReJeCtEd ", "request_sent", "request_received", "ghost"])(
@@ -333,6 +545,67 @@ describe("mergeUnlinkedFriends eligibility", () => {
         friendId2: "local_alias"
       })
     ).resolves.toMatchObject({ success: true });
+  });
+
+  test("allows the local alias result at the supported boundary", async () => {
+    const targetAliases = Array.from({ length: 255 }, (_, index) => `target_alias_${index}`);
+    const { ownerCtx, t } = await createEligibilityScenario({}, {}, undefined, { targetAliases });
+
+    await expect(
+      ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        friendId1: "canonical_friend",
+        friendId2: "local_alias"
+      })
+    ).resolves.toMatchObject({ success: true });
+
+    const target = await t.run(async (ctx) =>
+      ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", "owner@test.com").eq("member_id", "canonical_friend")
+        )
+        .unique()
+    );
+    expect(target?.local_alias_member_ids).toHaveLength(256);
+  });
+
+  test("rejects an over-cap local alias result without deleting the source", async () => {
+    const targetAliases = Array.from({ length: 256 }, (_, index) => `target_alias_${index}`);
+    const { ownerCtx, t } = await createEligibilityScenario({}, {}, undefined, { targetAliases });
+
+    await expect(
+      ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        friendId1: "canonical_friend",
+        friendId2: "local_alias"
+      })
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
+    const target = friends.find((friend) => friend.member_id === "canonical_friend");
+    expect(target?.local_alias_member_ids).toEqual(targetAliases);
+    expect(friends.some((friend) => friend.member_id === "local_alias")).toBe(true);
+  });
+
+  test("rejects an over-cap source closure before canonicalization writes", async () => {
+    const sourceAliases = Array.from({ length: 257 }, (_, index) => `source_alias_${index}`);
+    const { ownerCtx, t } = await createEligibilityScenario({}, {}, undefined, { sourceAliases });
+
+    await expect(
+      ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        friendId1: "canonical_friend",
+        friendId2: "local_alias"
+      })
+    ).rejects.toThrow("Friend merge is too large to complete safely");
+
+    const source = await t.run(async (ctx) =>
+      ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", "owner@test.com").eq("member_id", "local_alias")
+        )
+        .unique()
+    );
+    expect(source?.local_alias_member_ids).toEqual(sourceAliases);
   });
 });
 
@@ -831,4 +1104,1311 @@ test("mergeUnlinkedFriends rejects over-cap work before any writes", async () =>
   ).toBe(true);
   expect(canonical?.local_alias_member_ids).toBeUndefined();
   expect(state.friends.some((friend) => friend.member_id === "local_alias")).toBe(true);
+});
+
+test("mergeUnlinkedFriends rejects a conflicting owner email without rewriting the expense", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  let ownerId: any;
+
+  await t.run(async (ctx) => {
+    ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "stale_auth",
+      email: "stale@test.com",
+      display_name: "Stale Owner",
+      created_at: now,
+      member_id: "stale_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "canonical_friend",
+      name: "Canonical",
+      profile_avatar_color: "#111111",
+      has_linked_account: false,
+      updated_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "local_alias",
+      name: "Duplicate",
+      profile_avatar_color: "#222222",
+      has_linked_account: false,
+      updated_at: now
+    });
+    await ctx.db.insert("expenses", {
+      id: "stale_owner_expense",
+      group_id: "missing_group",
+      description: "Stale owner tuple",
+      date: now,
+      total_amount: 20,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "local_alias"],
+      splits: [{ id: "owner_split", member_id: "owner_member", amount: 20, is_settled: false }],
+      is_settled: false,
+      owner_email: "stale@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: ["owner_member", "local_alias"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "local_alias", name: "Duplicate" }
+      ],
+      participant_emails: ["stale@test.com"],
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("conflicting owner identity");
+
+  const rewritten = await t.run(async (ctx) =>
+    ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "stale_owner_expense"))
+      .unique()
+  );
+  expect(rewritten).toMatchObject({
+    owner_id: ownerId,
+    owner_account_id: "owner_auth",
+    owner_email: "stale@test.com"
+  });
+  expect(rewritten?.participant_member_ids).toContain("local_alias");
+});
+
+test("mergeMemberIds canonicalizes retained participant links to one proven account", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "target_auth",
+      email: "target@test.com",
+      display_name: "Target",
+      created_at: now,
+      member_id: "canonical_friend"
+    });
+    await ctx.db.insert("accounts", {
+      id: "true_auth",
+      email: "true@test.com",
+      display_name: "True Participant",
+      created_at: now,
+      member_id: "true_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "unrelated_auth",
+      email: "unrelated@test.com",
+      display_name: "Unrelated",
+      created_at: now,
+      member_id: "unrelated_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "canonical_friend",
+      name: "Target",
+      profile_avatar_color: "#111111",
+      has_linked_account: true,
+      linked_account_id: "target_auth",
+      linked_account_email: "target@test.com",
+      linked_member_id: "canonical_friend",
+      link_state: "linked",
+      status: "friend",
+      updated_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "local_alias",
+      name: "Duplicate",
+      profile_avatar_color: "#222222",
+      has_linked_account: false,
+      status: "manual",
+      updated_at: now
+    });
+    await ctx.db.insert("expenses", {
+      id: "mismatched_participant_expense",
+      group_id: "missing_group",
+      description: "Mismatched participant links",
+      date: now,
+      total_amount: 30,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "local_alias", "true_member"],
+      splits: [{ id: "owner_split", member_id: "owner_member", amount: 30, is_settled: false }],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: ["owner_member", "local_alias", "true_member"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "local_alias", name: "Duplicate" },
+        {
+          member_id: "true_member",
+          name: "True Participant",
+          linked_account_id: "unrelated_auth",
+          linked_account_email: "unrelated@test.com"
+        }
+      ],
+      participant_emails: ["owner@test.com", "unrelated@test.com"],
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await ownerCtx.mutation(api.aliases.mergeMemberIds, {
+    sourceId: "local_alias",
+    targetCanonicalId: "canonical_friend"
+  });
+
+  const state = await t.run(async (ctx) => ({
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "mismatched_participant_expense"))
+      .unique(),
+    visibility: await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "mismatched_participant_expense"))
+      .collect()
+  }));
+  expect(state.expense?.participants).toContainEqual({
+    member_id: "true_member",
+    name: "True Participant",
+    linked_account_id: "true_auth",
+    linked_account_email: "true@test.com"
+  });
+  expect(state.visibility.map((row) => row.user_id)).toContain("true_auth");
+  expect(state.visibility.map((row) => row.user_id)).not.toContain("unrelated_auth");
+  expect(state.expense?.participant_emails).not.toContain("unrelated@test.com");
+});
+
+test("mergeUnlinkedFriends rejects a source closure matching another friend's primary identity", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario({}, {}, undefined, {
+    sourceAliases: ["claimed_primary"]
+  });
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "claimed_primary",
+      name: "Conflicting Friend",
+      profile_avatar_color: "#333333",
+      has_linked_account: false,
+      updated_at: Date.now()
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("already attached to another friend");
+
+  const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
+  expect(
+    friends.find((friend) => friend.member_id === "canonical_friend")?.local_alias_member_ids
+  ).toBeUndefined();
+  expect(friends.map((friend) => friend.member_id)).toEqual(
+    expect.arrayContaining(["canonical_friend", "local_alias", "claimed_primary"])
+  );
+});
+
+test("mergeMemberIds does not replace a deleted canonical participant with unrelated links", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    const ownerId = await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@test.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("accounts", {
+      id: "target_auth",
+      email: "target@test.com",
+      display_name: "Target",
+      created_at: now,
+      member_id: "canonical_friend"
+    });
+    await ctx.db.insert("accounts", {
+      id: "deleted_auth",
+      email: "deleted@test.com",
+      display_name: "Deleted Participant",
+      created_at: now,
+      member_id: "deleted_member",
+      status: "deleted"
+    });
+    await ctx.db.insert("accounts", {
+      id: "unrelated_auth",
+      email: "unrelated@test.com",
+      display_name: "Unrelated",
+      created_at: now,
+      member_id: "unrelated_member"
+    });
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "canonical_friend",
+      name: "Target",
+      profile_avatar_color: "#111111",
+      has_linked_account: true,
+      linked_account_id: "target_auth",
+      linked_account_email: "target@test.com",
+      linked_member_id: "canonical_friend",
+      link_state: "linked",
+      status: "friend",
+      updated_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "local_alias",
+      name: "Duplicate",
+      profile_avatar_color: "#222222",
+      has_linked_account: false,
+      status: "manual",
+      updated_at: now
+    });
+    await ctx.db.insert("expenses", {
+      id: "deleted_canonical_participant_expense",
+      group_id: "missing_group",
+      description: "Deleted canonical participant",
+      date: now,
+      total_amount: 30,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "local_alias", "deleted_member"],
+      splits: [{ id: "owner_split", member_id: "owner_member", amount: 30, is_settled: false }],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: ownerId,
+      participant_member_ids: ["local_alias", "deleted_member"],
+      participants: [
+        { member_id: "local_alias", name: "Duplicate" },
+        {
+          member_id: "deleted_member",
+          name: "Deleted Participant",
+          linked_account_id: "unrelated_auth",
+          linked_account_email: "unrelated@test.com"
+        }
+      ],
+      participant_emails: ["owner@test.com", "unrelated@test.com"],
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  await t
+    .withIdentity(identity("owner@test.com", "owner_auth"))
+    .mutation(api.aliases.mergeMemberIds, {
+      sourceId: "local_alias",
+      targetCanonicalId: "canonical_friend"
+    });
+
+  const state = await t.run(async (ctx) => ({
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "deleted_canonical_participant_expense"))
+      .unique(),
+    visibility: await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) =>
+        q.eq("expense_id", "deleted_canonical_participant_expense")
+      )
+      .collect()
+  }));
+  expect(state.expense?.participants).toContainEqual({
+    member_id: "deleted_member",
+    name: "Deleted Participant"
+  });
+  expect(state.expense?.participant_emails).not.toContain("unrelated@test.com");
+  expect(state.visibility.map((row) => row.user_id)).not.toContain("unrelated_auth");
+});
+
+test("mergeUnlinkedFriends removes stale expense visibility for an unlinked target", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    const owner = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!owner) throw new Error("missing test owner");
+    await ctx.db.insert("accounts", {
+      id: "stale_auth",
+      email: "stale@test.com",
+      display_name: "Stale Participant",
+      created_at: now,
+      member_id: "stale_member"
+    });
+    await ctx.db.insert("expenses", {
+      id: "unlinked_merge_visibility_expense",
+      group_id: "missing_group",
+      description: "Stale unlinked visibility",
+      date: now,
+      total_amount: 20,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "local_alias"],
+      splits: [{ id: "owner_split", member_id: "owner_member", amount: 20, is_settled: false }],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: owner._id,
+      participant_member_ids: ["owner_member", "local_alias"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "local_alias", name: "Duplicate" }
+      ],
+      participant_emails: ["owner@test.com", "stale@test.com"],
+      created_at: now,
+      updated_at: now
+    });
+    for (const userId of ["owner_auth", "stale_auth"]) {
+      await ctx.db.insert("user_expenses", {
+        user_id: userId,
+        expense_id: "unlinked_merge_visibility_expense",
+        updated_at: now
+      });
+    }
+  });
+
+  await ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+    friendId1: "canonical_friend",
+    friendId2: "local_alias"
+  });
+
+  const state = await t.run(async (ctx) => ({
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "unlinked_merge_visibility_expense"))
+      .unique(),
+    visibility: await ctx.db
+      .query("user_expenses")
+      .withIndex("by_expense_id", (q) => q.eq("expense_id", "unlinked_merge_visibility_expense"))
+      .collect()
+  }));
+  expect(state.expense?.participant_emails).toEqual(["owner@test.com"]);
+  expect(state.visibility.map((row) => row.user_id)).toEqual(["owner_auth"]);
+});
+
+test("mergeUnlinkedFriends rejects a conflicting group owner email without rewriting the group", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  const now = Date.now();
+  let canonicalOwnerId: any;
+
+  await t.run(async (ctx) => {
+    const owner = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!owner) throw new Error("missing test owner");
+    canonicalOwnerId = owner._id;
+    await ctx.db.insert("accounts", {
+      id: "stale_auth",
+      email: "stale@test.com",
+      display_name: "Stale Owner",
+      created_at: now,
+      member_id: "stale_member"
+    });
+    await ctx.db.insert("groups", {
+      id: "stale_owner_group",
+      name: "Stale owner group",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "local_alias", name: "Duplicate" }
+      ],
+      owner_email: "stale@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: canonicalOwnerId,
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("conflicting owner identity");
+
+  const rewritten = await t.run(async (ctx) =>
+    ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "stale_owner_group"))
+      .unique()
+  );
+  expect(rewritten).toMatchObject({
+    owner_id: canonicalOwnerId,
+    owner_account_id: "owner_auth",
+    owner_email: "stale@test.com"
+  });
+  expect(rewritten?.members.map((member) => member.id)).toContain("local_alias");
+});
+
+test("mergeUnlinkedFriends rejects rewriting an active source into an inactive target", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    const owner = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!owner) throw new Error("missing owner");
+    await ctx.db.insert("expenses", {
+      id: "inactive_target_collision",
+      group_id: "missing_group",
+      description: "Historical target and active duplicate",
+      date: now,
+      total_amount: 20,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "local_alias", "canonical_friend"],
+      splits: [
+        { id: "owner_split", member_id: "owner_member", amount: 10, is_settled: false },
+        { id: "active_split", member_id: "local_alias", amount: 5, is_settled: false },
+        { id: "historical_split", member_id: "canonical_friend", amount: 5, is_settled: false }
+      ],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: owner._id,
+      participant_member_ids: ["owner_member", "local_alias", "canonical_friend"],
+      inactive_participant_member_ids: ["canonical_friend"],
+      participant_emails: ["owner@test.com"],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "local_alias", name: "Active duplicate" },
+        { member_id: "canonical_friend", name: "Historical canonical" }
+      ],
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("inactive participant history");
+
+  const state = await t.run(async (ctx) => ({
+    source: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "local_alias")
+      )
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "inactive_target_collision"))
+      .unique()
+  }));
+  expect(state.source).not.toBeNull();
+  expect(state.expense?.splits.map((split) => split.member_id)).toEqual([
+    "owner_member",
+    "local_alias",
+    "canonical_friend"
+  ]);
+});
+
+test("mergeUnlinkedFriends rejects an unlinked rewrite above the participant work boundary", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  const now = Date.now();
+  const participantIds = [
+    "local_alias",
+    ...Array.from({ length: 256 }, (_, index) => `participant_${index}`)
+  ];
+
+  await t.run(async (ctx) => {
+    const owner = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!owner) throw new Error("missing test owner");
+    await ctx.db.insert("expenses", {
+      id: "oversized_unlinked_participant_expense",
+      group_id: "missing_group",
+      description: "Oversized participant work",
+      date: now,
+      total_amount: 1,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", ...participantIds],
+      splits: [{ id: "owner_split", member_id: "owner_member", amount: 1, is_settled: false }],
+      is_settled: false,
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: owner._id,
+      participant_member_ids: participantIds,
+      participants: participantIds.map((memberId) => ({ member_id: memberId, name: memberId })),
+      participant_emails: ["owner@test.com"],
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("Friend merge is too large to complete safely");
+
+  const state = await t.run(async (ctx) => ({
+    source: await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "local_alias")
+      )
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "oversized_unlinked_participant_expense"))
+      .unique()
+  }));
+  expect(state.source).not.toBeNull();
+  expect(state.expense?.participant_member_ids).toContain("local_alias");
+});
+
+test("friend merge rejects conflicting strong owner identifiers without rewriting stale tuples", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    const staleOwnerId = await ctx.db.insert("accounts", {
+      id: "stale_auth",
+      email: "stale@test.com",
+      display_name: "Stale",
+      created_at: now,
+      member_id: "stale_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "stale@test.com",
+      member_id: "stale_target",
+      name: "Stale target",
+      profile_avatar_color: "#333333",
+      has_linked_account: false,
+      updated_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "stale@test.com",
+      member_id: "local_alias",
+      name: "Stale duplicate",
+      profile_avatar_color: "#444444",
+      has_linked_account: false,
+      updated_at: now
+    });
+    const groupRef = await ctx.db.insert("groups", {
+      id: "conflicting_owner_group",
+      name: "Conflicting owner",
+      members: [
+        { id: "owner_member", name: "Owner", is_current_user: true },
+        { id: "local_alias", name: "Duplicate" }
+      ],
+      owner_email: "stale@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: staleOwnerId,
+      created_at: now,
+      updated_at: now
+    });
+    await ctx.db.insert("expenses", {
+      id: "conflicting_owner_expense",
+      group_id: "conflicting_owner_group",
+      group_ref: groupRef,
+      description: "Conflicting owner",
+      date: now,
+      total_amount: 2,
+      paid_by_member_id: "owner_member",
+      involved_member_ids: ["owner_member", "local_alias"],
+      splits: [
+        { id: "owner_split", member_id: "owner_member", amount: 1, is_settled: false },
+        { id: "alias_split", member_id: "local_alias", amount: 1, is_settled: false }
+      ],
+      is_settled: false,
+      owner_email: "stale@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: staleOwnerId,
+      participant_member_ids: ["owner_member", "local_alias"],
+      participant_emails: [],
+      participants: [
+        { member_id: "owner_member", name: "Owner" },
+        { member_id: "local_alias", name: "Duplicate" }
+      ],
+      created_at: now,
+      updated_at: now
+    });
+  });
+
+  const staleCtx = t.withIdentity(identity("stale@test.com", "stale_auth"));
+  await expect(
+    staleCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "stale_target",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("conflicting owner identity");
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("conflicting owner identity");
+
+  const state = await t.run(async (ctx) => ({
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", "conflicting_owner_group"))
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "conflicting_owner_expense"))
+      .unique()
+  }));
+  expect(state.group).toMatchObject({
+    owner_account_id: "owner_auth",
+    owner_email: "stale@test.com"
+  });
+  expect(state.expense).toMatchObject({
+    owner_account_id: "owner_auth",
+    owner_email: "stale@test.com"
+  });
+});
+
+test.each([
+  { participantCount: 9, shouldSucceed: true },
+  { participantCount: 10, shouldSucceed: false }
+])(
+  "friend merge bounds cached linked participant resolution at $participantCount identities",
+  async ({ participantCount, shouldSucceed }) => {
+    const { t, ownerCtx } = await createEligibilityScenario();
+    const now = Date.now();
+    const participants = Array.from({ length: participantCount }, (_, index) => ({
+      member_id: `participant_${index}`,
+      name: `Participant ${index}`,
+      linked_account_id: `untrusted_link_${index}`,
+      linked_account_email: `untrusted_${index}@test.com`
+    }));
+
+    await t.run(async (ctx) => {
+      const owner = await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+        .unique();
+      if (!owner) throw new Error("missing owner");
+      await ctx.db.insert("expenses", {
+        id: "linked_participant_budget_expense",
+        group_id: "missing_group",
+        description: "Linked participant budget",
+        date: now,
+        total_amount: 2,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member", "local_alias"],
+        splits: [{ id: "owner_split", member_id: "owner_member", amount: 2, is_settled: false }],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: owner._id,
+        participant_member_ids: ["local_alias"],
+        participant_emails: [],
+        participants,
+        created_at: now,
+        updated_at: now
+      });
+    });
+
+    const merge = ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    });
+    if (shouldSucceed) {
+      await expect(merge).resolves.toMatchObject({ success: true });
+    } else {
+      await expect(merge).rejects.toThrow("Friend merge is too large to complete safely");
+    }
+
+    const source = await t.run(async (ctx) =>
+      ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q.eq("account_email", "owner@test.com").eq("member_id", "local_alias")
+        )
+        .unique()
+    );
+    expect(source === null).toBe(shouldSucceed);
+  }
+);
+
+test("mergeMemberIds rejects a linked-looking target without proven account provenance", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario(
+    {},
+    { linked: true, linkState: "linked", status: "friend" }
+  );
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "target_linked_auth",
+      email: "target-linked@test.com",
+      display_name: "Linked",
+      created_at: Date.now(),
+      member_id: "actual_linked_member"
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      sourceId: "local_alias",
+      targetCanonicalId: "canonical_friend"
+    })
+  ).rejects.toThrow("unverified linked friend");
+
+  const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
+  expect(friends.map((friend) => friend.member_id)).toEqual(
+    expect.arrayContaining(["canonical_friend", "local_alias"])
+  );
+});
+
+test("mergeMemberIds rewrites a proven linked target from live account identity", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario(
+    {},
+    { linked: true, linkState: "linked", status: "friend" }
+  );
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "target_linked_auth",
+      email: "live-target@test.com",
+      display_name: "Live target",
+      created_at: Date.now(),
+      member_id: "live_target_member"
+    });
+    const target = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "canonical_friend")
+      )
+      .unique();
+    if (!target) throw new Error("missing target");
+    await ctx.db.patch(target._id, {
+      member_id: "legacy_target_member",
+      linked_member_id: "live_target_member",
+      linked_account_email: "stale-target@test.com"
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      sourceId: "local_alias",
+      targetCanonicalId: "legacy_target_member"
+    })
+  ).resolves.toMatchObject({ canonical_member_id: "live_target_member" });
+
+  const target = await t.run(async (ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "live_target_member")
+      )
+      .unique()
+  );
+  expect(target).toMatchObject({
+    linked_account_id: "target_linked_auth",
+    linked_account_email: "live-target@test.com",
+    linked_member_id: "live_target_member"
+  });
+  expect(target?.local_alias_member_ids).toEqual(
+    expect.arrayContaining(["legacy_target_member", "local_alias"])
+  );
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      sourceId: "local_alias",
+      targetCanonicalId: "legacy_target_member"
+    })
+  ).resolves.toMatchObject({
+    success: true,
+    already_merged: true,
+    canonical_member_id: "live_target_member",
+    alias_member_id: "local_alias"
+  });
+});
+
+test("mergeMemberIds does not resolve local aliases from an unlinked target", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  await t.run(async (ctx) => {
+    const target = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "canonical_friend")
+      )
+      .unique();
+    if (!target) throw new Error("missing target");
+    await ctx.db.patch(target._id, {
+      local_alias_member_ids: ["legacy_target_member"]
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      sourceId: "local_alias",
+      targetCanonicalId: "legacy_target_member"
+    })
+  ).rejects.toThrow("Friend with member_id legacy_target_member not found");
+
+  const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
+  expect(friends).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        member_id: "canonical_friend",
+        local_alias_member_ids: ["legacy_target_member"]
+      }),
+      expect.objectContaining({ member_id: "local_alias" })
+    ])
+  );
+});
+
+test("mergeMemberIds charges historical provenance rows to the merge byte budget", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario({}, { linked: true, status: "friend" });
+  const now = Date.now();
+  const largeEvidenceName = "e".repeat(550 * 1024);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "target_linked_auth",
+      email: "target-linked@test.com",
+      display_name: "Linked target",
+      created_at: now,
+      member_id: "target_linked_member"
+    });
+    for (let index = 0; index < 16; index += 1) {
+      await ctx.db.insert("invite_tokens", {
+        id: `large_provenance_${index}`,
+        creator_id: "owner_auth",
+        creator_email: "owner@test.com",
+        target_member_id: "canonical_friend",
+        target_member_name: largeEvidenceName,
+        created_at: now,
+        expires_at: now + 60_000,
+        claimed_by: "target_linked_auth",
+        claimed_at: now
+      });
+    }
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      sourceId: "local_alias",
+      targetCanonicalId: "canonical_friend"
+    })
+  ).rejects.toThrow("Friend merge is too large to complete safely");
+
+  const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
+  expect(friends.map((friend) => friend.member_id)).toEqual(
+    expect.arrayContaining(["canonical_friend", "local_alias"])
+  );
+});
+
+test("mergeMemberIds rejects an effective canonical target attached to a third friend", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario(
+    {},
+    { linked: true, linkState: "linked", status: "friend" }
+  );
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "target_linked_auth",
+      email: "target-linked@test.com",
+      display_name: "Linked target",
+      created_at: Date.now(),
+      member_id: "target_linked_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@test.com",
+      member_id: "target_linked_member",
+      local_alias_member_ids: ["third_friend_alias"],
+      name: "Existing canonical friend",
+      profile_avatar_color: "#333333",
+      has_linked_account: false,
+      updated_at: Date.now()
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      sourceId: "local_alias",
+      targetCanonicalId: "canonical_friend"
+    })
+  ).rejects.toThrow("already attached to another friend");
+
+  const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
+  expect(friends.map((friend) => friend.member_id).sort()).toEqual([
+    "canonical_friend",
+    "local_alias",
+    "target_linked_member"
+  ]);
+});
+
+test("mergeMemberIds treats a proven linked same-ID request as an effective canonical retry", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario(
+    {},
+    { linked: true, linkState: "linked", status: "friend" }
+  );
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "target_linked_auth",
+      email: "live-target@test.com",
+      display_name: "Live target",
+      created_at: Date.now(),
+      member_id: "target_linked_member"
+    });
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      sourceId: "canonical_friend",
+      targetCanonicalId: "canonical_friend"
+    })
+  ).resolves.toMatchObject({
+    success: true,
+    already_merged: true,
+    canonical_member_id: "target_linked_member"
+  });
+
+  expect(await t.run(async (ctx) => ctx.db.query("account_friends").collect())).toHaveLength(2);
+});
+
+const largeMergeDocumentText = "x".repeat(400 * 1024);
+
+test("merge index reads reserve byte-safe pages sequentially", async () => {
+  const aliasesModule = (await import("../aliases")) as Record<string, unknown>;
+  const collectSequentialMergeIndexRows = aliasesModule.collectSequentialMergeIndexRows;
+  expect(collectSequentialMergeIndexRows).toEqual(expect.any(Function));
+
+  const rows = Array.from({ length: 24 }, (_, index) => ({
+    _id: `row_${String(index).padStart(2, "0")}`,
+    _creationTime: index + 1,
+    payload: largeMergeDocumentText
+  }));
+  const requestedPageSizes: number[] = [];
+  let activeReads = 0;
+  let maxActiveReads = 0;
+  const readPage = async (cursor: string | null, limit: number) => {
+    requestedPageSizes.push(limit);
+    activeReads += 1;
+    maxActiveReads = Math.max(maxActiveReads, activeReads);
+    await Promise.resolve();
+    const start = cursor === null ? 0 : Number(cursor);
+    const page = rows.slice(start, start + limit);
+    const nextOffset = start + page.length;
+    activeReads -= 1;
+    return {
+      page,
+      continueCursor: String(nextOffset),
+      isDone: nextOffset >= rows.length
+    };
+  };
+
+  await expect(
+    (
+      collectSequentialMergeIndexRows as (
+        budget: { scannedRows: number; estimatedReadBytes: number },
+        readPage: (
+          cursor: string | null,
+          limit: number
+        ) => Promise<{
+          page: Array<{ _id: string; _creationTime: number; payload: string }>;
+          continueCursor: string;
+          isDone: boolean;
+        }>,
+        reserveLookup: () => void
+      ) => Promise<unknown>
+    )({ scannedRows: 0, estimatedReadBytes: 0 }, readPage, () => {})
+  ).rejects.toThrow("Friend merge is too large to complete safely");
+  expect(Math.max(...requestedPageSizes)).toBeLessThanOrEqual(5);
+  expect(requestedPageSizes.length).toBeGreaterThan(1);
+  expect(maxActiveReads).toBe(1);
+});
+
+test("merge index reads do not skip equal-time rows across page boundaries", async () => {
+  const { collectSequentialMergeIndexRows } = (await import("../aliases")) as Record<
+    string,
+    unknown
+  >;
+  const rows = Array.from({ length: 6 }, (_, index) => ({
+    _id: `row_${index}`,
+    _creationTime: 1,
+    payload: `row ${index}`
+  }));
+  const readPage = async (cursor: string | null, limit: number) => {
+    const start = cursor === null ? 0 : Number(cursor);
+    const page = rows.slice(start, start + limit);
+    const nextOffset = start + page.length;
+    return {
+      page,
+      continueCursor: String(nextOffset),
+      isDone: nextOffset >= rows.length
+    };
+  };
+
+  const collected = await (
+    collectSequentialMergeIndexRows as (
+      budget: { scannedRows: number; estimatedReadBytes: number },
+      readPage: (
+        cursor: string | null,
+        limit: number
+      ) => Promise<{
+        page: Array<{ _id: string; _creationTime: number; payload: string }>;
+        continueCursor: string;
+        isDone: boolean;
+      }>,
+      reserveLookup: () => void
+    ) => Promise<typeof rows>
+  )({ scannedRows: 0, estimatedReadBytes: 0 }, readPage, () => {});
+
+  expect(collected.map((row) => row._id)).toEqual(rows.map((row) => row._id));
+});
+
+test("friend merge shares its byte budget with the normalized friend fallback", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  await t.run(async (ctx) => {
+    const target = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@test.com").eq("member_id", "canonical_friend")
+      )
+      .unique();
+    if (!target) throw new Error("missing target");
+    await ctx.db.patch(target._id, { member_id: "LEGACY_TARGET" });
+    for (let index = 0; index < 22; index += 1) {
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@test.com",
+        member_id: `large_fallback_friend_${index}`,
+        name: `Large fallback ${index}`,
+        profile_avatar_color: "#333333",
+        profile_image_url: largeMergeDocumentText,
+        has_linked_account: false,
+        updated_at: Date.now()
+      });
+    }
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "legacy_target",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("Friend merge is too large to complete safely");
+});
+
+test("friend merge shares its byte budget with the owner conflict scan", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 22; index += 1) {
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@test.com",
+        member_id: `large_conflict_friend_${index}`,
+        name: `Large conflict ${index}`,
+        profile_avatar_color: "#333333",
+        profile_image_url: largeMergeDocumentText,
+        has_linked_account: false,
+        updated_at: Date.now()
+      });
+    }
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("Friend merge is too large to complete safely");
+
+  const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
+  expect(friends.some((friend) => friend.member_id === "local_alias")).toBe(true);
+});
+
+test("friend merge bounds owner-group bytes before the Convex read limit", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  await t.run(async (ctx) => {
+    const owner = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!owner) throw new Error("missing owner");
+    for (let index = 0; index < 15; index += 1) {
+      await ctx.db.insert("groups", {
+        id: `large_owner_group_${index}`,
+        name: `Large owner group ${index}`,
+        members: [
+          {
+            id: index === 0 ? "local_alias" : `member_${index}`,
+            name: largeMergeDocumentText
+          }
+        ],
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: owner._id,
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+    }
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("Friend merge is too large to complete safely");
+});
+
+test("friend merge bounds attached-expense bytes before the Convex read limit", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  await t.run(async (ctx) => {
+    const owner = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!owner) throw new Error("missing owner");
+    const foreignOwner = await ctx.db.insert("accounts", {
+      id: "foreign_auth",
+      email: "foreign@test.com",
+      display_name: "Foreign",
+      created_at: Date.now(),
+      member_id: "foreign_member"
+    });
+    const groupRef = await ctx.db.insert("groups", {
+      id: "large_attached_group",
+      name: "Large attached group",
+      members: [
+        { id: "owner_member", name: "Owner" },
+        { id: "local_alias", name: "Duplicate" }
+      ],
+      owner_email: "owner@test.com",
+      owner_account_id: "owner_auth",
+      owner_id: owner._id,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    for (let index = 0; index < 21; index += 1) {
+      await ctx.db.insert("expenses", {
+        id: `large_attached_expense_${index}`,
+        group_id: "large_attached_group",
+        group_ref: groupRef,
+        description: largeMergeDocumentText,
+        date: Date.now(),
+        total_amount: 1,
+        paid_by_member_id: "foreign_member",
+        involved_member_ids: ["foreign_member"],
+        splits: [
+          {
+            id: `foreign_split_${index}`,
+            member_id: "foreign_member",
+            amount: 1,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "foreign@test.com",
+        owner_account_id: "foreign_auth",
+        owner_id: foreignOwner,
+        participant_member_ids: ["foreign_member"],
+        participant_emails: ["foreign@test.com"],
+        participants: [{ member_id: "foreign_member", name: "Foreign" }],
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+    }
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("Friend merge is too large to complete safely");
+});
+
+test("friend merge bounds owner-expense bytes before the Convex read limit", async () => {
+  const { t, ownerCtx } = await createEligibilityScenario();
+  await t.run(async (ctx) => {
+    const owner = await ctx.db
+      .query("accounts")
+      .withIndex("by_email", (q) => q.eq("email", "owner@test.com"))
+      .unique();
+    if (!owner) throw new Error("missing owner");
+    for (let index = 0; index < 15; index += 1) {
+      await ctx.db.insert("expenses", {
+        id: `large_owner_expense_${index}`,
+        group_id: `missing_group_${index}`,
+        description: largeMergeDocumentText,
+        date: Date.now(),
+        total_amount: 1,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member", "local_alias"],
+        splits: [
+          {
+            id: `owner_split_${index}`,
+            member_id: "owner_member",
+            amount: 1,
+            is_settled: false
+          }
+        ],
+        is_settled: false,
+        owner_email: "owner@test.com",
+        owner_account_id: "owner_auth",
+        owner_id: owner._id,
+        participant_member_ids: ["owner_member", "local_alias"],
+        participant_emails: ["owner@test.com"],
+        participants: [
+          { member_id: "owner_member", name: "Owner" },
+          { member_id: "local_alias", name: "Duplicate" }
+        ],
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+    }
+  });
+
+  await expect(
+    ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    })
+  ).rejects.toThrow("Friend merge is too large to complete safely");
 });

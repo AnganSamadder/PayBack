@@ -107,7 +107,7 @@ final class AppStore: ObservableObject {
     /// an explicit remote hydration. This prevents empty startup snapshots from clobbering
     /// locally restored or test-seeded state.
     private var hasCompletedInitialRemoteLoad = false
-    private let retryPolicy: RetryPolicy = .linkingDefault
+    private let retryPolicy: RetryPolicy
     private let stateReconciliation = LinkStateReconciliation()
     private let failureTracker = LinkFailureTracker()
 
@@ -152,6 +152,7 @@ final class AppStore: ObservableObject {
         linkRequestService: LinkRequestService = Dependencies.current.linkRequestService,
         inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService,
         emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
+        retryPolicy: RetryPolicy = .linkingDefault,
         skipClerkInit: Bool = false,
         authenticationSessionLoader: (@Sendable () async throws -> AuthenticationSessionIdentity?)? = nil,
         convexAuthenticator: (@Sendable () async throws -> Void)? = nil
@@ -165,6 +166,7 @@ final class AppStore: ObservableObject {
         self.linkRequestService = linkRequestService
         self.inviteLinkService = inviteLinkService
         self.emailAuthService = emailAuthService
+        self.retryPolicy = retryPolicy
         self.skipClerkInit = skipClerkInit
         self.authenticationSessionLoader = authenticationSessionLoader ?? {
             let clerk = await Clerk.shared
@@ -781,16 +783,17 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     @MainActor
     private func signOutMissingAccountDuringSessionRecovery() async throws {
+        invalidateLogicalSessionForSignOut()
         try await emailAuthService.signOut()
-        await finishSignOut(signOutIdentity: false)
+        await finishSignOut(signOutIdentity: false, logicalSessionAlreadyInvalidated: true)
     }
 
     @MainActor
-    private func finishSignOut(signOutIdentity: Bool) async {
-        #if DEBUG
-        print("[AuthDebug] signOut called")
-        #endif
+    private func invalidateLogicalSessionForSignOut() {
+        // Rotate the logical session boundary before any suspension point. Irreversible
+        // retries must stop even while Clerk or Convex sign-out is still in flight.
         cancelClearAllDataWork()
+        dataEpoch = UUID()
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
         invalidateRemoteLoad()
@@ -801,6 +804,19 @@ func completeAuthentication(id: String, email: String, name: String?) {
         #if !PAYBACK_CI_NO_CONVEX
         Dependencies.syncManager?.stopSync()
         #endif
+    }
+
+    @MainActor
+    private func finishSignOut(
+        signOutIdentity: Bool,
+        logicalSessionAlreadyInvalidated: Bool = false
+    ) async {
+        #if DEBUG
+        print("[AuthDebug] signOut called")
+        #endif
+        if !logicalSessionAlreadyInvalidated {
+            invalidateLogicalSessionForSignOut()
+        }
 
         // 1. Sign out from Clerk/Backend FIRST
         // This ensures the persistent session is cleared from Keychain before we update UI
@@ -852,7 +868,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
         activeGroupMutationTokensByGroupId.removeAll()
         activeFriendDeletionTokenId = nil
         pendingFriendDeletionIdentityIdsByToken.removeAll()
-        dataEpoch = UUID()
 
         // CRITICAL: Reset currentUser with a fresh UUID to prevent data isolation issues
         // Without this, the next user logging in could inherit this user's member ID
@@ -2108,7 +2123,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
             }
 
             for friend in friends {
-                let friendIds = [friend.memberId] + (friend.aliasMemberIds ?? [])
+                let friendIds = [friend.memberId] +
+                    (friend.linkedMemberId.map { [$0] } ?? []) +
+                    (friend.aliasMemberIds ?? [])
                 guard friendIds.contains(where: isKnownIdentity) else { continue }
                 for friendId in friendIds where identityIds.insert(friendId).inserted {
                     didExpand = true
@@ -2163,8 +2180,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 for split in expense.splits where !isMe(split.memberId) && !split.isSettled {
                     paidByUser += split.amount
                 }
-            } else if let split = expense.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
-                owes += split.amount
+            } else {
+                owes += expense.splits
+                    .filter { isMe($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             }
         }
 
@@ -2266,9 +2285,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 }
             } else {
                 // Someone else paid, check if user owes (using ANY of their member IDs)
-                if let split = expense.splits.first(where: { isMe($0.memberId) }), !split.isSettled {
-                    owes += split.amount
-                }
+                owes += expense.splits
+                    .filter { isMe($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             }
         }
 
@@ -2277,22 +2296,25 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     func netBalance(forFriend friend: GroupMember) -> Double {
         var balance: Double = 0
+        let friendIdentityMemberIds = accountFriendIdentityMemberIds(
+            for: [friend.id] + (friend.accountFriendMemberId.map { [$0] } ?? [])
+        )
 
-        for expense in expenses where expenseInvolves(friend: friend, in: expense) {
+        func matchesFriendIdentity(_ memberId: UUID) -> Bool {
+            friendIdentityMemberIds.contains { areSamePerson(memberId, $0) }
+        }
+
+        for expense in expenses where
+            expense.involvedMemberIds.contains(where: { isMe($0) }) &&
+            expense.involvedMemberIds.contains(where: matchesFriendIdentity) {
             if isMe(expense.paidByMemberId) {
-                if let friendSplit = expense.splits.first(where: {
-                    isFriendMember($0.memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
-                }), !friendSplit.isSettled {
-                    balance += friendSplit.amount
-                }
-            } else if isFriendMember(
-                expense.paidByMemberId,
-                friendId: friend.id,
-                accountFriendMemberId: friend.accountFriendMemberId
-            ) {
-                if let userSplit = expense.splits.first(where: { isMe($0.memberId) }), !userSplit.isSettled {
-                    balance -= userSplit.amount
-                }
+                balance += expense.splits
+                    .filter { matchesFriendIdentity($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
+            } else if matchesFriendIdentity(expense.paidByMemberId) {
+                balance -= expense.splits
+                    .filter { isMe($0.memberId) && !$0.isSettled }
+                    .reduce(0.0) { $0 + $1.amount }
             }
         }
 
@@ -3908,22 +3930,71 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Claims an invite token and links the account with retry logic
     func claimInviteToken(_ tokenId: UUID) async throws {
-        guard session != nil else {
+        try await claimInviteToken(tokenId, mergingLocalFriend: nil)
+    }
+
+    /// Claims an invite token and optionally merges an existing unlinked friend atomically.
+    func claimInviteToken(_ tokenId: UUID, mergingLocalFriend friend: AccountFriend?) async throws {
+        guard let claimingSession = session else {
             throw PayBackError.authSessionMissing
         }
 
-        // Claim token via service with retry
-        let result = try await retryPolicy.execute {
-            try await self.inviteLinkService.claimInviteToken(tokenId)
+        if let friend {
+            let isEligible = await MainActor.run {
+                guard let currentFriend = friends.first(where: { $0.memberId == friend.memberId }) else {
+                    return false
+                }
+                return isMergeableUnlinkedFriend(currentFriend)
+            }
+            guard isEligible else {
+                throw PayBackError.linkMemberAlreadyLinked
+            }
         }
 
-        await applyLinkAcceptResult(result)
-        await reconcileAfterNetworkRecovery()
+        let claimingAccountId = claimingSession.account.id
+        let claimingDataEpoch = dataEpoch
+        let mergeMemberId = friend?.memberId
 
-        // 🚀 CRITICAL FIX: Fetch new data (groups/expenses) that we now have access to!
-        // The cloud services have been updated to rely on RLS, so fetching now will return
-        // the shared groups/expenses associated with this new link.
-        await loadRemoteData()
+        // The mutation can commit before its acknowledgement reaches the app. Keep the
+        // idempotent retry and canonical refresh alive if the presenting view disappears,
+        // while preventing a late result from crossing into a different account session.
+        let operation = Task { @MainActor [weak self] in
+            guard let self else { throw PayBackError.authSessionMissing }
+            let result = try await retryPolicy.execute {
+                guard self.session?.account.id == claimingAccountId,
+                      self.dataEpoch == claimingDataEpoch
+                else {
+                    throw PayBackError.authSessionMissing
+                }
+                return try await self.inviteLinkService.claimInviteToken(
+                    tokenId,
+                    mergeLocalFriendMemberId: mergeMemberId
+                )
+            }
+
+            guard self.session?.account.id == claimingAccountId,
+                  self.dataEpoch == claimingDataEpoch
+            else {
+                throw PayBackError.authSessionMissing
+            }
+            self.applyLinkAcceptResult(result)
+            await self.stateReconciliation.invalidate()
+            guard self.session?.account.id == claimingAccountId,
+                  self.dataEpoch == claimingDataEpoch
+            else {
+                throw PayBackError.authSessionMissing
+            }
+
+            // Fetch the canonical friend, group, and expense state only after the
+            // atomic backend claim/merge succeeds. This avoids optimistic UI loss.
+            await self.loadRemoteData()
+            guard self.session?.account.id == claimingAccountId,
+                  self.dataEpoch == claimingDataEpoch
+            else {
+                throw PayBackError.authSessionMissing
+            }
+        }
+        try await operation.value
     }
 
     @MainActor
@@ -4168,38 +4239,54 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     /// Merges two caller-owned, confirmed, unlinked friend records.
+    @MainActor
     func mergeFriend(unlinkedMemberId: UUID, into targetMemberId: UUID) async throws {
-        guard let session else {
+        guard let mergingSession = session else {
             throw PayBackError.authSessionMissing
         }
 
-        let mergeIds = try await MainActor.run { () throws -> (source: String, target: String) in
-            guard unlinkedMemberId != targetMemberId,
-                  let source = friends.first(where: { $0.memberId == unlinkedMemberId }),
-                  let target = friends.first(where: { $0.memberId == targetMemberId }),
-                  isMergeableUnlinkedFriend(source),
-                  isMergeableUnlinkedFriend(target) else {
-                throw PayBackError.underlying(
-                    message: "Only confirmed unlinked friends can be merged."
-                )
+        let mergingAccountId = mergingSession.account.id
+        let mergingAccountEmail = mergingSession.account.email.lowercased()
+        let mergingDataEpoch = dataEpoch
+
+        func ensureCurrentMergingSession() throws {
+            guard session?.account.id == mergingAccountId,
+                  dataEpoch == mergingDataEpoch else {
+                throw PayBackError.authSessionMissing
             }
-            return (source.memberId.uuidString, target.memberId.uuidString)
         }
 
-        try await accountService.mergeUnlinkedFriends(
-            friendId1: mergeIds.target,
-            friendId2: mergeIds.source
-        )
+        guard unlinkedMemberId != targetMemberId,
+              let source = friends.first(where: { $0.memberId == unlinkedMemberId }),
+              let target = friends.first(where: { $0.memberId == targetMemberId }),
+              isMergeableUnlinkedFriend(source),
+              isMergeableUnlinkedFriend(target) else {
+            throw PayBackError.underlying(
+                message: "Only confirmed unlinked friends can be merged."
+            )
+        }
+        let mergeIds = (source: source.memberId.uuidString, target: target.memberId.uuidString)
+
+        try await retryPolicy.execute {
+            try ensureCurrentMergingSession()
+            try await self.accountService.mergeUnlinkedFriends(
+                friendId1: mergeIds.target,
+                friendId2: mergeIds.source
+            )
+        }
+        try ensureCurrentMergingSession()
 
         // Keep the local source until the backend acknowledges the transaction and
         // returns a canonical friend snapshot. A failed hydration remains retryable.
         let remoteFriends = try await accountService.fetchFriends(
-            accountEmail: session.account.email.lowercased()
+            accountEmail: mergingAccountEmail
         )
-        await MainActor.run {
-            processFriendsUpdate(remoteFriends)
-        }
+        try ensureCurrentMergingSession()
+        processFriendsUpdate(remoteFriends)
+        try ensureCurrentMergingSession()
+
         await loadRemoteData()
+        try ensureCurrentMergingSession()
     }
 
     // MARK: - Account Linking Helpers
@@ -4566,7 +4653,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     /// Whether a friend row should be selectable as a direct-expense counterparty.
     ///
     /// Rules:
-    /// - confirmed/accepted friendships are selectable
+    /// - confirmed/accepted/manual friendships are selectable
     /// - linked-account friendships are selectable unless explicitly pending/rejected
     /// - legacy unlinked rows with no status are selectable only when they are not
     ///   group-only members (or already have an established direct group)
@@ -4596,10 +4683,16 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return !appearsInAnyNonDirectGroup(memberId: friend.memberId)
     }
 
+    /// Whether a confirmed friend can be used as the source of an invite-time merge.
     func isMergeableUnlinkedFriend(_ friend: AccountFriend) -> Bool {
-        guard !friend.hasLinkedAccount,
+        let linkState = normalizedFriendStatus(friend.linkState)
+        guard !isMe(friend.memberId),
+              friend.hasLinkedAccount == false,
               friend.linkedAccountId == nil,
-              friend.linkedAccountEmail == nil else {
+              friend.linkedAccountEmail == nil,
+              friend.linkedMemberId == nil,
+              linkState == nil || linkState == "unlinked"
+        else {
             return false
         }
         return isSelectableDirectExpenseFriend(friend)

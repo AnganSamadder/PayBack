@@ -49,6 +49,59 @@ final class SettlementLogicTests: XCTestCase {
         XCTAssertEqual(total, 6.17, accuracy: 0.001)
     }
 
+    func testIdentitySummaryAggregatesEquivalentSplitsAndKeepsMixedStateUnsettled() {
+        let canonicalId = UUID()
+        let aliasId = UUID()
+        let otherId = UUID()
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Dinner",
+            totalAmount: 50,
+            paidByMemberId: otherId,
+            involvedMemberIds: [canonicalId, aliasId, otherId],
+            splits: [
+                ExpenseSplit(memberId: canonicalId, amount: 10, isSettled: true),
+                ExpenseSplit(memberId: aliasId, amount: 20, isSettled: false),
+                ExpenseSplit(memberId: otherId, amount: 20, isSettled: false)
+            ]
+        )
+
+        let equivalentIds = Set([canonicalId, aliasId])
+        let summary = SettlementAmountLogic.identitySummary(for: expense) {
+            equivalentIds.contains($0)
+        }
+
+        XCTAssertTrue(summary.hasMatchingSplits)
+        XCTAssertFalse(summary.isFullySettled)
+        XCTAssertEqual(summary.totalAmount, 30, accuracy: 0.001)
+        XCTAssertEqual(summary.unsettledAmount, 20, accuracy: 0.001)
+        XCTAssertEqual(summary.relationshipAmount, 20, accuracy: 0.001)
+    }
+
+    func testIdentitySummaryUsesAggregateAmountWhenEveryEquivalentSplitIsSettled() {
+        let canonicalId = UUID()
+        let aliasId = UUID()
+        let expense = Expense(
+            groupId: UUID(),
+            description: "Dinner",
+            totalAmount: 30,
+            paidByMemberId: UUID(),
+            involvedMemberIds: [canonicalId, aliasId],
+            splits: [
+                ExpenseSplit(memberId: canonicalId, amount: 10, isSettled: true),
+                ExpenseSplit(memberId: aliasId, amount: 20, isSettled: true)
+            ]
+        )
+
+        let equivalentIds = Set([canonicalId, aliasId])
+        let summary = SettlementAmountLogic.identitySummary(for: expense) {
+            equivalentIds.contains($0)
+        }
+
+        XCTAssertTrue(summary.isFullySettled)
+        XCTAssertEqual(summary.relationshipAmount, 30, accuracy: 0.001)
+    }
+
     // MARK: - Test Helpers
 
     private func createTestExpense(

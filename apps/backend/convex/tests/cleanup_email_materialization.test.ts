@@ -7,14 +7,10 @@ import {
 } from "../cleanupEmailMaterialization";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
 
 async function finishScheduled(t: ReturnType<typeof convexTest>) {
-  await (
-    t.finishAllScheduledFunctions as (
-      advanceTimers: () => void,
-      maxIterations: number
-    ) => Promise<void>
-  )(vi.runAllTimers, 500);
+  await finishScheduledFunctions(t, 500);
 }
 
 async function runMaterialization(t: ReturnType<typeof convexTest>) {

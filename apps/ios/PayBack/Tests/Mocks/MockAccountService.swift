@@ -9,12 +9,16 @@ actor MockAccountServiceForAppStore: AccountService {
     private var friendSyncHistory: [String: [[AccountFriend]]] = [:] // email -> sync snapshots
     private var shouldFail: Bool = false
     private var shouldFailNextFriendFetch = false
+    private var shouldSuspendNextFriendFetch = false
+    private var friendFetchWaiters: [CheckedContinuation<Void, Never>] = []
+    private var friendFetchContinuation: CheckedContinuation<Void, Never>?
     private var selfDeleteCallCount = 0
     private var shouldFailSelfDelete = false
     private var completedSelfDeletion = false
     private var inProgressSelfDeletion = false
     private var mergeMemberIdCalls: [(source: UUID, target: UUID)] = []
     private var mergeUnlinkedFriendCalls: [(target: String, source: String)] = []
+    private var shouldThrowAfterNextMergeCommit = false
     private var clearFriendsInvocationCount = 0
     private var linkedFriendDeleteInvocationCount = 0
     private var unlinkedFriendDeleteInvocationCount = 0
@@ -75,6 +79,15 @@ actor MockAccountServiceForAppStore: AccountService {
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
+        if shouldSuspendNextFriendFetch {
+            shouldSuspendNextFriendFetch = false
+            let waiters = friendFetchWaiters
+            friendFetchWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+            await withCheckedContinuation { continuation in
+                friendFetchContinuation = continuation
+            }
+        }
         if shouldFailNextFriendFetch {
             shouldFailNextFriendFetch = false
             throw PayBackError.networkUnavailable
@@ -124,18 +137,40 @@ actor MockAccountServiceForAppStore: AccountService {
         shouldFail = fail
     }
 
+    func suspendNextFriendFetch() {
+        shouldSuspendNextFriendFetch = true
+    }
+
+    func waitUntilFriendFetchSuspends() async {
+        guard shouldSuspendNextFriendFetch else { return }
+        await withCheckedContinuation { continuation in
+            friendFetchWaiters.append(continuation)
+        }
+    }
+
+    func resumeFriendFetch() {
+        friendFetchContinuation?.resume()
+        friendFetchContinuation = nil
+    }
+
     func reset() {
         accounts.removeAll()
         friends.removeAll()
         friendSyncHistory.removeAll()
         shouldFail = false
         shouldFailNextFriendFetch = false
+        shouldSuspendNextFriendFetch = false
+        friendFetchWaiters.forEach { $0.resume() }
+        friendFetchWaiters.removeAll()
+        friendFetchContinuation?.resume()
+        friendFetchContinuation = nil
         selfDeleteCallCount = 0
         shouldFailSelfDelete = false
         completedSelfDeletion = false
         inProgressSelfDeletion = false
         mergeMemberIdCalls.removeAll()
         mergeUnlinkedFriendCalls.removeAll()
+        shouldThrowAfterNextMergeCommit = false
         clearFriendsInvocationCount = 0
         linkedFriendDeleteInvocationCount = 0
         unlinkedFriendDeleteInvocationCount = 0
@@ -358,10 +393,22 @@ actor MockAccountServiceForAppStore: AccountService {
             friendList.removeAll { $0.memberId == sourceId }
             friends[email] = friendList
         }
+        if shouldThrowAfterNextMergeCommit {
+            shouldThrowAfterNextMergeCommit = false
+            throw PayBackError.networkUnavailable
+        }
     }
 
     func latestMergeUnlinkedFriendsCall() -> (target: String, source: String)? {
         mergeUnlinkedFriendCalls.last
+    }
+
+    func throwAfterNextMergeCommit() {
+        shouldThrowAfterNextMergeCommit = true
+    }
+
+    func mergeUnlinkedFriendsCallCount() -> Int {
+        mergeUnlinkedFriendCalls.count
     }
 
     func validateAccountIds(_ ids: [String]) async throws -> Set<String> {

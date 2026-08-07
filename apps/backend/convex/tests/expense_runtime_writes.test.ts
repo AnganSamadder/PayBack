@@ -4,6 +4,7 @@ import { api, internal } from "../_generated/api";
 import { Id } from "../_generated/dataModel";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
 
 function identity(email: string, subject: string) {
   return {
@@ -405,7 +406,7 @@ describe("runtime expense writes", () => {
         "Group deletion is in progress"
       );
 
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      await finishScheduledFunctions(t);
       expect(await t.run((ctx) => ctx.db.get(fixture.groupId))).toBeNull();
       expect(await t.run((ctx) => ctx.db.get(canonicalExpenseId))).not.toBeNull();
     } finally {
