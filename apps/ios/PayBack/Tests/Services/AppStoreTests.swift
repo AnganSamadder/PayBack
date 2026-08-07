@@ -358,14 +358,7 @@ final class AppStoreTests: XCTestCase {
             linkedAccountEmail: "alice@example.com"
         )
 
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
-
-        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
-        sut.addGroup(name: "Test", memberNames: ["Alice"])
-        try await Task.sleep(nanoseconds: 200_000_000)
+        sut.processFriendsUpdate([linkedFriend])
 
         let friend = GroupMember(id: memberId, name: "Alice")
 
@@ -373,7 +366,7 @@ final class AppStoreTests: XCTestCase {
         let hasLinked = sut.friendHasLinkedAccount(friend)
 
         // Then
-        XCTAssertFalse(hasLinked) // Not yet synced to local state
+        XCTAssertTrue(hasLinked)
     }
 
     func testLinkedAccountEmail_ReturnsEmailForLinkedFriend() async throws {
@@ -388,19 +381,13 @@ final class AppStoreTests: XCTestCase {
             linkedAccountEmail: email
         )
 
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        _ = UserSession(account: account)
-        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
-
-        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
-        sut.addGroup(name: "Test", memberNames: ["Alice"])
-        try await Task.sleep(nanoseconds: 200_000_000)
+        sut.processFriendsUpdate([linkedFriend])
 
         let friend = GroupMember(id: memberId, name: "Alice")
 
         let linkedEmail = sut.linkedAccountEmail(for: friend)
 
-        XCTAssertNil(linkedEmail)
+        XCTAssertEqual(linkedEmail, email)
     }
 
     func testIsAccountEmailAlreadyLinked_ReturnsTrueForLinkedEmail() async throws {
@@ -414,19 +401,13 @@ final class AppStoreTests: XCTestCase {
             linkedAccountEmail: email
         )
 
-        let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        _ = UserSession(account: account)
-        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
-
-        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [linkedFriend])
-        sut.addGroup(name: "Test", memberNames: ["Alice"])
-        try await Task.sleep(nanoseconds: 200_000_000)
+        sut.processFriendsUpdate([linkedFriend])
 
         // When
         let isLinked = sut.isAccountEmailAlreadyLinked(email: email)
 
         // Then
-        XCTAssertFalse(isLinked) // Not yet synced to local state
+        XCTAssertTrue(isLinked)
     }
 
     // MARK: - Persistence Tests
