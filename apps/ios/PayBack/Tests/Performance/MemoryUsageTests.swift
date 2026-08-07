@@ -49,7 +49,11 @@ final class MemoryUsageTests: XCTestCase {
         options.iterationCount = 5
 
         measure(metrics: [XCTMemoryMetric()], options: options) {
-            let policy = RetryPolicy(maxAttempts: 3, baseDelay: 0.01)
+            let policy = RetryPolicy(
+                maxAttempts: 3,
+                baseDelay: 0.01,
+                sleeper: { _ in }
+            )
 
             let expectation = self.expectation(description: "failing-retries")
 
