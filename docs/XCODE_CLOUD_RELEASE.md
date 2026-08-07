@@ -99,6 +99,11 @@ This document describes the complete Xcode Cloud workflow setup for PayBack.
 
 ## Release Process
 
+Before creating any release tag, update `MARKETING_VERSION` and
+`CURRENT_PROJECT_VERSION` in `project.yml`, run `xcodegen generate`, and merge
+the generated project changes to `main`. The tag version must exactly match the
+committed `MARKETING_VERSION`.
+
 ### Creating an Alpha Release (Internal Testing)
 
 ```bash
@@ -148,9 +153,11 @@ git push origin release-1.0.0
 
 ---
 
-## Version Automation
+## Version Validation
 
-Version numbers are extracted from git tags automatically:
+Xcode Cloud validates the tag against the version already committed in
+`project.yml`. It uses the Xcode Cloud build number for the uploaded build and
+does not mutate or regenerate the project during the cloud build.
 
 | Tag             | Marketing Version | Build Number             |
 | --------------- | ----------------- | ------------------------ |

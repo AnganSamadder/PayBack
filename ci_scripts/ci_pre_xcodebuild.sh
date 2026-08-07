@@ -18,28 +18,24 @@ REPOSITORY_ROOT=$(pwd)
 # ----------------------------------------------------------------------------
 if [[ -n "${CI_TAG:-}" ]]; then
 	MARKETING_VERSION=$(echo "$CI_TAG" | sed -E 's/^(alpha|beta|release|prod)-//')
-	BUILD_NUMBER="$CI_BUILD_NUMBER"
 
 	echo "Tag detected: $CI_TAG"
 	echo "Marketing Version: $MARKETING_VERSION"
-	echo "Build Number: $BUILD_NUMBER"
+	echo "Xcode Cloud Build Number: $CI_BUILD_NUMBER"
 
 	PROJECT_YML="$REPOSITORY_ROOT/project.yml"
-
-	if [[ -f "$PROJECT_YML" ]]; then
-		sed -i.bak "s/MARKETING_VERSION: .*/MARKETING_VERSION: $MARKETING_VERSION/" "$PROJECT_YML"
-		sed -i.bak "s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: $BUILD_NUMBER/" "$PROJECT_YML"
-		rm -f "${PROJECT_YML}.bak"
-
-		echo "Updated project.yml with version $MARKETING_VERSION ($BUILD_NUMBER)"
-
-		cd "$REPOSITORY_ROOT"
-		if command -v bunx >/dev/null 2>&1; then
-			bunx xcodegen generate --spec project.yml
-		elif command -v npx >/dev/null 2>&1; then
-			npx xcodegen generate --spec project.yml
-		fi
+	if [[ ! -f "$PROJECT_YML" ]]; then
+		echo "ERROR: project.yml not found at $PROJECT_YML" >&2
+		exit 1
 	fi
+
+	CONFIGURED_VERSION=$(awk '$1 == "MARKETING_VERSION:" { print $2; exit }' "$PROJECT_YML" | tr -d '"')
+	if [[ "$CONFIGURED_VERSION" != "$MARKETING_VERSION" ]]; then
+		echo "ERROR: Tag version $MARKETING_VERSION does not match project.yml version $CONFIGURED_VERSION" >&2
+		exit 1
+	fi
+
+	echo "project.yml already contains release version $MARKETING_VERSION"
 fi
 
 # ----------------------------------------------------------------------------
