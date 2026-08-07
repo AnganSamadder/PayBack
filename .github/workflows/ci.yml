@@ -49,7 +49,9 @@ jobs:
         run: bun run typecheck
 
       - name: Test CI scripts
-        run: bash scripts/tests/check-sanitizer-output.test.sh
+        run: |
+          bash scripts/tests/check-sanitizer-output.test.sh
+          bash scripts/tests/ci-pre-xcodebuild.test.sh
 
   # ──────────────────────────────────────────────────────────────
   # Tier 2a — Linux jobs (cheap, parallel)
