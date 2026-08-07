@@ -28,6 +28,7 @@ final class GroupMemberDeletionTests: XCTestCase {
             groupCloudService: mockGroupCloudService,
             linkRequestService: mockLinkRequestService,
             inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
             skipClerkInit: true
         )
     }
