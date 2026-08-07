@@ -9,6 +9,7 @@ echo "CI_BUILD_NUMBER: ${CI_BUILD_NUMBER:-none}"
 echo "CI_WORKFLOW: ${CI_WORKFLOW:-none}"
 
 cd "$(dirname "$0")/.."
+REPOSITORY_ROOT=$(pwd)
 
 # ----------------------------------------------------------------------------
 # Version Extraction from Tag
@@ -23,7 +24,7 @@ if [[ -n "${CI_TAG:-}" ]]; then
 	echo "Marketing Version: $MARKETING_VERSION"
 	echo "Build Number: $BUILD_NUMBER"
 
-	PROJECT_YML="$CI_PRIMARY_REPOSITORY_PATH/project.yml"
+	PROJECT_YML="$REPOSITORY_ROOT/project.yml"
 
 	if [[ -f "$PROJECT_YML" ]]; then
 		sed -i.bak "s/MARKETING_VERSION: .*/MARKETING_VERSION: $MARKETING_VERSION/" "$PROJECT_YML"
@@ -32,7 +33,7 @@ if [[ -n "${CI_TAG:-}" ]]; then
 
 		echo "Updated project.yml with version $MARKETING_VERSION ($BUILD_NUMBER)"
 
-		cd "$CI_PRIMARY_REPOSITORY_PATH"
+		cd "$REPOSITORY_ROOT"
 		if command -v bunx >/dev/null 2>&1; then
 			bunx xcodegen generate --spec project.yml
 		elif command -v npx >/dev/null 2>&1; then
