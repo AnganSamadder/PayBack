@@ -439,8 +439,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         _ = UserSession(account: account)
 
         // Complete authentication first to establish currentUser
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let alice1 = GroupMember(name: "Alice")
         let alice2 = GroupMember(name: "Alice") // Alias
@@ -495,8 +494,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         await mockExpenseCloudService.addExpense(expense3)
 
         // When: Trigger reload (triggers normalization)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 seconds for complex data
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         // Then: Data should be loaded and normalized
         XCTAssertGreaterThanOrEqual(sut.expenses.count, 1, "Should have loaded expenses")
