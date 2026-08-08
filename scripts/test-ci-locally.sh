@@ -409,6 +409,7 @@ if [ "$EFFECTIVE_PARALLEL_TESTING" = "YES" ] && [ -n "$PAYBACK_MAX_PARALLEL_TEST
 	PARALLEL_FLAG="$PARALLEL_FLAG -maximum-parallel-testing-workers $PAYBACK_MAX_PARALLEL_TEST_WORKERS"
 fi
 TSAN_OPTIONS_ENV=""
+TEST_SELECTION_FLAGS="$("$PROJECT_ROOT/scripts/ios-test-selection-flags.sh" "$SANITIZER")"
 if [ "$SANITIZER" = "none" ]; then
 	SANITIZER_FLAGS="-enableCodeCoverage YES"
 elif [ "$SANITIZER" = "thread" ]; then
@@ -484,6 +485,7 @@ if [ "$XCODECLOUD_MODE" = true ]; then
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $DERIVED_DATA_ARG \
     $PARALLEL_FLAG \
+    $TEST_SELECTION_FLAGS \
     -resultBundlePath TestResults.xcresult"
 else
 	# Standard mode: single xcodebuild test command (matches CI)
@@ -498,6 +500,7 @@ else
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $SANITIZER_FLAGS \
     $PARALLEL_FLAG \
+    $TEST_SELECTION_FLAGS \
     -resultBundlePath TestResults.xcresult"
 fi
 
