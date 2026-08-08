@@ -8,6 +8,13 @@ echo "CI_TAG: ${CI_TAG:-none}"
 echo "CI_BUILD_NUMBER: ${CI_BUILD_NUMBER:-none}"
 echo "CI_WORKFLOW: ${CI_WORKFLOW:-none}"
 
+if [ "${CI_XCODEBUILD_ACTION:-}" != "archive" ]; then
+	echo "Skipping archive-only release validation for ${CI_XCODEBUILD_ACTION:-unknown} action"
+	echo "ci_pre_xcodebuild.sh complete"
+	echo "=========================================="
+	exit 0
+fi
+
 cd "$(dirname "$0")/.."
 REPOSITORY_ROOT=$(pwd)
 
