@@ -52,6 +52,7 @@ jobs:
         run: |
           bash scripts/tests/check-sanitizer-output.test.sh
           bash scripts/tests/ci-pre-xcodebuild.test.sh
+          bash scripts/tests/ios-test-selection-flags.test.sh
 
   # ──────────────────────────────────────────────────────────────
   # Tier 2a — Linux jobs (cheap, parallel)
@@ -595,6 +596,7 @@ jobs:
         if: matrix.run_on_pr == true || github.event_name == 'push'
         id: test-flags
         run: |
+          echo "test_selection_flags=$(scripts/ios-test-selection-flags.sh '${{ matrix.sanitizer }}')" >> $GITHUB_OUTPUT
           if [ "${{ matrix.sanitizer }}" = "thread" ]; then
             echo "sanitizer_flag=-enableThreadSanitizer YES" >> $GITHUB_OUTPUT
             echo "coverage_flag=" >> $GITHUB_OUTPUT
@@ -630,6 +632,7 @@ jobs:
             -resultBundlePath TestResults.xcresult \
             ${{ steps.test-flags.outputs.sanitizer_flag }} \
             ${{ steps.test-flags.outputs.coverage_flag }} \
+            ${{ steps.test-flags.outputs.test_selection_flags }} \
             2>&1 | tee test-output.txt
         env:
           NSUnbufferedIO: "YES"
