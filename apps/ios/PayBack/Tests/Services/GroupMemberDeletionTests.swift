@@ -247,17 +247,11 @@ final class GroupMemberDeletionTests: XCTestCase {
     // MARK: - Cloud acknowledgement and rollback
 
     func testGroupViewsPresentCloudMutationFailures() throws {
-        let payBackDirectory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let groupsListSource = try String(
-            contentsOf: payBackDirectory.appendingPathComponent("Sources/Features/Groups/GroupsListView.swift"),
-            encoding: .utf8
+        let groupsListSource = try SourceFixture.contents(
+            at: "Sources/Features/Groups/GroupsListView.swift"
         )
-        let groupDetailSource = try String(
-            contentsOf: payBackDirectory.appendingPathComponent("Sources/Features/Groups/GroupDetailView.swift"),
-            encoding: .utf8
+        let groupDetailSource = try SourceFixture.contents(
+            at: "Sources/Features/Groups/GroupDetailView.swift"
         )
 
         XCTAssertTrue(groupsListSource.contains("try await store.deleteGroups"))
@@ -268,9 +262,8 @@ final class GroupMemberDeletionTests: XCTestCase {
         XCTAssertTrue(groupDetailSource.contains(".allowsHitTesting(!isUpdatingGroup)"))
         XCTAssertTrue(groupDetailSource.contains("ProgressView(\"Updating group…\")"))
 
-        let appStoreSource = try String(
-            contentsOf: payBackDirectory.appendingPathComponent("Sources/Services/State/AppStore.swift"),
-            encoding: .utf8
+        let appStoreSource = try SourceFixture.contents(
+            at: "Sources/Services/State/AppStore.swift"
         )
         XCTAssertTrue(appStoreSource.contains("groupCloudService.removeMemberFromGroup"))
     }

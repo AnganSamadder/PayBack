@@ -14,6 +14,7 @@
 		029621A60FC347E8EC491949 /* EmailValidatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F45BB3B4078A680BE7D260A2 /* EmailValidatorTests.swift */; };
 		02A9BDD8F9E9A9688FFA6DA4 /* AppStoreSettlementEdgeCasesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40630637ADB9921D6CA233B3 /* AppStoreSettlementEdgeCasesTests.swift */; };
 		02DA0EEDCE9DED1F99D38090 /* metrics_template.csv in Resources */ = {isa = PBXBuildFile; fileRef = AFAED94382E80DC702F256BE /* metrics_template.csv */; };
+		02E279F845C63CA4AC930519 /* SourceFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4694289BC8DE65EA854AD54C /* SourceFixture.swift */; };
 		0466734F95A4513D7F050558 /* SignupViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AEFBDA3414831919896FB4E /* SignupViewTests.swift */; };
 		048E2B39F61F67994F440E2C /* UserAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5717A22E4AAD8CD7A14ED7D /* UserAccount.swift */; };
 		04B113CDCEE47F46770947BA /* FriendsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BDA8B0A8AF582C2E1CBE990 /* FriendsTabView.swift */; };
@@ -130,6 +131,7 @@
 		47383A58654762DA21F69FCB /* AppStoreDataNormalizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C0166AE6D51E4712BBA9180 /* AppStoreDataNormalizationTests.swift */; };
 		487A2075DC7C73DCF2C2B03E /* LinkStateReconciliationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B17BE28CDE16EE29A18A323 /* LinkStateReconciliationTests.swift */; };
 		4A666772E1249EB0CF1A08BC /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 197A2B9C5F8F5B679EBA5627 /* ActivityView.swift */; };
+		4A67795DDBF351B8B9C45AD6 /* SourceFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FD69024627368875B1C88CA /* SourceFixtureTests.swift */; };
 		4BD63B213C7A3C656EDE5B6F /* PayBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17A3BE8746AD4D48BDCB0C1E /* PayBackTests.swift */; };
 		4BD9ACD5EE658D1E066962D4 /* InviteDataPopulationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 302B806511ECBF6DB0275D55 /* InviteDataPopulationTests.swift */; };
 		4BF4240CE243E9F9EA57DFA9 /* LinkRequestService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0143659E678920CB7777834 /* LinkRequestService.swift */; };
@@ -242,6 +244,7 @@
 		8991FEB68B56E39AB23015CF /* XCTest+Async.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B716DF6C753362E081C4E53 /* XCTest+Async.swift */; };
 		89FE755374B3DE091972AE6B /* EmailValidatorExtendedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 969ADA34691DAABA5441C015 /* EmailValidatorExtendedTests.swift */; };
 		8A8B83BF4F1BA0AA524D8FD8 /* LinkingModelsExtendedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E8607213FB43A8CD702A10 /* LinkingModelsExtendedTests.swift */; };
+		8B5186204DD1DDDC841CA715 /* SourceFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FD69024627368875B1C88CA /* SourceFixtureTests.swift */; };
 		8B9C49091E017D53713586DE /* AppStoreBalanceExtendedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98F427750E9430EC0BF9920E /* AppStoreBalanceExtendedTests.swift */; };
 		8BF8EB213F51D8BC991DFC21 /* PhoneAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDA3E6B62DA262910AA5CADB /* PhoneAuthService.swift */; };
 		8BFFBBCEDDC324537E640D4D /* UserAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5717A22E4AAD8CD7A14ED7D /* UserAccount.swift */; };
@@ -451,6 +454,7 @@
 		F33DBD392DFE6F7232461437 /* RetryPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2EEAB9077F4A19C50DD93B /* RetryPolicyTests.swift */; };
 		F3425882EB6E5B26C8A8AFDB /* LinkingModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85516C61396B85FE8F675EB9 /* LinkingModels.swift */; };
 		F36C3AEA84E1C1E295FBBB0F /* NavigationTransitionSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D4E113943C9D1F69EDF783D /* NavigationTransitionSettingsTests.swift */; };
+		F4008F7F34B4F5F4B631C8C7 /* SourceFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4694289BC8DE65EA854AD54C /* SourceFixture.swift */; };
 		F489DDA98239B35195B19EF2 /* ConvexInviteLinkService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102036A9B91896A6E8315357 /* ConvexInviteLinkService.swift */; };
 		F48AB79B626A97E8034C7841 /* ConvexRevisionedSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13EBE90C783FA6BD35614AF4 /* ConvexRevisionedSync.swift */; };
 		F4AA7FF087870FB4BA68CA9F /* InviteLinkService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230D91E194DB7716254085D4 /* InviteLinkService.swift */; };
@@ -510,6 +514,7 @@
 		0DEEE08CB9798C9737AD7700 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		0E46479AB9B1ACE4165FC0C3 /* SmartIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartIcon.swift; sourceTree = "<group>"; };
 		0E9B24B6561666A6E61B05E7 /* BulkImportEdgeCaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BulkImportEdgeCaseTests.swift; sourceTree = "<group>"; };
+		0FD69024627368875B1C88CA /* SourceFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceFixtureTests.swift; sourceTree = "<group>"; };
 		102036A9B91896A6E8315357 /* ConvexInviteLinkService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvexInviteLinkService.swift; sourceTree = "<group>"; };
 		104ABE14A97B8A00D7A3BCFD /* EmailAuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailAuthServiceTests.swift; sourceTree = "<group>"; };
 		113851BAEAD1EADFEE916193 /* ClerkAuthProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClerkAuthProvider.swift; sourceTree = "<group>"; };
@@ -563,6 +568,7 @@
 		44DC8C435AB86C92B1C7D259 /* PayBack.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PayBack.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		456EBFF34CFB76014B0AB3BD /* PhoneAuthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAuthServiceTests.swift; sourceTree = "<group>"; };
 		4619114BBBC6F2F215EB0321 /* ErrorPropagationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorPropagationTests.swift; sourceTree = "<group>"; };
+		4694289BC8DE65EA854AD54C /* SourceFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceFixture.swift; sourceTree = "<group>"; };
 		470EEC7D42D40A275EF2B960 /* AuthFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthFlowView.swift; sourceTree = "<group>"; };
 		48C32E0D19191E93F00A9273 /* FilteringPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilteringPerformanceTests.swift; sourceTree = "<group>"; };
 		49D7C53DAB1E7F54FE02BDCC /* DetailContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailContainer.swift; sourceTree = "<group>"; };
@@ -826,6 +832,8 @@
 			isa = PBXGroup;
 			children = (
 				79B960C8E7DBE3D555716AE1 /* ExpenseBuilder.swift */,
+				4694289BC8DE65EA854AD54C /* SourceFixture.swift */,
+				0FD69024627368875B1C88CA /* SourceFixtureTests.swift */,
 				8394D3CAB8B80195DB4C6A89 /* TestHelpers.swift */,
 				5B716DF6C753362E081C4E53 /* XCTest+Async.swift */,
 			);
@@ -1433,6 +1441,7 @@
 			buildPhases = (
 				9B903DF83EB878005793C975 /* Sources */,
 				38E17DD4383171F2B58873F3 /* Resources */,
+				EC80296D6A95273937D4D474 /* Bundle Source Scan Fixtures */,
 			);
 			buildRules = (
 			);
@@ -1452,6 +1461,7 @@
 			buildPhases = (
 				AC11E2522C81FF881F1EE7DD /* Sources */,
 				7A59EA64F946EA439B3DAB1D /* Resources */,
+				DC7797C3B137F4982ECE1464 /* Bundle Source Scan Fixtures */,
 			);
 			buildRules = (
 			);
@@ -1643,6 +1653,58 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "set -euo pipefail\n\n# Safety check: only deploy when explicitly enabled\nif [ \"${CONVEX_DEPLOY_ON_CI:-}\" != \"1\" ]; then\n  echo \"Convex deploy disabled (CONVEX_DEPLOY_ON_CI != 1). Skipping.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\n# Guardrail: never deploy backend from non-production app configs.\n# Internal/Debug app builds should not push server changes.\nif [ \"${CONFIGURATION:-}\" != \"Release\" ]; then\n  echo \"Convex deploy skipped for CONFIGURATION=${CONFIGURATION:-unset} (only Release deploys backend).\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\n# Verify deploy key is available\nif [ -z \"${CONVEX_DEPLOY_KEY:-}\" ]; then\n  echo \"warning: CONVEX_DEPLOY_KEY not set. Skipping Convex deploy.\"\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\n  exit 0\nfi\n\nexport PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\"\n\n# Try to find bunx/npx via nvm (local dev) or Homebrew (XcodeCloud)\nexport NVM_DIR=\"$HOME/.nvm\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\nelif [ -d \"$NVM_DIR/versions/node\" ]; then\n  LATEST_NODE=$(ls -rd \"$NVM_DIR/versions/node\"/v* 2>/dev/null | head -n 1)\n  if [ -n \"$LATEST_NODE\" ]; then\n    export PATH=\"$LATEST_NODE/bin:$PATH\"\n  fi\nfi\n\nif command -v bunx >/dev/null 2>&1; then\n  echo \"Deploying Convex backend...\"\n  bunx convex deploy -y --cmd 'echo \"Backend deploy successful\"'\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\nelif command -v npx >/dev/null 2>&1; then\n  echo \"Deploying Convex backend...\"\n  npx convex deploy -y --cmd 'echo \\\"Backend deploy successful\\\"'\n  touch \"$DERIVED_FILE_DIR/convex_sync_timestamp\"\nelse\n  echo \"error: bunx and npx not found in PATH. Cannot deploy Convex backend.\"\n  echo \"PATH: $PATH\"\n  exit 1\nfi\n";
+		};
+		DC7797C3B137F4982ECE1464 /* Bundle Source Scan Fixtures */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/apps/ios/PayBack/Sources/Services/State/AppStore.swift",
+				"$(SRCROOT)/apps/ios/PayBack/Sources/Services/Convex/ConvexGroupService.swift",
+				"$(SRCROOT)/apps/ios/PayBack/Sources/Features/Groups/GroupDetailView.swift",
+				"$(SRCROOT)/apps/ios/PayBack/Sources/Features/Groups/GroupsListView.swift",
+			);
+			name = "Bundle Source Scan Fixtures";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/AppStore.swift.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ConvexGroupService.swift.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GroupDetailView.swift.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GroupsListView.swift.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nfixture_dir=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nmkdir -p \"$fixture_dir\"\ncp \"$SRCROOT/apps/ios/PayBack/Sources/Services/State/AppStore.swift\" \"$fixture_dir/AppStore.swift.txt\"\ncp \"$SRCROOT/apps/ios/PayBack/Sources/Services/Convex/ConvexGroupService.swift\" \"$fixture_dir/ConvexGroupService.swift.txt\"\ncp \"$SRCROOT/apps/ios/PayBack/Sources/Features/Groups/GroupDetailView.swift\" \"$fixture_dir/GroupDetailView.swift.txt\"\ncp \"$SRCROOT/apps/ios/PayBack/Sources/Features/Groups/GroupsListView.swift\" \"$fixture_dir/GroupsListView.swift.txt\"\n";
+		};
+		EC80296D6A95273937D4D474 /* Bundle Source Scan Fixtures */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/apps/ios/PayBack/Sources/Services/State/AppStore.swift",
+				"$(SRCROOT)/apps/ios/PayBack/Sources/Services/Convex/ConvexGroupService.swift",
+				"$(SRCROOT)/apps/ios/PayBack/Sources/Features/Groups/GroupDetailView.swift",
+				"$(SRCROOT)/apps/ios/PayBack/Sources/Features/Groups/GroupsListView.swift",
+			);
+			name = "Bundle Source Scan Fixtures";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/AppStore.swift.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ConvexGroupService.swift.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GroupDetailView.swift.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GroupsListView.swift.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nfixture_dir=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nmkdir -p \"$fixture_dir\"\ncp \"$SRCROOT/apps/ios/PayBack/Sources/Services/State/AppStore.swift\" \"$fixture_dir/AppStore.swift.txt\"\ncp \"$SRCROOT/apps/ios/PayBack/Sources/Services/Convex/ConvexGroupService.swift\" \"$fixture_dir/ConvexGroupService.swift.txt\"\ncp \"$SRCROOT/apps/ios/PayBack/Sources/Features/Groups/GroupDetailView.swift\" \"$fixture_dir/GroupDetailView.swift.txt\"\ncp \"$SRCROOT/apps/ios/PayBack/Sources/Features/Groups/GroupsListView.swift\" \"$fixture_dir/GroupsListView.swift.txt\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -1868,6 +1930,8 @@
 				E3732A559287438FD2DB677D /* SettlementLogicTests.swift in Sources */,
 				0466734F95A4513D7F050558 /* SignupViewTests.swift in Sources */,
 				BBEBB5F9E321220ACF7D5E9E /* SmartIconTests.swift in Sources */,
+				F4008F7F34B4F5F4B631C8C7 /* SourceFixture.swift in Sources */,
+				8B5186204DD1DDDC841CA715 /* SourceFixtureTests.swift in Sources */,
 				E35BE6589DB9D7C34660C318 /* SpendingGroupTests.swift in Sources */,
 				1B285C78202C7397E1CF856D /* SplitCalculationPerformanceTests.swift in Sources */,
 				2D04A34E469AAD6679A9088B /* SplitInvariantsTests.swift in Sources */,
@@ -2007,6 +2071,8 @@
 				C184A918B5684092C6C6E1DE /* SettlementLogicTests.swift in Sources */,
 				6FAF535689CDC10CDDEC30F8 /* SignupViewTests.swift in Sources */,
 				B4CA3FFBFAE0638830BE4424 /* SmartIconTests.swift in Sources */,
+				02E279F845C63CA4AC930519 /* SourceFixture.swift in Sources */,
+				4A67795DDBF351B8B9C45AD6 /* SourceFixtureTests.swift in Sources */,
 				C9E5874E544DD7B72E56E4BD /* SpendingGroupTests.swift in Sources */,
 				A25828D200520365BCCC7EAD /* SplitCalculationPerformanceTests.swift in Sources */,
 				8C0598C88826FD27F8FD3AA6 /* SplitInvariantsTests.swift in Sources */,
@@ -2207,7 +2273,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 99;
+				CURRENT_PROJECT_VERSION = 100;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -2229,7 +2295,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 0.1.5;
+				MARKETING_VERSION = 0.1.6;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -2277,7 +2343,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 99;
+				CURRENT_PROJECT_VERSION = 100;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -2294,7 +2360,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 0.1.5;
+				MARKETING_VERSION = 0.1.6;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -2418,7 +2484,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 99;
+				CURRENT_PROJECT_VERSION = 100;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 39YTAJZTZ6;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -2435,7 +2501,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 0.1.5;
+				MARKETING_VERSION = 0.1.6;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

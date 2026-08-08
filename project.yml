@@ -106,8 +106,8 @@ settings:
   base:
     SWIFT_VERSION: "5.10"
     IPHONEOS_DEPLOYMENT_TARGET: "18.0"
-    MARKETING_VERSION: 0.1.5
-    CURRENT_PROJECT_VERSION: 99
+    MARKETING_VERSION: 0.1.6
+    CURRENT_PROJECT_VERSION: 100
     DEVELOPMENT_TEAM: "39YTAJZTZ6"
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
     ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -470,6 +470,28 @@ targets:
     sources:
       - path: apps/ios/PayBack/Tests
 
+    postBuildScripts:
+      - name: Bundle Source Scan Fixtures
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - $(SRCROOT)/apps/ios/PayBack/Sources/Services/State/AppStore.swift
+          - $(SRCROOT)/apps/ios/PayBack/Sources/Services/Convex/ConvexGroupService.swift
+          - $(SRCROOT)/apps/ios/PayBack/Sources/Features/Groups/GroupDetailView.swift
+          - $(SRCROOT)/apps/ios/PayBack/Sources/Features/Groups/GroupsListView.swift
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/AppStore.swift.txt
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ConvexGroupService.swift.txt
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GroupDetailView.swift.txt
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GroupsListView.swift.txt
+        script: |
+          set -eu
+          fixture_dir="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+          mkdir -p "$fixture_dir"
+          cp "$SRCROOT/apps/ios/PayBack/Sources/Services/State/AppStore.swift" "$fixture_dir/AppStore.swift.txt"
+          cp "$SRCROOT/apps/ios/PayBack/Sources/Services/Convex/ConvexGroupService.swift" "$fixture_dir/ConvexGroupService.swift.txt"
+          cp "$SRCROOT/apps/ios/PayBack/Sources/Features/Groups/GroupDetailView.swift" "$fixture_dir/GroupDetailView.swift.txt"
+          cp "$SRCROOT/apps/ios/PayBack/Sources/Features/Groups/GroupsListView.swift" "$fixture_dir/GroupsListView.swift.txt"
+
     dependencies:
       - target: PayBack
         # embed: false
@@ -567,6 +589,28 @@ targets:
           - "Services/DependenciesExtendedTests.swift"
           - "Services/ClerkAuthProviderTests.swift"
           - "Services/ClerkAuthProviderExtendedTests.swift"
+
+    postBuildScripts:
+      - name: Bundle Source Scan Fixtures
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - $(SRCROOT)/apps/ios/PayBack/Sources/Services/State/AppStore.swift
+          - $(SRCROOT)/apps/ios/PayBack/Sources/Services/Convex/ConvexGroupService.swift
+          - $(SRCROOT)/apps/ios/PayBack/Sources/Features/Groups/GroupDetailView.swift
+          - $(SRCROOT)/apps/ios/PayBack/Sources/Features/Groups/GroupsListView.swift
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/AppStore.swift.txt
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ConvexGroupService.swift.txt
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GroupDetailView.swift.txt
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GroupsListView.swift.txt
+        script: |
+          set -eu
+          fixture_dir="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+          mkdir -p "$fixture_dir"
+          cp "$SRCROOT/apps/ios/PayBack/Sources/Services/State/AppStore.swift" "$fixture_dir/AppStore.swift.txt"
+          cp "$SRCROOT/apps/ios/PayBack/Sources/Services/Convex/ConvexGroupService.swift" "$fixture_dir/ConvexGroupService.swift.txt"
+          cp "$SRCROOT/apps/ios/PayBack/Sources/Features/Groups/GroupDetailView.swift" "$fixture_dir/GroupDetailView.swift.txt"
+          cp "$SRCROOT/apps/ios/PayBack/Sources/Features/Groups/GroupsListView.swift" "$fixture_dir/GroupsListView.swift.txt"
 
     dependencies:
       - target: PayBackCI

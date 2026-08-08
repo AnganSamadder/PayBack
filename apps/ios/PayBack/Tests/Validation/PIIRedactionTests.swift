@@ -317,13 +317,9 @@ final class PIIRedactionTests: XCTestCase {
     }
 
     func test_appStoreAuthDebugPrintsAreDebugOnly() throws {
-        let payBackDirectory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let sourceURL = payBackDirectory
-            .appendingPathComponent("Sources/Services/State/AppStore.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let source = try SourceFixture.contents(
+            at: "Sources/Services/State/AppStore.swift"
+        )
 
         var debugOnlyBranches: [Bool] = []
         var unguardedLines: [Int] = []
@@ -350,13 +346,9 @@ final class PIIRedactionTests: XCTestCase {
     }
 
     func test_groupDetailDoesNotLogFinancialDetails() throws {
-        let payBackDirectory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let sourceURL = payBackDirectory
-            .appendingPathComponent("Sources/Features/Groups/GroupDetailView.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let source = try SourceFixture.contents(
+            at: "Sources/Features/Groups/GroupDetailView.swift"
+        )
 
         XCTAssertFalse(source.contains("print("), "Group details must not be written to stdout")
     }
