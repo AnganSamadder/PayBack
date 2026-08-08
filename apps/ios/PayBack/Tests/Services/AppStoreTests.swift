@@ -812,8 +812,7 @@ final class AppStoreTests: XCTestCase {
     func testFriendMembers_DedupesIdentityEquivalentLinkedFriendAndGroupMember() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        sut.session = UserSession(account: account)
 
         let linkedMemberId = UUID()
         let canonicalMemberId = UUID()
@@ -827,7 +826,7 @@ final class AppStoreTests: XCTestCase {
             aliasMemberIds: [linkedMemberId, canonicalMemberId]
         )
 
-        sut.friends = [linkedFriend]
+        sut.processFriendsUpdate([linkedFriend])
         sut.groups = [
             SpendingGroup(
                 name: "Alias Group",
@@ -837,10 +836,6 @@ final class AppStoreTests: XCTestCase {
                 ]
             )
         ]
-
-        // Build alias map through normal dedupe pipeline.
-        sut.updateGroup(sut.groups[0])
-        try await Task.sleep(nanoseconds: 300_000_000)
 
         // When
         let visibleTestUsers = sut.friendMembers.filter { $0.name == "Test User" }
