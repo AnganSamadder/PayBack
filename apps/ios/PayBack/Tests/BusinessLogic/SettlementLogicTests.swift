@@ -11,13 +11,9 @@ import XCTest
 /// Related Requirements: R2
 final class SettlementLogicTests: XCTestCase {
     func testGroupSettleModalKeepsFailedBatchVisibleWithActionableError() throws {
-        let payBackDirectory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let sourceURL = payBackDirectory
-            .appendingPathComponent("Sources/Features/Groups/GroupDetailView.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let source = try SourceFixture.contents(
+            at: "Sources/Features/Groups/GroupDetailView.swift"
+        )
         let settlementFunction = try XCTUnwrap(
             source.components(separatedBy: "private func settleSelectedExpenses() async {").last?
                 .components(separatedBy: "// MARK: - AddGroupMemberSheet").first

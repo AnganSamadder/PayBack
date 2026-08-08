@@ -246,14 +246,8 @@ final class ConvexGroupServiceTests: XCTestCase {
     }
 
     func testConvexGroupService_UsesAtomicMemberRemovalMutation() throws {
-        let payBackDirectory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let source = try String(
-            contentsOf: payBackDirectory
-                .appendingPathComponent("Sources/Services/Convex/ConvexGroupService.swift"),
-            encoding: .utf8
+        let source = try SourceFixture.contents(
+            at: "Sources/Services/Convex/ConvexGroupService.swift"
         )
 
         XCTAssertTrue(source.contains("groups:removeMemberAndExpenses"))
