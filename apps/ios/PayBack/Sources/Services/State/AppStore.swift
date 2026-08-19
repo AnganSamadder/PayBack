@@ -79,6 +79,7 @@ final class AppStore: ObservableObject {
     private let linkRequestService: LinkRequestService
     private let inviteLinkService: InviteLinkService
     private let emailAuthService: EmailAuthService
+    private let environment: ConvexEnvironment
     private let skipClerkInit: Bool
     private let authenticationSessionLoader: @Sendable () async throws -> AuthenticationSessionIdentity?
     private let convexAuthenticator: @Sendable () async throws -> Void
@@ -152,6 +153,7 @@ final class AppStore: ObservableObject {
         linkRequestService: LinkRequestService = Dependencies.current.linkRequestService,
         inviteLinkService: InviteLinkService = Dependencies.current.inviteLinkService,
         emailAuthService: EmailAuthService = Dependencies.current.emailAuthService,
+        environment: ConvexEnvironment = AppConfig.environment,
         retryPolicy: RetryPolicy = .linkingDefault,
         skipClerkInit: Bool = false,
         authenticationSessionLoader: (@Sendable () async throws -> AuthenticationSessionIdentity?)? = nil,
@@ -166,6 +168,7 @@ final class AppStore: ObservableObject {
         self.linkRequestService = linkRequestService
         self.inviteLinkService = inviteLinkService
         self.emailAuthService = emailAuthService
+        self.environment = environment
         self.retryPolicy = retryPolicy
         self.skipClerkInit = skipClerkInit
         self.authenticationSessionLoader = authenticationSessionLoader ?? {
@@ -192,10 +195,20 @@ final class AppStore: ObservableObject {
         let localData = persistence.load()
         AppConfig.markTiming("Persistence loaded (\(localData.groups.count) groups, \(localData.expenses.count) expenses)")
 
-        self.groups = localData.groups
-        self.expenses = localData.expenses
+        let localGroups = environment == .production
+            ? localData.groups.filter { $0.isDebug != true }
+            : localData.groups
+        let localExpenses = environment == .production
+            ? localData.expenses.filter { !$0.isDebug }
+            : localData.expenses
+        self.groups = localGroups
+        self.expenses = localExpenses
         self.friends = []
         self.currentUser = GroupMember(name: "You", isCurrentUser: true)
+
+        if localGroups.count != localData.groups.count || localExpenses.count != localData.expenses.count {
+            persistence.save(AppData(groups: localGroups, expenses: localExpenses))
+        }
 
         // One-time migration: showRealNames → preferNicknames/preferWholeNames
         Self.migrateDisplayNameSettings()
@@ -392,7 +405,8 @@ final class AppStore: ObservableObject {
                 guard self.session != nil, self.hasCompletedInitialRemoteLoad else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenGroupIds = Set<UUID>()
-                let uniqueGroups = remoteGroups.filter { seenGroupIds.insert($0.id).inserted }
+                let uniqueGroups = self.productionVisibleGroups(remoteGroups)
+                    .filter { seenGroupIds.insert($0.id).inserted }
 
                 // Only log if count changes to reduce noise
                 let previousCount = self.groups.count
@@ -422,7 +436,8 @@ final class AppStore: ObservableObject {
                 guard self.session != nil, self.hasCompletedInitialRemoteLoad else { return }
                 // Deduplicate by ID to prevent SwiftUI ForEach errors
                 var seenExpenseIds = Set<UUID>()
-                let uniqueExpenses = remoteExpenses.filter { seenExpenseIds.insert($0.id).inserted }
+                let uniqueExpenses = self.productionVisibleExpenses(remoteExpenses)
+                    .filter { seenExpenseIds.insert($0.id).inserted }
 
                 let previousCount = self.expenses.count
                 self.expenses = self.mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: uniqueExpenses)
@@ -2392,16 +2407,23 @@ func completeAuthentication(id: String, email: String, name: String?) {
         print("[AppStore] Starting remote data fetch...")
         #endif
 
+        scheduleProductionDebugCleanup(context: context)
+
         do {
-            try? await expenseCloudService.clearLegacyMockExpenses()
+            if environment != .production {
+                try? await expenseCloudService.clearLegacyMockExpenses()
+            }
             guard isCurrentRemoteLoad(context) else { return }
 
-            let remoteGroups = try await groupCloudService.fetchGroups()
+            let fetchedGroups = try await groupCloudService.fetchGroups()
             guard isCurrentRemoteLoad(context) else { return }
-            let remoteExpenses = try await expenseCloudService.fetchExpenses()
+            let fetchedExpenses = try await expenseCloudService.fetchExpenses()
             guard isCurrentRemoteLoad(context) else { return }
             let remoteFriends = try await accountService.fetchFriends(accountEmail: context.accountEmail)
             guard isCurrentRemoteLoad(context) else { return }
+
+            let remoteGroups = productionVisibleGroups(fetchedGroups)
+            let remoteExpenses = productionVisibleExpenses(fetchedExpenses)
 
             #if DEBUG
             print("[AppStore] Fetched \(remoteGroups.count) groups and \(remoteExpenses.count) expenses from cloud")
@@ -2482,6 +2504,27 @@ func completeAuthentication(id: String, email: String, name: String?) {
     private func persistCurrentState() {
         let appData = AppData(groups: groups, expenses: expenses)
         persistence.save(appData)
+    }
+
+    @MainActor
+    private func scheduleProductionDebugCleanup(context: RemoteLoadContext) {
+        guard environment == .production else { return }
+        Task { @MainActor [weak self] in
+            guard let self, self.isCurrentRemoteLoad(context) else { return }
+            async let groupCleanup: Void? = try? self.groupCloudService.deleteDebugGroups()
+            async let expenseCleanup: Void? = try? self.expenseCloudService.deleteDebugExpenses()
+            _ = await (groupCleanup, expenseCleanup)
+        }
+    }
+
+    private func productionVisibleGroups(_ remoteGroups: [SpendingGroup]) -> [SpendingGroup] {
+        guard environment == .production else { return remoteGroups }
+        return remoteGroups.filter { $0.isDebug != true }
+    }
+
+    private func productionVisibleExpenses(_ remoteExpenses: [Expense]) -> [Expense] {
+        guard environment == .production else { return remoteExpenses }
+        return remoteExpenses.filter { !$0.isDebug }
     }
 
     private func normalizedRemoteData(groups: [SpendingGroup], expenses: [Expense]) -> NormalizedRemoteData {
@@ -3529,6 +3572,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Adds a debug expense that will be flagged for easy cleanup
     func addDebugExpense(_ expense: Expense) {
+        guard environment == .development else { return }
         var debugExpense = expense
         debugExpense.isDebug = true
         expenses.append(debugExpense)
@@ -3541,6 +3585,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     /// Adds a debug group that will be flagged for easy cleanup
     func addExistingDebugGroup(_ group: SpendingGroup) {
+        guard environment == .development else { return }
         guard !groups.contains(where: { $0.id == group.id }) else { return }
 
         var debugGroup = group

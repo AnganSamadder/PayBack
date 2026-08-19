@@ -28,4 +28,8 @@ final class MockPersistenceService: PersistenceServiceProtocol {
         storage = AppData(groups: [], expenses: [])
         shouldFail = false
     }
+
+    func storedData() -> AppData {
+        storage
+    }
 }

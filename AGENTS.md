@@ -618,6 +618,21 @@ All group deletions (`deleteGroup`, `deleteGroups`, clear/leave flows removing w
 - iOS must await that single mutation; never sequence a group upsert followed by separate expense deletions.
 - Optimistic rollback must be account/data-epoch fenced and must not overwrite a concurrently updated group snapshot.
 
+### 9.8 Production generated-data isolation
+
+Generated fixtures must never affect production activity or balances.
+
+Required behavior:
+
+1. Production initial loads and realtime updates exclude records marked `is_payback_generated_mock_data`.
+2. Production clients must refuse generated group and expense seed writes.
+3. Authenticated cleanup must query by canonical `owner_id` plus the generated-data flag; never infer ownership from payer or member UUIDs.
+4. Cleanup failures are best-effort and must not block real groups, expenses, or friends from loading.
+
+Failure signature:
+
+- Known fixture records such as `Roommates`, `Work Team`, `Team Lunch`, or `Groceries` appear unsettled while totals and friend balances remain zero.
+
 ## 10) Convex Environment Routing (iOS Build Pipeline)
 
 Goal: route iOS builds automatically:

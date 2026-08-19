@@ -10,6 +10,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
     var mockGroupCloudService: MockGroupCloudServiceForAppStore!
     var mockLinkRequestService: MockLinkRequestServiceForAppStore!
     var mockInviteLinkService: MockInviteLinkServiceForTests!
+    var mockEmailAuthService: MockEmailAuthService!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -20,6 +21,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         mockGroupCloudService = MockGroupCloudServiceForAppStore()
         mockLinkRequestService = MockLinkRequestServiceForAppStore()
         mockInviteLinkService = MockInviteLinkServiceForTests()
+        mockEmailAuthService = MockEmailAuthService()
 
         sut = AppStore(
             persistence: mockPersistence,
@@ -28,6 +30,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
             groupCloudService: mockGroupCloudService,
             linkRequestService: mockLinkRequestService,
             inviteLinkService: mockInviteLinkService,
+            emailAuthService: mockEmailAuthService,
             skipClerkInit: true
         )
     }
@@ -39,11 +42,233 @@ final class AppStoreRemoteDataTests: XCTestCase {
         await mockGroupCloudService.reset()
         await mockLinkRequestService.reset()
         await mockInviteLinkService.reset()
+        mockEmailAuthService = nil
         sut = nil
         try await super.tearDown()
     }
 
+    private func makeSUT(environment: ConvexEnvironment) -> AppStore {
+        AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: mockEmailAuthService,
+            environment: environment,
+            skipClerkInit: true
+        )
+    }
+
     // MARK: - Remote Data Loading Tests
+
+    func testProductionStore_RemovesGeneratedDataFromLocalPersistence() {
+        let realGroup = SpendingGroup(name: "Real Group", members: [GroupMember(name: "Owner")])
+        var generatedGroup = SpendingGroup(name: "Roommates", members: [GroupMember(name: "Stale Owner")])
+        generatedGroup.isDebug = true
+        let realExpense = Expense(
+            groupId: realGroup.id,
+            description: "Real expense",
+            totalAmount: 20,
+            paidByMemberId: realGroup.members[0].id,
+            involvedMemberIds: [realGroup.members[0].id],
+            splits: [ExpenseSplit(memberId: realGroup.members[0].id, amount: 20)]
+        )
+        let generatedExpense = Expense(
+            groupId: generatedGroup.id,
+            description: "Team Lunch",
+            totalAmount: 65.25,
+            paidByMemberId: generatedGroup.members[0].id,
+            involvedMemberIds: [generatedGroup.members[0].id],
+            splits: [ExpenseSplit(memberId: generatedGroup.members[0].id, amount: 65.25)],
+            isDebug: true
+        )
+        mockPersistence.save(AppData(
+            groups: [realGroup, generatedGroup],
+            expenses: [realExpense, generatedExpense]
+        ))
+
+        sut = makeSUT(environment: .production)
+
+        XCTAssertEqual(sut.groups.map(\.id), [realGroup.id])
+        XCTAssertEqual(sut.expenses.map(\.id), [realExpense.id])
+        XCTAssertEqual(mockPersistence.storedData().groups.map(\.id), [realGroup.id])
+        XCTAssertEqual(mockPersistence.storedData().expenses.map(\.id), [realExpense.id])
+    }
+
+    func testProductionRemoteLoad_DoesNotWaitForGeneratedDataCleanup() async throws {
+        sut = makeSUT(environment: .production)
+        sut.session = UserSession(account: UserAccount(
+            id: "production-account",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: sut.currentUser.id
+        ))
+        let realGroup = SpendingGroup(
+            name: "Real Group",
+            members: [sut.currentUser, GroupMember(name: "Friend")]
+        )
+        let realExpense = Expense(
+            groupId: realGroup.id,
+            description: "Real expense",
+            totalAmount: 20,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: realGroup.members.map(\.id),
+            splits: realGroup.members.map { ExpenseSplit(memberId: $0.id, amount: 10) }
+        )
+        await mockGroupCloudService.addGroup(realGroup)
+        await mockExpenseCloudService.addExpense(realExpense)
+        await mockGroupCloudService.suspendNextDeleteDebug()
+
+        let loadCompleted = expectation(description: "Remote load completes while cleanup is suspended")
+        let loadTask = Task { @MainActor in
+            await sut.loadRemoteData()
+            loadCompleted.fulfill()
+        }
+        for _ in 0..<100 {
+            if await mockGroupCloudService.currentDeleteDebugInvocationCount() == 1 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await fulfillment(of: [loadCompleted], timeout: 1)
+
+        XCTAssertEqual(sut.groups.map(\.id), [realGroup.id])
+        XCTAssertEqual(sut.expenses.map(\.id), [realExpense.id])
+
+        await mockGroupCloudService.resumeDeleteDebug()
+        await loadTask.value
+    }
+
+    func testProductionRemoteLoad_RemovesGeneratedDataAndRequestsCleanup() async throws {
+        sut = makeSUT(environment: .production)
+
+        let account = UserAccount(
+            id: "production-account",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: sut.currentUser.id
+        )
+        sut.session = UserSession(account: account)
+
+        let realGroup = SpendingGroup(
+            name: "Real Group",
+            members: [sut.currentUser, GroupMember(name: "Friend")]
+        )
+        var generatedGroup = SpendingGroup(
+            name: "Roommates",
+            members: [GroupMember(name: "Stale Owner"), GroupMember(name: "Generated Friend")]
+        )
+        generatedGroup.isDebug = true
+
+        let realExpense = Expense(
+            groupId: realGroup.id,
+            description: "Real expense",
+            totalAmount: 20,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: realGroup.members.map(\.id),
+            splits: realGroup.members.map { ExpenseSplit(memberId: $0.id, amount: 10) }
+        )
+        let generatedExpense = Expense(
+            groupId: generatedGroup.id,
+            description: "Team Lunch",
+            totalAmount: 65.25,
+            paidByMemberId: generatedGroup.members[0].id,
+            involvedMemberIds: generatedGroup.members.map(\.id),
+            splits: generatedGroup.members.map { ExpenseSplit(memberId: $0.id, amount: 32.625) },
+            isDebug: true
+        )
+
+        await mockGroupCloudService.addGroup(realGroup)
+        await mockGroupCloudService.addGroup(generatedGroup)
+        await mockExpenseCloudService.addExpense(realExpense)
+        await mockExpenseCloudService.addExpense(generatedExpense)
+
+        await sut.loadRemoteData()
+
+        for _ in 0..<100 {
+            let groupCleanupCount = await mockGroupCloudService.currentDeleteDebugInvocationCount()
+            let expenseCleanupCount = await mockExpenseCloudService.currentDeleteDebugInvocationCount()
+            if groupCleanupCount == 1, expenseCleanupCount == 1 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(sut.groups.map(\.id), [realGroup.id])
+        XCTAssertEqual(sut.expenses.map(\.id), [realExpense.id])
+        let groupCleanupCount = await mockGroupCloudService.currentDeleteDebugInvocationCount()
+        let expenseCleanupCount = await mockExpenseCloudService.currentDeleteDebugInvocationCount()
+        XCTAssertEqual(groupCleanupCount, 1)
+        XCTAssertEqual(expenseCleanupCount, 1)
+    }
+
+    func testProductionStore_RejectsGeneratedSeedWrites() async throws {
+        sut = makeSUT(environment: .production)
+
+        var generatedGroup = SpendingGroup(
+            name: "Roommates",
+            members: [sut.currentUser, GroupMember(name: "Generated Friend")]
+        )
+        generatedGroup.isDebug = true
+        let generatedExpense = Expense(
+            groupId: generatedGroup.id,
+            description: "Groceries",
+            totalAmount: 85.50,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: generatedGroup.members.map(\.id),
+            splits: generatedGroup.members.map { ExpenseSplit(memberId: $0.id, amount: 42.75) },
+            isDebug: true
+        )
+
+        sut.addExistingDebugGroup(generatedGroup)
+        sut.addDebugExpense(generatedExpense)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertTrue(sut.expenses.isEmpty)
+        let remoteGroups = try await mockGroupCloudService.fetchGroups()
+        let remoteExpenses = try await mockExpenseCloudService.fetchExpenses()
+        XCTAssertTrue(remoteGroups.isEmpty)
+        XCTAssertTrue(remoteExpenses.isEmpty)
+    }
+
+    func testDevelopmentRemoteLoad_PreservesGeneratedData() async throws {
+        sut = makeSUT(environment: .development)
+        sut.session = UserSession(account: UserAccount(
+            id: "development-account",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: sut.currentUser.id
+        ))
+
+        var generatedGroup = SpendingGroup(
+            name: "Roommates",
+            members: [sut.currentUser, GroupMember(name: "Generated Friend")]
+        )
+        generatedGroup.isDebug = true
+        let generatedExpense = Expense(
+            groupId: generatedGroup.id,
+            description: "Groceries",
+            totalAmount: 85.50,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: generatedGroup.members.map(\.id),
+            splits: generatedGroup.members.map { ExpenseSplit(memberId: $0.id, amount: 42.75) },
+            isDebug: true
+        )
+        await mockGroupCloudService.addGroup(generatedGroup)
+        await mockExpenseCloudService.addExpense(generatedExpense)
+
+        await sut.loadRemoteData()
+
+        XCTAssertEqual(sut.groups.map(\.id), [generatedGroup.id])
+        XCTAssertEqual(sut.expenses.map(\.id), [generatedExpense.id])
+        let groupCleanupCount = await mockGroupCloudService.currentDeleteDebugInvocationCount()
+        let expenseCleanupCount = await mockExpenseCloudService.currentDeleteDebugInvocationCount()
+        XCTAssertEqual(groupCleanupCount, 0)
+        XCTAssertEqual(expenseCleanupCount, 0)
+    }
 
     func testCompleteAuthentication_LoadsRemoteData() async throws {
         // Given
