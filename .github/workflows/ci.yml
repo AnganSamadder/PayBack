@@ -53,6 +53,7 @@ jobs:
           bash scripts/tests/check-sanitizer-output.test.sh
           bash scripts/tests/ci-pre-xcodebuild.test.sh
           bash scripts/tests/ios-test-selection-flags.test.sh
+          bash scripts/tests/prepare-convex-deploy.test.sh
 
   # ──────────────────────────────────────────────────────────────
   # Tier 2a — Linux jobs (cheap, parallel)
