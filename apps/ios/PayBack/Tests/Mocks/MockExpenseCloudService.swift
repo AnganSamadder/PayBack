@@ -25,6 +25,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var shouldSuspendSettlement = false
     private var settlementContinuation: CheckedContinuation<Void, Never>?
     private var clearAllInvocationCount = 0
+    private var deleteDebugInvocationCount = 0
     private var shouldSuspendClearAll = false
     private var clearAllContinuation: CheckedContinuation<Void, Never>?
 
@@ -106,7 +107,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     }
 
     func deleteDebugExpenses() async throws {
-        // No-op for mock - just clear expenses flagged as debug
+        deleteDebugInvocationCount += 1
     }
 
     func clearAllData() async throws {
@@ -166,6 +167,10 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         clearAllInvocationCount
     }
 
+    func currentDeleteDebugInvocationCount() -> Int {
+        deleteDebugInvocationCount
+    }
+
     func suspendNextClearAll() {
         shouldSuspendClearAll = true
     }
@@ -188,6 +193,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         settlementContinuation?.resume()
         settlementContinuation = nil
         clearAllInvocationCount = 0
+        deleteDebugInvocationCount = 0
         shouldSuspendClearAll = false
         clearAllContinuation?.resume()
         clearAllContinuation = nil

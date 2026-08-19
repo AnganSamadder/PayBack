@@ -803,17 +803,10 @@ export const clearDebugDataForUser = mutation({
     const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
     const expenseOperations: ExpenseWriteOperation[] = [];
 
-    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-      ctx.db,
-      user.member_id ?? user.id
-    );
-    const aliases = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-    const membershipIds = new Set([canonicalMemberId, ...aliases]);
-
     const debugGroups = await ctx.db
       .query("groups")
-      .withIndex("by_is_payback_generated_mock_data", (q) =>
-        q.eq("is_payback_generated_mock_data", true)
+      .withIndex("by_owner_id_and_is_payback_generated_mock_data", (q) =>
+        q.eq("owner_id", user._id).eq("is_payback_generated_mock_data", true)
       )
       .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
     if (debugGroups.length > MAX_EXPENSE_WRITE_OPERATIONS) {
@@ -824,8 +817,7 @@ export const clearDebugDataForUser = mutation({
 
     let deleted = 0;
     for (const group of debugGroups) {
-      const isOwner = membershipIds.has(normalizeMemberId(group.owner_id as any));
-      if (!isOwner) continue;
+      if (!isGroupOwner(group, user)) continue;
 
       await deleteGroupWithExpenses(ctx, group, groupVisibilityBatch, expenseOperations);
       deleted += 1;

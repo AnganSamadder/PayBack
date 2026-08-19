@@ -292,6 +292,10 @@ export default defineSchema({
     .index("by_owner_account_id", ["owner_account_id"])
     .index("by_owner_email", ["owner_email"])
     .index("by_owner_id", ["owner_id"])
+    .index("by_owner_id_and_is_payback_generated_mock_data", [
+      "owner_id",
+      "is_payback_generated_mock_data"
+    ])
     .index("by_client_id", ["id"])
     .index("by_is_payback_generated_mock_data", ["is_payback_generated_mock_data"]),
 
@@ -368,6 +372,10 @@ export default defineSchema({
     .index("by_owner_account_id", ["owner_account_id"])
     .index("by_owner_email", ["owner_email"])
     .index("by_owner_id", ["owner_id"])
+    .index("by_owner_id_and_is_payback_generated_mock_data", [
+      "owner_id",
+      "is_payback_generated_mock_data"
+    ])
     .index("by_owner_id_and_context_kind", ["owner_id", "context_kind"])
     .index("by_owner_account_id_and_context_kind", ["owner_account_id", "context_kind"])
     .index("by_owner_email_and_context_kind", ["owner_email", "context_kind"])

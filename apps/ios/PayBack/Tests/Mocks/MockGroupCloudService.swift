@@ -9,6 +9,9 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
     private var queuedFetchDelaysNanoseconds: [UInt64] = []
     private var fetchInvocationCount = 0
     private var clearAllInvocationCount = 0
+    private var deleteDebugInvocationCount = 0
+    private var shouldSuspendDeleteDebug = false
+    private var deleteDebugContinuation: CheckedContinuation<Void, Never>?
     private var shouldSuspendClearAll = false
     private var clearAllContinuation: CheckedContinuation<Void, Never>?
     private var upsertDelayNanoseconds: UInt64 = 0
@@ -88,7 +91,12 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
     }
 
     func deleteDebugGroups() async throws {
-        // No-op for mock - just clear groups flagged as debug
+        deleteDebugInvocationCount += 1
+        if shouldSuspendDeleteDebug {
+            await withCheckedContinuation { continuation in
+                deleteDebugContinuation = continuation
+            }
+        }
     }
 
     func leaveGroup(_ groupId: UUID) async throws {
@@ -178,6 +186,20 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         clearAllInvocationCount
     }
 
+    func currentDeleteDebugInvocationCount() -> Int {
+        deleteDebugInvocationCount
+    }
+
+    func suspendNextDeleteDebug() {
+        shouldSuspendDeleteDebug = true
+    }
+
+    func resumeDeleteDebug() {
+        shouldSuspendDeleteDebug = false
+        deleteDebugContinuation?.resume()
+        deleteDebugContinuation = nil
+    }
+
     func suspendNextClearAll() {
         shouldSuspendClearAll = true
     }
@@ -195,6 +217,10 @@ actor MockGroupCloudServiceForAppStore: GroupCloudService {
         queuedFetchDelaysNanoseconds.removeAll()
         fetchInvocationCount = 0
         clearAllInvocationCount = 0
+        deleteDebugInvocationCount = 0
+        shouldSuspendDeleteDebug = false
+        deleteDebugContinuation?.resume()
+        deleteDebugContinuation = nil
         shouldSuspendClearAll = false
         clearAllContinuation?.resume()
         clearAllContinuation = nil

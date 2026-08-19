@@ -1492,17 +1492,10 @@ export const clearDebugDataForUser = mutation({
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
-    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-      ctx.db,
-      user.member_id ?? user.id
-    );
-    const aliases = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-    const membershipIds = new Set([canonicalMemberId, ...aliases]);
-
     const debugExpenses = await ctx.db
       .query("expenses")
-      .withIndex("by_is_payback_generated_mock_data", (q) =>
-        q.eq("is_payback_generated_mock_data", true)
+      .withIndex("by_owner_id_and_is_payback_generated_mock_data", (q) =>
+        q.eq("owner_id", user._id).eq("is_payback_generated_mock_data", true)
       )
       .take(MAX_EXPENSE_WRITE_OPERATIONS + 1);
     if (debugExpenses.length > MAX_EXPENSE_WRITE_OPERATIONS) {
@@ -1514,8 +1507,7 @@ export const clearDebugDataForUser = mutation({
     let deleted = 0;
     const operations: ExpenseWriteOperation[] = [];
     for (const expense of debugExpenses) {
-      const isOwner = membershipIds.has(normalizeMemberId(expense.paid_by_member_id));
-      if (!isOwner) continue;
+      if (!isExpenseOwner(expense, user)) continue;
 
       operations.push({ kind: "delete" as const, expense });
       deleted += 1;
