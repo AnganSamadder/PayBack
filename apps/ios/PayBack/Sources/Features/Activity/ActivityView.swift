@@ -1,5 +1,23 @@
 import SwiftUI
 
+enum ActivityBalancePresentation {
+    static func overallText(net: Double, formattedCurrency: String, hasUnsettledExposure: Bool) -> String {
+        guard abs(net) < 0.0001 else { return formattedCurrency }
+        return hasUnsettledExposure ? formattedCurrency : "Settled Up"
+    }
+
+    static func overallDescription(net: Double, hasUnsettledExposure: Bool) -> String {
+        if net > 0.0001 { return "You are owed overall" }
+        if net < -0.0001 { return "You owe overall" }
+        return hasUnsettledExposure ? "Your unsettled balances offset" : "Everything is settled"
+    }
+
+    static func groupText(net: Double, formattedAbsoluteCurrency: String, hasUnsettledExposure: Bool) -> String {
+        guard abs(net) < 0.0001 else { return formattedAbsoluteCurrency }
+        return hasUnsettledExposure ? "Unsettled" : "Settled"
+    }
+}
+
 struct ActivityView: View {
     @EnvironmentObject var store: AppStore
     @Binding var path: [ActivityRoute]
@@ -643,8 +661,11 @@ struct DashboardView: View {
 
     private var balanceText: String {
         let net = calculateOverallNetBalance()
-        if abs(net) < 0.0001 { return "Settled Up" }
-        return currency(net)
+        return ActivityBalancePresentation.overallText(
+            net: net,
+            formattedCurrency: currency(net),
+            hasUnsettledExposure: store.hasUnsettledBalanceExposure()
+        )
     }
 
     private var balanceColor: Color {
@@ -656,9 +677,10 @@ struct DashboardView: View {
 
     private var balanceDescription: String {
         let net = calculateOverallNetBalance()
-        if net > 0.0001 { return "You are owed overall" }
-        if net < -0.0001 { return "You owe overall" }
-        return "Everything is settled"
+        return ActivityBalancePresentation.overallDescription(
+            net: net,
+            hasUnsettledExposure: store.hasUnsettledBalanceExposure()
+        )
     }
 
     private var gradientColors: [Color] {
@@ -737,9 +759,12 @@ struct CompactGroupCard: View {
     }
 
     private func balanceText(_ net: Double) -> String {
-        if abs(net) < 0.0001 { return "Settled" }
         let id = Locale.current.currency?.identifier ?? "USD"
-        return abs(net).formatted(.currency(code: id))
+        return ActivityBalancePresentation.groupText(
+            net: net,
+            formattedAbsoluteCurrency: abs(net).formatted(.currency(code: id)),
+            hasUnsettledExposure: store.hasUnsettledBalanceExposure(in: group.id)
+        )
     }
 
     private func balanceColor(_ net: Double) -> Color {

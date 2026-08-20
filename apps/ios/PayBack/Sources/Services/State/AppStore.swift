@@ -305,6 +305,10 @@ final class AppStore: ObservableObject {
 
             guard let identity else {
                 AppConfig.markTiming("No authentication user found")
+                let hasLogicalSession = await MainActor.run { self.session != nil }
+                if hasLogicalSession {
+                    await finishSignOut(signOutIdentity: false)
+                }
                 await finishAuthenticationSessionCheck(recoveryError: nil)
                 return
             }
@@ -325,7 +329,7 @@ final class AppStore: ObservableObject {
 
             if let account {
                 AppConfig.markTiming("Account lookup complete (found)")
-                await finishLogin(account: account)
+                try await finishLogin(account: account)
                 await MainActor.run {
                     self.migrateLegacyDisplaySettingsIfNeeded()
                 }
@@ -347,7 +351,7 @@ final class AppStore: ObservableObject {
             authenticationSessionRecoveryMessage = recoveryError.userFacingMessage(
                 fallback: "We couldn't verify your existing sign-in. Check your connection and try again."
             )
-        } else {
+        } else if session == nil {
             authenticationSessionRecoveryMessage = nil
         }
         isAuthenticationSessionCheckInProgress = false
@@ -356,26 +360,19 @@ final class AppStore: ObservableObject {
         AppConfig.printTimingSummary()
     }
 
-    private func finishLogin(account: UserAccount) async {
+    private func finishLogin(account: UserAccount) async throws {
         await MainActor.run {
-            self.persistence.clear()
-            self.session = UserSession(account: account)
-            self.applyDisplayName(account.displayName)
+            self.beginAuthenticatedSession(account: account)
         }
 
-        // Run subsequent tasks in parallel to minimize wait time
-        async let identityCheck = ensureCurrentUserIdentity(for: account)
-        async let remoteDataLoad: Void = loadRemoteData()
-        async let reconciliation: Void = reconcileLinkState()
-
-        // Wait for identity (needed for session update)
-        let updatedAccount = await identityCheck
+        // Resolve the canonical member identity before hydrating expenses. Balance
+        // attribution must never run against a member ID inherited from another session.
+        let updatedAccount = try await ensureCurrentUserIdentity(for: account)
         await MainActor.run {
             self.session = UserSession(account: updatedAccount)
         }
 
-        // Ensure other tasks complete
-        _ = await (remoteDataLoad, reconciliation)
+        await loadRemoteData()
 
         // Start real-time sync
         await MainActor.run {
@@ -384,6 +381,48 @@ final class AppStore: ObservableObject {
             AppConfig.markTiming("Sync started")
             #endif
         }
+    }
+
+    @MainActor
+    private func beginAuthenticatedSession(account: UserAccount) {
+        // Local persistence is intentionally treated as an unauthenticated launch cache.
+        // It is not scoped by backend or account, so it must never cross this boundary.
+        cancelClearAllDataWork()
+        dataEpoch = UUID()
+        sessionMonitorTask?.cancel()
+        sessionMonitorTask = nil
+        invalidateRemoteLoad()
+        friendSyncTask?.cancel()
+        friendSyncTask = nil
+        hasCompletedInitialRemoteLoad = false
+
+        #if !PAYBACK_CI_NO_CONVEX
+        Dependencies.syncManager?.stopSync()
+        #endif
+
+        groups = []
+        expenses = []
+        friends = []
+        incomingLinkRequests = []
+        outgoingLinkRequests = []
+        previousLinkRequests = []
+        memberAliasMap.removeAll()
+        pendingExpenseUpsertIds.removeAll()
+        pendingExpenseSettlementExpectations.removeAll()
+        latestSettlementMutationIdByExpense.removeAll()
+        pendingExpenseDeleteIds.removeAll()
+        activeGroupMutationTokensByGroupId.removeAll()
+        activeFriendDeletionTokenId = nil
+        pendingFriendDeletionIdentityIdsByToken.removeAll()
+        authenticationSessionRecoveryMessage = nil
+
+        currentUser = GroupMember(
+            id: account.linkedMemberId ?? UUID(),
+            name: account.displayName,
+            isCurrentUser: true
+        )
+        session = nil
+        persistence.clear()
     }
 
     @MainActor
@@ -683,14 +722,14 @@ final class AppStore: ObservableObject {
             }
         }
 
-        // 4. Update Local Session
+        // 4. Establish a clean account-scoped session boundary before any remote
+        // data is rendered. The launch cache may belong to another environment.
         await MainActor.run {
-             self.session = UserSession(account: account)
-             self.applyDisplayName(account.displayName)
+            self.beginAuthenticatedSession(account: account)
         }
 
         // 5. Post-Login Setup
-        let updatedAccount = await ensureCurrentUserIdentity(for: account)
+        let updatedAccount = try await ensureCurrentUserIdentity(for: account)
         await MainActor.run {
             self.session = UserSession(account: updatedAccount)
         }
@@ -751,7 +790,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         throw PayBackError.underlying(message: "Server authentication timed out")
     }
 
-    private func ensureCurrentUserIdentity(for account: UserAccount) async -> UserAccount {
+    private func ensureCurrentUserIdentity(for account: UserAccount) async throws -> UserAccount {
         if let linkedId = account.linkedMemberId {
             await MainActor.run {
                 if self.currentUser.id != linkedId {
@@ -771,14 +810,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
         // Do NOT use currentUser.id as it may be stale from a previous session
         let memberId = UUID()
         var updatedAccount = account
-        do {
-            try await accountService.updateLinkedMember(accountId: account.id, memberId: memberId)
-            updatedAccount.linkedMemberId = memberId
-        } catch {
-            #if DEBUG
-            print("[AppStore] Failed to link member id to account: \(error.localizedDescription)")
-            #endif
-        }
+        try await accountService.updateLinkedMember(accountId: account.id, memberId: memberId)
+        updatedAccount.linkedMemberId = memberId
         await MainActor.run {
             self.currentUser = GroupMember(
                 id: memberId,
@@ -2205,6 +2238,22 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return paidByUser - owes
     }
 
+    func hasUnsettledBalanceExposure(in groupId: UUID? = nil) -> Bool {
+        expenses.contains { expense in
+            guard groupId == nil || expense.groupId == groupId else { return false }
+
+            if isMe(expense.paidByMemberId) {
+                return expense.splits.contains {
+                    !isMe($0.memberId) && !$0.isSettled && abs($0.amount) > 0.0001
+                }
+            }
+
+            return expense.splits.contains {
+                isMe($0.memberId) && !$0.isSettled && abs($0.amount) > 0.0001
+            }
+        }
+    }
+
     func resolvedContextKind(for expense: Expense) -> ExpenseContextKind {
         if expense.contextKind == .groupedIndividual {
             return .groupedIndividual
@@ -2435,6 +2484,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             groups = normalization.groups
             expenses = normalization.expenses
             hasCompletedInitialRemoteLoad = true
+            authenticationSessionRecoveryMessage = nil
             persistCurrentState()
             logFetchedData(groups: normalization.groups, expenses: normalization.expenses)
             processFriendsUpdate(remoteFriends)
@@ -2476,6 +2526,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 // If the initial fetch fails after a valid session exists, allow later realtime
                 // snapshots to repopulate the store once connectivity/auth recovers.
                 hasCompletedInitialRemoteLoad = true
+                authenticationSessionRecoveryMessage = error.userFacingMessage(
+                    fallback: "We couldn't load your PayBack data. Check your connection and try again."
+                )
             }
             #if DEBUG
             print("⚠️ Failed to load remote data: \(error.localizedDescription)")

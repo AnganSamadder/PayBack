@@ -121,7 +121,7 @@ struct RootViewWithStore: View {
                     .accessibilityHidden(true)
 
                 VStack(spacing: 8) {
-                    Text("Couldn't Restore Your Session")
+                    Text(store.session == nil ? "Couldn't Restore Your Session" : "Couldn't Load Your Data")
                         .font(.title2.bold())
                         .multilineTextAlignment(.center)
                     Text(store.authenticationSessionRecoveryMessage ?? "Check your connection and try again.")

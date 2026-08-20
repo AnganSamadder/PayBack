@@ -8,6 +8,7 @@ actor MockAccountServiceForAppStore: AccountService {
     private var friends: [String: [AccountFriend]] = [:] // email -> friends
     private var friendSyncHistory: [String: [[AccountFriend]]] = [:] // email -> sync snapshots
     private var shouldFail: Bool = false
+    private var shouldFailLinkedMemberUpdate = false
     private var shouldFailNextFriendFetch = false
     private var shouldSuspendNextFriendFetch = false
     private var friendFetchWaiters: [CheckedContinuation<Void, Never>] = []
@@ -53,7 +54,7 @@ actor MockAccountServiceForAppStore: AccountService {
     }
 
     func updateLinkedMember(accountId: String, memberId: UUID?) async throws {
-        if shouldFail {
+        if shouldFail || shouldFailLinkedMemberUpdate {
             throw PayBackError.networkUnavailable
         }
         // Find account by ID and update
@@ -137,6 +138,10 @@ actor MockAccountServiceForAppStore: AccountService {
         shouldFail = fail
     }
 
+    func setShouldFailLinkedMemberUpdate(_ fail: Bool) {
+        shouldFailLinkedMemberUpdate = fail
+    }
+
     func suspendNextFriendFetch() {
         shouldSuspendNextFriendFetch = true
     }
@@ -158,6 +163,7 @@ actor MockAccountServiceForAppStore: AccountService {
         friends.removeAll()
         friendSyncHistory.removeAll()
         shouldFail = false
+        shouldFailLinkedMemberUpdate = false
         shouldFailNextFriendFetch = false
         shouldSuspendNextFriendFetch = false
         friendFetchWaiters.forEach { $0.resume() }

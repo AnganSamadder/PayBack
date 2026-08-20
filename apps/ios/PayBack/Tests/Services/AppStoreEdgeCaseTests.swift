@@ -1402,6 +1402,51 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertTrue(recoveryStore.canPresentAuthenticationFlow)
     }
 
+    func testRemoteLoadFailureThenExpiredIdentityClearsStaleLogicalSession() async {
+        let identity = AuthenticationSessionIdentity(
+            email: "expired@example.com",
+            displayName: "Expired User"
+        )
+        let account = UserAccount(
+            id: "expired-account",
+            email: identity.email,
+            displayName: identity.displayName,
+            linkedMemberId: UUID()
+        )
+        await mockAccountService.addAccount(account)
+        await mockGroupCloudService.setShouldFail(true)
+        let sessionLoader = SequencedAuthenticationSessionLoader(
+            outcomes: [.identity(identity), .noUser]
+        )
+        let recoveryStore = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true,
+            authenticationSessionLoader: {
+                try await sessionLoader.load()
+            },
+            convexAuthenticator: {}
+        )
+
+        await recoveryStore.checkSession()
+
+        XCTAssertNotNil(recoveryStore.session)
+        XCTAssertTrue(recoveryStore.isAuthenticationSessionRecoveryBlocking)
+
+        await recoveryStore.checkSession()
+
+        XCTAssertNil(recoveryStore.session)
+        XCTAssertFalse(recoveryStore.isAuthenticationSessionRecoveryBlocking)
+        XCTAssertTrue(recoveryStore.canPresentAuthenticationFlow)
+        XCTAssertTrue(recoveryStore.groups.isEmpty)
+        XCTAssertTrue(recoveryStore.expenses.isEmpty)
+    }
+
     func testConvexAuthenticationFailureBlocksSessionRestoreUntilRetrySucceeds() async {
         let identity = AuthenticationSessionIdentity(
             email: "restored@example.com",

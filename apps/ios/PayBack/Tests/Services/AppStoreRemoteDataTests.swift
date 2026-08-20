@@ -204,6 +204,130 @@ final class AppStoreRemoteDataTests: XCTestCase {
         XCTAssertEqual(expenseCleanupCount, 1)
     }
 
+    func testProductionSessionRestore_DoesNotExposePreviousEnvironmentCacheWhenRemoteLoadFails() async throws {
+        let staleMember = GroupMember(name: "Stale Test User")
+        let staleGroup = SpendingGroup(name: "Bob & Test User", members: [staleMember])
+        let staleExpense = Expense(
+            groupId: staleGroup.id,
+            description: "E2E Notes Check",
+            totalAmount: 12.34,
+            paidByMemberId: staleMember.id,
+            involvedMemberIds: [staleMember.id],
+            splits: [ExpenseSplit(memberId: staleMember.id, amount: 12.34)]
+        )
+        mockPersistence.save(AppData(groups: [staleGroup], expenses: [staleExpense]))
+
+        let identity = AuthenticationSessionIdentity(
+            email: "owner@example.com",
+            displayName: "Production Owner"
+        )
+        let productionMemberId = UUID()
+        let account = UserAccount(
+            id: "production-account",
+            email: identity.email,
+            displayName: identity.displayName,
+            linkedMemberId: productionMemberId
+        )
+        await mockAccountService.addAccount(account)
+        await mockGroupCloudService.setShouldFail(true)
+
+        sut = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: mockEmailAuthService,
+            environment: .production,
+            skipClerkInit: true,
+            authenticationSessionLoader: { identity },
+            convexAuthenticator: {}
+        )
+
+        XCTAssertEqual(sut.groups.map(\.id), [staleGroup.id])
+        XCTAssertEqual(sut.expenses.map(\.id), [staleExpense.id])
+        XCTAssertEqual(sut.overallNetBalance(), 0, accuracy: 0.001)
+
+        await sut.checkSession()
+
+        XCTAssertEqual(sut.session?.account.id, account.id)
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertTrue(sut.expenses.isEmpty)
+        XCTAssertTrue(mockPersistence.storedData().groups.isEmpty)
+        XCTAssertTrue(mockPersistence.storedData().expenses.isEmpty)
+        XCTAssertTrue(sut.isAuthenticationSessionRecoveryBlocking)
+
+        let friend = GroupMember(name: "Production Friend")
+        let productionGroup = SpendingGroup(
+            name: "Production Group",
+            members: [
+                GroupMember(id: productionMemberId, name: identity.displayName, isCurrentUser: true),
+                friend
+            ]
+        )
+        let productionExpense = Expense(
+            groupId: productionGroup.id,
+            description: "Production Expense",
+            totalAmount: 20,
+            paidByMemberId: productionMemberId,
+            involvedMemberIds: productionGroup.members.map(\.id),
+            splits: productionGroup.members.map { ExpenseSplit(memberId: $0.id, amount: 10) }
+        )
+        await mockGroupCloudService.addGroup(productionGroup)
+        await mockExpenseCloudService.addExpense(productionExpense)
+        await mockGroupCloudService.setShouldFail(false)
+
+        await sut.checkSession()
+
+        XCTAssertFalse(sut.isAuthenticationSessionRecoveryBlocking)
+        XCTAssertEqual(sut.groups.map(\.id), [productionGroup.id])
+        XCTAssertEqual(sut.expenses.map(\.id), [productionExpense.id])
+        XCTAssertEqual(sut.overallNetBalance(), 10, accuracy: 0.001)
+    }
+
+    func testProductionSessionRestore_BlocksBeforeHydrationWhenIdentityBootstrapFails() async throws {
+        let staleGroup = SpendingGroup(name: "Stale Test Group", members: [GroupMember(name: "Test User")])
+        mockPersistence.save(AppData(groups: [staleGroup], expenses: []))
+
+        let identity = AuthenticationSessionIdentity(
+            email: "legacy@example.com",
+            displayName: "Legacy Owner"
+        )
+        let account = UserAccount(
+            id: "legacy-production-account",
+            email: identity.email,
+            displayName: identity.displayName,
+            linkedMemberId: nil
+        )
+        await mockAccountService.addAccount(account)
+        await mockAccountService.setShouldFailLinkedMemberUpdate(true)
+
+        sut = AppStore(
+            persistence: mockPersistence,
+            accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService,
+            groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService,
+            inviteLinkService: mockInviteLinkService,
+            emailAuthService: mockEmailAuthService,
+            environment: .production,
+            skipClerkInit: true,
+            authenticationSessionLoader: { identity },
+            convexAuthenticator: {}
+        )
+
+        await sut.checkSession()
+
+        XCTAssertNil(sut.session)
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertTrue(sut.expenses.isEmpty)
+        XCTAssertTrue(mockPersistence.storedData().groups.isEmpty)
+        XCTAssertTrue(sut.isAuthenticationSessionRecoveryBlocking)
+        let storedAccount = try await mockAccountService.lookupAccount(byEmail: identity.email)
+        XCTAssertNil(storedAccount?.linkedMemberId)
+    }
+
     func testProductionStore_RejectsGeneratedSeedWrites() async throws {
         sut = makeSUT(environment: .production)
 
@@ -232,6 +356,66 @@ final class AppStoreRemoteDataTests: XCTestCase {
         let remoteExpenses = try await mockExpenseCloudService.fetchExpenses()
         XCTAssertTrue(remoteGroups.isEmpty)
         XCTAssertTrue(remoteExpenses.isEmpty)
+    }
+
+    func testZeroNetWithOffsettingOpenBalances_RemainsUnsettled() {
+        sut = makeSUT(environment: .development)
+        let currentUserId = sut.currentUser.id
+        let friendA = GroupMember(name: "Friend A")
+        let friendB = GroupMember(name: "Friend B")
+        let group = SpendingGroup(
+            name: "Offsetting Balances",
+            members: [sut.currentUser, friendA, friendB]
+        )
+        sut.groups = [group]
+        sut.expenses = [
+            Expense(
+                groupId: group.id,
+                description: "User is owed",
+                totalAmount: 10,
+                paidByMemberId: currentUserId,
+                involvedMemberIds: [currentUserId, friendA.id],
+                splits: [
+                    ExpenseSplit(memberId: currentUserId, amount: 5, isSettled: true),
+                    ExpenseSplit(memberId: friendA.id, amount: 5, isSettled: false)
+                ]
+            ),
+            Expense(
+                groupId: group.id,
+                description: "User owes",
+                totalAmount: 10,
+                paidByMemberId: friendB.id,
+                involvedMemberIds: [currentUserId, friendB.id],
+                splits: [
+                    ExpenseSplit(memberId: currentUserId, amount: 5, isSettled: false),
+                    ExpenseSplit(memberId: friendB.id, amount: 5, isSettled: true)
+                ]
+            )
+        ]
+
+        XCTAssertEqual(sut.overallNetBalance(), 0, accuracy: 0.001)
+        XCTAssertTrue(sut.hasUnsettledBalanceExposure())
+        XCTAssertTrue(sut.hasUnsettledBalanceExposure(in: group.id))
+        XCTAssertEqual(
+            ActivityBalancePresentation.overallText(
+                net: 0,
+                formattedCurrency: "$0.00",
+                hasUnsettledExposure: true
+            ),
+            "$0.00"
+        )
+        XCTAssertEqual(
+            ActivityBalancePresentation.overallDescription(net: 0, hasUnsettledExposure: true),
+            "Your unsettled balances offset"
+        )
+        XCTAssertEqual(
+            ActivityBalancePresentation.groupText(
+                net: 0,
+                formattedAbsoluteCurrency: "$0.00",
+                hasUnsettledExposure: true
+            ),
+            "Unsettled"
+        )
     }
 
     func testDevelopmentRemoteLoad_PreservesGeneratedData() async throws {
