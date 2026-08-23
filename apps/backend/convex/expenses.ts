@@ -1258,6 +1258,50 @@ export const list = query({
   }
 });
 
+export const listLegacyPage = query({
+  args: {
+    paginationOpts: paginationOptsValidator
+  },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    requireSafeSyncPageSize(args.paginationOpts.numItems);
+
+    const visibilityPage = await ctx.db
+      .query("user_expenses")
+      .withIndex("by_user_id_and_updated_at", (query) => query.eq("user_id", user.id))
+      .order("desc")
+      .paginate({
+        ...args.paginationOpts,
+        maximumRowsRead: MAX_SYNC_PAGE_SIZE,
+        maximumBytesRead: 1024 * 1024
+      } as typeof args.paginationOpts);
+    const expenseByDocumentId = new Map<string, Doc<"expenses">>();
+
+    for (const visibility of visibilityPage.page) {
+      let expense = visibility.expense_ref ? await ctx.db.get(visibility.expense_ref) : null;
+      if (!expense || expense.id !== visibility.expense_id) {
+        const matches = await ctx.db
+          .query("expenses")
+          .withIndex("by_client_id", (query) => query.eq("id", visibility.expense_id))
+          .take(2);
+        if (matches.length > 1) {
+          throw new Error(`Expense ${visibility.expense_id} is not unique`);
+        }
+        expense = matches[0] ?? null;
+      }
+      if (!expense || (await isExpenseAttachedToDeletingGroup(ctx, expense))) continue;
+      expenseByDocumentId.set(String(expense._id), expense);
+    }
+
+    return {
+      page: Array.from(expenseByDocumentId.values()),
+      continueCursor: visibilityPage.continueCursor,
+      isDone: visibilityPage.isDone
+    };
+  }
+});
+
 export const listV2 = query({
   args: {
     paginationOpts: paginationOptsValidator,

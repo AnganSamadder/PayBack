@@ -57,7 +57,7 @@ echo "CI_WORKFLOW: ${CI_WORKFLOW:-unset}"
 echo "CI_PRODUCT_PLATFORM: ${CI_PRODUCT_PLATFORM:-unset}"
 
 # ----------------------------------------------------------------------------
-# Convex deploy key check (informational only)
+# Convex deployment configuration
 # ----------------------------------------------------------------------------
 echo ""
 echo "--- Convex Configuration ---"
@@ -65,8 +65,7 @@ if [ -n "${CONVEX_DEPLOY_KEY:-}" ]; then
 	echo "CONVEX_DEPLOY_KEY: set (length=${#CONVEX_DEPLOY_KEY})"
 else
 	echo "CONVEX_DEPLOY_KEY: NOT SET"
-	echo "  Convex backend deploy will be skipped during build."
-	echo "  Set CONVEX_DEPLOY_KEY in Xcode Cloud environment variables to enable."
+	echo "  Tagged production archives require this Xcode Cloud environment variable."
 fi
 
 if [ "${CONVEX_DEPLOY_ON_CI:-}" = "1" ]; then
@@ -74,6 +73,20 @@ if [ "${CONVEX_DEPLOY_ON_CI:-}" = "1" ]; then
 else
 	echo "CONVEX_DEPLOY_ON_CI: disabled (set to '1' to enable deploy)"
 fi
+
+case "${CI_TAG:-}" in
+beta-* | release-* | prod-*)
+	if [ "${CONVEX_DEPLOY_ON_CI:-}" != "1" ]; then
+		echo "ERROR: Production release $CI_TAG requires CONVEX_DEPLOY_ON_CI=1." >&2
+		exit 1
+	fi
+	if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+		echo "ERROR: Production release $CI_TAG requires CONVEX_DEPLOY_KEY." >&2
+		exit 1
+	fi
+	"$REPOSITORY_ROOT/ci_scripts/deploy_convex_backend.sh"
+	;;
+esac
 
 echo ""
 echo "ci_pre_xcodebuild.sh complete"

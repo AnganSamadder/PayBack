@@ -424,6 +424,45 @@ export const list = query({
   }
 });
 
+export const listLegacyPage = query({
+  args: {
+    paginationOpts: paginationOptsValidator
+  },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUser(ctx);
+    if (!user) throw new Error("User not found");
+    requireSafeSyncPageSize(args.paginationOpts.numItems);
+
+    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
+      ctx.db,
+      user.member_id ?? user.id
+    );
+    const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+    const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
+    const result = await ctx.db
+      .query("groups")
+      .order("desc")
+      .paginate({
+        ...args.paginationOpts,
+        maximumRowsRead: MAX_SYNC_PAGE_SIZE,
+        maximumBytesRead: 1024 * 1024
+      } as typeof args.paginationOpts);
+
+    return {
+      page: result.page.filter(
+        (group) =>
+          !group.deletion_token &&
+          (group.owner_id === user._id ||
+            group.owner_account_id === user.id ||
+            group.owner_email.trim().toLowerCase() === user.email.trim().toLowerCase() ||
+            group.members.some((member) => membershipIds.has(normalizeMemberId(member.id))))
+      ),
+      continueCursor: result.continueCursor,
+      isDone: result.isDone
+    };
+  }
+});
+
 export const listV2 = query({
   args: {
     paginationOpts: paginationOptsValidator,

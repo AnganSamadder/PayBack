@@ -1,8 +1,21 @@
 import { convexTest } from "convex-test";
+import { makeFunctionReference } from "convex/server";
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
+
+const legacyGroupsPage = makeFunctionReference<
+  "query",
+  { paginationOpts: { cursor: string | null; numItems: number } },
+  { page: Array<{ id: string }>; continueCursor: string; isDone: boolean }
+>("groups:listLegacyPage");
+
+const legacyExpensesPage = makeFunctionReference<
+  "query",
+  { paginationOpts: { cursor: string | null; numItems: number } },
+  { page: Array<{ id: string }>; continueCursor: string; isDone: boolean }
+>("expenses:listLegacyPage");
 
 function identity(email: string, subject: string) {
   return {
@@ -129,6 +142,122 @@ async function seedSyncFixture(t: ReturnType<typeof convexTest>) {
 }
 
 describe("revisioned V2 sync queries", () => {
+  test("legacy group pagination scans bounded pages without losing later visible groups", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const accountId = await ctx.db.insert("accounts", {
+        id: "sync_auth",
+        email: "sync@test.com",
+        display_name: "Sync",
+        member_id: "sync_member",
+        created_at: 1
+      });
+      const otherAccountId = await ctx.db.insert("accounts", {
+        id: "other_auth",
+        email: "other@test.com",
+        display_name: "Other",
+        member_id: "other_member",
+        created_at: 1
+      });
+      await ctx.db.insert("groups", {
+        id: "visible_after_hidden_rows",
+        name: "Visible",
+        members: [{ id: "sync_member", name: "Sync" }],
+        owner_email: "sync@test.com",
+        owner_account_id: "sync_auth",
+        owner_id: accountId,
+        created_at: 20,
+        updated_at: 20
+      });
+      for (let index = 0; index < 12; index += 1) {
+        await ctx.db.insert("groups", {
+          id: `hidden_${index}`,
+          name: `Hidden ${index}`,
+          members: [{ id: "other_member", name: "Other" }],
+          owner_email: "other@test.com",
+          owner_account_id: "other_auth",
+          owner_id: otherAccountId,
+          created_at: index,
+          updated_at: index
+        });
+      }
+    });
+    const user = t.withIdentity(identity("sync@test.com", "sync_auth"));
+
+    let cursor: string | null = null;
+    const visibleIds: string[] = [];
+    do {
+      const response = await user.query(legacyGroupsPage, {
+        paginationOpts: { cursor, numItems: 4 }
+      });
+      visibleIds.push(...response.page.map((group) => group.id));
+      cursor = response.isDone ? null : response.continueCursor;
+      if (response.isDone) break;
+    } while (cursor);
+
+    expect(visibleIds).toEqual(["visible_after_hidden_rows"]);
+  });
+
+  test("legacy expense pagination deduplicates visibility rows for the same expense", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const accountId = await ctx.db.insert("accounts", {
+        id: "sync_auth",
+        email: "sync@test.com",
+        display_name: "Sync",
+        member_id: "sync_member",
+        created_at: 1
+      });
+      const groupId = await ctx.db.insert("groups", {
+        id: "legacy_group",
+        name: "Legacy",
+        members: [{ id: "sync_member", name: "Sync" }],
+        owner_email: "sync@test.com",
+        owner_account_id: "sync_auth",
+        owner_id: accountId,
+        created_at: 1,
+        updated_at: 1
+      });
+      const expenseId = await ctx.db.insert("expenses", {
+        id: "legacy_expense",
+        group_id: "legacy_group",
+        group_ref: groupId,
+        description: "Dinner",
+        date: 1,
+        total_amount: 42,
+        paid_by_member_id: "sync_member",
+        involved_member_ids: ["sync_member"],
+        splits: [{ id: "legacy_split", member_id: "sync_member", amount: 42, is_settled: false }],
+        is_settled: false,
+        owner_email: "sync@test.com",
+        owner_account_id: "sync_auth",
+        owner_id: accountId,
+        participant_member_ids: ["sync_member"],
+        participant_emails: ["sync@test.com"],
+        participants: [{ member_id: "sync_member", name: "Sync" }],
+        created_at: 1,
+        updated_at: 1
+      });
+      for (let index = 0; index < 2; index += 1) {
+        await ctx.db.insert("user_expenses", {
+          user_id: "sync_auth",
+          expense_id: "legacy_expense",
+          account_ref: accountId,
+          expense_ref: expenseId,
+          updated_at: 10 - index
+        });
+      }
+    });
+    const user = t.withIdentity(identity("sync@test.com", "sync_auth"));
+
+    const response = await user.query(legacyExpensesPage, {
+      paginationOpts: { cursor: null, numItems: 8 }
+    });
+
+    expect(response.page.map((expense) => expense.id)).toEqual(["legacy_expense"]);
+    expect(response.isDone).toBe(true);
+  });
+
   test("pages only the authenticated account's materialized groups with one revision", async () => {
     const t = convexTest(schema, modules);
     await seedSyncFixture(t);

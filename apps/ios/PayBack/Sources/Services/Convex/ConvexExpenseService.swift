@@ -20,6 +20,15 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
     }
 
     private func fetchLegacyExpenses() async throws -> [Expense] {
+        do {
+            return try await ConvexRevisionedSync.fetchLegacyExpenseDTOs(client: client)
+                .map { try $0.validatedExpense() }
+        } catch where ConvexSyncErrorClassifier.isV2Unavailable(error) {
+            return try await fetchUnboundedLegacyExpenses()
+        }
+    }
+
+    private func fetchUnboundedLegacyExpenses() async throws -> [Expense] {
         for try await expenses in client.subscribe(
             to: "expenses:list",
             yielding: [ConvexExpenseDTO].self

@@ -97,51 +97,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         XCTAssertEqual(mockPersistence.storedData().expenses.map(\.id), [realExpense.id])
     }
 
-    func testProductionRemoteLoad_DoesNotWaitForGeneratedDataCleanup() async throws {
-        sut = makeSUT(environment: .production)
-        sut.session = UserSession(account: UserAccount(
-            id: "production-account",
-            email: "owner@example.com",
-            displayName: "Owner",
-            linkedMemberId: sut.currentUser.id
-        ))
-        let realGroup = SpendingGroup(
-            name: "Real Group",
-            members: [sut.currentUser, GroupMember(name: "Friend")]
-        )
-        let realExpense = Expense(
-            groupId: realGroup.id,
-            description: "Real expense",
-            totalAmount: 20,
-            paidByMemberId: sut.currentUser.id,
-            involvedMemberIds: realGroup.members.map(\.id),
-            splits: realGroup.members.map { ExpenseSplit(memberId: $0.id, amount: 10) }
-        )
-        await mockGroupCloudService.addGroup(realGroup)
-        await mockExpenseCloudService.addExpense(realExpense)
-        await mockGroupCloudService.suspendNextDeleteDebug()
-
-        let loadCompleted = expectation(description: "Remote load completes while cleanup is suspended")
-        let loadTask = Task { @MainActor in
-            await sut.loadRemoteData()
-            loadCompleted.fulfill()
-        }
-        for _ in 0..<100 {
-            if await mockGroupCloudService.currentDeleteDebugInvocationCount() == 1 {
-                break
-            }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        await fulfillment(of: [loadCompleted], timeout: 1)
-
-        XCTAssertEqual(sut.groups.map(\.id), [realGroup.id])
-        XCTAssertEqual(sut.expenses.map(\.id), [realExpense.id])
-
-        await mockGroupCloudService.resumeDeleteDebug()
-        await loadTask.value
-    }
-
-    func testProductionRemoteLoad_RemovesGeneratedDataAndRequestsCleanup() async throws {
+    func testProductionRemoteLoad_FiltersGeneratedDataWithoutDeletingIt() async throws {
         sut = makeSUT(environment: .production)
 
         let account = UserAccount(
@@ -187,21 +143,12 @@ final class AppStoreRemoteDataTests: XCTestCase {
 
         await sut.loadRemoteData()
 
-        for _ in 0..<100 {
-            let groupCleanupCount = await mockGroupCloudService.currentDeleteDebugInvocationCount()
-            let expenseCleanupCount = await mockExpenseCloudService.currentDeleteDebugInvocationCount()
-            if groupCleanupCount == 1, expenseCleanupCount == 1 {
-                break
-            }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-
         XCTAssertEqual(sut.groups.map(\.id), [realGroup.id])
         XCTAssertEqual(sut.expenses.map(\.id), [realExpense.id])
         let groupCleanupCount = await mockGroupCloudService.currentDeleteDebugInvocationCount()
         let expenseCleanupCount = await mockExpenseCloudService.currentDeleteDebugInvocationCount()
-        XCTAssertEqual(groupCleanupCount, 1)
-        XCTAssertEqual(expenseCleanupCount, 1)
+        XCTAssertEqual(groupCleanupCount, 0)
+        XCTAssertEqual(expenseCleanupCount, 0)
     }
 
     func testProductionSessionRestore_DoesNotExposePreviousEnvironmentCacheWhenRemoteLoadFails() async throws {

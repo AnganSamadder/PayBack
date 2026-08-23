@@ -28,14 +28,27 @@ printf '%s\n' \
 printf '%s\n' \
 	'#!/bin/sh' \
 	'exit 0' >"$TEST_ROOT/ci_scripts/bin/xcodebuild"
-chmod +x "$TEST_BIN/bunx" "$TEST_BIN/xcrun" "$TEST_ROOT/ci_scripts/bin/xcodebuild"
+printf '%s\n' \
+	'#!/bin/sh' \
+	'set -eu' \
+	'printf "%s\n" "deployed" >>"$FAKE_DEPLOY_LOG"' >"$TEST_ROOT/ci_scripts/deploy_convex_backend.sh"
+chmod +x \
+	"$TEST_BIN/bunx" \
+	"$TEST_BIN/xcrun" \
+	"$TEST_ROOT/ci_scripts/bin/xcodebuild" \
+	"$TEST_ROOT/ci_scripts/deploy_convex_backend.sh"
 
 run_prebuild() {
 	local tag="$1"
 	local action="$2"
 	local output_file="$3"
+	local deploy_on_ci="${4:-}"
+	local deploy_key="${5:-}"
 	env -u CI_PRIMARY_REPOSITORY_PATH -u CI_BUILD_NUMBER \
 		PATH="$TEST_BIN:$PATH" \
+		FAKE_DEPLOY_LOG="$TEMP_DIR/deploy.log" \
+		CONVEX_DEPLOY_ON_CI="$deploy_on_ci" \
+		CONVEX_DEPLOY_KEY="$deploy_key" \
 		CI_TAG="$tag" \
 		CI_WORKFLOW="Beta Release" \
 		CI_XCODE_PROJECT="PayBack.xcodeproj" \
@@ -55,11 +68,19 @@ grep -q 'CURRENT_PROJECT_VERSION: 96' "$TEST_ROOT/project.yml"
 grep -q '^ci_pre_xcodebuild.sh complete$' "$OUTPUT_FILE"
 
 ARCHIVE_OUTPUT="$TEMP_DIR/archive-output.log"
-if ! run_prebuild "beta-0.1.1" "archive" "$ARCHIVE_OUTPUT"; then
+if ! run_prebuild "beta-0.1.1" "archive" "$ARCHIVE_OUTPUT" "1" "prod-key"; then
 	sed -n '1,120p' "$ARCHIVE_OUTPUT" >&2
 	exit 1
 fi
 grep -q 'project.yml already contains release version 0.1.1' "$ARCHIVE_OUTPUT"
+grep -q '^deployed$' "$TEMP_DIR/deploy.log"
+
+MISSING_DEPLOY_OUTPUT="$TEMP_DIR/missing-deploy-output.log"
+if run_prebuild "beta-0.1.1" "archive" "$MISSING_DEPLOY_OUTPUT"; then
+	echo "Expected a beta Archive without a production backend deploy to fail" >&2
+	exit 1
+fi
+grep -q 'requires CONVEX_DEPLOY_ON_CI=1' "$MISSING_DEPLOY_OUTPUT"
 
 TEST_MISMATCH_OUTPUT="$TEMP_DIR/test-mismatch-output.log"
 if ! run_prebuild "beta-0.1.2" "test" "$TEST_MISMATCH_OUTPUT"; then

@@ -5,6 +5,16 @@ import XCTest
 import ConvexMobile
 
 final class ConvexRevisionedSyncTests: XCTestCase {
+    func testLegacySnapshotAccumulatorKeepsFirstOccurrenceAndStableOrder() {
+        var accumulator = ConvexLegacySnapshotAccumulator<String>()
+
+        accumulator.append("newest dinner", id: "expense-a")
+        accumulator.append("taxi", id: "expense-b")
+        accumulator.append("stale dinner", id: "expense-a")
+
+        XCTAssertEqual(accumulator.values, ["newest dinner", "taxi"])
+    }
+
     func testRevisionedPageDecodesExactBackendContract() throws {
         let groupID = UUID().uuidString
         let memberID = UUID().uuidString

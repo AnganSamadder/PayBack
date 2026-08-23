@@ -20,6 +20,15 @@ final class ConvexGroupService: GroupCloudService, Sendable {
     }
 
     private func fetchLegacyGroups() async throws -> [SpendingGroup] {
+        do {
+            return try await ConvexRevisionedSync.fetchLegacyGroupDTOs(client: client)
+                .map { try $0.validatedSpendingGroup() }
+        } catch where ConvexSyncErrorClassifier.isV2Unavailable(error) {
+            return try await fetchUnboundedLegacyGroups()
+        }
+    }
+
+    private func fetchUnboundedLegacyGroups() async throws -> [SpendingGroup] {
         for try await result in client.subscribe(
             to: "groups:list",
             yielding: [ConvexGroupDTO].self

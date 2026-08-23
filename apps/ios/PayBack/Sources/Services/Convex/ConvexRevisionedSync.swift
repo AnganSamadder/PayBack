@@ -109,6 +109,33 @@ struct ConvexRevisionedExpensesPageDTO: Decodable, Sendable {
     let revision: Int
 }
 
+struct ConvexLegacyGroupsPageDTO: Decodable, Sendable {
+    let page: [ConvexGroupDTO]
+    let continueCursor: String
+    let isDone: Bool
+}
+
+struct ConvexLegacyExpensesPageDTO: Decodable, Sendable {
+    let page: [ConvexExpenseDTO]
+    let continueCursor: String
+    let isDone: Bool
+}
+
+struct ConvexLegacySnapshotAccumulator<Value> {
+    private var orderedIDs: [String] = []
+    private var valuesByID: [String: Value] = [:]
+
+    var values: [Value] {
+        orderedIDs.compactMap { valuesByID[$0] }
+    }
+
+    mutating func append(_ value: Value, id: String) {
+        guard valuesByID[id] == nil else { return }
+        orderedIDs.append(id)
+        valuesByID[id] = value
+    }
+}
+
 enum ConvexSyncErrorClassifier {
     static func isRevisionMismatch(_ error: Error) -> Bool {
         convexErrorData(error)?.contains("SYNC_REVISION_CHANGED") == true
@@ -191,6 +218,46 @@ enum ConvexRevisionedSync {
             stableID: \ConvexExpenseDTO.id
         )
         return try await paginator.fetchSnapshot()
+    }
+
+    static func fetchLegacyGroupDTOs(client: ConvexClient) async throws -> [ConvexGroupDTO] {
+        var cursor: String?
+        var accumulator = ConvexLegacySnapshotAccumulator<ConvexGroupDTO>()
+        repeat {
+            try Task.checkCancellation()
+            let response: ConvexLegacyGroupsPageDTO = try await fetchPage(
+                client: client,
+                query: "groups:listLegacyPage",
+                cursor: cursor,
+                expectedRevision: nil
+            )
+            response.page.forEach { accumulator.append($0, id: $0.id) }
+            if response.isDone { return accumulator.values }
+            guard response.continueCursor != cursor else {
+                throw ConvexRevisionedSyncError.streamEndedWithoutValue
+            }
+            cursor = response.continueCursor
+        } while true
+    }
+
+    static func fetchLegacyExpenseDTOs(client: ConvexClient) async throws -> [ConvexExpenseDTO] {
+        var cursor: String?
+        var accumulator = ConvexLegacySnapshotAccumulator<ConvexExpenseDTO>()
+        repeat {
+            try Task.checkCancellation()
+            let response: ConvexLegacyExpensesPageDTO = try await fetchPage(
+                client: client,
+                query: "expenses:listLegacyPage",
+                cursor: cursor,
+                expectedRevision: nil
+            )
+            response.page.forEach { accumulator.append($0, id: $0.id) }
+            if response.isDone { return accumulator.values }
+            guard response.continueCursor != cursor else {
+                throw ConvexRevisionedSyncError.streamEndedWithoutValue
+            }
+            cursor = response.continueCursor
+        } while true
     }
 
     static func prepareGroups(_ dtos: [ConvexGroupDTO]) throws -> ConvexPreparedGroups {

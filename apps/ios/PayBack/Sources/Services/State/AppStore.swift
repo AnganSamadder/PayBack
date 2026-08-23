@@ -2456,8 +2456,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
         print("[AppStore] Starting remote data fetch...")
         #endif
 
-        scheduleProductionDebugCleanup(context: context)
-
         do {
             if environment != .production {
                 try? await expenseCloudService.clearLegacyMockExpenses()
@@ -2557,17 +2555,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
     private func persistCurrentState() {
         let appData = AppData(groups: groups, expenses: expenses)
         persistence.save(appData)
-    }
-
-    @MainActor
-    private func scheduleProductionDebugCleanup(context: RemoteLoadContext) {
-        guard environment == .production else { return }
-        Task { @MainActor [weak self] in
-            guard let self, self.isCurrentRemoteLoad(context) else { return }
-            async let groupCleanup: Void? = try? self.groupCloudService.deleteDebugGroups()
-            async let expenseCleanup: Void? = try? self.expenseCloudService.deleteDebugExpenses()
-            _ = await (groupCleanup, expenseCleanup)
-        }
     }
 
     private func productionVisibleGroups(_ remoteGroups: [SpendingGroup]) -> [SpendingGroup] {
