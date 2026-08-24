@@ -26,10 +26,7 @@ const FRIEND_LIST_LIMITS = {
   friends: 512,
   readRows: 2048,
   queries: 1024,
-  estimatedReadBytes: 8 * 1024 * 1024,
-  hardReadSafetyBytes: 10 * 1024 * 1024,
-  maximumDocumentReservationBytes: 2 * 1024 * 1024,
-  maximumPageRows: 5
+  estimatedReadBytes: 8 * 1024 * 1024
 } as const;
 
 const LEGACY_FRIEND_LOOKUP_LIMITS = {
@@ -74,41 +71,6 @@ function accountFriendListRows(
     budget.estimatedReadBytes > FRIEND_LIST_LIMITS.estimatedReadBytes
   ) {
     throw friendListLimitError();
-  }
-}
-
-async function collectFriendListRows<T>(
-  budget: FriendListBudget,
-  readPage: (
-    cursor: string | null,
-    limit: number
-  ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>
-): Promise<T[]> {
-  const rows: T[] = [];
-  let cursor: string | null = null;
-
-  while (true) {
-    const remainingFriends = FRIEND_LIST_LIMITS.friends - budget.friendRows + 1;
-    const remainingRows = FRIEND_LIST_LIMITS.readRows - budget.readRows + 1;
-    const remainingHardBytes = FRIEND_LIST_LIMITS.hardReadSafetyBytes - budget.estimatedReadBytes;
-    const byteReservedRows = Math.floor(
-      remainingHardBytes / FRIEND_LIST_LIMITS.maximumDocumentReservationBytes
-    );
-    const pageSize = Math.min(
-      FRIEND_LIST_LIMITS.maximumPageRows,
-      remainingFriends,
-      remainingRows,
-      byteReservedRows
-    );
-    if (pageSize <= 0) throw friendListLimitError();
-
-    chargeFriendListQueries(budget, 1);
-    const result = await readPage(cursor, pageSize);
-    accountFriendListRows(budget, result.page, true);
-    rows.push(...result.page);
-    if (result.isDone) return rows;
-    if (result.continueCursor === cursor) throw friendListLimitError();
-    cursor = result.continueCursor;
   }
 }
 
@@ -211,13 +173,13 @@ export const list = query({
     if (!user) return [];
     const accountEmail = user.email.trim().toLowerCase();
 
-    const friends = await collectFriendListRows(budget, async (cursor, limit) =>
-      ctx.db
-        .query("account_friends")
-        .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
-        .order("asc")
-        .paginate({ cursor, numItems: limit })
-    );
+    chargeFriendListQueries(budget, 1);
+    const friends = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
+      .order("asc")
+      .take(FRIEND_LIST_LIMITS.friends + 1);
+    accountFriendListRows(budget, friends, true);
 
     type LinkedIdentityContext = {
       provenLink: ProvenFriendLink;
@@ -551,7 +513,7 @@ export const upsert = mutation({
         linked_member_id:
           provenLink?.linkedMemberId ?? (isGhost ? existingLegacy.linked_member_id : undefined),
         link_state: provenLink ? "linked" : isGhost ? "ghost" : "unlinked",
-        status: isGhost ? "ghost" : existingLegacy.status,
+        status: isGhost ? "ghost" : (existingLegacy.status ?? (provenLink ? "friend" : "manual")),
         updated_at: Date.now()
       });
       return existingLegacy._id;
@@ -572,7 +534,7 @@ export const upsert = mutation({
         profile_avatar_color: getRandomAvatarColor(),
         has_linked_account: false,
         link_state: isGhost ? "ghost" : "unlinked",
-        status: isGhost ? "ghost" : undefined,
+        status: isGhost ? "ghost" : "manual",
         updated_at: Date.now()
       });
     }

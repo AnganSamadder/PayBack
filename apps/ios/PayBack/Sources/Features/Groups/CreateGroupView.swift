@@ -279,14 +279,18 @@ struct CreateGroupView: View {
         }
 
         // Get member names for the selected friends
-        let memberNames = allFriends
-            .filter { selectedFriendIds.contains($0.id) }
-            .map { $0.name }
+        let selectedFriends = allFriends.filter { selectedFriendIds.contains($0.id) }
+        let memberNames = selectedFriends.map(\.name)
+        let selectedNewFriends = newlyAddedFriends.filter { selectedFriendIds.contains($0.id) }
 
         guard !memberNames.isEmpty else { return }
 
         // Create the group using AppStore
-        store.addGroup(name: trimmedName, memberNames: memberNames)
+        store.addGroup(
+            name: trimmedName,
+            memberNames: memberNames,
+            newFriends: selectedNewFriends
+        )
 
         Haptics.notify(.success)
         dismiss()

@@ -70,23 +70,16 @@ async function hasAccountAliasEvidence(
 }
 
 async function collectBoundedPairEvidence<T>(
-  readPage: (
-    cursor: string | null
-  ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>,
+  readRows: () => Promise<T[]>,
   onRowsRead?: FriendLinkReadObserver
 ): Promise<T[]> {
-  const rows: T[] = [];
-  let cursor: string | null = null;
-
-  while (true) {
-    const result = await readPage(cursor);
-    onRowsRead?.(result.page);
-    rows.push(...result.page);
-    if (rows.length > MAX_LEGACY_LINK_EVIDENCE_ROWS) return [];
-    if (result.isDone) return rows;
-    if (result.continueCursor === cursor) return [];
-    cursor = result.continueCursor;
+  const rows = await readRows();
+  if (rows.length === 0) {
+    onRowsRead?.([]);
+  } else {
+    for (const row of rows) onRowsRead?.([row]);
   }
+  return rows.length > MAX_LEGACY_LINK_EVIDENCE_ROWS ? [] : rows;
 }
 
 async function hasHistoricalClaimEvidence(
@@ -98,47 +91,47 @@ async function hasHistoricalClaimEvidence(
   onRowsRead?: FriendLinkReadObserver
 ): Promise<boolean> {
   const outgoingInvites = await collectBoundedPairEvidence(
-    async (cursor) =>
+    async () =>
       await ctx.db
         .query("invite_tokens")
         .withIndex("by_creator_id_and_claimed_by", (q) =>
           q.eq("creator_id", owner.id).eq("claimed_by", linkedAccount.id)
         )
         .order("asc")
-        .paginate({ cursor, numItems: 1 }),
+        .take(MAX_LEGACY_LINK_EVIDENCE_ROWS + 1),
     onRowsRead
   );
   const reverseInvites = await collectBoundedPairEvidence(
-    async (cursor) =>
+    async () =>
       await ctx.db
         .query("invite_tokens")
         .withIndex("by_creator_id_and_claimed_by", (q) =>
           q.eq("creator_id", linkedAccount.id).eq("claimed_by", owner.id)
         )
         .order("asc")
-        .paginate({ cursor, numItems: 1 }),
+        .take(MAX_LEGACY_LINK_EVIDENCE_ROWS + 1),
     onRowsRead
   );
   const outgoingRequests = await collectBoundedPairEvidence(
-    async (cursor) =>
+    async () =>
       await ctx.db
         .query("link_requests")
         .withIndex("by_requester_id_and_recipient_email", (q) =>
           q.eq("requester_id", owner.id).eq("recipient_email", linkedAccount.email)
         )
         .order("asc")
-        .paginate({ cursor, numItems: 1 }),
+        .take(MAX_LEGACY_LINK_EVIDENCE_ROWS + 1),
     onRowsRead
   );
   const reverseRequests = await collectBoundedPairEvidence(
-    async (cursor) =>
+    async () =>
       await ctx.db
         .query("link_requests")
         .withIndex("by_requester_id_and_recipient_email", (q) =>
           q.eq("requester_id", linkedAccount.id).eq("recipient_email", owner.email)
         )
         .order("asc")
-        .paginate({ cursor, numItems: 1 }),
+        .take(MAX_LEGACY_LINK_EVIDENCE_ROWS + 1),
     onRowsRead
   );
 

@@ -401,6 +401,37 @@ final class AppStoreRemoteDataTests: XCTestCase {
         XCTAssertEqual(expenseCleanupCount, 0)
     }
 
+    func testRemoteLoad_FriendFailureDoesNotHideFinancialData() async throws {
+        sut = makeSUT(environment: .production)
+        sut.session = UserSession(account: UserAccount(
+            id: "production-account",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: sut.currentUser.id
+        ))
+
+        let friend = GroupMember(name: "Friend")
+        let group = SpendingGroup(name: "Trip", members: [sut.currentUser, friend])
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner",
+            totalAmount: 40,
+            paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: group.members.map(\.id),
+            splits: group.members.map { ExpenseSplit(memberId: $0.id, amount: 20) }
+        )
+        await mockGroupCloudService.addGroup(group)
+        await mockExpenseCloudService.addExpense(expense)
+        await mockAccountService.failNextFriendFetch()
+
+        await sut.loadRemoteData()
+
+        XCTAssertEqual(sut.groups.map(\.id), [group.id])
+        XCTAssertEqual(sut.expenses.map(\.id), [expense.id])
+        XCTAssertFalse(sut.isAuthenticationSessionRecoveryBlocking)
+        XCTAssertEqual(sut.overallNetBalance(), 20, accuracy: 0.001)
+    }
+
     func testCompleteAuthentication_LoadsRemoteData() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")

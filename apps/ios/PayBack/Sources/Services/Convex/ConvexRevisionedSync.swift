@@ -301,7 +301,7 @@ enum ConvexRevisionedSync {
     ) -> [String: ConvexEncodable?] {
         let paginationOptions: [String: ConvexEncodable?] = [
             "cursor": cursor,
-            "numItems": pageSize
+            "numItems": Double(pageSize)
         ]
         var arguments: [String: ConvexEncodable?] = ["paginationOpts": paginationOptions]
         if let expectedRevision {

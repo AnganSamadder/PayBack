@@ -396,6 +396,8 @@ Required keys:
 
 - `AppStore.subscribeToSyncManager` must ignore realtime payloads until a valid session exists.
 - Prevent empty pre-auth snapshots from clobbering local state.
+- A friends/linking-channel hydration failure must not block successfully loaded groups and expenses.
+- Only synchronize friend state after a successful canonical friends fetch.
 
 ### 8.6 Dependencies thread-safety
 
@@ -482,6 +484,13 @@ Failure impact:
 Failure impact:
 
 - Friend-of-friend participants (for example, Bob in a shared group) can appear as unintended direct friends.
+
+### 8.13 Explicit manual-friend creation
+
+- A person entered through the Create Group "Add New Friend" control is an explicit friend, not a group-derived identity.
+- Persist that friend in `AppStore.friends` before creating the group and reuse the same member UUID in both records.
+- `friends:upsert` must store unproven client-created friends as `link_state="unlinked"` with server-owned `status="manual"`.
+- Re-upserting a legacy explicit friend with no status must repair it to `status="manual"`; never accept client-supplied linked metadata without server provenance.
 
 ### 8.13 Bulk import link provenance
 
@@ -673,6 +682,12 @@ Required behavior:
 Failure signature:
 
 - Xcode Cloud compile error: `Cannot find type 'ConvexAccountService' in scope`.
+
+### Swift numeric payload compatibility
+
+- Convex Swift encodes `Int` as Convex Int64 (`$integer`), not a JavaScript number.
+- Arguments validated with backend `v.number()` (including pagination `numItems`) must be sent from Swift as `Double`.
+- Add an encoding regression test whenever introducing a numeric Swift-to-Convex request field.
 
 ## 11) Auth UX Continuity (iOS)
 

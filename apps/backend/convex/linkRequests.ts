@@ -55,16 +55,8 @@ const MAX_ACTIVE_DUPLICATE_CANDIDATES = 1;
 const LINK_REQUEST_LIST_LIMITS = {
   compatibilityRows: 50,
   pageRows: 5,
-  estimatedReadBytes: 8 * 1024 * 1024,
-  hardReadSafetyBytes: 10 * 1024 * 1024,
-  maximumDocumentReservationBytes: 2 * 1024 * 1024
+  estimatedReadBytes: 8 * 1024 * 1024
 } as const;
-
-type LinkRequestPage<T> = {
-  page: T[];
-  continueCursor: string;
-  isDone: boolean;
-};
 
 function convexRowsSize(rows: readonly unknown[]) {
   return rows.reduce<number>((total, row) => total + getConvexSize(row as Value), 0);
@@ -75,66 +67,27 @@ function clampedLinkRequestPageSize(requested: number) {
   return Math.max(1, Math.min(LINK_REQUEST_LIST_LIMITS.pageRows, Math.trunc(requested)));
 }
 
-function compatibilityPageSize(readBytes: number, rowLimit: number) {
-  const remainingHardBytes = LINK_REQUEST_LIST_LIMITS.hardReadSafetyBytes - readBytes;
-  const byteReservedRows = Math.floor(
-    remainingHardBytes / LINK_REQUEST_LIST_LIMITS.maximumDocumentReservationBytes
-  );
-  return Math.min(LINK_REQUEST_LIST_LIMITS.pageRows, rowLimit, byteReservedRows);
-}
-
 async function collectCompatibilityLinkRequests<T extends { _id: unknown; created_at: number }>(
-  readActivePage: (cursor: string | null, limit: number) => Promise<LinkRequestPage<T>>,
-  readHistoryPage: (cursor: string | null, limit: number) => Promise<LinkRequestPage<T>>
+  activeRows: T[],
+  historyRows: T[]
 ): Promise<T[]> {
-  const activeRows: T[] = [];
-  let cursor: string | null = null;
-  let readBytes = 0;
-
-  while (activeRows.length <= LINK_REQUEST_LIST_LIMITS.compatibilityRows) {
-    const pageSize = compatibilityPageSize(
-      readBytes,
-      LINK_REQUEST_LIST_LIMITS.compatibilityRows + 1 - activeRows.length
-    );
-    if (pageSize <= 0) {
-      throw new Error("Active link request list exceeds the safe read budget");
-    }
-
-    const result = await readActivePage(cursor, pageSize);
-    const pageBytes = convexRowsSize(result.page);
-    if (readBytes + pageBytes > LINK_REQUEST_LIST_LIMITS.estimatedReadBytes) {
-      throw new Error("Active link request list exceeds the safe read budget");
-    }
-    readBytes += pageBytes;
-    activeRows.push(...result.page);
-    if (activeRows.length > LINK_REQUEST_LIST_LIMITS.compatibilityRows) {
-      throw new Error("Too many active link requests to list safely");
-    }
-    if (result.isDone) break;
-    if (result.continueCursor === cursor) {
-      throw new Error("Active link request pagination did not advance");
-    }
-    cursor = result.continueCursor;
+  if (activeRows.length > LINK_REQUEST_LIST_LIMITS.compatibilityRows) {
+    throw new Error("Too many active link requests to list safely");
+  }
+  let readBytes = convexRowsSize(activeRows);
+  if (readBytes > LINK_REQUEST_LIST_LIMITS.estimatedReadBytes) {
+    throw new Error("Active link request list exceeds the safe read budget");
   }
 
   activeRows.sort((left, right) => right.created_at - left.created_at);
   const rows = [...activeRows];
   const activeIds = new Set(activeRows.map((row) => String(row._id)));
-  cursor = null;
-  while (rows.length < LINK_REQUEST_LIST_LIMITS.compatibilityRows) {
-    const pageSize = compatibilityPageSize(readBytes, LINK_REQUEST_LIST_LIMITS.pageRows);
-    if (pageSize <= 0) return rows;
-
-    const result = await readHistoryPage(cursor, pageSize);
-    const pageBytes = convexRowsSize(result.page);
-    if (readBytes + pageBytes > LINK_REQUEST_LIST_LIMITS.estimatedReadBytes) return rows;
-    readBytes += pageBytes;
-    for (const row of result.page) {
-      if (!activeIds.has(String(row._id))) rows.push(row);
-      if (rows.length === LINK_REQUEST_LIST_LIMITS.compatibilityRows) return rows;
-    }
-    if (result.isDone || result.continueCursor === cursor) return rows;
-    cursor = result.continueCursor;
+  for (const row of historyRows) {
+    const rowBytes = getConvexSize(row as Value);
+    if (readBytes + rowBytes > LINK_REQUEST_LIST_LIMITS.estimatedReadBytes) break;
+    readBytes += rowBytes;
+    if (!activeIds.has(String(row._id))) rows.push(row);
+    if (rows.length === LINK_REQUEST_LIST_LIMITS.compatibilityRows) break;
   }
   return rows;
 }
@@ -261,23 +214,20 @@ export const listIncoming = query({
     if (!user) return [];
     const recipientEmail = user.email.trim().toLowerCase();
     const now = Date.now();
-    return await collectCompatibilityLinkRequests(
-      (cursor, limit) =>
-        ctx.db
-          .query("link_requests")
-          .withIndex("by_recipient_email_status_and_expiry", (q) =>
-            q.eq("recipient_email", recipientEmail).eq("status", "pending").gt("expires_at", now)
-          )
-          .paginate({ cursor, numItems: limit }),
-      (cursor, limit) =>
-        ctx.db
-          .query("link_requests")
-          .withIndex("by_recipient_email_and_created_at", (q) =>
-            q.eq("recipient_email", recipientEmail)
-          )
-          .order("desc")
-          .paginate({ cursor, numItems: limit })
-    );
+    const activeRows = await ctx.db
+      .query("link_requests")
+      .withIndex("by_recipient_email_status_and_expiry", (q) =>
+        q.eq("recipient_email", recipientEmail).eq("status", "pending").gt("expires_at", now)
+      )
+      .take(LINK_REQUEST_LIST_LIMITS.compatibilityRows + 1);
+    const historyRows = await ctx.db
+      .query("link_requests")
+      .withIndex("by_recipient_email_and_created_at", (q) =>
+        q.eq("recipient_email", recipientEmail)
+      )
+      .order("desc")
+      .take(LINK_REQUEST_LIST_LIMITS.compatibilityRows);
+    return await collectCompatibilityLinkRequests(activeRows, historyRows);
   }
 });
 
@@ -316,21 +266,18 @@ export const listOutgoing = query({
     if (!user) return [];
 
     const now = Date.now();
-    return await collectCompatibilityLinkRequests(
-      (cursor, limit) =>
-        ctx.db
-          .query("link_requests")
-          .withIndex("by_requester_id_status_and_expiry", (q) =>
-            q.eq("requester_id", user.id).eq("status", "pending").gt("expires_at", now)
-          )
-          .paginate({ cursor, numItems: limit }),
-      (cursor, limit) =>
-        ctx.db
-          .query("link_requests")
-          .withIndex("by_requester_id_and_created_at", (q) => q.eq("requester_id", user.id))
-          .order("desc")
-          .paginate({ cursor, numItems: limit })
-    );
+    const activeRows = await ctx.db
+      .query("link_requests")
+      .withIndex("by_requester_id_status_and_expiry", (q) =>
+        q.eq("requester_id", user.id).eq("status", "pending").gt("expires_at", now)
+      )
+      .take(LINK_REQUEST_LIST_LIMITS.compatibilityRows + 1);
+    const historyRows = await ctx.db
+      .query("link_requests")
+      .withIndex("by_requester_id_and_created_at", (q) => q.eq("requester_id", user.id))
+      .order("desc")
+      .take(LINK_REQUEST_LIST_LIMITS.compatibilityRows);
+    return await collectCompatibilityLinkRequests(activeRows, historyRows);
   }
 });
 

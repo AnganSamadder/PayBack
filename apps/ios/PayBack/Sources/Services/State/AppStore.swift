@@ -1132,7 +1132,20 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return GroupMember(name: name)
     }
 
-    func addGroup(name: String, memberNames: [String]) {
+    func addGroup(
+        name: String,
+        memberNames: [String],
+        newFriends: [GroupMember] = []
+    ) {
+        for member in newFriends where !friends.contains(where: { $0.memberId == member.id }) {
+            friends.append(AccountFriend(
+                memberId: member.id,
+                name: member.name,
+                hasLinkedAccount: false,
+                status: "friend"
+            ))
+        }
+
         // Include current user as a member
         var allMembers = [GroupMember(id: currentUser.id, name: currentUser.name, profileImageUrl: currentUser.profileImageUrl, profileColorHex: currentUser.profileColorHex, isCurrentUser: true)]
         // Reuse existing member IDs when possible
@@ -2466,7 +2479,17 @@ func completeAuthentication(id: String, email: String, name: String?) {
             guard isCurrentRemoteLoad(context) else { return }
             let fetchedExpenses = try await expenseCloudService.fetchExpenses()
             guard isCurrentRemoteLoad(context) else { return }
-            let remoteFriends = try await accountService.fetchFriends(accountEmail: context.accountEmail)
+            let remoteFriends: [AccountFriend]?
+            do {
+                remoteFriends = try await accountService.fetchFriends(
+                    accountEmail: context.accountEmail
+                )
+            } catch {
+                remoteFriends = nil
+                #if DEBUG
+                print("⚠️ Friend hydration failed without blocking financial data: \(error.localizedDescription)")
+                #endif
+            }
             guard isCurrentRemoteLoad(context) else { return }
 
             let remoteGroups = productionVisibleGroups(fetchedGroups)
@@ -2485,11 +2508,13 @@ func completeAuthentication(id: String, email: String, name: String?) {
             authenticationSessionRecoveryMessage = nil
             persistCurrentState()
             logFetchedData(groups: normalization.groups, expenses: normalization.expenses)
-            processFriendsUpdate(remoteFriends)
+            if let remoteFriends {
+                processFriendsUpdate(remoteFriends)
+            }
             normalizeDirectGroupFlags()
             purgeCurrentUserFriendRecords()
             pruneSelfOnlyDirectGroups()
-            let mergedFriends = friends
+            let mergedFriends = remoteFriends == nil ? nil : friends
 
             // Perform state reconciliation to verify link status
             await reconcileLinkState(remoteLoadContext: context)
@@ -2511,10 +2536,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
             }
 
             guard isCurrentRemoteLoad(context) else { return }
-            try? await accountService.syncFriends(
-                accountEmail: context.accountEmail,
-                friends: mergedFriends
-            )
+            if let mergedFriends {
+                try? await accountService.syncFriends(
+                    accountEmail: context.accountEmail,
+                    friends: mergedFriends
+                )
+            }
 
             #if DEBUG
             print("[AppStore] ✅ Remote data sync complete")

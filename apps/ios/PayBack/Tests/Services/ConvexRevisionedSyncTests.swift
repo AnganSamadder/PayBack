@@ -5,6 +5,26 @@ import XCTest
 import ConvexMobile
 
 final class ConvexRevisionedSyncTests: XCTestCase {
+    func testPaginationArgumentsEncodePageSizeAsConvexFloat() {
+        let groupArguments = ConvexRevisionedSync.groupArguments(
+            cursor: nil,
+            expectedRevision: nil
+        )
+        let expenseArguments = ConvexRevisionedSync.expenseArguments(
+            cursor: nil,
+            expectedRevision: nil
+        )
+
+        for arguments in [groupArguments, expenseArguments] {
+            let paginationOptions = arguments["paginationOpts"] as? [String: ConvexEncodable?]
+
+            XCTAssertEqual(
+                paginationOptions?["numItems"] as? Double,
+                Double(ConvexRevisionedSync.pageSize)
+            )
+        }
+    }
+
     func testLegacySnapshotAccumulatorKeepsFirstOccurrenceAndStableOrder() {
         var accumulator = ConvexLegacySnapshotAccumulator<String>()
 

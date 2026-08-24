@@ -808,7 +808,64 @@ test("friends:upsert cannot create linked metadata from a client payload", async
   expect(row?.has_linked_account).toBe(false);
   expect(row?.linked_account_id).toBeUndefined();
   expect(row?.linked_account_email).toBeUndefined();
-  expect(row?.status).toBeUndefined();
+  expect(row?.status).toBe("manual");
+});
+
+test("friends:upsert repairs an explicit legacy friend missing confirmation status", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      created_at: now,
+      member_id: "owner_member"
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "legacy_manual_friend",
+      name: "Legacy Manual Friend",
+      profile_avatar_color: "#123456",
+      has_linked_account: false,
+      link_state: "unlinked",
+      updated_at: now
+    });
+  });
+
+  const ownerCtx = t.withIdentity({
+    subject: "owner_auth_id",
+    email: "owner@example.com",
+    name: "Owner",
+    pictureUrl: "http://placeholder.com",
+    tokenIdentifier: "owner_auth_id",
+    issuer: "http://placeholder.com",
+    emailVerified: true,
+    updatedAt: "2023-01-01"
+  });
+
+  await ownerCtx.mutation(api.friends.upsert, {
+    member_id: "legacy_manual_friend",
+    name: "Legacy Manual Friend",
+    has_linked_account: false,
+    status: "friend"
+  });
+
+  const row = await t.run(async (ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@example.com").eq("member_id", "legacy_manual_friend")
+      )
+      .unique()
+  );
+
+  expect(row).toMatchObject({
+    has_linked_account: false,
+    link_state: "unlinked",
+    status: "manual"
+  });
 });
 
 test("friends:upsert cannot promote an existing unlinked row", async () => {

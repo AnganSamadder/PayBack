@@ -102,6 +102,17 @@ final class CreateGroupViewTests: XCTestCase {
         XCTAssertNotEqual(aliceMember.id, bobMember.id)
     }
 
+    func testAddGroup_RegistersExplicitlyAddedFriendWithMatchingMemberIdentity() async throws {
+        let alexId = UUID()
+        let alex = GroupMember(id: alexId, name: "Alex")
+
+        sut.addGroup(name: "Dinner", memberNames: [alex.name], newFriends: [alex])
+
+        XCTAssertEqual(sut.friends.count, 1)
+        XCTAssertEqual(sut.friends[0].memberId, alexId)
+        XCTAssertEqual(sut.groups[0].members.first(where: { $0.name == alex.name })?.id, alexId)
+    }
+
     func testAddGroup_HandlesEmptyMemberName() async throws {
         // Given
         let memberNames = ["Alice", "", "Bob"]
