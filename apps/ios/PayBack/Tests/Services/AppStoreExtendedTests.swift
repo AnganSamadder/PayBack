@@ -211,6 +211,111 @@ final class AppStoreExtendedTests: XCTestCase {
         XCTAssertEqual(store.friends.count, initialCount + 1)
     }
 
+    func testAddUnlinkedFriend_RegistersConfirmedFriendBeforeDirectGroup() async throws {
+        let accountService = MockAccountServiceForAppStore()
+        let account = UserAccount(
+            id: "account-1",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: UUID()
+        )
+        store = AppStore(
+            accountService: accountService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true
+        )
+        store.session = UserSession(account: account)
+        store.currentUser = GroupMember(
+            id: account.linkedMemberId!,
+            name: account.displayName,
+            isCurrentUser: true
+        )
+        let friend = GroupMember(id: UUID(), name: "Alice")
+
+        try await store.addUnlinkedFriend(friend)
+
+        XCTAssertEqual(store.friends.map(\.memberId), [friend.id])
+        XCTAssertEqual(store.confirmedFriendMembers.map(\.id), [friend.id])
+        XCTAssertEqual(store.directGroup(with: friend.id)?.members.map(\.id), [store.currentUser.id, friend.id])
+
+        for _ in 0..<100 where await accountService.latestSyncedFriends(accountEmail: account.email) == nil {
+            await Task.yield()
+        }
+        let syncedSnapshots = await accountService.syncedFriendSnapshots(accountEmail: account.email)
+        XCTAssertFalse(syncedSnapshots.isEmpty)
+        XCTAssertTrue(syncedSnapshots.allSatisfy { snapshot in
+            snapshot.contains(where: { $0.memberId == friend.id })
+        })
+    }
+
+    func testAddUnlinkedFriend_WhenCloudWriteFails_DoesNotShowSuccessLocally() async {
+        let accountService = MockAccountServiceForAppStore()
+        let account = UserAccount(
+            id: "account-1",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: UUID()
+        )
+        store = AppStore(
+            accountService: accountService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true
+        )
+        store.session = UserSession(account: account)
+        store.currentUser = GroupMember(
+            id: account.linkedMemberId!,
+            name: account.displayName,
+            isCurrentUser: true
+        )
+        let friend = GroupMember(id: UUID(), name: "Alice")
+        await accountService.setShouldFail(true)
+
+        do {
+            try await store.addUnlinkedFriend(friend)
+            XCTFail("Expected the friend write to fail")
+        } catch {
+            XCTAssertEqual(error as? PayBackError, .networkUnavailable)
+        }
+
+        XCTAssertTrue(store.friends.isEmpty)
+        XCTAssertTrue(store.confirmedFriendMembers.isEmpty)
+        XCTAssertNil(store.directGroup(with: friend.id))
+    }
+
+    func testManualFriendCandidate_ReusesUniqueGroupOnlyIdentity() async throws {
+        let accountService = MockAccountServiceForAppStore()
+        let account = UserAccount(
+            id: "account-1",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: UUID()
+        )
+        store = AppStore(
+            accountService: accountService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true
+        )
+        store.session = UserSession(account: account)
+        store.currentUser = GroupMember(
+            id: account.linkedMemberId!,
+            name: account.displayName,
+            isCurrentUser: true
+        )
+        let groupOnlyMember = GroupMember(id: UUID(), name: "Alice")
+        store.groups = [SpendingGroup(
+            name: groupOnlyMember.name,
+            members: [store.currentUser, groupOnlyMember],
+            isDirect: true
+        )]
+
+        let candidate = store.manualFriendCandidate(named: " alice ")
+        try await store.addUnlinkedFriend(candidate)
+
+        XCTAssertEqual(candidate.id, groupOnlyMember.id)
+        XCTAssertEqual(store.friends.map(\.memberId), [groupOnlyMember.id])
+        XCTAssertEqual(store.groups.count, 1)
+    }
+
     func testFriendMembers_ExcludesCurrentUser() {
         // Add a friend that looks like current user
         let friendWithCurrentUserId = AccountFriend(

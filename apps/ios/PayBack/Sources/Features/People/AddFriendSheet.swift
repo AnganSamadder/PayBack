@@ -142,6 +142,11 @@ struct AddFriendSheet: View {
             TextField("Friend's Name", text: $name)
                 .textContentType(.name)
                 .autocapitalization(.words)
+                .disabled(submissionState == .sending)
+                .submitLabel(.done)
+                .onSubmit {
+                    addFriendByName()
+                }
                 .onChange(of: name) { _, _ in
                     clearSubmissionError()
                 }
@@ -237,10 +242,14 @@ struct AddFriendSheet: View {
     private var actionButton: some View {
         switch mode {
         case .byName:
-            Button("Add") {
-                addFriendByName()
+            if submissionState == .sending {
+                ProgressView()
+            } else {
+                Button("Add") {
+                    addFriendByName()
+                }
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
         case .byEmail:
             switch submissionState {
@@ -268,10 +277,11 @@ struct AddFriendSheet: View {
     }
 
     private func addFriendByName() {
+        guard submissionState != .sending else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let candidate = GroupMember(name: trimmed)
+        let candidate = store.manualFriendCandidate(named: trimmed)
 
         // Check if trying to add self
         if store.isCurrentUser(candidate) {
@@ -281,24 +291,36 @@ struct AddFriendSheet: View {
         }
 
         // Check for duplicate
-        if store.friendMembers.contains(where: { $0.name.lowercased() == trimmed.lowercased() }) {
+        if store.confirmedFriendMembers.contains(where: {
+            $0.name.localizedCaseInsensitiveCompare(trimmed) == .orderedSame
+        }) {
             Haptics.notify(.error)
             submissionState = .error("A friend with this name already exists.")
             return
         }
 
-        // Create direct group with the friend
-        _ = store.directGroup(with: candidate)
-
-        // Register as a confirmed friend so they appear on the Friends tab
-        let newFriend = AccountFriend(memberId: candidate.id, name: trimmed, status: "friend")
-        store.addImportedFriend(newFriend)
-
-        // Trigger success haptic
-        Haptics.notify(.success)
-
-        successMessage = "Added \(trimmed) as a friend."
-        showSuccessMessage = true
+        submissionState = .sending
+        Task {
+            do {
+                try await store.addUnlinkedFriend(candidate)
+                await MainActor.run {
+                    Haptics.notify(.success)
+                    successMessage = "Added \(trimmed) as a friend."
+                    showSuccessMessage = true
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    Haptics.notify(.error)
+                    submissionState = .error(
+                        error.userFacingMessage(
+                            fallback: "We couldn't add this friend. Please try again."
+                        )
+                    )
+                }
+            }
+        }
     }
 
     private func sendLinkRequest() {

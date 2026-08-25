@@ -1715,6 +1715,53 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
     }
 
+    func manualFriendCandidate(named rawName: String) -> GroupMember {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchingGroupOnlyMembers = friendMembers.filter { member in
+            member.name.localizedCaseInsensitiveCompare(name) == .orderedSame &&
+                !friends.contains(where: { areSamePerson($0.memberId, member.id) })
+        }
+
+        // Reuse a unique historical identity so a friend whose earlier cloud write
+        // failed can be promoted without creating a duplicate direct group.
+        return matchingGroupOnlyMembers.count == 1
+            ? matchingGroupOnlyMembers[0]
+            : GroupMember(name: name)
+    }
+
+    @MainActor
+    func addUnlinkedFriend(_ friend: GroupMember) async throws {
+        guard !isCurrentUser(friend) else { return }
+        guard let session else { throw PayBackError.authSessionMissing }
+
+        if friends.contains(where: { areSamePerson($0.memberId, friend.id) }) {
+            _ = directGroup(with: friend)
+            return
+        }
+
+        let context = groupMutationContext()
+        let newFriend = AccountFriend(
+            memberId: friend.id,
+            name: friend.name,
+            hasLinkedAccount: false,
+            status: "friend"
+        )
+
+        // Confirm the canonical friend remotely before reporting success or creating
+        // the convenience direct group. A failed write must not leave group-only state.
+        try await accountService.syncFriends(
+            accountEmail: session.account.email.lowercased(),
+            friends: friends + [newFriend]
+        )
+        try Task.checkCancellation()
+        guard isCurrentGroupMutation(context) else { throw CancellationError() }
+
+        if !friends.contains(where: { areSamePerson($0.memberId, friend.id) }) {
+            processFriendsUpdate(friends + [newFriend])
+        }
+        _ = directGroup(with: friend)
+    }
+
     func resolveLinkedAccountsForImport(_ memberIds: [UUID]) async throws -> [UUID: (String, String)] {
         try await accountService.resolveLinkedAccountsForMemberIds(memberIds)
     }
