@@ -197,6 +197,10 @@ actor MockAccountServiceForAppStore: AccountService {
         friendSyncHistory[accountEmail.lowercased()]?.last
     }
 
+    func syncedFriendSnapshots(accountEmail: String) -> [[AccountFriend]] {
+        friendSyncHistory[accountEmail.lowercased()] ?? []
+    }
+
     func failNextFriendFetch() {
         shouldFailNextFriendFetch = true
     }

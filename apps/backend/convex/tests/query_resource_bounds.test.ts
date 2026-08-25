@@ -866,6 +866,51 @@ test("friends:upsert rejects an oversized legacy fallback scan without writing",
   expect(legacyFriend?.name).toBe("Original Legacy Name");
 });
 
+test("friends:upsert can add a manual friend after the legacy lookup crosses one page", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now
+    });
+    for (let index = 0; index < 7; index += 1) {
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@example.com",
+        member_id: `existing_${index}`,
+        name: `Existing ${index}`,
+        profile_avatar_color: "#123456",
+        has_linked_account: false,
+        link_state: "unlinked",
+        updated_at: now + index
+      });
+    }
+  });
+
+  const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
+  await owner.mutation(api.friends.upsert, {
+    member_id: "new_manual_friend",
+    name: "New Manual Friend",
+    has_linked_account: false,
+    status: "friend"
+  });
+
+  const insertedFriend = await t.run((ctx) =>
+    ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", "owner@example.com").eq("member_id", "new_manual_friend")
+      )
+      .unique()
+  );
+  expect(insertedFriend?.name).toBe("New Manual Friend");
+  expect(insertedFriend?.status).toBe("manual");
+});
+
 test("friends:clearAllForUser deletes in bounded resumable batches", async () => {
   vi.useFakeTimers();
   try {
