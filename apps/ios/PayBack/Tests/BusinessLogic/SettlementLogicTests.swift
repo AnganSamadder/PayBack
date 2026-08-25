@@ -25,6 +25,15 @@ final class SettlementLogicTests: XCTestCase {
         XCTAssertFalse(settlementFunction.contains("Continue settling remaining expenses"))
     }
 
+    func testExpenseSettlementAlertsSanitizeUnderlyingServerErrors() throws {
+        let source = try SourceFixture.contents(
+            at: "Sources/Features/Activity/ExpenseDetailView.swift"
+        )
+
+        XCTAssertEqual(source.components(separatedBy: ".userFacingMessage(").count - 1, 2)
+        XCTAssertFalse(source.contains("settlementError?.errorDescription"))
+    }
+
     func testTotalToSettleUsesCurrentUsersUnsettledShareInsteadOfExpenseTotal() {
         let me = UUID()
         let other = UUID()

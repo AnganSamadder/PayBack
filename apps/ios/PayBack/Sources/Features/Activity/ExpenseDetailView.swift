@@ -102,7 +102,9 @@ struct ExpenseDetailView: View {
         .alert("Unable to Update Settlement", isPresented: $showSettlementError) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text(settlementError?.errorDescription ?? "Please try again.")
+            Text(settlementError?.userFacingMessage(
+                fallback: "We couldn't update this settlement. Please try again."
+            ) ?? "We couldn't update this settlement. Please try again.")
         }
     }
 
@@ -555,7 +557,9 @@ struct SettleExpenseSheet: View {
             .alert("Unable to Update Settlement", isPresented: $showSettlementError) {
                 Button("OK", role: .cancel) { }
             } message: {
-                Text(settlementError?.errorDescription ?? "Please try again.")
+                Text(settlementError?.userFacingMessage(
+                    fallback: "We couldn't update this settlement. Please try again."
+                ) ?? "We couldn't update this settlement. Please try again.")
             }
         }
     }
