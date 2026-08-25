@@ -773,8 +773,7 @@ final class AppStoreTests: XCTestCase {
     func testScheduleFriendSync_SyncsDedupedFriendsOnly() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 200_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let linkedMemberId = UUID()
         let canonicalMemberId = UUID()
@@ -801,7 +800,10 @@ final class AppStoreTests: XCTestCase {
 
         // When
         sut.updateGroup(group)
-        try await Task.sleep(nanoseconds: 300_000_000)
+
+        for _ in 0..<500 where await mockAccountService.latestSyncedFriends(accountEmail: account.email) == nil {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
 
         // Then - only the canonical deduped friend list should be written to cloud.
         let synced = await mockAccountService.latestSyncedFriends(accountEmail: account.email)

@@ -747,8 +747,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
     func testSendLinkRequest_DoesNotRequireRecipientToAlreadyHaveAccount() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let friend = GroupMember(name: "Alice")
 
