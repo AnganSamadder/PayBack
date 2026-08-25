@@ -31,10 +31,7 @@ const FRIEND_LIST_LIMITS = {
 
 const LEGACY_FRIEND_LOOKUP_LIMITS = {
   rows: 256,
-  estimatedReadBytes: 8 * 1024 * 1024,
-  hardReadSafetyBytes: 10 * 1024 * 1024,
-  maximumDocumentReservationBytes: 2 * 1024 * 1024,
-  maximumPageRows: 5
+  estimatedReadBytes: 8 * 1024 * 1024
 } as const;
 const FRIEND_CLEAR_BATCH_SIZE = 5;
 
@@ -79,50 +76,28 @@ async function findBoundedLegacyFriend(
   accountEmail: string,
   normalizedMemberId: string
 ) {
-  const rows: Doc<"account_friends">[] = [];
-  let cursor: string | null = null;
-  let readBytes = 0;
-
-  while (true) {
-    const remainingRows = LEGACY_FRIEND_LOOKUP_LIMITS.rows - rows.length + 1;
-    const remainingHardBytes = LEGACY_FRIEND_LOOKUP_LIMITS.hardReadSafetyBytes - readBytes;
-    const byteReservedRows = Math.floor(
-      remainingHardBytes / LEGACY_FRIEND_LOOKUP_LIMITS.maximumDocumentReservationBytes
-    );
-    const pageSize = Math.min(
-      LEGACY_FRIEND_LOOKUP_LIMITS.maximumPageRows,
-      remainingRows,
-      byteReservedRows
-    );
-    if (pageSize <= 0) throw new Error("Friend lookup is too large to complete safely");
-
-    const result = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
-      .order("asc")
-      .paginate({ cursor, numItems: pageSize });
-    readBytes += result.page.reduce((total, row) => total + getConvexSize(row as Value), 0);
-    rows.push(...result.page);
-    if (
-      rows.length > LEGACY_FRIEND_LOOKUP_LIMITS.rows ||
-      readBytes > LEGACY_FRIEND_LOOKUP_LIMITS.estimatedReadBytes
-    ) {
-      throw new Error("Friend lookup is too large to complete safely");
-    }
-    if (result.isDone) {
-      const matches = rows.filter(
-        (friend) => normalizeMemberId(friend.member_id) === normalizedMemberId
-      );
-      if (matches.length > 1) {
-        throw new Error("Identity maintenance required: duplicate friend identities");
-      }
-      return matches[0] ?? null;
-    }
-    if (result.continueCursor === cursor) {
-      throw new Error("Friend lookup is too large to complete safely");
-    }
-    cursor = result.continueCursor;
+  // Mutations may run at most one paginated query. Use one bounded indexed read
+  // so legacy normalization remains atomic with the subsequent patch or insert.
+  const rows: Doc<"account_friends">[] = await ctx.db
+    .query("account_friends")
+    .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
+    .order("asc")
+    .take(LEGACY_FRIEND_LOOKUP_LIMITS.rows + 1);
+  const readBytes = rows.reduce((total, row) => total + getConvexSize(row as Value), 0);
+  if (
+    rows.length > LEGACY_FRIEND_LOOKUP_LIMITS.rows ||
+    readBytes > LEGACY_FRIEND_LOOKUP_LIMITS.estimatedReadBytes
+  ) {
+    throw new Error("Friend lookup is too large to complete safely");
   }
+
+  const matches = rows.filter(
+    (friend) => normalizeMemberId(friend.member_id) === normalizedMemberId
+  );
+  if (matches.length > 1) {
+    throw new Error("Identity maintenance required: duplicate friend identities");
+  }
+  return matches[0] ?? null;
 }
 
 async function deleteFriendBatch(
