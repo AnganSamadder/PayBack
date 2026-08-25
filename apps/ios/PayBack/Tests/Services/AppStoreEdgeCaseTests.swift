@@ -436,8 +436,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             equivalentMemberIds: [aliasId]
         )
         await mockAccountService.addAccount(account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let member = GroupMember(id: aliasId, name: "Alias")
 
