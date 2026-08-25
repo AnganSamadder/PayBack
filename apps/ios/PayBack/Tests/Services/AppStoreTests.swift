@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import PayBack
 
@@ -41,6 +42,18 @@ final class AppStoreTests: XCTestCase {
         await mockInviteLinkService.reset()
         sut = nil
         try await super.tearDown()
+    }
+
+    private func clearAllUserDataAndWaitForCompletion() async {
+        let completed = expectation(description: "Clear-all cloud work completed")
+        let completionObservation = sut.$isClearingAllData
+            .dropFirst()
+            .first(where: { !$0 })
+            .sink { _ in completed.fulfill() }
+
+        sut.clearAllUserData()
+        await fulfillment(of: [completed], timeout: 1)
+        withExtendedLifetime(completionObservation) {}
     }
 
     // MARK: - Initialization Tests
@@ -1670,11 +1683,7 @@ final class AppStoreTests: XCTestCase {
     }
 
     func testClearAllUserData_waitsForEveryCloudService() async throws {
-        sut.clearAllUserData()
-
-        for _ in 0..<100 where sut.isClearingAllData {
-            await Task.yield()
-        }
+        await clearAllUserDataAndWaitForCompletion()
 
         XCTAssertFalse(sut.isClearingAllData)
         XCTAssertNil(sut.clearAllDataErrorMessage)
@@ -1689,11 +1698,7 @@ final class AppStoreTests: XCTestCase {
     func testClearAllUserData_keepsFailureVisibleAndStopsRemainingCloudWork() async throws {
         await mockExpenseCloudService.setShouldFail(true)
 
-        sut.clearAllUserData()
-
-        for _ in 0..<100 where sut.isClearingAllData {
-            await Task.yield()
-        }
+        await clearAllUserDataAndWaitForCompletion()
 
         XCTAssertFalse(sut.isClearingAllData)
         XCTAssertNotNil(sut.clearAllDataErrorMessage)
