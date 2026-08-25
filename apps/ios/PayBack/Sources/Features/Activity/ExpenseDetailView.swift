@@ -1,6 +1,14 @@
 import SwiftUI
 import UIKit
 
+enum SettlementErrorPresentation {
+    static let fallbackMessage = "We couldn't update this settlement. Please try again."
+
+    static func message(for error: Error?) -> String {
+        error?.userFacingMessage(fallback: fallbackMessage) ?? fallbackMessage
+    }
+}
+
 struct ExpenseDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var store: AppStore
@@ -102,9 +110,7 @@ struct ExpenseDetailView: View {
         .alert("Unable to Update Settlement", isPresented: $showSettlementError) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text(settlementError?.userFacingMessage(
-                fallback: "We couldn't update this settlement. Please try again."
-            ) ?? "We couldn't update this settlement. Please try again.")
+            Text(SettlementErrorPresentation.message(for: settlementError))
         }
     }
 
@@ -557,9 +563,7 @@ struct SettleExpenseSheet: View {
             .alert("Unable to Update Settlement", isPresented: $showSettlementError) {
                 Button("OK", role: .cancel) { }
             } message: {
-                Text(settlementError?.userFacingMessage(
-                    fallback: "We couldn't update this settlement. Please try again."
-                ) ?? "We couldn't update this settlement. Please try again.")
+                Text(SettlementErrorPresentation.message(for: settlementError))
             }
         }
     }

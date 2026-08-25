@@ -25,13 +25,19 @@ final class SettlementLogicTests: XCTestCase {
         XCTAssertFalse(settlementFunction.contains("Continue settling remaining expenses"))
     }
 
-    func testExpenseSettlementAlertsSanitizeUnderlyingServerErrors() throws {
-        let source = try SourceFixture.contents(
-            at: "Sources/Features/Activity/ExpenseDetailView.swift"
+    func testExpenseSettlementAlertsSanitizeUnderlyingServerErrors() {
+        let rawError = PayBackError.underlying(
+            message: "[Request ID: private-request-id] internal server stack"
         )
 
-        XCTAssertEqual(source.components(separatedBy: ".userFacingMessage(").count - 1, 2)
-        XCTAssertFalse(source.contains("settlementError?.errorDescription"))
+        XCTAssertEqual(
+            SettlementErrorPresentation.message(for: rawError),
+            "We couldn't update this settlement. Please try again."
+        )
+        XCTAssertEqual(
+            SettlementErrorPresentation.message(for: nil),
+            "We couldn't update this settlement. Please try again."
+        )
     }
 
     func testTotalToSettleUsesCurrentUsersUnsettledShareInsteadOfExpenseTotal() {
