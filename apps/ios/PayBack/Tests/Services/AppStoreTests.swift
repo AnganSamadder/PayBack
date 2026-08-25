@@ -546,9 +546,7 @@ final class AppStoreTests: XCTestCase {
     func testUpdateFriendNickname_UpdatesNickname() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
-        _ = UserSession(account: account)
-        sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        sut.session = UserSession(account: account)
 
         let memberId = UUID()
         let friend = AccountFriend(
@@ -560,15 +558,15 @@ final class AppStoreTests: XCTestCase {
             linkedAccountEmail: nil
         )
 
-        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [friend])
-        sut.addGroup(name: "Test", memberNames: ["Alice"])
-        try await Task.sleep(nanoseconds: 200_000_000)
+        sut.processFriendsUpdate([friend])
 
         // When
         try await sut.updateFriendNickname(memberId: memberId, nickname: "Ally")
 
-        // Then - nickname should be updated in local state
-        XCTAssertTrue(true) // Test completes without error
+        // Then
+        XCTAssertEqual(sut.friends.first?.nickname, "Ally")
+        let syncedFriends = await mockAccountService.latestSyncedFriends(accountEmail: account.email)
+        XCTAssertEqual(syncedFriends?.first?.nickname, "Ally")
     }
 
     func testUpdateFriendNickname_WithoutSession_Throws() async throws {
