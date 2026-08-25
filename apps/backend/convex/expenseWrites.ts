@@ -1,5 +1,4 @@
 import { getConvexSize, type Value } from "convex/values";
-import type { PaginationResult } from "convex/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx } from "./_generated/server";
 import {
@@ -18,7 +17,6 @@ export const MAX_EXPENSE_WRITE_READ_BYTES = 8 * 1024 * 1024;
 export const MAX_EXPENSE_WRITE_WRITES = 2048;
 export const MAX_EXPENSE_WRITE_BYTES = 12 * 1024 * 1024;
 
-const VISIBILITY_READ_PAGE_SIZE = 4;
 const INSERT_SYSTEM_FIELD_RESERVATION = 512;
 
 type ExpenseInsert = Omit<Doc<"expenses">, "_id" | "_creationTime">;
@@ -211,42 +209,19 @@ async function validateDesiredAccounts(
   return accounts;
 }
 
-async function collectVisibilityRowsByIndex(
-  loadPage: (
-    cursor: string | null,
-    numItems: number
-  ) => Promise<PaginationResult<Doc<"user_expenses">>>,
-  budget: ReadBudget
-): Promise<Doc<"user_expenses">[]> {
-  const rows: Doc<"user_expenses">[] = [];
-  let cursor: string | null = null;
-  while (rows.length <= MAX_EXPENSE_VISIBILITY_ROWS) {
-    chargeQuery(budget);
-    const result = await loadPage(
-      cursor,
-      Math.min(VISIBILITY_READ_PAGE_SIZE, MAX_EXPENSE_VISIBILITY_ROWS + 1 - rows.length)
-    );
-    chargeRows(budget, result.page as Value[]);
-    rows.push(...result.page);
-    if (result.isDone || rows.length > MAX_EXPENSE_VISIBILITY_ROWS) break;
-    cursor = result.continueCursor;
-  }
-  return rows;
-}
-
 async function collectVisibilityRows(
   ctx: MutationCtx,
   operation: ExpenseWriteOperation,
   budget: ReadBudget
 ): Promise<Doc<"user_expenses">[]> {
-  const legacyRows = await collectVisibilityRowsByIndex(
-    (cursor, numItems) =>
-      ctx.db
-        .query("user_expenses")
-        .withIndex("by_expense_id", (query) => query.eq("expense_id", operation.expense.id))
-        .paginate({ cursor, numItems }),
-    budget
-  );
+  // Mutations cannot issue multiple paginated queries. Visibility rows are small,
+  // so read one bounded page from each compatibility index and keep the shared cap.
+  chargeQuery(budget);
+  const legacyRows = await ctx.db
+    .query("user_expenses")
+    .withIndex("by_expense_id", (query) => query.eq("expense_id", operation.expense.id))
+    .take(MAX_EXPENSE_VISIBILITY_ROWS + 1);
+  chargeRows(budget, legacyRows as Value[]);
   if (legacyRows.length > MAX_EXPENSE_VISIBILITY_ROWS) {
     throw expenseWriteLimitError(
       `more than ${MAX_EXPENSE_VISIBILITY_ROWS} visibility rows for ${operation.expense.id}`
@@ -255,14 +230,12 @@ async function collectVisibilityRows(
 
   if (operation.kind === "insert") return legacyRows;
 
-  const referencedRows = await collectVisibilityRowsByIndex(
-    (cursor, numItems) =>
-      ctx.db
-        .query("user_expenses")
-        .withIndex("by_expense_ref", (query) => query.eq("expense_ref", operation.expense._id))
-        .paginate({ cursor, numItems }),
-    budget
-  );
+  chargeQuery(budget);
+  const referencedRows = await ctx.db
+    .query("user_expenses")
+    .withIndex("by_expense_ref", (query) => query.eq("expense_ref", operation.expense._id))
+    .take(MAX_EXPENSE_VISIBILITY_ROWS + 1);
+  chargeRows(budget, referencedRows as Value[]);
   if (referencedRows.length > MAX_EXPENSE_VISIBILITY_ROWS) {
     throw expenseWriteLimitError(
       `more than ${MAX_EXPENSE_VISIBILITY_ROWS} visibility rows for ${operation.expense.id}`
