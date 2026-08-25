@@ -788,6 +788,17 @@ Required behavior:
 - **Do:** sync deduped `self.friends` after `processFriendsUpdate(...)`.
 - **Don’t:** write pre-dedupe arrays or `derivedFriendsFromGroups()` to Convex.
 
+### Manual friend creation
+
+- **Do:** await the canonical `account_friends` write before showing success or creating a direct group.
+- **Do:** on an explicit retry, reuse a unique matching group-only member ID to repair an earlier partial add.
+- **Don’t:** promote every group participant into the Friends tab; group membership is not friendship.
+
+### Convex mutation reads
+
+- **Do:** use bounded indexed `.take(limit + 1)` reads for mutation compatibility scans and reject overflow.
+- **Don’t:** loop over `.paginate(...)` inside one mutation; Convex permits only one paginated query per function.
+
 ### Convex auth and ownership
 
 - **Do:** derive actor identity on server (`getCurrentUser*`) and resolve ownership server-side.
