@@ -270,7 +270,7 @@ final class AuthCoordinatorTests: XCTestCase {
     }
 
     func testLogin_SetsBusyStateDuringOperation() async {
-        mockEmailAuthService.signInDelay = 0.1
+        await mockEmailAuthService.suspendNextSignIn()
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
@@ -283,18 +283,15 @@ final class AuthCoordinatorTests: XCTestCase {
             displayName: "Test"
         ))
 
-        let expectation = expectation(description: "Login completes")
-
-        Task {
+        let loginTask = Task { @MainActor in
             await coordinator.login(emailInput: "test@example.com", password: "password")
-            expectation.fulfill()
         }
 
-        // Check busy state is set
-        try? await Task.sleep(nanoseconds: 10_000_000) // 0.01 seconds
+        await mockEmailAuthService.waitUntilSignInIsSuspended()
         XCTAssertTrue(coordinator.isBusy)
 
-        await fulfillment(of: [expectation], timeout: 1.0)
+        await mockEmailAuthService.resumeSignIn()
+        await loginTask.value
         XCTAssertFalse(coordinator.isBusy)
     }
 
@@ -457,26 +454,22 @@ final class AuthCoordinatorTests: XCTestCase {
     }
 
     func testSendPasswordReset_SerializesConcurrentCalls() async {
-        mockEmailAuthService.passwordResetDelay = 0.2
-
-        let expectation1 = expectation(description: "First reset")
-        let expectation2 = expectation(description: "Second reset")
-
-        let firstTask = Task {
+        await mockEmailAuthService.suspendNextPasswordReset()
+        let firstTask = Task { @MainActor in
             await coordinator.sendPasswordReset(emailInput: "test1@example.com")
-            expectation1.fulfill()
         }
+        await mockEmailAuthService.waitUntilPasswordResetIsSuspended()
 
-        try? await Task.sleep(nanoseconds: 50_000_000)
-
-        let secondTask = Task {
+        let secondTask = Task { @MainActor in
             await coordinator.sendPasswordReset(emailInput: "test2@example.com")
-            expectation2.fulfill()
         }
+        await secondTask.value
 
-        await fulfillment(of: [expectation1, expectation2], timeout: 1.0)
-        _ = await (firstTask.value, secondTask.value)
         XCTAssertEqual(mockEmailAuthService.passwordResetCallCount, 1)
+        XCTAssertTrue(coordinator.isBusy)
+
+        await mockEmailAuthService.resumePasswordReset()
+        await firstTask.value
         XCTAssertFalse(coordinator.isBusy)
     }
 
@@ -730,7 +723,7 @@ final class AuthCoordinatorTests: XCTestCase {
     // MARK: - RunBusyTask Tests
 
     func testRunBusyTask_PreventsConcurrentNonConcurrentCalls() async {
-        mockEmailAuthService.signInDelay = 0.2
+        await mockEmailAuthService.suspendNextSignIn()
         mockEmailAuthService.signInResult = EmailAuthSignInResult(
             uid: "123",
             email: "test@example.com",
@@ -743,26 +736,21 @@ final class AuthCoordinatorTests: XCTestCase {
             displayName: "Test"
         ))
 
-        let expectation1 = expectation(description: "First login")
-        let expectation2 = expectation(description: "Second login")
-
-        Task {
+        let firstTask = Task { @MainActor in
             await coordinator.login(emailInput: "test@example.com", password: "password1")
-            expectation1.fulfill()
         }
+        await mockEmailAuthService.waitUntilSignInIsSuspended()
 
-        // Wait a bit to ensure first call starts
-        try? await Task.sleep(nanoseconds: 50_000_000) // 0.05 seconds
-
-        Task {
+        let secondTask = Task { @MainActor in
             await coordinator.login(emailInput: "test@example.com", password: "password2")
-            expectation2.fulfill()
         }
-
-        await fulfillment(of: [expectation1, expectation2], timeout: 1.0)
+        await secondTask.value
 
         // Second call should have been blocked, so only one sign-in should have occurred
         XCTAssertEqual(mockEmailAuthService.signInCallCount, 1)
+
+        await mockEmailAuthService.resumeSignIn()
+        await firstTask.value
     }
 
     func testRunBusyTask_ClearsErrorAndInfoMessages() async {
@@ -950,6 +938,44 @@ actor TestAccountService: AccountService {
     #endif
 }
 
+private actor TestSuspensionGate {
+    private var shouldSuspendNextOperation = false
+    private var isSuspended = false
+    private var resumeContinuation: CheckedContinuation<Void, Never>?
+    private var suspensionWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func suspendNextOperation() {
+        shouldSuspendNextOperation = true
+    }
+
+    func waitIfNeeded() async {
+        guard shouldSuspendNextOperation else { return }
+
+        isSuspended = true
+        let waiters = suspensionWaiters
+        suspensionWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+
+        await withCheckedContinuation { continuation in
+            resumeContinuation = continuation
+        }
+        isSuspended = false
+    }
+
+    func waitUntilSuspended() async {
+        guard !isSuspended else { return }
+        await withCheckedContinuation { continuation in
+            suspensionWaiters.append(continuation)
+        }
+    }
+
+    func resume() {
+        shouldSuspendNextOperation = false
+        resumeContinuation?.resume()
+        resumeContinuation = nil
+    }
+}
+
 final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     var signInResult: EmailAuthSignInResult?
     var signUpResult: SignUpResult?
@@ -967,6 +993,8 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
     var passwordResetDelay: TimeInterval = 0
 
     private let lock = NSLock()
+    private let signInGate = TestSuspensionGate()
+    private let passwordResetGate = TestSuspensionGate()
 
     private var _signInCalled = false
     private var _signUpCalled = false
@@ -1045,12 +1073,38 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
         lock.withLock { _passwordResetResendCallCount }
     }
 
+    func suspendNextSignIn() async {
+        await signInGate.suspendNextOperation()
+    }
+
+    func waitUntilSignInIsSuspended() async {
+        await signInGate.waitUntilSuspended()
+    }
+
+    func resumeSignIn() async {
+        await signInGate.resume()
+    }
+
+    func suspendNextPasswordReset() async {
+        await passwordResetGate.suspendNextOperation()
+    }
+
+    func waitUntilPasswordResetIsSuspended() async {
+        await passwordResetGate.waitUntilSuspended()
+    }
+
+    func resumePasswordReset() async {
+        await passwordResetGate.resume()
+    }
+
     func signIn(email: String, password: String) async throws -> EmailAuthSignInResult {
         lock.withLock {
             _signInCalled = true
             _signInCallCount += 1
             _lastSignInEmail = email
         }
+
+        await signInGate.waitIfNeeded()
 
         if signInDelay > 0 {
             try? await Task.sleep(nanoseconds: UInt64(signInDelay * 1_000_000_000))
@@ -1109,6 +1163,8 @@ final class TestEmailAuthService: EmailAuthService, @unchecked Sendable {
             _passwordResetCallCount += 1
             _lastPasswordResetEmail = email
         }
+
+        await passwordResetGate.waitIfNeeded()
 
         if passwordResetDelay > 0 {
             try await Task.sleep(nanoseconds: UInt64(passwordResetDelay * 1_000_000_000))
