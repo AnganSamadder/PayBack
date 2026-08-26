@@ -25,6 +25,7 @@ import {
   MAX_EXPENSE_VIEWERS,
   MAX_EXPENSE_WRITE_OPERATIONS
 } from "./expenseWrites";
+import { insertGroupWithVisibility } from "./groupVisibility";
 import {
   getAccountSyncRevision,
   MAX_SYNC_PAGE_SIZE,
@@ -77,12 +78,13 @@ function isEligibleDirectFriendRecord(friend: any): boolean {
     typeof friend.status === "string" ? friend.status.trim().toLowerCase() : undefined;
   if (normalizedStatus === "rejected") return false;
   // Backward-compatible acceptance:
-  // - explicit friend/accepted rows
+  // - explicit friend/accepted/manual rows
   // - linked-account rows
   // - legacy rows without status (including accidental empty-string status writes)
   return (
     normalizedStatus === "friend" ||
     normalizedStatus === "accepted" ||
+    normalizedStatus === "manual" ||
     friend.has_linked_account === true ||
     !normalizedStatus
   );
@@ -691,6 +693,7 @@ export const create = mutation({
     };
 
     let group: any = null;
+    let createdDirectGroupForExpense = false;
     let callerEquivalentIds = await buildUserEquivalentMemberIds(ctx.db, user);
     let contextKind: ExpenseContextKind;
 
@@ -767,15 +770,74 @@ export const create = mutation({
         });
       }
     } else {
-      const groupAccess = await requireGroupByClientIdWithAccess(
-        ctx,
-        user,
-        args.group_id,
-        callerEquivalentIds
-      );
-      group = groupAccess.group;
+      const existingGroupByClientId = await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
+        .unique();
+
+      if (!existingGroupByClientId && !existing && requestedContextKind === "direct") {
+        if (!UUID_PATTERN.test(args.group_id)) {
+          throw new Error("Direct expense group_id must be a UUID.");
+        }
+        requireMatchingMemberSets({
+          involvedMemberIds: normalizedInvolved,
+          participantMemberIds: normalizedParticipantMemberIds,
+          splitMemberIds: normalizedSplits.map((split) => split.member_id),
+          participantRows: normalizedParticipants
+        });
+        if (normalizedInvolved.length !== 2 || normalizedParticipants.length !== 2) {
+          throw new Error("Direct expenses must include exactly two participants.");
+        }
+
+        const currentUserEquivalentIds = await buildCurrentUserEquivalentIds(callerEquivalentIds);
+        const participantIdentityRows = await Promise.all(
+          normalizedParticipants.map(async (participant) => ({
+            participant,
+            identityIds: await getEquivalentIdSet(participant.member_id)
+          }))
+        );
+        const currentUserRows = participantIdentityRows.filter(({ identityIds }) =>
+          intersects(identityIds, currentUserEquivalentIds)
+        );
+        const counterpartyRows = participantIdentityRows.filter(
+          ({ identityIds }) => !intersects(identityIds, currentUserEquivalentIds)
+        );
+        if (currentUserRows.length !== 1 || counterpartyRows.length !== 1) {
+          throw new Error("Direct expenses must include the current user and one friend.");
+        }
+
+        const now = Date.now();
+        const groupDocumentId = await insertGroupWithVisibility(ctx, {
+          id: args.group_id,
+          name: counterpartyRows[0].participant.name.trim() || "Direct expense",
+          members: participantIdentityRows.map(({ participant, identityIds }) => ({
+            id: participant.member_id,
+            name: participant.name.trim() || "Unknown",
+            is_current_user: intersects(identityIds, currentUserEquivalentIds) || undefined
+          })),
+          owner_email: user.email.trim().toLowerCase(),
+          owner_account_id: user.id,
+          owner_id: user._id,
+          is_direct: true,
+          is_payback_generated_mock_data: false,
+          created_at: now,
+          updated_at: now
+        });
+        group = await ctx.db.get(groupDocumentId);
+        createdDirectGroupForExpense = true;
+      } else {
+        const groupAccess = await requireGroupByClientIdWithAccess(
+          ctx,
+          user,
+          args.group_id,
+          callerEquivalentIds
+        );
+        group = groupAccess.group;
+        callerEquivalentIds = groupAccess.callerEquivalentIds;
+      }
+
+      if (!group) throw new Error("Group not found");
       if (group.deletion_token) throw new Error("Group deletion is in progress");
-      callerEquivalentIds = groupAccess.callerEquivalentIds;
       assertAccountCanAcceptChanges(await ctx.db.get(group.owner_id as Id<"accounts">));
       contextKind =
         requestedContextKind === "grouped_individual"
@@ -852,6 +914,7 @@ export const create = mutation({
 
           if (!matchingFriend) {
             if (
+              !createdDirectGroupForExpense &&
               !registeredMemberAccount &&
               directCounterpartyRows.length === 1 &&
               intersects(directCounterpartyRows[0].identityIds, memberEquivalentIds)
