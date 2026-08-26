@@ -11,12 +11,14 @@ struct CreateGroupView: View {
     @State private var showAddNewFriend = false
     @State private var newFriendName: String = ""
     @State private var newlyAddedFriends: [GroupMember] = []
+    @State private var isCreating = false
+    @State private var creationErrorMessage: String?
     @FocusState private var isGroupNameFocused: Bool
     @FocusState private var isNewFriendFocused: Bool
 
-    // All available friends (existing + newly added)
+    // Confirmed friends plus explicit friends drafted in this creation flow.
     private var allFriends: [GroupMember] {
-        let existing = store.friendMembers
+        let existing = store.confirmedFriends
         let combined = existing + newlyAddedFriends.filter { newFriend in
             !existing.contains(where: { $0.id == newFriend.id })
         }
@@ -60,16 +62,24 @@ struct CreateGroupView: View {
 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") {
-                        createGroup()
+                        Task { await createGroup() }
                     }
                     .fontWeight(.semibold)
                     .foregroundStyle(canCreate ? AppTheme.brand : .secondary)
-                    .disabled(!canCreate)
+                    .disabled(!canCreate || isCreating)
                 }
             }
             .groupDuplicateAlert(isPresented: $showExactDupeWarning) {
                 skipDupeCheck = true
-                createGroup()
+                Task { await createGroup() }
+            }
+            .alert("Couldn't Create Group", isPresented: Binding(
+                get: { creationErrorMessage != nil },
+                set: { if !$0 { creationErrorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(creationErrorMessage ?? "Please try again.")
             }
         }
     }
@@ -259,9 +269,10 @@ struct CreateGroupView: View {
     @State private var showExactDupeWarning = false
     @State private var skipDupeCheck = false
 
-    private func createGroup() {
+    @MainActor
+    private func createGroup() async {
         let trimmedName = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, !selectedFriendIds.isEmpty else { return }
+        guard !isCreating, !trimmedName.isEmpty, !selectedFriendIds.isEmpty else { return }
 
         // DEDUPLICATION Check
         if !skipDupeCheck {
@@ -280,20 +291,27 @@ struct CreateGroupView: View {
 
         // Get member names for the selected friends
         let selectedFriends = allFriends.filter { selectedFriendIds.contains($0.id) }
-        let memberNames = selectedFriends.map(\.name)
         let selectedNewFriends = newlyAddedFriends.filter { selectedFriendIds.contains($0.id) }
 
-        guard !memberNames.isEmpty else { return }
+        guard !selectedFriends.isEmpty else { return }
 
-        // Create the group using AppStore
-        store.addGroup(
-            name: trimmedName,
-            memberNames: memberNames,
-            newFriends: selectedNewFriends
-        )
-
-        Haptics.notify(.success)
-        dismiss()
+        isCreating = true
+        defer { isCreating = false }
+        do {
+            _ = try await store.addGroupAndSync(
+                name: trimmedName,
+                members: selectedFriends,
+                newFriends: selectedNewFriends
+            )
+            Haptics.notify(.success)
+            dismiss()
+        } catch is CancellationError {
+            return
+        } catch {
+            creationErrorMessage = error.userFacingMessage(
+                fallback: "Your changes weren't saved. Check your connection and try again."
+            )
+        }
     }
 }
 

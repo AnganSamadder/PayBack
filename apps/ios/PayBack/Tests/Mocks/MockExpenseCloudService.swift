@@ -20,6 +20,8 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var shouldFail: Bool = false
     private var upsertDelaysNanoseconds: [UInt64] = []
     private var upsertInvocationCount = 0
+    private var shouldSuspendUpsert = false
+    private var upsertContinuation: CheckedContinuation<Void, Never>?
     private var settlementInvocationCount = 0
     private var queuedSettlementResponses: [QueuedSettlementResponse] = []
     private var shouldSuspendSettlement = false
@@ -34,6 +36,11 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
             throw PayBackError.authSessionMissing
         }
         upsertInvocationCount += 1
+        if shouldSuspendUpsert {
+            await withCheckedContinuation { continuation in
+                upsertContinuation = continuation
+            }
+        }
         let delay = upsertDelaysNanoseconds.isEmpty ? 0 : upsertDelaysNanoseconds.removeFirst()
         if delay > 0 {
             try await Task.sleep(nanoseconds: delay)
@@ -141,6 +148,16 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         upsertInvocationCount
     }
 
+    func suspendNextUpsert() {
+        shouldSuspendUpsert = true
+    }
+
+    func resumeUpsert() {
+        shouldSuspendUpsert = false
+        upsertContinuation?.resume()
+        upsertContinuation = nil
+    }
+
     func currentSettlementInvocationCount() -> Int {
         settlementInvocationCount
     }
@@ -187,6 +204,9 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         shouldFail = false
         upsertDelaysNanoseconds.removeAll()
         upsertInvocationCount = 0
+        shouldSuspendUpsert = false
+        upsertContinuation?.resume()
+        upsertContinuation = nil
         settlementInvocationCount = 0
         queuedSettlementResponses.removeAll()
         shouldSuspendSettlement = false

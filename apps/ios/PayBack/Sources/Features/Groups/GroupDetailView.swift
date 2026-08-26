@@ -1239,7 +1239,7 @@ struct AddGroupMemberSheet: View {
     private var availableFriends: [GroupMember] {
         // Filter out friends who are already in the group
         // GroupMember equality is based on ID
-        store.friendMembers.filter { friend in
+        store.confirmedFriends.filter { friend in
             !group.members.contains(where: { $0.id == friend.id }) &&
             !store.isCurrentUser(friend)
         }

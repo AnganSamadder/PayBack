@@ -224,7 +224,7 @@ final class AppStoreBalanceExtendedTests: XCTestCase {
 
     // MARK: - Friend Display Name Tests
 
-    func testFriendMembers_ContainsAllFriends() {
+    func testImportedFriends_AreStoredAsConfirmedRelationshipRecords() {
         let friend1 = AccountFriend(memberId: UUID(), name: "Friend 1", hasLinkedAccount: false)
         let friend2 = AccountFriend(memberId: UUID(), name: "Friend 2", hasLinkedAccount: false)
 

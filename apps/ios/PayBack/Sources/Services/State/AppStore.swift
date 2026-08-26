@@ -1160,6 +1160,60 @@ func completeAuthentication(id: String, email: String, name: String?) {
         scheduleFriendSync()
     }
 
+    /// Creates a user-facing group only after every required cloud write is acknowledged.
+    /// Explicitly added friends remain confirmed if the later group write fails.
+    @MainActor
+    func addGroupAndSync(
+        name: String,
+        members: [GroupMember],
+        newFriends: [GroupMember] = []
+    ) async throws -> SpendingGroup {
+        guard let session else { throw PayBackError.authSessionMissing }
+        let context = groupMutationContext()
+
+        var friendsToCommit = friends
+        for member in newFriends where !friendsToCommit.contains(where: {
+            areSamePerson($0.memberId, member.id)
+        }) {
+            friendsToCommit.append(AccountFriend(
+                memberId: member.id,
+                name: member.name,
+                hasLinkedAccount: false,
+                status: "friend"
+            ))
+        }
+
+        if friendsToCommit != friends {
+            try await accountService.syncFriends(
+                accountEmail: session.account.email.lowercased(),
+                friends: friendsToCommit
+            )
+            try Task.checkCancellation()
+            guard isCurrentGroupMutation(context) else { throw CancellationError() }
+            processFriendsUpdate(friendsToCommit)
+        }
+
+        let group = SpendingGroup(
+            name: name,
+            members: [
+                GroupMember(
+                    id: currentUser.id,
+                    name: currentUser.name,
+                    profileImageUrl: currentUser.profileImageUrl,
+                    profileColorHex: currentUser.profileColorHex,
+                    isCurrentUser: true
+                )
+            ] + members
+        )
+        try await groupCloudService.upsertGroup(group)
+        try Task.checkCancellation()
+        guard isCurrentGroupMutation(context) else { throw CancellationError() }
+
+        groups.append(group)
+        persistCurrentState()
+        return group
+    }
+
     func updateGroup(_ group: SpendingGroup) {
         guard let idx = groups.firstIndex(where: { $0.id == group.id }) else { return }
         groups[idx] = group
@@ -1696,8 +1750,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return true
     }
 
-    func directGroup(with memberId: UUID) -> SpendingGroup? {
-        existingDirectGroup(
+    func existingDirectExpenseLedger(with memberId: UUID) -> SpendingGroup? {
+        existingDirectExpenseLedger(
             for: accountFriendIdentityMemberIds(for: [memberId])
         )
     }
@@ -1717,7 +1771,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     func manualFriendCandidate(named rawName: String) -> GroupMember {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matchingGroupOnlyMembers = friendMembers.filter { member in
+        let matchingGroupOnlyMembers = knownGroupParticipants.filter { member in
             member.name.localizedCaseInsensitiveCompare(name) == .orderedSame &&
                 !friends.contains(where: { areSamePerson($0.memberId, member.id) })
         }
@@ -1735,7 +1789,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
         guard let session else { throw PayBackError.authSessionMissing }
 
         if friends.contains(where: { areSamePerson($0.memberId, friend.id) }) {
-            _ = directGroup(with: friend)
             return
         }
 
@@ -1747,8 +1800,8 @@ func completeAuthentication(id: String, email: String, name: String?) {
             status: "friend"
         )
 
-        // Confirm the canonical friend remotely before reporting success or creating
-        // the convenience direct group. A failed write must not leave group-only state.
+        // Friendship is the durable user action. The private expense ledger is created
+        // atomically with the first direct expense, never as a side effect of this write.
         try await accountService.syncFriends(
             accountEmail: session.account.email.lowercased(),
             friends: friends + [newFriend]
@@ -1759,7 +1812,6 @@ func completeAuthentication(id: String, email: String, name: String?) {
         if !friends.contains(where: { areSamePerson($0.memberId, friend.id) }) {
             processFriendsUpdate(friends + [newFriend])
         }
-        _ = directGroup(with: friend)
     }
 
     func resolveLinkedAccountsForImport(_ memberIds: [UUID]) async throws -> [UUID: (String, String)] {
@@ -1978,7 +2030,16 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     // MARK: - Expenses
     @MainActor
-    func addExpenseAndSync(_ expense: Expense) async throws {
+    func addExpenseAndSync(
+        _ expense: Expense,
+        directExpenseLedger: SpendingGroup? = nil
+    ) async throws {
+        if let directExpenseLedger {
+            guard directExpenseLedger.isDirect == true, directExpenseLedger.id == expense.groupId else {
+                throw PayBackError.underlying(message: "Direct expense ledger does not match the expense.")
+            }
+        }
+
         var expenseToStore = expense
         if expenseToStore.ownerEmail == nil || expenseToStore.ownerAccountId == nil {
             expenseToStore.ownerEmail = session?.account.email
@@ -1988,7 +2049,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses.append(expenseToStore)
         persistCurrentState()
 
-        guard !isImporting, session != nil else { return }
+        guard !isImporting, session != nil else {
+            commitDirectExpenseLedgerIfNeeded(directExpenseLedger)
+            return
+        }
+
+        let mutationContext = groupMutationContext()
 
         #if !PAYBACK_CI_NO_CONVEX
         if expenseCloudService is NoopExpenseCloudService {
@@ -2007,12 +2073,22 @@ func completeAuthentication(id: String, email: String, name: String?) {
             try await retryPolicy.execute {
                 try await self.expenseCloudService.upsertExpense(expenseToStore, participants: participants)
             }
+            try Task.checkCancellation()
+            guard isCurrentGroupMutation(mutationContext) else { throw CancellationError() }
+            commitDirectExpenseLedgerIfNeeded(directExpenseLedger)
         } catch {
+            guard isCurrentGroupMutation(mutationContext) else { throw CancellationError() }
             pendingExpenseUpsertIds.remove(expenseToStore.id)
             expenses.removeAll { $0.id == expenseToStore.id }
             persistCurrentState()
             throw error
         }
+    }
+
+    private func commitDirectExpenseLedgerIfNeeded(_ ledger: SpendingGroup?) {
+        guard let ledger, !groups.contains(where: { $0.id == ledger.id }) else { return }
+        groups.append(ledger)
+        persistCurrentState()
     }
 
     func addExpense(_ expense: Expense) {
@@ -2977,7 +3053,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
     }
 
-    var confirmedFriendMembers: [GroupMember] {
+    var confirmedFriends: [GroupMember] {
         let overrides = friendNameOverrides()
         var seenCanonicalIds = Set<UUID>()
         var result: [GroupMember] = []
@@ -3001,7 +3077,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    var friendMembers: [GroupMember] {
+    var knownGroupParticipants: [GroupMember] {
         let overrides = friendNameOverrides()
 
         // Build a map of non-current-user group members keyed by display name.
@@ -3579,7 +3655,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             return currentUser
         }
 
-        if let friendMember = friendMembers.first(where: { areSamePerson($0.id, id) }) {
+        if let friendMember = knownGroupParticipants.first(where: { areSamePerson($0.id, id) }) {
             return friendMember
         }
 
@@ -3604,7 +3680,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     // MARK: - Direct (person-to-person) helpers
-    private func existingDirectGroup(for friendMemberIds: Set<UUID>) -> SpendingGroup? {
+    private func existingDirectExpenseLedger(for friendMemberIds: Set<UUID>) -> SpendingGroup? {
         groups.first { group in
             guard group.isDirect == true, group.members.count == 2 else { return false }
 
@@ -3620,10 +3696,12 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
     }
 
-    func directGroup(with friend: GroupMember) -> SpendingGroup {
+    /// Returns an existing person-to-person expense ledger or a transient draft.
+    /// The draft is not persisted or synced until its first expense succeeds.
+    func directExpenseTarget(for friend: GroupMember) -> SpendingGroup {
         guard !isCurrentUser(friend) else {
             #if DEBUG
-            print("⚠️ [directGroup] ERROR: Attempted to create direct group with current user!")
+            print("⚠️ [directExpenseTarget] ERROR: Attempted to create a target with current user!")
             #endif
 
             // This should never happen - return a fallback to prevent crashes
@@ -3634,19 +3712,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
         let friendMemberIds = accountFriendIdentityMemberIds(
             for: [friend.id] + (friend.accountFriendMemberId.map { [$0] } ?? [])
         )
-        if let existing = existingDirectGroup(for: friendMemberIds) {
+        if let existing = existingDirectExpenseLedger(for: friendMemberIds) {
             return existing
         }
 
-        // Otherwise create one
-        let directGroup = SpendingGroup(name: friend.name, members: [currentUser, friend], isDirect: true)
-        groups.append(directGroup)
-        persistCurrentState()
-        Task { [directGroup] in
-            try? await groupCloudService.upsertGroup(directGroup)
-        }
-        scheduleFriendSync()
-        return directGroup
+        return SpendingGroup(name: friend.name, members: [currentUser, friend], isDirect: true)
     }
 
     func groupedIndividualDraftGroup(with friends: [GroupMember]) -> SpendingGroup {

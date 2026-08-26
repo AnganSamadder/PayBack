@@ -423,7 +423,7 @@ final class AppStoreBalanceTests: XCTestCase {
         let alice = sharedGroup.members.first(where: { $0.name == "Alice" })!
         let bob = sharedGroup.members.first(where: { $0.name == "Bob" })!
 
-        let directGroup = sut.directGroup(with: alice)
+        let directGroup = sut.directExpenseTarget(for: alice)
 
         sut.addExpense(
             Expense(

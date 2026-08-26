@@ -822,7 +822,7 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(synced?.first?.memberId, linkedMemberId)
     }
 
-    func testFriendMembers_DedupesIdentityEquivalentLinkedFriendAndGroupMember() async throws {
+    func testKnownGroupParticipants_DedupesIdentityEquivalentLinkedFriendAndGroupMember() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.session = UserSession(account: account)
@@ -851,7 +851,7 @@ final class AppStoreTests: XCTestCase {
         ]
 
         // When
-        let visibleTestUsers = sut.friendMembers.filter { $0.name == "Test User" }
+        let visibleTestUsers = sut.knownGroupParticipants.filter { $0.name == "Test User" }
 
         // Then
         XCTAssertEqual(visibleTestUsers.count, 1, "Identity-equivalent linked/group members should collapse to one visible friend")
@@ -864,7 +864,7 @@ final class AppStoreTests: XCTestCase {
         let currentUserMember = GroupMember(id: sut.currentUser.id, name: "Test")
 
         // When
-        let directGroup = sut.directGroup(with: currentUserMember)
+        let directGroup = sut.directExpenseTarget(for: currentUserMember)
 
         // Then - should return a fallback group
         XCTAssertNotNil(directGroup)
@@ -976,17 +976,17 @@ final class AppStoreTests: XCTestCase {
         XCTAssertNil(group)
     }
 
-    // MARK: - Friend Members Edge Cases
+    // MARK: - Known Group Participant Edge Cases
 
-    func testFriendMembers_WithoutSession_ReturnsFromGroups() async throws {
-        // Given - friendMembers returns from Convex-synced friends array, not groups
+    func testKnownGroupParticipants_WithoutSession_ReturnsImportedFriends() async throws {
+        // Given - knownGroupParticipants returns from Convex-synced friends array, not groups
         let aliceId = UUID()
         let bobId = UUID()
         sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false))
         sut.addImportedFriend(AccountFriend(memberId: bobId, name: "Bob", hasLinkedAccount: false))
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then
         XCTAssertEqual(friends.count, 2)
@@ -994,18 +994,18 @@ final class AppStoreTests: XCTestCase {
         XCTAssertTrue(friends.contains { $0.name == "Bob" })
     }
 
-    func testFriendMembers_ExcludesCurrentUser() async throws {
+    func testKnownGroupParticipants_ExcludesCurrentUser() async throws {
         // Given
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then
         XCTAssertFalse(friends.contains { $0.id == sut.currentUser.id })
     }
 
-    func testConfirmedFriendMembers_ExcludeGroupDerivedMembers() async throws {
+    func testConfirmedFriends_ExcludeGroupDerivedMembers() async throws {
         let aliceId = UUID()
         let bobId = UUID()
         sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false, status: "friend"))
@@ -1020,12 +1020,12 @@ final class AppStoreTests: XCTestCase {
             )
         ]
 
-        let confirmedFriends = sut.confirmedFriendMembers
+        let confirmedFriends = sut.confirmedFriends
 
         XCTAssertEqual(confirmedFriends.map(\.id), [aliceId])
     }
 
-    func testConfirmedFriendMembers_ExcludeNonSelectableStatuses() async throws {
+    func testConfirmedFriends_ExcludeNonSelectableStatuses() async throws {
         let acceptedId = UUID()
         let pendingId = UUID()
         let rejectedId = UUID()
@@ -1036,7 +1036,7 @@ final class AppStoreTests: XCTestCase {
             AccountFriend(memberId: rejectedId, name: "Rejected", status: "rejected")
         ]
 
-        let confirmedFriends = sut.confirmedFriendMembers
+        let confirmedFriends = sut.confirmedFriends
 
         XCTAssertEqual(confirmedFriends.map(\.id), [acceptedId])
     }
@@ -1166,12 +1166,12 @@ final class AppStoreTests: XCTestCase {
         XCTAssertTrue(sut.expenses.isEmpty)
     }
 
-    func testAddExpenseAndSync_NormalizesLegacyDirectExpenseContextBeforeCloudUpsert() async throws {
+    func testAddExpenseAndSync_PreservesExplicitDirectExpenseContextBeforeCloudUpsert() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
         let alice = GroupMember(name: "Alice")
-        let directGroup = sut.directGroup(with: alice)
+        let directGroup = sut.directExpenseTarget(for: alice)
         let legacyDirectExpense = Expense(
             groupId: directGroup.id,
             description: "Coffee",
@@ -1181,7 +1181,8 @@ final class AppStoreTests: XCTestCase {
             splits: [
                 ExpenseSplit(memberId: sut.currentUser.id, amount: 6),
                 ExpenseSplit(memberId: alice.id, amount: 6)
-            ]
+            ],
+            contextKind: .direct
         )
 
         try await sut.addExpenseAndSync(legacyDirectExpense)
