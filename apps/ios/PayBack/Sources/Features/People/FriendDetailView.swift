@@ -626,12 +626,10 @@ struct FriendDetailView: View {
         .navigationTitle("Friend Details")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showAddExpense) {
-            if let directGroup = getDirectGroup() {
-                AddExpenseView(group: directGroup)
-                    .environmentObject(store)
-                    .interactiveDismissDisabled()
-                    .presentationDragIndicator(.hidden)
-            }
+            AddExpenseView(group: store.directExpenseTarget(for: friend))
+                .environmentObject(store)
+                .interactiveDismissDisabled()
+                .presentationDragIndicator(.hidden)
         }
         .onAppear {
             if isFriend {
@@ -1005,17 +1003,6 @@ struct FriendDetailView: View {
                     insertion: .move(edge: .trailing).combined(with: .opacity),
                     removal: .move(edge: .leading).combined(with: .opacity)
                 ))
-        }
-    }
-
-        // MARK: - Helper Methods
-
-    private func getDirectGroup() -> SpendingGroup? {
-        return store.groups.first { group in
-            (group.isDirect ?? false) &&
-            group.members.count == 2 &&
-            group.members.contains(where: { isMe($0.id) }) &&
-            group.members.contains(where: { isFriend($0.id) })
         }
     }
 

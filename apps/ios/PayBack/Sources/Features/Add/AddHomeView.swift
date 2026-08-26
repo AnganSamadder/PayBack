@@ -70,9 +70,9 @@ struct ChooseTargetView: View {
                     }
                 }
                 Section("Friends") {
-                    ForEach(friendMembers) { m in
+                    ForEach(confirmedFriends) { m in
                         Button {
-                            let g = store.directGroup(with: m)
+                            let g = store.directExpenseTarget(for: m)
                             selectedGroup = g
                         } label: {
                             HStack(spacing: 12) {
@@ -88,8 +88,8 @@ struct ChooseTargetView: View {
         }
     }
 
-    private var friendMembers: [GroupMember] {
-        store.friendMembers
+    private var confirmedFriends: [GroupMember] {
+        store.confirmedFriends
     }
 
     private var availableGroups: [SpendingGroup] {

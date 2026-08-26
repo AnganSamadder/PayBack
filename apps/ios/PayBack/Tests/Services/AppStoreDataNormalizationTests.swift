@@ -396,7 +396,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
 
         // When - check friend members
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then - should have friend
         XCTAssertTrue(friends.count > 0)
@@ -425,7 +425,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
 
         // When - check friend members
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then - should use original name
         XCTAssertTrue(friends.count > 0)
@@ -459,7 +459,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         try await Task.sleep(nanoseconds: 500_000_000)
 
         // Then - should have both friends
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
         XCTAssertTrue(friends.count >= 1)
     }
 
@@ -519,7 +519,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
                 .id
         )
         XCTAssertFalse(syncedFriends.contains(where: { $0.memberId == bobId }))
-        XCTAssertTrue(sut.friendMembers.contains(where: { $0.id == bobId }))
+        XCTAssertTrue(sut.knownGroupParticipants.contains(where: { $0.id == bobId }))
     }
 
     func testMakeParticipants_IncludesLinkedAccountMetadataForLinkedFriends() async throws {
@@ -572,9 +572,9 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         XCTAssertEqual(friend?.linkedAccountEmail, "angan@example.com")
     }
 
-    // MARK: - Friend Members Deduplication Tests
+    // MARK: - Known Group Participant Deduplication Tests
 
-    func testFriendMembers_SkipsUnlinkedRemoteFriendWhenNameMatchesGroupMemberButIdsDiffer() async throws {
+    func testKnownGroupParticipants_SkipsUnlinkedRemoteFriendWhenNameMatchesGroupMemberButIdsDiffer() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Current User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
@@ -605,14 +605,14 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         ]
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then - prefer the group member ID (matches groups/expenses) and avoid duplicates
         XCTAssertTrue(friends.contains(where: { $0.id == groupMemberId }))
         XCTAssertFalse(friends.contains(where: { $0.id == remoteFriendId }))
     }
 
-    func testFriendMembers_DoesNotSkipLinkedRemoteFriendWhenNameMatchesGroupMemberButIdsDiffer() async throws {
+    func testKnownGroupParticipants_DoesNotSkipLinkedRemoteFriendWhenNameMatchesGroupMemberButIdsDiffer() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Current User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
@@ -642,14 +642,14 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         ]
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then
         XCTAssertTrue(friends.contains(where: { $0.id == groupMemberId }))
         XCTAssertTrue(friends.contains(where: { $0.id == remoteFriendId }))
     }
 
-    func testFriendMembers_SkipsUnlinkedRemoteFriendWhenNicknameMatchesGroupMemberNameButIdsDiffer() async throws {
+    func testKnownGroupParticipants_SkipsUnlinkedRemoteFriendWhenNicknameMatchesGroupMemberNameButIdsDiffer() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
@@ -679,7 +679,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         ]
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then
         XCTAssertTrue(friends.contains(where: { $0.id == groupMemberId }))

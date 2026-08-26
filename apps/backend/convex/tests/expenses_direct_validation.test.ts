@@ -26,6 +26,7 @@ function buildDirectExpenseArgs(args: {
   return {
     id: args.expenseId,
     group_id: args.groupId,
+    context_kind: "direct" as const,
     description: "Direct test expense",
     date: Date.now(),
     total_amount: 20,
@@ -53,6 +54,103 @@ function buildDirectExpenseArgs(args: {
     ]
   };
 }
+
+test("expenses:create atomically creates the direct expense ledger for the first expense", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const groupId = "ee5c4e20-a456-4cc9-93ab-5513583c37b5";
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now
+    });
+    await ctx.db.insert("account_friends", {
+      account_email: "owner@example.com",
+      member_id: "friend_member",
+      name: "Friend",
+      profile_avatar_color: "#000000",
+      has_linked_account: false,
+      link_state: "unlinked",
+      status: "manual",
+      updated_at: now
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildDirectExpenseArgs({
+        expenseId: "first_direct_expense",
+        groupId,
+        ownerMemberId: "owner_member",
+        otherMemberId: "friend_member"
+      })
+    )
+  ).resolves.toBeDefined();
+
+  const result = await t.run(async (ctx) => ({
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", groupId))
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "first_direct_expense"))
+      .unique()
+  }));
+  expect(result.group?.is_direct).toBe(true);
+  expect(result.group?.members.map((member) => member.id)).toEqual([
+    "owner_member",
+    "friend_member"
+  ]);
+  expect(result.expense?.group_ref).toBe(result.group?._id);
+});
+
+test("expenses:create leaves no direct expense ledger when friendship validation fails", async () => {
+  const t = convexTest(schema, modules);
+  const now = Date.now();
+  const groupId = "1a4b434b-53b8-46ea-ad42-bb332ce6f647";
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("accounts", {
+      id: "owner_auth_id",
+      email: "owner@example.com",
+      display_name: "Owner",
+      member_id: "owner_member",
+      created_at: now
+    });
+  });
+
+  const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildDirectExpenseArgs({
+        expenseId: "rejected_first_direct_expense",
+        groupId,
+        ownerMemberId: "owner_member",
+        otherMemberId: "stranger_member"
+      })
+    )
+  ).rejects.toThrow("not a confirmed friend");
+
+  const remnants = await t.run(async (ctx) => ({
+    group: await ctx.db
+      .query("groups")
+      .withIndex("by_client_id", (q) => q.eq("id", groupId))
+      .unique(),
+    expense: await ctx.db
+      .query("expenses")
+      .withIndex("by_client_id", (q) => q.eq("id", "rejected_first_direct_expense"))
+      .unique()
+  }));
+  expect(remnants).toEqual({ group: null, expense: null });
+});
 
 test("expenses:create allows direct expense when involved member is an alias of a linked friend", async () => {
   const t = convexTest(schema, modules);

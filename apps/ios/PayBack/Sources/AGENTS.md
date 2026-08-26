@@ -1,53 +1,57 @@
-# iOS KNOWLEDGE BASE
+# PayBack iOS source instructions
 
-**Path:** `apps/ios/PayBack/Sources`
+The root `AGENTS.md` applies. This file adds rules for `apps/ios/PayBack/Sources`.
 
-**MAINTENANCE PROTOCOL**
-- **Update this file** when you discover new patterns, fix subtle bugs, or clarify architecture.
-- **Example**: If you fix a race condition in `AppStore`, document the fix pattern here.
-- **Goal**: Save the next agent from wasting time on the same issue.
+## Architecture
 
-## OVERVIEW
-Native Swift iOS app using a hybrid **Centralized Store + MVVM** architecture. `AppStore` is the single source of truth.
+- `AppStore` is the account-scoped source of truth for shared UI state.
+- Views render store state and keep only short-lived presentation/input state locally.
+- Inject services through `AppStore`/`Dependencies` protocols so behavior is executable in tests.
+- Realtime sync is authoritative only after authentication and a successful channel fetch.
 
-## STRUCTURE
-```
-Sources/
-├── App/           # Entry point (`PayBackApp.swift`)
-├── Features/      # UI Screens (Auth, Expenses, Groups)
-├── Models/        # Domain entities (`SpendingGroup`, `UserAccount`)
-├── Services/      # Business logic & Infrastructure
-│   ├── State/     # `AppStore.swift` (Global State)
-│   ├── Convex/    # Backend integration
-│   └── Core/      # DI (`Dependencies.swift`)
-└── DesignSystem/  # Reusable UI components
-```
+## Names that encode the data boundary
 
-## ARCHITECTURAL PATTERNS
-- **State Management**: `AppStore` (ObservableObject) holds all app state. Views access it via `@EnvironmentObject`.
-- **Views**: "Dumb" views in `Features/` render state from the store.
-- **DI**: `Dependencies.current` singleton for service access. Constructor injection supported for tests.
-- **Sync**: Real-time sync handled by `AppStore.subscribeToSyncManager`.
+- `friends: [AccountFriend]`: persisted confirmed relationship records.
+- `confirmedFriends: [GroupMember]`: display/selection projection of confirmed friends. Use for the
+  Friends tab, all UI labeled Friends, and direct-expense targets.
+- `knownGroupParticipants: [GroupMember]`: confirmed friends plus group-derived identities. Use only
+  for identity resolution, migration recovery, dedupe, and navigation fallback.
+- `directExpenseTarget(for:)`: returns an existing direct expense ledger or a transient draft. It
+  must not persist, sync, or alter friendship state.
+- `existingDirectExpenseLedger(with:)`: lookup only.
 
-## NAVIGATION CONVENTIONS (NATIVE IOS)
-- **Push pages must use `NavigationStack` routes**: If a screen should feel like "back to previous page", add a typed route in `App/Navigation/TabRoutes.swift` and navigate via `NavigationLink(value:)` / path mutation.
-- **Do not build custom push animations** for normal detail pages (`FriendDetail`, `GroupDetail`, `ExpenseDetail`). Native push/pop and interactive edge-swipe are the default.
-- **Modal flows stay modal**: Use `sheet` / `fullScreenCover` for task-style flows (create/add/import/settings/camera/claim/etc). Do not force swipe-back semantics onto modals.
-- **Per-tab navigation state lives in `TabNavigationState`**: Keep independent paths for each tab. Switching tabs preserves each tab's stack.
-- **Active tab re-tap resets and scrolls to top**: `TabBarReselectObserver` detects reselects; on re-tap clear only that tab's path and refresh that tab root so home content returns to top (Activity also resets segment to default).
-- **Tab 2 is reserved FAB spacer**: Never treat tab index `2` as a selectable content tab.
-- **Route resolution**: Use `AppStore.navigationGroup(id:)`, `navigationExpense(id:)`, and `navigationMember(id:)` to resolve IDs safely and consistently (including identity equivalence).
+Never reintroduce a generic `friendMembers` API. It obscures whether group-only people are included.
+Never infer or sync friendship from group membership.
 
-## GOTCHAS
-- **God Object**: `AppStore.swift` is massive (>1300 lines). Modify with care.
-- **CI Flag**: `PAYBACK_CI_NO_CONVEX` mocks out the backend in CI.
-- **Convex Env Routing**: Build setting `PAYBACK_CONVEX_ENV` is source of truth (`Debug/Internal=development`, `Release=production`).
-- **Auth**: Two-step process: Clerk (Identity) -> Convex (Session).
-- **Concurrency**: `MainActor` usage is critical for UI updates from sync.
-- **Async destructive actions**: Capture and transport stable UUIDs into `Task`/`await` work. Never carry `IndexSet` or array offsets across an asynchronous boundary because live data may reorder first.
-- **Overlapping mutations**: Same-entity optimistic writes need a per-entity generation token. Only the latest generation may apply a response, rollback, clear pending state, or surface an error.
+## Friend and direct-expense lifecycle
 
-## TESTING
-- **Framework**: XCTest.
-- **Strategy**: Unit tests for logic; UI tests for flows.
-- **Mocking**: `Dependencies.mock()` allows swapping services.
+1. `addUnlinkedFriend` awaits `AccountService.syncFriends` before updating local confirmed state.
+2. Friend addition and link-request success do not create a direct expense ledger.
+3. Direct-expense UI works with a transient target until save.
+4. `addExpenseAndSync(_:directExpenseLedger:)` commits the local ledger only after the Convex
+   expense mutation succeeds. On failure it rolls back the optimistic expense and leaves no ledger.
+5. Existing/legacy ledgers are reused through identity-equivalent member IDs.
+
+## Async state safety
+
+- `AppStore` UI mutations are main-actor isolated.
+- Capture account ID/data epoch before async work and reject stale completions after account switch.
+- Cancellation is not success and must not surface an obsolete error.
+- Roll back only the entity/version changed by the failed operation.
+- Use per-entity generation tokens for overlapping optimistic writes.
+- Carry UUIDs, not array positions, across `await`.
+
+## Navigation and presentation
+
+- Push detail pages through typed `NavigationStack` routes.
+- Keep task flows (create, add, import, auth, camera) modal.
+- Preserve independent per-tab paths in `TabNavigationState`.
+- Resolve route IDs through `AppStore` identity-aware navigation helpers.
+
+## Build and tests
+
+- Do not edit `project.pbxproj`; edit `project.yml` and run `xcodegen generate`.
+- Add focused XCTest regression coverage for state transitions and failure rollback.
+- Any `AppStore`, service, or concurrency change requires standard iOS CI plus TSan; add ASan for
+  data-structure or memory-sensitive changes.
+- Keep user-facing errors actionable and free of raw backend details or PII.

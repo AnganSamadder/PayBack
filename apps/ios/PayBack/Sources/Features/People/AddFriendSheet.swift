@@ -291,7 +291,7 @@ struct AddFriendSheet: View {
         }
 
         // Check for duplicate
-        if store.confirmedFriendMembers.contains(where: {
+        if store.confirmedFriends.contains(where: {
             $0.name.localizedCaseInsensitiveCompare(trimmed) == .orderedSame
         }) {
             Haptics.notify(.error)
@@ -347,7 +347,6 @@ struct AddFriendSheet: View {
                 try await store.sendLinkRequest(toEmail: trimmedEmail, forFriend: friendMember)
 
                 await MainActor.run {
-                    _ = store.directGroup(with: friendMember)
                     Haptics.notify(.success)
                     successMessage = "Link request sent. They'll see it when they use PayBack."
                     showSuccessMessage = true

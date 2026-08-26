@@ -185,7 +185,7 @@ struct RootView: View {
                                 }
                             },
                             onSelectFriend: { friend in
-                                let g = store.directGroup(with: friend)
+                                let g = store.directExpenseTarget(for: friend)
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     showPickerUI = false
                                     showAddOverlay = false
@@ -506,7 +506,7 @@ private struct TargetPicker: View {
     }
 
     private var directExpenseTargets: [GroupMember] {
-        store.confirmedFriendMembers
+        store.confirmedFriends
     }
 
     private func confirmSelectedFriends() {

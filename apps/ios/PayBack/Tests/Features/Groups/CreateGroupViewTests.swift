@@ -113,6 +113,68 @@ final class CreateGroupViewTests: XCTestCase {
         XCTAssertEqual(sut.groups[0].members.first(where: { $0.name == alex.name })?.id, alexId)
     }
 
+    func testAddGroupAndSync_ConfirmsNewFriendBeforeCommittingGroup() async throws {
+        let account = UserAccount(
+            id: "account-1",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: sut.currentUser.id
+        )
+        sut.session = UserSession(account: account)
+        let alex = GroupMember(id: UUID(), name: "Alex")
+
+        let group = try await sut.addGroupAndSync(
+            name: "Dinner",
+            members: [alex],
+            newFriends: [alex]
+        )
+        let groupUpsertCount = await mockGroupCloudService.currentUpsertInvocationCount()
+
+        XCTAssertEqual(sut.confirmedFriends.map(\.id), [alex.id])
+        XCTAssertEqual(sut.groups.map(\.id), [group.id])
+        XCTAssertEqual(groupUpsertCount, 1)
+    }
+
+    func testAddGroupAndSync_FailedFriendWriteDoesNotCreateGroupOrParticipant() async {
+        let account = UserAccount(
+            id: "account-1",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: sut.currentUser.id
+        )
+        sut.session = UserSession(account: account)
+        await mockAccountService.setShouldFail(true)
+        let alex = GroupMember(id: UUID(), name: "Alex")
+
+        await XCTAssertThrowsErrorAsync(
+            try await sut.addGroupAndSync(name: "Dinner", members: [alex], newFriends: [alex])
+        )
+        let groupUpsertCount = await mockGroupCloudService.currentUpsertInvocationCount()
+
+        XCTAssertTrue(sut.confirmedFriends.isEmpty)
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertEqual(groupUpsertCount, 0)
+    }
+
+    func testAddGroupAndSync_FailedGroupWriteKeepsConfirmedFriendWithoutLocalGroup() async {
+        let account = UserAccount(
+            id: "account-1",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: sut.currentUser.id
+        )
+        sut.session = UserSession(account: account)
+        await mockGroupCloudService.setShouldFail(true)
+        let alex = GroupMember(id: UUID(), name: "Alex")
+
+        await XCTAssertThrowsErrorAsync(
+            try await sut.addGroupAndSync(name: "Dinner", members: [alex], newFriends: [alex])
+        )
+
+        XCTAssertEqual(sut.confirmedFriends.map(\.id), [alex.id])
+        XCTAssertTrue(sut.groups.isEmpty)
+    }
+
     func testAddGroup_HandlesEmptyMemberName() async throws {
         // Given
         let memberNames = ["Alice", "", "Bob"]
@@ -152,8 +214,8 @@ final class CreateGroupViewTests: XCTestCase {
 
     // MARK: - Friend Selection Tests
 
-    func testFriendMembers_ReturnsUniqueMembers() async throws {
-        // Given - friendMembers returns from Convex-synced friends array
+    func testKnownGroupParticipants_ReturnsUniqueMembers() async throws {
+        // Given - knownGroupParticipants returns from Convex-synced friends array
         let aliceId = UUID()
         let bobId = UUID()
         let charlieId = UUID()
@@ -163,7 +225,7 @@ final class CreateGroupViewTests: XCTestCase {
         sut.addImportedFriend(AccountFriend(memberId: charlieId, name: "Charlie", hasLinkedAccount: false))
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then - should have unique friends only
         XCTAssertEqual(friends.count, 3) // Alice, Bob, Charlie
@@ -171,19 +233,19 @@ final class CreateGroupViewTests: XCTestCase {
         XCTAssertEqual(names, Set(["Alice", "Bob", "Charlie"]))
     }
 
-    func testFriendMembers_ExcludesCurrentUser() async throws {
+    func testKnownGroupParticipants_ExcludesCurrentUser() async throws {
         // Given
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then
         XCTAssertFalse(friends.contains { $0.id == sut.currentUser.id })
     }
 
-    func testFriendMembers_SortedAlphabetically() async throws {
-        // Given - friendMembers returns from Convex-synced friends array, sorted
+    func testKnownGroupParticipants_SortedAlphabetically() async throws {
+        // Given - knownGroupParticipants returns from Convex-synced friends array, sorted
         let zoeId = UUID()
         let aliceId = UUID()
         let mikeId = UUID()
@@ -193,7 +255,7 @@ final class CreateGroupViewTests: XCTestCase {
         sut.addImportedFriend(AccountFriend(memberId: mikeId, name: "Mike", hasLinkedAccount: false))
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then
         let names = friends.map { $0.name }

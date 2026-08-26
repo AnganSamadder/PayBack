@@ -48,7 +48,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
     func testDirectGroup_WithCurrentUser_ReturnsFallback() async throws {
         // When - try to create direct group with current user
-        let directGroup = sut.directGroup(with: sut.currentUser)
+        let directGroup = sut.directExpenseTarget(for: sut.currentUser)
 
         // Then - should return a fallback group
         XCTAssertNotNil(directGroup)
@@ -313,17 +313,17 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertEqual(sut.expenses.first?.id, expense.id)
     }
 
-    // MARK: - Friend Members Edge Cases
+    // MARK: - Known Group Participant Edge Cases
 
-    func testFriendMembers_WithoutSession_DeriveFromGroups() async throws {
-        // Given - friendMembers now returns from Convex-synced friends array
+    func testKnownGroupParticipants_WithoutSession_UsesImportedFriends() async throws {
+        // Given - knownGroupParticipants now returns from Convex-synced friends array
         let aliceId = UUID()
         let bobId = UUID()
         sut.addImportedFriend(AccountFriend(memberId: aliceId, name: "Alice", hasLinkedAccount: false))
         sut.addImportedFriend(AccountFriend(memberId: bobId, name: "Bob", hasLinkedAccount: false))
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then
         XCTAssertTrue(friends.count >= 2)
@@ -331,7 +331,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertTrue(friends.contains { $0.name == "Bob" })
     }
 
-    func testFriendMembers_WithSession_UsesRemoteFriends() async throws {
+    func testKnownGroupParticipants_WithSession_UsesRemoteFriends() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
@@ -350,29 +350,29 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then
         XCTAssertTrue(friends.count >= 0)
     }
 
-    func testFriendMembers_ExcludesCurrentUser() async throws {
+    func testKnownGroupParticipants_ExcludesCurrentUser() async throws {
         // Given
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then
         XCTAssertFalse(friends.contains { $0.id == sut.currentUser.id })
     }
 
-    func testFriendMembers_SortedAlphabetically() async throws {
+    func testKnownGroupParticipants_SortedAlphabetically() async throws {
         // Given
         sut.addGroup(name: "Trip", memberNames: ["Zoe", "Alice", "Bob"])
 
         // When
-        let friends = sut.friendMembers
+        let friends = sut.knownGroupParticipants
 
         // Then
         if friends.count >= 3 {

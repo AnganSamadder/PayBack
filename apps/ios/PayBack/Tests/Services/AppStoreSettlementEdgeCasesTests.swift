@@ -849,7 +849,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertTrue(sut.canSettleExpenseForAll(expense))
     }
 
-    func testConfirmedFriendMembers_ExcludesGroupDerivedPeople() async throws {
+    func testConfirmedFriends_ExcludesGroupDerivedPeople() async throws {
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         sut.session = UserSession(account: account)
 
@@ -867,7 +867,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
 
         sut.addGroup(name: "Trip", memberNames: ["Real Friend", "Group Only"])
 
-        let friendNames = sut.confirmedFriendMembers.map(\.name)
+        let friendNames = sut.confirmedFriends.map(\.name)
         XCTAssertEqual(friendNames, ["Real Friend"])
     }
 

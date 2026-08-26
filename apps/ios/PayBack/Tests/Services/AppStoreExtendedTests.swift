@@ -5,17 +5,22 @@ import XCTest
 final class AppStoreExtendedTests: XCTestCase {
 
     var store: AppStore!
+    var persistence: MockPersistenceService!
 
     override func setUp() {
         super.setUp()
         Dependencies.reset()
+        persistence = MockPersistenceService()
         store = AppStore(
+            persistence: persistence,
             emailAuthService: MockEmailAuthService(),
             skipClerkInit: true
         )
     }
 
     override func tearDown() {
+        persistence.reset()
+        persistence = nil
         Dependencies.reset()
         super.tearDown()
     }
@@ -211,7 +216,7 @@ final class AppStoreExtendedTests: XCTestCase {
         XCTAssertEqual(store.friends.count, initialCount + 1)
     }
 
-    func testAddUnlinkedFriend_RegistersConfirmedFriendBeforeDirectGroup() async throws {
+    func testAddUnlinkedFriend_RegistersConfirmedFriendWithoutCreatingDirectExpenseLedger() async throws {
         let accountService = MockAccountServiceForAppStore()
         let account = UserAccount(
             id: "account-1",
@@ -220,6 +225,7 @@ final class AppStoreExtendedTests: XCTestCase {
             linkedMemberId: UUID()
         )
         store = AppStore(
+            persistence: persistence,
             accountService: accountService,
             emailAuthService: MockEmailAuthService(),
             skipClerkInit: true
@@ -235,8 +241,9 @@ final class AppStoreExtendedTests: XCTestCase {
         try await store.addUnlinkedFriend(friend)
 
         XCTAssertEqual(store.friends.map(\.memberId), [friend.id])
-        XCTAssertEqual(store.confirmedFriendMembers.map(\.id), [friend.id])
-        XCTAssertEqual(store.directGroup(with: friend.id)?.members.map(\.id), [store.currentUser.id, friend.id])
+        XCTAssertEqual(store.confirmedFriends.map(\.id), [friend.id])
+        XCTAssertNil(store.existingDirectExpenseLedger(with: friend.id))
+        XCTAssertTrue(store.groups.isEmpty)
 
         for _ in 0..<100 where await accountService.latestSyncedFriends(accountEmail: account.email) == nil {
             await Task.yield()
@@ -257,6 +264,7 @@ final class AppStoreExtendedTests: XCTestCase {
             linkedMemberId: UUID()
         )
         store = AppStore(
+            persistence: persistence,
             accountService: accountService,
             emailAuthService: MockEmailAuthService(),
             skipClerkInit: true
@@ -278,8 +286,163 @@ final class AppStoreExtendedTests: XCTestCase {
         }
 
         XCTAssertTrue(store.friends.isEmpty)
-        XCTAssertTrue(store.confirmedFriendMembers.isEmpty)
-        XCTAssertNil(store.directGroup(with: friend.id))
+        XCTAssertTrue(store.confirmedFriends.isEmpty)
+        XCTAssertNil(store.existingDirectExpenseLedger(with: friend.id))
+    }
+
+    func testDirectExpenseTarget_DoesNotPersistLedgerBeforeExpenseSave() {
+        let friend = GroupMember(id: UUID(), name: "Alice")
+
+        let target = store.directExpenseTarget(for: friend)
+
+        XCTAssertTrue(target.isDirect == true)
+        XCTAssertEqual(target.members.map(\.id), [store.currentUser.id, friend.id])
+        XCTAssertTrue(store.groups.isEmpty)
+    }
+
+    func testAddExpenseAndSync_FirstDirectExpenseCommitsLedgerAfterCloudSuccess() async throws {
+        let expenseService = MockExpenseCloudServiceForAppStore()
+        let account = UserAccount(
+            id: "account-1",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: UUID()
+        )
+        store = AppStore(
+            persistence: persistence,
+            accountService: MockAccountServiceForAppStore(),
+            expenseCloudService: expenseService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true
+        )
+        store.session = UserSession(account: account)
+        store.currentUser = GroupMember(
+            id: account.linkedMemberId!,
+            name: account.displayName,
+            isCurrentUser: true
+        )
+        let friend = GroupMember(id: UUID(), name: "Alice")
+        let ledger = store.directExpenseTarget(for: friend)
+        let expense = Expense(
+            groupId: ledger.id,
+            description: "Lunch",
+            date: Date(),
+            totalAmount: 20,
+            paidByMemberId: store.currentUser.id,
+            involvedMemberIds: ledger.members.map(\.id),
+            splits: ledger.members.map { ExpenseSplit(memberId: $0.id, amount: 10) },
+            contextKind: .direct,
+            participantNames: Dictionary(uniqueKeysWithValues: ledger.members.map { ($0.id, $0.name) })
+        )
+
+        try await store.addExpenseAndSync(expense, directExpenseLedger: ledger)
+
+        XCTAssertEqual(store.expenses.map(\.id), [expense.id])
+        XCTAssertEqual(store.groups.map(\.id), [ledger.id])
+        XCTAssertEqual(store.existingDirectExpenseLedger(with: friend.id)?.id, ledger.id)
+    }
+
+    func testAddExpenseAndSync_FailedFirstDirectExpenseLeavesNoLedger() async {
+        let expenseService = MockExpenseCloudServiceForAppStore()
+        await expenseService.setShouldFail(true)
+        let account = UserAccount(
+            id: "account-1",
+            email: "owner@example.com",
+            displayName: "Owner",
+            linkedMemberId: UUID()
+        )
+        store = AppStore(
+            persistence: persistence,
+            accountService: MockAccountServiceForAppStore(),
+            expenseCloudService: expenseService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true
+        )
+        store.session = UserSession(account: account)
+        store.currentUser = GroupMember(
+            id: account.linkedMemberId!,
+            name: account.displayName,
+            isCurrentUser: true
+        )
+        let friend = GroupMember(id: UUID(), name: "Alice")
+        let ledger = store.directExpenseTarget(for: friend)
+        let expense = Expense(
+            groupId: ledger.id,
+            description: "Lunch",
+            date: Date(),
+            totalAmount: 20,
+            paidByMemberId: store.currentUser.id,
+            involvedMemberIds: ledger.members.map(\.id),
+            splits: ledger.members.map { ExpenseSplit(memberId: $0.id, amount: 10) },
+            contextKind: .direct,
+            participantNames: Dictionary(uniqueKeysWithValues: ledger.members.map { ($0.id, $0.name) })
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await store.addExpenseAndSync(expense, directExpenseLedger: ledger)
+        )
+
+        XCTAssertTrue(store.expenses.isEmpty)
+        XCTAssertTrue(store.groups.isEmpty)
+    }
+
+    func testAddExpenseAndSync_FirstDirectExpenseSuccessAfterAccountSwitchDoesNotCommitOldLedger() async throws {
+        let expenseService = MockExpenseCloudServiceForAppStore()
+        let accountA = UserAccount(
+            id: "account-a",
+            email: "a@example.com",
+            displayName: "Account A",
+            linkedMemberId: UUID()
+        )
+        let accountB = UserAccount(
+            id: "account-b",
+            email: "b@example.com",
+            displayName: "Account B",
+            linkedMemberId: UUID()
+        )
+        store = AppStore(
+            persistence: persistence,
+            accountService: MockAccountServiceForAppStore(),
+            expenseCloudService: expenseService,
+            emailAuthService: MockEmailAuthService(),
+            skipClerkInit: true
+        )
+        store.session = UserSession(account: accountA)
+        store.currentUser = GroupMember(
+            id: accountA.linkedMemberId!,
+            name: accountA.displayName,
+            isCurrentUser: true
+        )
+        let friend = GroupMember(id: UUID(), name: "Alice")
+        let ledger = store.directExpenseTarget(for: friend)
+        let expense = Expense(
+            groupId: ledger.id,
+            description: "Lunch",
+            date: Date(),
+            totalAmount: 20,
+            paidByMemberId: store.currentUser.id,
+            involvedMemberIds: ledger.members.map(\.id),
+            splits: ledger.members.map { ExpenseSplit(memberId: $0.id, amount: 10) },
+            contextKind: .direct,
+            participantNames: Dictionary(uniqueKeysWithValues: ledger.members.map { ($0.id, $0.name) })
+        )
+        await expenseService.suspendNextUpsert()
+
+        let operation = Task { @MainActor in
+            try await self.store.addExpenseAndSync(expense, directExpenseLedger: ledger)
+        }
+        while await expenseService.currentUpsertInvocationCount() == 0 {
+            await Task.yield()
+        }
+
+        store.session = UserSession(account: accountB)
+        store.groups = []
+        store.expenses = []
+        await expenseService.resumeUpsert()
+
+        await XCTAssertThrowsErrorAsync(try await operation.value)
+        XCTAssertTrue(store.groups.isEmpty)
+        XCTAssertTrue(store.expenses.isEmpty)
     }
 
     func testManualFriendCandidate_ReusesUniqueGroupOnlyIdentity() async throws {
@@ -291,6 +454,7 @@ final class AppStoreExtendedTests: XCTestCase {
             linkedMemberId: UUID()
         )
         store = AppStore(
+            persistence: persistence,
             accountService: accountService,
             emailAuthService: MockEmailAuthService(),
             skipClerkInit: true
@@ -316,7 +480,7 @@ final class AppStoreExtendedTests: XCTestCase {
         XCTAssertEqual(store.groups.count, 1)
     }
 
-    func testFriendMembers_ExcludesCurrentUser() {
+    func testKnownGroupParticipants_ExcludesCurrentUser() {
         // Add a friend that looks like current user
         let friendWithCurrentUserId = AccountFriend(
             memberId: store.currentUser.id,
@@ -326,8 +490,8 @@ final class AppStoreExtendedTests: XCTestCase {
 
         store.addImportedFriend(friendWithCurrentUserId)
 
-        let friendMembers = store.friendMembers
-        XCTAssertFalse(friendMembers.contains { $0.id == store.currentUser.id })
+        let knownGroupParticipants = store.knownGroupParticipants
+        XCTAssertFalse(knownGroupParticipants.contains { $0.id == store.currentUser.id })
     }
 
     // MARK: - Group Expenses Query

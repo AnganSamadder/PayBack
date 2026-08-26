@@ -349,7 +349,10 @@ struct AddExpenseView: View {
         defer { isSaving = false }
 
         do {
-            try await store.addExpenseAndSync(expense)
+            try await store.addExpenseAndSync(
+                expense,
+                directExpenseLedger: expenseContextKind == .direct ? group : nil
+            )
             Haptics.notify(.success)
             close()
         } catch {

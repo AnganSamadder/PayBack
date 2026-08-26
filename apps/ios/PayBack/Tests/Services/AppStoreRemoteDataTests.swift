@@ -685,29 +685,27 @@ final class AppStoreRemoteDataTests: XCTestCase {
 
     // MARK: - Direct Group Tests
 
-    func testDirectGroup_CreatesNewGroup() async throws {
+    func testDirectExpenseTarget_CreatesTransientLedgerDraft() async throws {
         // Given
         let friend = GroupMember(name: "Alice")
 
         // When
-        let directGroup = sut.directGroup(with: friend)
+        let directGroup = sut.directExpenseTarget(for: friend)
 
         // Then
         XCTAssertEqual(directGroup.isDirect, true)
         XCTAssertEqual(directGroup.name, "Alice")
         XCTAssertEqual(directGroup.members.count, 2)
+        XCTAssertTrue(sut.groups.isEmpty)
     }
 
-    func testDirectGroup_ReusesExistingGroup() async throws {
+    func testDirectExpenseTarget_DoesNotPersistAnUnusedDraft() async throws {
         // Given
         let friend = GroupMember(name: "Alice")
-        let firstGroup = sut.directGroup(with: friend)
+        let draft = sut.directExpenseTarget(for: friend)
 
-        // When
-        let secondGroup = sut.directGroup(with: friend)
-
-        // Then
-        XCTAssertEqual(firstGroup.id, secondGroup.id)
+        XCTAssertTrue(draft.isDirect == true)
+        XCTAssertTrue(sut.groups.isEmpty)
     }
 
     func testDirectGroup_FindsExistingGroupByMembers() async throws {
@@ -721,7 +719,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         sut.addExistingGroup(existingGroup)
 
         // When
-        let foundGroup = sut.directGroup(with: alice)
+        let foundGroup = sut.directExpenseTarget(for: alice)
 
         // Then
         XCTAssertEqual(foundGroup.id, existingGroup.id)
@@ -730,7 +728,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
     func testDirectGroupByMemberId_ReusesCanonicalGroupForFriendCardAlias() async throws {
         let scenario = try await loadAliasedDirectGroupScenario()
 
-        let foundGroup = sut.directGroup(with: scenario.friendCardAliasId)
+        let foundGroup = sut.existingDirectExpenseLedger(with: scenario.friendCardAliasId)
 
         XCTAssertEqual(foundGroup?.id, scenario.existingGroup.id)
     }
@@ -743,7 +741,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
             accountFriendMemberId: scenario.friendCardAliasId
         )
 
-        let foundGroup = sut.directGroup(with: friendCardMember)
+        let foundGroup = sut.directExpenseTarget(for: friendCardMember)
 
         XCTAssertEqual(foundGroup.id, scenario.existingGroup.id)
         XCTAssertEqual(sut.groups.count, 1, "Identity-equivalent direct groups must not be duplicated")

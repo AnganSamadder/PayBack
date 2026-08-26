@@ -120,7 +120,7 @@ final class AppStoreQueryTests: XCTestCase {
         // Given
         // Direct group with Alice
         let alice = GroupMember(name: "Alice")
-        let directGroup = sut.directGroup(with: alice)
+        let directGroup = sut.directExpenseTarget(for: alice)
 
         // Regular group with multiple people
         sut.addGroup(name: "Team", memberNames: ["Bob", "Charlie"])
@@ -135,7 +135,8 @@ final class AppStoreQueryTests: XCTestCase {
             splits: [
                 ExpenseSplit(memberId: alice.id, amount: 5),
                 ExpenseSplit(memberId: sut.currentUser.id, amount: 5)
-            ]
+            ],
+            contextKind: .direct
         )
         sut.addExpense(personalExpense)
 
@@ -230,7 +231,7 @@ final class AppStoreQueryTests: XCTestCase {
         let alice = GroupMember(name: "Alice")
         sut.friends = [AccountFriend(memberId: alice.id, name: "Alice", status: "friend")]
 
-        let directGroup = sut.directGroup(with: alice)
+        let directGroup = sut.directExpenseTarget(for: alice)
         sut.addGroup(name: "Trip", memberNames: ["Alice", "Bob"])
         let realGroup = sut.groups.first { $0.name == "Trip" }!
         let aliceInRealGroup = realGroup.members.first { $0.name == "Alice" }!
