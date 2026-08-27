@@ -43,4 +43,14 @@ grep -Fq "scripts/ios-test-selection-flags.sh" "$WORKFLOW"
 grep -Fq "scripts/ios-test-selection-flags.sh" "$LOCAL_PARITY_SCRIPT"
 grep -Fq "bash scripts/tests/ios-test-selection-flags.test.sh" "$WORKFLOW"
 
+grep -Fq 'parallel_flag=-parallel-testing-enabled NO' "$WORKFLOW"
+if grep -Fq 'parallel_flag=-parallel-testing-enabled YES' "$WORKFLOW"; then
+	echo "Hosted iOS tests must not use parallel simulator clones" >&2
+	exit 1
+fi
+
+grep -Fq "PAYBACK_PARALLEL_TESTING=\"\${PAYBACK_PARALLEL_TESTING:-NO}\"" "$LOCAL_PARITY_SCRIPT"
+grep -Fq 'scripts/create-ci-simulator.sh' "$WORKFLOW"
+grep -Fq 'Revalidate Isolated Simulator' "$WORKFLOW"
+
 echo "iOS test selection flag checks passed"

@@ -16,7 +16,7 @@
 #   FAIL_ON_WARNINGS: 1 (fail if any warnings are detected)
 #   RUN_WEB_E2E: 1 (default) to run web Playwright smoke tests; set to 0 to skip
 #   PAYBACK_SIMULATOR_UDID: explicit available iPhone simulator UDID (optional)
-#   PAYBACK_PARALLEL_TESTING: YES (default) or NO
+#   PAYBACK_PARALLEL_TESTING: NO (default) or YES
 #   PAYBACK_MAX_PARALLEL_TEST_WORKERS: positive Xcode worker limit (optional)
 
 set -e
@@ -36,7 +36,7 @@ SANITIZER="${SANITIZER:-none}"
 CI_FLAVOR="${CI_FLAVOR:-github}"
 FAIL_ON_WARNINGS="${FAIL_ON_WARNINGS:-1}"
 RUN_WEB_E2E="${RUN_WEB_E2E:-1}"
-PAYBACK_PARALLEL_TESTING="${PAYBACK_PARALLEL_TESTING:-YES}"
+PAYBACK_PARALLEL_TESTING="${PAYBACK_PARALLEL_TESTING:-NO}"
 PAYBACK_MAX_PARALLEL_TEST_WORKERS="${PAYBACK_MAX_PARALLEL_TEST_WORKERS:-}"
 TEST_SCHEME="PayBackTests"
 
@@ -119,11 +119,7 @@ IOS_SDK_VERSION=$(xcodebuild -showsdks | grep -o 'iphoneos[0-9]*\.[0-9]*' | sed 
 
 # Mirrors the GitHub Actions job budgets. The local script does not enforce a wall-clock
 # timeout, but reporting the same value keeps parity drift visible in diagnostic output.
-if [ "$SANITIZER" = "none" ]; then
-	CI_JOB_TIMEOUT_MINUTES=75
-else
-	CI_JOB_TIMEOUT_MINUTES=90
-fi
+CI_JOB_TIMEOUT_MINUTES=90
 IOS_SDK_MAJOR=${IOS_SDK_VERSION%%.*}
 if ! [[ "$IOS_SDK_MAJOR" =~ ^[0-9]+$ ]]; then
 	echo -e "${RED}✗ Could not detect the selected Xcode's iOS SDK${NC}"

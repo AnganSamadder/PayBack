@@ -1,6 +1,32 @@
 import XCTest
 @testable import PayBack
 
+private actor CancellationTestGate {
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var suspensionWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func suspend() async {
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+            suspensionWaiters.forEach { $0.resume() }
+            suspensionWaiters.removeAll()
+        }
+    }
+
+    func waitUntilSuspended() async {
+        guard releaseContinuation == nil else { return }
+
+        await withCheckedContinuation { continuation in
+            suspensionWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
 /// Tests for async operation cancellation
 ///
 /// This test suite validates:
@@ -36,24 +62,27 @@ final class AsyncCancellationTests: XCTestCase {
 
     func test_taskCancellation_beforeExecution_detectsCancellation() async {
         // Arrange
-        var didExecute = false
+        let gate = CancellationTestGate()
 
         let task = Task {
+            await gate.suspend()
+
             // Check cancellation before doing work
             try Task.checkCancellation()
-            didExecute = true
             return "completed"
         }
 
-        // Act - cancel immediately
+        // Act - cancel only after the task is known to be suspended before its work.
+        await gate.waitUntilSuspended()
         task.cancel()
+        await gate.release()
 
         // Assert
         do {
             _ = try await task.value
             XCTFail("Should have thrown CancellationError")
         } catch is CancellationError {
-            XCTAssertFalse(didExecute, "Should not execute work after cancellation")
+            // Expected
         } catch {
             XCTFail("Wrong error type: \(error)")
         }
