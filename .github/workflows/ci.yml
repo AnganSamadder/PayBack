@@ -52,6 +52,7 @@ jobs:
         run: |
           bash scripts/tests/check-sanitizer-output.test.sh
           bash scripts/tests/ci-pre-xcodebuild.test.sh
+          bash scripts/tests/create-ci-simulator.test.sh
           bash scripts/tests/ios-test-selection-flags.test.sh
           bash scripts/tests/prepare-convex-deploy.test.sh
 
@@ -393,7 +394,7 @@ jobs:
         include:
           - sanitizer: none
             run_on_pr: true
-            timeout: 75
+            timeout: 90
           - sanitizer: thread
             run_on_pr: false
             timeout: 90
@@ -577,6 +578,10 @@ jobs:
               summary.write(f"\n- Using simulator **{name}** (iOS {version_str})\n")
           PY
 
+      - name: Create Isolated Simulator
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: scripts/create-ci-simulator.sh
+
       - name: Boot Selected Simulator
         if: matrix.run_on_pr == true || github.event_name == 'push'
         run: |
@@ -611,7 +616,7 @@ jobs:
           else
             echo "sanitizer_flag=" >> $GITHUB_OUTPUT
             echo "coverage_flag=-enableCodeCoverage YES" >> $GITHUB_OUTPUT
-            echo "parallel_flag=-parallel-testing-enabled YES" >> $GITHUB_OUTPUT
+            echo "parallel_flag=-parallel-testing-enabled NO" >> $GITHUB_OUTPUT
             echo "tsan_options=" >> $GITHUB_OUTPUT
           fi
 
@@ -619,6 +624,46 @@ jobs:
         if: matrix.run_on_pr == true || github.event_name == 'push'
         run: |
           rm -rf TestResults.xcresult coverage.json coverage-report.txt || true
+
+      - name: Revalidate Isolated Simulator
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: |
+          set -e
+          if SIMULATOR_UDID="$SIMULATOR_UDID" python3 <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          try:
+            result = subprocess.check_output([
+              "xcrun", "simctl", "list", "devices", "available", "--json",
+            ])
+            data = json.loads(result)
+          except (subprocess.CalledProcessError, json.JSONDecodeError):
+            sys.exit(1)
+
+          expected = os.environ["SIMULATOR_UDID"]
+          for devices in data.get("devices", {}).values():
+            for device in devices:
+              if device.get("udid") == expected and device.get("isAvailable", True):
+                sys.exit(0)
+          sys.exit(1)
+          PY
+          then
+            echo "Isolated simulator is still available: $SIMULATOR_UDID"
+          else
+            echo "Selected simulator disappeared; creating a replacement"
+            scripts/create-ci-simulator.sh
+          fi
+
+      - name: Boot Revalidated Simulator
+        if: matrix.run_on_pr == true || github.event_name == 'push'
+        run: |
+          set -e
+          echo "Final simulator readiness check: $SIMULATOR_UDID"
+          xcrun simctl boot "$SIMULATOR_UDID" || true
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
 
       - name: Run Unit Tests
         if: matrix.run_on_pr == true || github.event_name == 'push'
@@ -723,3 +768,11 @@ jobs:
             coverage.json
             coverage-report.txt
           retention-days: 30
+
+      - name: Delete Isolated Simulator
+        if: always() && (matrix.run_on_pr == true || github.event_name == 'push')
+        run: |
+          if [ "${SIMULATOR_EPHEMERAL:-0}" = "1" ] && [ -n "${SIMULATOR_UDID:-}" ]; then
+            xcrun simctl shutdown "$SIMULATOR_UDID" || true
+            xcrun simctl delete "$SIMULATOR_UDID" || true
+          fi

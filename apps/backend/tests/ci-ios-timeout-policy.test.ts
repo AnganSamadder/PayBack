@@ -18,7 +18,7 @@ describe("iOS CI timeout policy", () => {
   );
 
   it("allows the full standard suite to finish on hosted Xcode runners", () => {
-    expect(sanitizerTimeout(workflow, "none")).toBeGreaterThanOrEqual(75);
+    expect(sanitizerTimeout(workflow, "none")).toBeGreaterThanOrEqual(90);
   });
 
   it("gives serialized sanitizer suites additional headroom", () => {
@@ -27,7 +27,7 @@ describe("iOS CI timeout policy", () => {
   });
 
   it("keeps the local parity script's documented budgets synchronized", () => {
-    expect(localParityScript).toContain("CI_JOB_TIMEOUT_MINUTES=75");
-    expect(localParityScript).toContain("CI_JOB_TIMEOUT_MINUTES=90");
+    expect(localParityScript).not.toContain("CI_JOB_TIMEOUT_MINUTES=75");
+    expect(localParityScript.match(/CI_JOB_TIMEOUT_MINUTES=90/g)).toHaveLength(1);
   });
 });
