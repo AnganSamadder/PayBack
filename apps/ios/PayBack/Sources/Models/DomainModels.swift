@@ -222,6 +222,14 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         self.ownerAccountId = ownerAccountId
     }
 
+    /// The payer can fund an expense without taking a share in its selected participants.
+    /// Include split rows as well so legacy records with sparse participant lists still count.
+    func involvesMember(where matches: (UUID) -> Bool) -> Bool {
+        matches(paidByMemberId) ||
+            involvedMemberIds.contains(where: matches) ||
+            splits.contains { matches($0.memberId) }
+    }
+
     // Computed property to check if all splits are settled
     var allSplitsSettled: Bool {
         splits.allSatisfy { $0.isSettled }

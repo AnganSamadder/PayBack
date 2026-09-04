@@ -55,6 +55,226 @@ function buildDirectExpenseArgs(args: {
   };
 }
 
+test.each(
+  [false, true].flatMap((linked) =>
+    [false, true].flatMap((existingLedger) =>
+      [false, true].flatMap((payerIsOwner) =>
+        (existingLedger ? [false] : [false, true]).map((useAliases) => ({
+          linked,
+          existingLedger,
+          payerIsOwner,
+          useAliases
+        }))
+      )
+    )
+  )
+)(
+  "payer without a split is saved (linked=$linked, existingLedger=$existingLedger, payerIsOwner=$payerIsOwner, aliases=$useAliases)",
+  async ({ linked, existingLedger, payerIsOwner, useAliases }) => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const groupId = "fee0884d-9f80-4e4a-a7f5-f1c90923254a";
+    const ownerMemberId = useAliases ? "owner_alias" : "owner_member";
+    const friendMemberId = useAliases ? "friend_alias" : "friend_member";
+    await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("accounts", {
+        id: "owner_auth_id",
+        email: "owner@example.com",
+        display_name: "Owner",
+        member_id: "owner_member",
+        alias_member_ids: useAliases ? [ownerMemberId] : [],
+        created_at: now
+      });
+      if (linked) {
+        await ctx.db.insert("accounts", {
+          id: "friend_auth_id",
+          email: "friend@example.com",
+          display_name: "Friend",
+          member_id: "friend_member",
+          alias_member_ids: useAliases ? [friendMemberId] : [],
+          created_at: now
+        });
+      }
+      await ctx.db.insert("account_friends", {
+        account_email: "owner@example.com",
+        member_id: friendMemberId,
+        linked_member_id: linked ? "friend_member" : undefined,
+        name: "Friend",
+        profile_avatar_color: "#000000",
+        has_linked_account: linked,
+        link_state: linked ? "linked" : "unlinked",
+        status: linked ? "friend" : "manual",
+        updated_at: now,
+        ...(linked
+          ? { linked_account_id: "friend_auth_id", linked_account_email: "friend@example.com" }
+          : {})
+      });
+      if (existingLedger)
+        await ctx.db.insert("groups", {
+          id: groupId,
+          name: "Direct ledger",
+          members: [
+            { id: "owner_member", name: "Owner", is_current_user: true },
+            { id: "friend_member", name: "Friend" }
+          ],
+          owner_id: ownerId,
+          owner_account_id: "owner_auth_id",
+          owner_email: "owner@example.com",
+          is_direct: true,
+          created_at: now,
+          updated_at: now
+        });
+    });
+    const owner = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+    const args = buildDirectExpenseArgs({
+      expenseId: "payer_without_split",
+      groupId,
+      ownerMemberId,
+      otherMemberId: friendMemberId
+    });
+    const payerId = payerIsOwner ? ownerMemberId : friendMemberId;
+    const splitMemberId = payerIsOwner ? friendMemberId : ownerMemberId;
+    args.paid_by_member_id = payerId;
+    args.total_amount = 15;
+    args.involved_member_ids = [splitMemberId];
+    args.participant_member_ids = [splitMemberId];
+    args.participants = [{ member_id: splitMemberId, name: payerIsOwner ? "Friend" : "Owner" }];
+    args.splits = [{ id: "only_split", member_id: splitMemberId, amount: 15, is_settled: false }];
+    await owner.mutation(api.expenses.create, args);
+
+    const saved = await owner.query(api.expenses.list, {});
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      id: args.id,
+      context_kind: "direct",
+      group_id: groupId,
+      paid_by_member_id: payerId,
+      involved_member_ids: [splitMemberId],
+      total_amount: 15,
+      is_settled: false,
+      splits: [{ member_id: splitMemberId, amount: 15, is_settled: false }]
+    });
+    await owner.mutation(api.expenses.create, args);
+    await t.run(async (ctx) => {
+      const groups = await ctx.db.query("groups").collect();
+      expect(groups).toHaveLength(1);
+      expect(groups[0].members.map((member) => member.id).sort()).toEqual([
+        friendMemberId,
+        ownerMemberId
+      ]);
+      expect(await ctx.db.query("expenses").collect()).toHaveLength(1);
+    });
+    if (linked) {
+      const friend = t.withIdentity(identityFor("friend@example.com", "friend_auth_id"));
+      expect((await friend.query(api.expenses.list, {})).map((expense) => expense.id)).toEqual([
+        args.id
+      ]);
+    }
+  }
+);
+
+test.each([
+  "unknown",
+  "pending",
+  "rejected",
+  "unproven-link",
+  "pending-linked",
+  "rejected-linked",
+  "same-name",
+  "third-party",
+  "self-only"
+])(
+  "first payer-only expense rejects invalid ledger identities (%s) without persisting data",
+  async (scenario) => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("accounts", {
+        id: "owner_auth_id",
+        email: "owner@example.com",
+        display_name: "Owner",
+        member_id: "owner_member",
+        created_at: now
+      });
+      if (["unproven-link", "pending-linked", "rejected-linked"].includes(scenario)) {
+        await ctx.db.insert("accounts", {
+          id: "friend_auth_id",
+          email: "friend@example.com",
+          display_name: "Friend",
+          member_id: "friend_member",
+          created_at: now
+        });
+      }
+      if (scenario !== "unknown") {
+        await ctx.db.insert("account_friends", {
+          account_email: "owner@example.com",
+          member_id: scenario === "same-name" ? "different_member" : "friend_member",
+          name: "Friend",
+          profile_avatar_color: "#000000",
+          has_linked_account: ["unproven-link", "pending-linked", "rejected-linked"].includes(
+            scenario
+          ),
+          ...(scenario.endsWith("-linked") ? { link_state: "linked" as const } : {}),
+          status:
+            scenario === "pending-linked"
+              ? "pending"
+              : scenario === "rejected-linked"
+                ? "rejected"
+                : scenario === "pending" || scenario === "rejected"
+                  ? scenario
+                  : "manual",
+          updated_at: now,
+          ...(["unproven-link", "pending-linked", "rejected-linked"].includes(scenario)
+            ? {
+                linked_account_id: "friend_auth_id",
+                linked_account_email: "friend@example.com"
+              }
+            : {})
+        });
+      }
+      if (scenario === "third-party") {
+        await ctx.db.insert("account_friends", {
+          account_email: "owner@example.com",
+          member_id: "third_member",
+          name: "Third",
+          profile_avatar_color: "#000000",
+          has_linked_account: false,
+          status: "manual",
+          updated_at: now
+        });
+      }
+    });
+    const args = buildDirectExpenseArgs({
+      expenseId: "invalid_payer_only",
+      groupId: "446f75e6-2e7d-4515-99f2-e83ecae6b30c",
+      ownerMemberId: "owner_member",
+      otherMemberId: "friend_member"
+    });
+    args.paid_by_member_id =
+      scenario === "third-party"
+        ? "third_member"
+        : scenario === "self-only"
+          ? "owner_member"
+          : "friend_member";
+    if (scenario !== "third-party") {
+      args.total_amount = 15;
+      args.involved_member_ids = ["owner_member"];
+      args.participant_member_ids = ["owner_member"];
+      args.participants = [{ member_id: "owner_member", name: "Owner" }];
+      args.splits = [
+        { id: "only_split", member_id: "owner_member", amount: 15, is_settled: false }
+      ];
+    }
+    const owner = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
+    await expect(owner.mutation(api.expenses.create, args)).rejects.toThrow();
+    await t.run(async (ctx) => {
+      expect(await ctx.db.query("groups").collect()).toHaveLength(0);
+      expect(await ctx.db.query("expenses").collect()).toHaveLength(0);
+      expect(await ctx.db.query("user_expenses").collect()).toHaveLength(0);
+    });
+  }
+);
+
 test("expenses:create atomically creates the direct expense ledger for the first expense", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();

@@ -49,6 +49,175 @@ final class AppStoreBalanceTests: XCTestCase {
 
     // MARK: - Net Balance (Single Group) Tests
 
+    func testFriendPayerWithoutOwnSplitCountsAgainstExistingCredit() throws {
+        let friend = GroupMember(name: "Friend")
+        let cards = Expense(
+            groupId: UUID(), description: "Cards", totalAmount: 15,
+            paidByMemberId: friend.id, involvedMemberIds: [sut.currentUser.id],
+            splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 15)],
+            contextKind: .direct
+        )
+        let dinner = Expense(
+            groupId: UUID(), description: "Dinner", totalAmount: 40.88,
+            paidByMemberId: sut.currentUser.id, involvedMemberIds: [sut.currentUser.id, friend.id],
+            splits: [ExpenseSplit(memberId: friend.id, amount: 40.88)],
+            contextKind: .groupedIndividual
+        )
+        // Exercise already-saved records without rewriting their selected split participants.
+        let data = try JSONEncoder().encode([cards, dinner])
+        sut.expenses = try JSONDecoder().decode([Expense].self, from: data)
+
+        XCTAssertEqual(sut.netBalance(forFriend: friend), 25.88, accuracy: 0.001)
+        XCTAssertEqual(Set(sut.expenses(forFriend: friend).map(\.id)), [cards.id, dinner.id])
+        XCTAssertEqual(sut.overallNetBalance(), 25.88, accuracy: 0.001)
+        XCTAssertEqual(sut.expenses.first?.involvedMemberIds, [sut.currentUser.id])
+
+        sut.expenses[0].splits[0].isSettled = true
+        XCTAssertEqual(sut.netBalance(forFriend: friend), 40.88, accuracy: 0.001)
+        XCTAssertEqual(sut.expenses(forFriend: friend).count, 2)
+    }
+
+    func testCurrentUserPayerWithoutOwnSplitAppearsInFriendAndActivityLists() {
+        let friend = GroupMember(name: "Friend")
+        let expense = Expense(
+            groupId: UUID(), description: "Gift repayment", totalAmount: 15,
+            paidByMemberId: sut.currentUser.id, involvedMemberIds: [friend.id],
+            splits: [ExpenseSplit(memberId: friend.id, amount: 15)], contextKind: .direct
+        )
+        sut.expenses = [expense]
+
+        XCTAssertEqual(sut.netBalance(forFriend: friend), 15, accuracy: 0.001)
+        XCTAssertEqual(sut.expenses(forFriend: friend).map(\.id), [expense.id])
+        XCTAssertEqual(sut.expensesInvolvingCurrentUser().map(\.id), [expense.id])
+    }
+
+    func testFriendLedgerRecognizesSplitMembersMissingFromLegacyInvolvedIds() {
+        let friend = GroupMember(name: "Friend")
+        let expense = Expense(
+            groupId: UUID(), description: "Legacy debt", totalAmount: 15,
+            paidByMemberId: friend.id, involvedMemberIds: [],
+            splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 15)], contextKind: .direct
+        )
+        sut.expenses = [expense]
+
+        XCTAssertEqual(sut.netBalance(forFriend: friend), -15, accuracy: 0.001)
+        XCTAssertEqual(sut.expenses(forFriend: friend).map(\.id), [expense.id])
+        XCTAssertEqual(sut.expensesInvolvingCurrentUser().map(\.id), [expense.id])
+    }
+
+    func testFriendPayerUsesImportedPointerAndCurrentUserAlias() {
+        let friend = GroupMember(name: "Friend")
+        let importedFriend = GroupMember(name: "Imported friend", accountFriendMemberId: friend.id)
+        let myAlias = UUID()
+        sut.session = UserSession(account: UserAccount(
+            id: "current-account", email: "current@example.com", displayName: "Current User",
+            equivalentMemberIds: [myAlias]
+        ))
+        let group = SpendingGroup(name: "Legacy ledger", members: [sut.currentUser, importedFriend], isDirect: true)
+        sut.groups = [group]
+        let expense = Expense(
+            groupId: group.id, description: "Legacy debt", totalAmount: 15,
+            paidByMemberId: importedFriend.id, involvedMemberIds: [myAlias],
+            splits: [ExpenseSplit(memberId: myAlias, amount: 15)]
+        )
+        sut.expenses = [expense]
+
+        XCTAssertEqual(sut.netBalance(forFriend: friend), -15, accuracy: 0.001)
+        XCTAssertEqual(sut.expenses(forFriend: friend).map(\.id), [expense.id])
+    }
+
+    func testPayerOnlyMatchingDoesNotIncludeUnrelatedExpensesOrSameNamePeople() {
+        let friend = GroupMember(name: "Friend")
+        let sameName = GroupMember(name: "Friend")
+        sut.expenses = [
+            Expense(
+                groupId: UUID(), description: "Someone else's debt", totalAmount: 15,
+                paidByMemberId: friend.id, involvedMemberIds: [sameName.id],
+                splits: [ExpenseSplit(memberId: sameName.id, amount: 15)], contextKind: .direct
+            ),
+            Expense(
+                groupId: UUID(), description: "Different person", totalAmount: 20,
+                paidByMemberId: sameName.id, involvedMemberIds: [sut.currentUser.id],
+                splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 20)], contextKind: .direct
+            )
+        ]
+
+        XCTAssertEqual(sut.netBalance(forFriend: friend), 0)
+        XCTAssertTrue(sut.expenses(forFriend: friend).isEmpty)
+    }
+
+    func testGroupPayerWithoutOwnSplitUsesSharedFriendFilter() {
+        let friend = GroupMember(name: "Friend")
+        let thirdPerson = GroupMember(name: "Third person")
+        let group = SpendingGroup(name: "Trip", members: [sut.currentUser, friend, thirdPerson])
+        sut.groups = [group]
+        let shared = Expense(
+            groupId: group.id, description: "Shared debt", totalAmount: 15,
+            paidByMemberId: friend.id, involvedMemberIds: [sut.currentUser.id],
+            splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 15)]
+        )
+        let unrelated = Expense(
+            groupId: group.id, description: "Other members only", totalAmount: 20,
+            paidByMemberId: friend.id, involvedMemberIds: [thirdPerson.id],
+            splits: [ExpenseSplit(memberId: thirdPerson.id, amount: 20)]
+        )
+        sut.expenses = [shared, unrelated]
+
+        XCTAssertEqual(sut.expensesShared(with: friend).map(\.id), [shared.id])
+        XCTAssertTrue(sut.expenses(forFriend: friend).isEmpty, "Group expenses stay out of the Individual tab")
+        XCTAssertEqual(sut.netBalance(forFriend: friend), -15, accuracy: 0.001)
+    }
+
+    func testFriendRowMatchingIncludesSparseLinkedAndImportedIdentities() {
+        let friend = GroupMember(name: "Friend")
+        let linkedId = UUID()
+        let imported = GroupMember(name: "Imported friend", accountFriendMemberId: linkedId)
+        sut.friends = [AccountFriend(memberId: friend.id, name: friend.name, linkedMemberId: linkedId)]
+        sut.groups = [SpendingGroup(name: "Trip", members: [sut.currentUser, imported])]
+
+        XCTAssertTrue(sut.isFriendMember(linkedId, friendId: friend.id))
+        XCTAssertTrue(sut.isFriendMember(imported.id, friendId: friend.id))
+        XCTAssertFalse(sut.isFriendMember(UUID(), friendId: friend.id))
+    }
+
+    func testThirdPartyPayerDoesNotBecomeDebtToViewedFriend() {
+        let friend = GroupMember(name: "Friend")
+        let payer = GroupMember(name: "Alex")
+        let expense = Expense(
+            groupId: UUID(), description: "Shared dinner", totalAmount: 30,
+            paidByMemberId: payer.id, involvedMemberIds: [sut.currentUser.id, friend.id, payer.id],
+            splits: [
+                ExpenseSplit(memberId: sut.currentUser.id, amount: 15),
+                ExpenseSplit(memberId: friend.id, amount: 15)
+            ], contextKind: .groupedIndividual, participantNames: [payer.id: payer.name]
+        )
+        sut.expenses = [expense]
+
+        XCTAssertEqual(sut.expenses(forFriend: friend).map(\.id), [expense.id])
+        XCTAssertEqual(sut.netBalance(forFriend: friend), 0)
+        let summary = SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: sut.isMe)
+        let text = FriendExpensePresentationLogic.relationshipText(
+            payerIsCurrentUser: sut.isMe(expense.paidByMemberId), friendName: friend.name,
+            payerName: sut.participantDisplayName(memberId: expense.paidByMemberId, in: expense),
+            summary: summary, currencyCode: "USD"
+        )
+        XCTAssertTrue(text.hasPrefix("You owe Alex "))
+        XCTAssertFalse(text.contains(friend.name))
+        XCTAssertEqual(summary.relationshipAmount, 15)
+    }
+
+    func testFriendIdentityMatcherRefreshesAfterIdentityUpdates() {
+        let friend = GroupMember(name: "Friend")
+        let alias = UUID()
+        XCTAssertFalse(sut.friendIdentityMatcher(for: friend)(alias))
+
+        sut.friends = [AccountFriend(memberId: friend.id, name: friend.name, aliasMemberIds: [alias])]
+
+        XCTAssertTrue(sut.friendIdentityMatcher(for: friend)(alias))
+        sut.friends = []
+        XCTAssertFalse(sut.friendIdentityMatcher(for: friend)(alias))
+    }
+
     func testNetBalanceForFriendIncludesImportedGroupMemberPointerIdentity() {
         let friendMemberId = UUID()
         let importedGroupMemberId = UUID()

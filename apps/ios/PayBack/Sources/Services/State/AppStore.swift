@@ -2352,7 +2352,20 @@ func completeAuthentication(id: String, email: String, name: String?) {
     func isFriendMember(_ memberId: UUID, friendId: UUID, accountFriendMemberId: UUID? = nil) -> Bool {
         if areSamePerson(memberId, friendId) { return true }
         if let accountFriendMemberId, areSamePerson(memberId, accountFriendMemberId) { return true }
-        return false
+        let identityIds = accountFriendIdentityMemberIds(
+            for: [friendId] + (accountFriendMemberId.map { [$0] } ?? [])
+        )
+        return identityIds.contains { areSamePerson(memberId, $0) }
+    }
+
+    /// Resolve the graph once for a synchronous list or row render, without caching across updates.
+    func friendIdentityMatcher(for friend: GroupMember) -> (UUID) -> Bool {
+        let aliases = memberAliasMap
+        let identities = accountFriendIdentityMemberIds(
+            for: [friend.id] + (friend.accountFriendMemberId.map { [$0] } ?? [])
+        )
+        let canonicalIds = Set(identities.map { aliases[$0] ?? $0 })
+        return { canonicalIds.contains(aliases[$0] ?? $0) }
     }
 
     public func overallNetBalance() -> Double {
@@ -2496,17 +2509,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     func netBalance(forFriend friend: GroupMember) -> Double {
         var balance: Double = 0
-        let friendIdentityMemberIds = accountFriendIdentityMemberIds(
-            for: [friend.id] + (friend.accountFriendMemberId.map { [$0] } ?? [])
-        )
-
-        func matchesFriendIdentity(_ memberId: UUID) -> Bool {
-            friendIdentityMemberIds.contains { areSamePerson(memberId, $0) }
-        }
+        let matchesFriendIdentity = friendIdentityMatcher(for: friend)
 
         for expense in expenses where
-            expense.involvedMemberIds.contains(where: { isMe($0) }) &&
-            expense.involvedMemberIds.contains(where: matchesFriendIdentity) {
+            expense.involvesMember(where: isMe) &&
+            expense.involvesMember(where: matchesFriendIdentity) {
             if isMe(expense.paidByMemberId) {
                 balance += expense.splits
                     .filter { matchesFriendIdentity($0.memberId) && !$0.isSettled }
@@ -3593,26 +3600,24 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func expenses(forFriend friend: GroupMember) -> [Expense] {
-        expenses
+        expensesShared(with: friend)
             .filter { expense in
-                guard expenseInvolves(friend: friend, in: expense) else { return false }
-                return isDirectExpense(expense) || isGroupedIndividualExpense(expense)
+                isDirectExpense(expense) || isGroupedIndividualExpense(expense)
             }
-            .sorted(by: { $0.date > $1.date })
     }
 
-    private func expenseInvolves(friend: GroupMember, in expense: Expense) -> Bool {
-        guard expense.involvedMemberIds.contains(where: { isMe($0) }) else { return false }
-        return expense.involvedMemberIds.contains(where: {
-            isFriendMember($0, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
-        })
+    func expensesShared(with friend: GroupMember) -> [Expense] {
+        let matchesFriend = friendIdentityMatcher(for: friend)
+        return expenses
+            .filter { $0.involvesMember(where: isMe) && $0.involvesMember(where: matchesFriend) }
+            .sorted(by: { $0.date > $1.date })
     }
 
     func expensesInvolvingCurrentUser() -> [Expense] {
         let userIds = currentUserMemberIds
         return expenses
             .filter { expense in
-                expense.involvedMemberIds.contains { userIds.contains($0) }
+                expense.involvesMember { userIds.contains($0) }
             }
             .sorted(by: { $0.date > $1.date })
     }
@@ -3620,10 +3625,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     func unsettledExpensesInvolvingCurrentUser() -> [Expense] {
         return expenses
             .filter { expense in
-                let isInvolved = expense.involvedMemberIds.contains { isMe($0) } ||
-                    isMe(expense.paidByMemberId) ||
-                    expense.splits.contains { isMe($0.memberId) }
-                guard isInvolved else { return false }
+                guard expense.involvesMember(where: isMe) else { return false }
 
                 if isMe(expense.paidByMemberId) {
                     let otherSplits = expense.splits.filter { !isMe($0.memberId) }
