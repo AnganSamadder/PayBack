@@ -33,6 +33,9 @@ through authenticated functions.
 - For a first direct expense with an explicit `context_kind="direct"` and no existing group,
   `expenses:create` validates the confirmed friend, inserts the ledger, and inserts the expense in
   the same mutation. Any thrown error rolls back both.
+- First-ledger membership is the identity-equivalent union of the payer and selected participants:
+  exactly the authenticated user and one confirmed friend. A payer need not take a split; preserve
+  selected participant/split arrays and validate payer-only counterparties too.
 - Existing legacy direct ledgers retain narrow compatibility behavior; do not extend that fallback
   to newly created ledgers.
 

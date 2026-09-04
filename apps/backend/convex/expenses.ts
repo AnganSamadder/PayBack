@@ -785,10 +785,6 @@ export const create = mutation({
           splitMemberIds: normalizedSplits.map((split) => split.member_id),
           participantRows: normalizedParticipants
         });
-        if (normalizedInvolved.length !== 2 || normalizedParticipants.length !== 2) {
-          throw new Error("Direct expenses must include exactly two participants.");
-        }
-
         const currentUserEquivalentIds = await buildCurrentUserEquivalentIds(callerEquivalentIds);
         const participantIdentityRows = await Promise.all(
           normalizedParticipants.map(async (participant) => ({
@@ -796,6 +792,35 @@ export const create = mutation({
             identityIds: await getEquivalentIdSet(participant.member_id)
           }))
         );
+        // A payer can fund the entire expense without taking a split. Ledger membership
+        // includes that identity, while the selected participants and amounts stay intact.
+        const payerIdentityIds = await getEquivalentIdSet(normalizedPaidBy);
+        if (
+          !participantIdentityRows.some(({ identityIds }) =>
+            intersects(identityIds, payerIdentityIds)
+          )
+        ) {
+          const payerIsCurrentUser = intersects(payerIdentityIds, currentUserEquivalentIds);
+          const payerFriend = payerIsCurrentUser
+            ? undefined
+            : (await buildOwnerFriendIdentityRows()).find(({ identityIds }) =>
+                intersects(identityIds, payerIdentityIds)
+              )?.friend;
+          if (!payerIsCurrentUser && !payerFriend) {
+            throw new Error("Cannot create direct expense: payer is not a confirmed friend.");
+          }
+          participantIdentityRows.push({
+            participant: {
+              member_id: normalizedPaidBy,
+              name: payerIsCurrentUser ? user.display_name : payerFriend.name
+            },
+            identityIds: payerIdentityIds
+          });
+        }
+        if (participantIdentityRows.length !== 2) {
+          throw new Error("Direct expenses must include exactly two participants.");
+        }
+
         const currentUserRows = participantIdentityRows.filter(({ identityIds }) =>
           intersects(identityIds, currentUserEquivalentIds)
         );
@@ -880,7 +905,10 @@ export const create = mutation({
         );
         const ownerFriendIdentityRows = await buildOwnerFriendIdentityRows();
 
-        for (const memberId of normalizedInvolved) {
+        const memberIdsToValidate = createdDirectGroupForExpense
+          ? group.members.map((member: { id: string }) => normalizeMemberId(member.id))
+          : normalizedInvolved;
+        for (const memberId of memberIdsToValidate) {
           const groupMember = group.members.find((m: any) => normalizeMemberId(m.id) === memberId);
           if (groupMember?.is_current_user) {
             continue;
@@ -893,8 +921,13 @@ export const create = mutation({
 
           const registeredMemberAccount = await findAccountByMemberId(ctx.db, memberId);
           assertAccountCanAcceptChanges(registeredMemberAccount);
-          const candidateFriendRows = ownerFriendIdentityRows.filter(({ identityIds }: any) =>
-            intersects(identityIds, memberEquivalentIds)
+          const candidateFriendRows = ownerFriendIdentityRows.filter(
+            ({ friend, identityIds }: any) =>
+              intersects(identityIds, memberEquivalentIds) &&
+              (!createdDirectGroupForExpense ||
+                ["", "friend", "accepted", "manual"].includes(
+                  friend.status?.trim().toLowerCase() ?? ""
+                ))
           );
           let matchingFriend: (typeof ownerFriendIdentityRows)[number] | undefined;
 
@@ -923,7 +956,11 @@ export const create = mutation({
             }
 
             const normalizedGroupMemberName = normalizePersonName(groupMember?.name);
-            if (!registeredMemberAccount && normalizedGroupMemberName) {
+            if (
+              !createdDirectGroupForExpense &&
+              !registeredMemberAccount &&
+              normalizedGroupMemberName
+            ) {
               const byNameMatches = ownerFriendIdentityRows.filter(
                 ({ friend }: any) =>
                   isEligibleDirectFriendRecord(friend) &&

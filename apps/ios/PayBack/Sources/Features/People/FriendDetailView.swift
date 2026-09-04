@@ -1,5 +1,21 @@
 import SwiftUI
 
+enum FriendExpensePresentationLogic {
+    static func relationshipText(
+        payerIsCurrentUser: Bool,
+        friendName: String,
+        payerName: String,
+        summary: IdentitySplitSummary,
+        currencyCode: String
+    ) -> String {
+        let amount = abs(summary.relationshipAmount).formatted(.currency(code: currencyCode).sign(strategy: .never))
+        if payerIsCurrentUser {
+            return summary.isFullySettled ? "\(friendName) paid \(amount)" : "\(friendName) owes me \(amount)"
+        }
+        return summary.isFullySettled ? "You paid \(amount)" : "You owe \(payerName) \(amount)"
+    }
+}
+
 enum FriendNameEditingLogic {
     static func initialText(currentNickname: String?, fallbackName: String) -> String {
         currentNickname ?? fallbackName
@@ -1071,31 +1087,15 @@ struct GroupExpensesView: View {
 
     private var groupExpenses: [SpendingGroup: [Expense]] {
         var result: [SpendingGroup: [Expense]] = [:]
+        let sharedExpenses = store.expensesShared(with: friend).filter { store.isGroupExpense($0) }
 
-        func isFriend(_ memberId: UUID) -> Bool {
-            if store.areSamePerson(memberId, friend.id) { return true }
-            if let accountFriendMemberId = friend.accountFriendMemberId {
-                return store.areSamePerson(memberId, accountFriendMemberId)
-            }
-            return false
-        }
-
-        // TODO: DATABASE_INTEGRATION - Replace store.groups with database query
-        // Example: SELECT * FROM groups WHERE member_ids CONTAINS friend.id AND is_direct = false
         for group in store.groups {
             // Skip direct groups - those are handled separately
             guard !(group.isDirect ?? false) else {
                 continue
             }
 
-            guard group.members.contains(where: { isFriend($0.id) }) else { continue }
-
-            // TODO: DATABASE_INTEGRATION - Replace store.expenses(in:) with database query
-            // Example: SELECT * FROM expenses WHERE group_id = group.id AND involved_member_ids CONTAINS friend.id
-            let expenses = store.expenses(in: group.id)
-                .filter { expense in
-                    expense.involvedMemberIds.contains { isFriend($0) }
-                }
+            let expenses = sharedExpenses.filter { $0.groupId == group.id }
 
             if !expenses.isEmpty {
                 result[group] = expenses
@@ -1138,38 +1138,7 @@ struct DirectExpenseCard: View {
 
     private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
-    private func isFriend(_ memberId: UUID) -> Bool {
-        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
-    }
-
-    private var friendSplitSummary: IdentitySplitSummary {
-        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isFriend)
-    }
-
-    private var mySplitSummary: IdentitySplitSummary {
-        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isMe)
-    }
-
-    private var relevantSplitSummary: IdentitySplitSummary {
-        isMe(expense.paidByMemberId) ? friendSplitSummary : mySplitSummary
-    }
-
-    private var isRelevantSplitSettled: Bool {
-        relevantSplitSummary.isFullySettled
-    }
-
-    private var primaryAmount: Double {
-        relevantSplitSummary.relationshipAmount
-    }
-
-    private var relationshipText: String {
-        if isMe(expense.paidByMemberId) {
-            return isRelevantSplitSettled ? "\(friend.name) paid \(currency(primaryAmount))" : "\(friend.name) owes me \(currency(primaryAmount))"
-        }
-        return isRelevantSplitSettled ? "You paid \(currencyPositive(primaryAmount))" : "You owe \(friend.name) \(currencyPositive(primaryAmount))"
-    }
-
-    private var groupedIndividualContextText: String? {
+    private func groupedIndividualContextText(isFriend: (UUID) -> Bool) -> String? {
         guard store.resolvedContextKind(for: expense) == .groupedIndividual else { return nil }
 
         let otherNames = expense.involvedMemberIds.compactMap { memberId -> String? in
@@ -1186,6 +1155,20 @@ struct DirectExpenseCard: View {
     }
 
     var body: some View {
+        let isFriend = store.friendIdentityMatcher(for: friend)
+        let payerIsCurrentUser = isMe(expense.paidByMemberId)
+        let relevantSplitSummary = SettlementAmountLogic.identitySummary(
+            for: expense, matchesIdentity: payerIsCurrentUser ? isFriend : isMe
+        )
+        let isRelevantSplitSettled = relevantSplitSummary.isFullySettled
+        let primaryAmount = relevantSplitSummary.relationshipAmount
+        let payerName = isFriend(expense.paidByMemberId)
+            ? friend.name : store.participantDisplayName(memberId: expense.paidByMemberId, in: expense)
+        let relationshipText = FriendExpensePresentationLogic.relationshipText(
+            payerIsCurrentUser: payerIsCurrentUser, friendName: friend.name, payerName: payerName,
+            summary: relevantSplitSummary, currencyCode: Locale.current.currency?.identifier ?? "USD"
+        )
+        let groupedIndividualContextText = groupedIndividualContextText(isFriend: isFriend)
         let content = VStack(spacing: AppMetrics.FriendDetail.expenseCardInternalSpacing) {
             HStack {
                 GroupIcon(name: expense.description)
@@ -1212,7 +1195,7 @@ struct DirectExpenseCard: View {
 
                     Text(relationshipText)
                         .font(.system(.caption, design: .rounded, weight: .medium))
-                        .foregroundStyle(isMe(expense.paidByMemberId) ? .green : .red)
+                        .foregroundStyle(payerIsCurrentUser ? .green : .red)
 
                     if let groupedIndividualContextText {
                         Text(groupedIndividualContextText)
@@ -1253,21 +1236,6 @@ struct DirectExpenseCard: View {
         }
     }
 
-    private func currency(_ amount: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
-        return amount.formatted(.currency(code: id))
-    }
-
-    private func currencyPositive(_ amount: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
-        let positiveAmount = abs(amount)
-        return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
-    }
-
-    private func memberName(for id: UUID) -> String {
-        if isMe(id) { return "You" }
-        return store.participantDisplayName(memberId: id, in: expense)
-    }
 }
 
 struct GroupExpensesSection: View {
@@ -1324,27 +1292,12 @@ struct GroupExpenseRow: View {
 
     private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
-    private func isFriend(_ memberId: UUID) -> Bool {
-        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
-    }
-
-    private var friendSplitSummary: IdentitySplitSummary {
-        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isFriend)
-    }
-
-    private var mySplitSummary: IdentitySplitSummary {
-        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isMe)
-    }
-
-    private var relevantSplitSummary: IdentitySplitSummary {
-        isMe(expense.paidByMemberId) ? friendSplitSummary : mySplitSummary
-    }
-
-    private var isRelevantSplitSettled: Bool {
-        relevantSplitSummary.isFullySettled
-    }
-
     var body: some View {
+        let isFriend = store.friendIdentityMatcher(for: friend)
+        let friendSplitSummary = SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isFriend)
+        let mySplitSummary = SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isMe)
+        let relevantSplitSummary = isMe(expense.paidByMemberId) ? friendSplitSummary : mySplitSummary
+        let isRelevantSplitSettled = relevantSplitSummary.isFullySettled
         HStack(spacing: AppMetrics.FriendDetail.groupExpenseRowSpacing) {
             GroupIcon(name: expense.description)
                 .frame(width: AppMetrics.FriendDetail.groupExpenseIconSize, height: AppMetrics.FriendDetail.groupExpenseIconSize)

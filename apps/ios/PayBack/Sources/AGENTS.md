@@ -32,6 +32,15 @@ Never infer or sync friendship from group membership.
    expense mutation succeeds. On failure it rolls back the optimistic expense and leaves no ledger.
 5. Existing/legacy ledgers are reused through identity-equivalent member IDs.
 
+## Expense participation
+
+- Expense visibility includes `paidByMemberId`, `involvedMemberIds`, and split member IDs. Use
+  `Expense.involvesMember(where:)` with the store's identity matching for read-side filters.
+- A payer can have no split. Preserve selected split participants and amounts when fixing display
+  logic; existing records must count without a data rewrite.
+- Friend balances, Individual/Groups lists, and row summaries must resolve the same canonical,
+  linked, alias, and imported `accountFriendMemberId` identities.
+
 ## Async state safety
 
 - `AppStore` UI mutations are main-actor isolated.

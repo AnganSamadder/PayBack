@@ -273,13 +273,10 @@ struct GroupDetailView: View {
         return v.formatted(.currency(code: id))
     }
 
-    private func isMemberMatch(_ expenseMemberId: UUID, _ member: GroupMember) -> Bool {
-        store.isFriendMember(expenseMemberId, friendId: member.id, accountFriendMemberId: member.accountFriendMemberId)
-    }
-
     private func calculateNetBalance(for member: GroupMember) -> Double {
         // Positive means member should receive; negative means owes
         let items = store.expenses(in: groupId)
+        let matchesMember = store.friendIdentityMatcher(for: member)
         var paidByMember: Double = 0
         var owes: Double = 0
 
@@ -287,7 +284,7 @@ struct GroupDetailView: View {
             // Skip fully settled expenses entirely
             if exp.isSettled { continue }
 
-            if isMemberMatch(exp.paidByMemberId, member) {
+            if matchesMember(exp.paidByMemberId) {
                 // If member paid, they are credited with the total amount...
                 var credit = exp.totalAmount
 
@@ -302,9 +299,7 @@ struct GroupDetailView: View {
             }
 
             // If member owes money (their split is not settled), debit them
-            let splitSummary = SettlementAmountLogic.identitySummary(for: exp) {
-                isMemberMatch($0, member)
-            }
+            let splitSummary = SettlementAmountLogic.identitySummary(for: exp, matchesIdentity: matchesMember)
             owes += splitSummary.unsettledAmount
         }
         return paidByMember - owes
@@ -361,7 +356,8 @@ struct GroupDetailView: View {
         }
 
         // Find the AccountFriend for this member (check both primary and remapped IDs)
-        if let accountFriend = store.friends.first(where: { isMemberMatch($0.memberId, member) }) {
+        let matchesMember = store.friendIdentityMatcher(for: member)
+        if let accountFriend = store.friends.first(where: { matchesMember($0.memberId) }) {
             return accountFriend.displayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return member.name
@@ -374,7 +370,8 @@ struct GroupDetailView: View {
         }
 
         // Find the AccountFriend for this member (check both primary and remapped IDs)
-        if let accountFriend = store.friends.first(where: { isMemberMatch($0.memberId, member) }) {
+        let matchesMember = store.friendIdentityMatcher(for: member)
+        if let accountFriend = store.friends.first(where: { matchesMember($0.memberId) }) {
             return accountFriend.secondaryDisplayName(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
         }
         return nil
