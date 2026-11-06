@@ -1,4 +1,36 @@
 import SwiftUI
+import Observation
+
+/// Presentation state for promoting an exact group participant to a confirmed friend.
+@MainActor
+@Observable
+final class GroupMemberFriendAddAction {
+    private(set) var pendingMember: GroupMember?
+    private(set) var errorMessage: String?
+
+    func add(_ member: GroupMember, to store: AppStore) async -> Bool {
+        guard pendingMember == nil, !store.isCurrentUser(member) else { return false }
+        let accountId = store.session?.account.id
+        let epoch = store.dataEpoch
+        pendingMember = member
+        errorMessage = nil
+        defer { pendingMember = nil }
+
+        do {
+            try await store.addUnlinkedFriend(member)
+            guard !Task.isCancelled, store.session?.account.id == accountId,
+                  store.dataEpoch == epoch else { return false }
+            return true
+        } catch {
+            guard !Task.isCancelled, !(error is CancellationError),
+                  store.session?.account.id == accountId, store.dataEpoch == epoch else { return false }
+            errorMessage = error.userFacingMessage(
+                fallback: "This friend was not saved. Check your connection and try again."
+            )
+            return false
+        }
+    }
+}
 
 struct GroupDetailView: View {
     @EnvironmentObject var store: AppStore
@@ -14,6 +46,8 @@ struct GroupDetailView: View {
     @State private var showUnsettledAlert = false
     @State private var showLeaveConfirmation = false
     @State private var isUpdatingGroup = false
+    @State private var friendAddAction = GroupMemberFriendAddAction()
+    @State private var friendAddTask: Task<Void, Never>?
     @State private var groupOperationErrorMessage: String?
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
@@ -92,6 +126,7 @@ struct GroupDetailView: View {
                 }
             }
         }
+        .onDisappear { friendAddTask?.cancel() }
         .navigationTitle("Group Details")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showAddExpense) {
@@ -432,6 +467,17 @@ struct GroupDetailView: View {
                 .buttonStyle(.plain)
             }
 
+            if let member = friendAddAction.pendingMember {
+                ProgressView("Adding \(member.name)…")
+                    .font(.caption)
+            }
+            if let message = friendAddAction.errorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("group.friendAddError")
+            }
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(group.members) { member in
@@ -454,18 +500,15 @@ struct GroupDetailView: View {
 
                                 if !store.friends.contains(where: { store.areSamePerson($0.memberId, member.id) }) {
                                     Button {
-                                        let newFriend = AccountFriend(
-                                            memberId: member.id,
-                                            name: member.name,
-                                            profileImageUrl: member.profileImageUrl,
-                                            profileColorHex: member.profileColorHex,
-                                            status: "friend"
-                                        )
-                                        store.addImportedFriend(newFriend)
-                                        Haptics.notify(.success)
+                                        friendAddTask = Task {
+                                            if await friendAddAction.add(member, to: store) {
+                                                Haptics.notify(.success)
+                                            }
+                                        }
                                     } label: {
                                         Label("Add Friend", systemImage: "person.badge.plus")
                                     }
+                                    .disabled(friendAddAction.pendingMember != nil)
 
                                 }
                             }

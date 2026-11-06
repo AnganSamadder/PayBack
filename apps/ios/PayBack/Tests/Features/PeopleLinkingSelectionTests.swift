@@ -129,3 +129,94 @@ final class PeopleExpenseIdentityTests: XCTestCase {
         XCTAssertEqual(expense.splits, rows)
     }
 }
+
+@MainActor
+final class GroupMemberFriendAddActionTests: XCTestCase {
+    private func makeStore(accountService: MockAccountServiceForAppStore) -> AppStore {
+        let store = AppStore(persistence: MockPersistenceService(), accountService: accountService,
+            expenseCloudService: MockExpenseCloudServiceForAppStore(), groupCloudService: MockGroupCloudServiceForAppStore(),
+            linkRequestService: MockLinkRequestServiceForAppStore(), inviteLinkService: MockInviteLinkServiceForTests(), skipClerkInit: true)
+        store.session = UserSession(account: UserAccount(id: "first", email: "first@example.test", displayName: "First", linkedMemberId: store.currentUser.id))
+        return store
+    }
+
+    func testGroupParticipantStaysPendingUntilRemoteAcknowledgementAndKeepsExactId() async throws {
+        let service = MockAccountServiceForAppStore()
+        let store = makeStore(accountService: service)
+        let member = GroupMember(name: "Alex")
+        let group = SpendingGroup(name: "Trip", members: [store.currentUser, member])
+        store.groups = [group]
+        let action = GroupMemberFriendAddAction()
+        await service.suspendNextFriendSync()
+        let task = Task { await action.add(member, to: store) }
+        await service.waitUntilFriendSyncSuspends()
+        XCTAssertEqual(action.pendingMember?.id, member.id)
+        XCTAssertTrue(store.friends.isEmpty)
+        let duplicateAccepted = await action.add(member, to: store)
+        XCTAssertFalse(duplicateAccepted, "A second tap cannot complete the pending action")
+        await service.resumeFriendSync()
+        let accepted = await task.value
+        XCTAssertTrue(accepted)
+        XCTAssertNil(action.pendingMember)
+        XCTAssertNil(action.errorMessage)
+        XCTAssertEqual(store.friends.map(\.memberId), [member.id])
+        let remote = await service.latestSyncedFriends(accountEmail: "first@example.test")
+        XCTAssertEqual(remote?.map(\.memberId), [member.id])
+        XCTAssertEqual(store.groups.map(\.id), [group.id], "Adding a friend must not create a direct ledger")
+        XCTAssertTrue(store.expenses.isEmpty)
+    }
+
+    func testRejectedFriendSaveShowsFailureAndAllowsAcknowledgedRetry() async {
+        let service = MockAccountServiceForAppStore()
+        let store = makeStore(accountService: service)
+        let member = GroupMember(name: "Alex")
+        let action = GroupMemberFriendAddAction()
+        await service.setShouldFail(true)
+        let failed = await action.add(member, to: store)
+        XCTAssertFalse(failed)
+        XCTAssertTrue(store.friends.isEmpty)
+        XCTAssertNil(action.pendingMember)
+        XCTAssertNotNil(action.errorMessage)
+        await service.setShouldFail(false)
+        let retried = await action.add(member, to: store)
+        XCTAssertTrue(retried)
+        XCTAssertNil(action.errorMessage)
+        XCTAssertEqual(store.friends.map(\.memberId), [member.id])
+    }
+
+    func testAccountSwitchFencesBothLateSuccessAndLateFailure() async {
+        for shouldFail in [false, true] {
+            let service = MockAccountServiceForAppStore()
+            let store = makeStore(accountService: service)
+            let member = GroupMember(name: "Alex")
+            let action = GroupMemberFriendAddAction()
+            await service.suspendNextFriendSync()
+            let task = Task { await action.add(member, to: store) }
+            await service.waitUntilFriendSyncSuspends()
+            store.session = UserSession(account: UserAccount(id: "second", email: "second@example.test", displayName: "Second"))
+            await service.setShouldFail(shouldFail)
+            await service.resumeFriendSync()
+            let accepted = await task.value
+            XCTAssertFalse(accepted)
+            XCTAssertNil(action.errorMessage)
+            XCTAssertNil(action.pendingMember)
+            XCTAssertTrue(store.friends.isEmpty)
+        }
+    }
+
+    func testCancelledGroupActionCannotReportSuccessfulLateAcknowledgement() async {
+        let service = MockAccountServiceForAppStore()
+        let store = makeStore(accountService: service)
+        let action = GroupMemberFriendAddAction()
+        await service.suspendNextFriendSync()
+        let task = Task { await action.add(GroupMember(name: "Alex"), to: store) }
+        await service.waitUntilFriendSyncSuspends()
+        task.cancel()
+        await service.resumeFriendSync()
+        let accepted = await task.value
+        XCTAssertFalse(accepted)
+        XCTAssertNil(action.errorMessage)
+        XCTAssertNil(action.pendingMember)
+        XCTAssertTrue(store.friends.isEmpty)
+    }
+}

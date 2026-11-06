@@ -91,6 +91,13 @@ final class AppStore: ObservableObject {
     private var remoteLoadGeneration: UInt64 = 0
     /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseUpsertIds: Set<UUID> = []
+    private struct ExpenseUpsertMutationToken {
+        let id: UUID
+        let snapshotGeneration: UInt64
+        var latestServerExpense: Expense?
+    }
+    private var financialSnapshotPublicationGeneration: UInt64 = 0
+    private var latestExpenseUpsertMutationIds: [UUID: ExpenseUpsertMutationToken] = [:]
     /// Successful settlement writes not yet confirmed by a realtime snapshot that preserves
     /// the requested split state. Untargeted concurrent changes remain authoritative.
     private var pendingExpenseSettlementExpectations: [UUID: SettlementRealtimeExpectation] = [:]
@@ -456,6 +463,7 @@ final class AppStore: ObservableObject {
         memberAliasMap.removeAll()
         friendUpdateTokens.removeAll()
         pendingExpenseUpsertIds.removeAll()
+        latestExpenseUpsertMutationIds.removeAll()
         pendingExpenseSettlementExpectations.removeAll()
         latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
@@ -875,6 +883,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses = []
         friends = []
         pendingExpenseUpsertIds.removeAll()
+        latestExpenseUpsertMutationIds.removeAll()
         pendingExpenseSettlementExpectations.removeAll()
         latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
@@ -923,6 +932,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         groups = []
         friends = []
         pendingExpenseUpsertIds.removeAll()
+        latestExpenseUpsertMutationIds.removeAll()
         pendingExpenseSettlementExpectations.removeAll()
         latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()
@@ -1417,7 +1427,11 @@ func completeAuthentication(id: String, email: String, name: String?) {
     ) {
         if let groupIndex = groups.firstIndex(where: { $0.id == optimisticGroup.id }),
            groupContentsMatch(groups[groupIndex], optimisticGroup) {
-            groups[groupIndex] = originalGroup
+            let currentProjection = groups[groupIndex].memberIdentityMap
+            groups[groupIndex] = SpendingGroup(id: originalGroup.id, name: originalGroup.name,
+                members: originalGroup.members, createdAt: originalGroup.createdAt,
+                isDirect: originalGroup.isDirect, isDebug: originalGroup.isDebug,
+                memberIdentityMap: currentProjection)
         }
         restoreGroups([], expenses: removedExpenses)
     }
@@ -1840,10 +1854,13 @@ func completeAuthentication(id: String, email: String, name: String?) {
         for localExpense in expenses where pendingLocalExpenseIds.contains(localExpense.id) {
             if let remoteIndex = remoteIndexById[localExpense.id] {
                 let remoteExpense = merged[remoteIndex]
+                if latestExpenseUpsertMutationIds[localExpense.id] != nil {
+                    latestExpenseUpsertMutationIds[localExpense.id]?.latestServerExpense = remoteExpense
+                }
                 var shouldPreserveLocalExpense = false
 
                 if pendingExpenseUpsertIds.contains(localExpense.id) {
-                    if remoteExpense == localExpense {
+                    if expenseWithProjection(localExpense, from: remoteExpense) == remoteExpense {
                         pendingExpenseUpsertIds.remove(localExpense.id)
                     } else {
                         shouldPreserveLocalExpense = true
@@ -1859,7 +1876,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 }
 
                 if shouldPreserveLocalExpense {
-                    merged[remoteIndex] = localExpense
+                    merged[remoteIndex] = expenseWithProjection(localExpense, from: remoteExpense)
                 }
             } else {
                 merged.append(localExpense)
@@ -1879,6 +1896,66 @@ func completeAuthentication(id: String, email: String, name: String?) {
         return merged.filter { seenIds.insert($0.id).inserted }
     }
 
+    /// Projection is derived from the current complete server generation, not authored
+    /// by an expense write. Keep it current even while financial edits are optimistic.
+    private func expenseWithProjection(_ authored: Expense, from server: Expense) -> Expense {
+        Expense(id: authored.id, groupId: authored.groupId, description: authored.description,
+            date: authored.date, totalAmount: authored.totalAmount, paidByMemberId: authored.paidByMemberId,
+            involvedMemberIds: authored.involvedMemberIds, splits: authored.splits, isSettled: authored.isSettled,
+            contextKind: authored.contextKind, participantNames: authored.participantNames, isDebug: authored.isDebug,
+            subexpenses: authored.subexpenses, notes: authored.notes, ownerEmail: authored.ownerEmail,
+            ownerAccountId: authored.ownerAccountId, currencyCode: authored.currencyCode,
+            financialIdentityMap: server.financialIdentityMap)
+    }
+
+    @MainActor
+    private func ownsExpenseUpsert(_ expenseId: UUID, token: UUID, context: GroupMutationContext) -> Bool {
+        isCurrentGroupMutation(context) && latestExpenseUpsertMutationIds[expenseId]?.id == token
+    }
+
+    @MainActor
+    private func isCurrentExpenseUpsert(_ expenseId: UUID, token: UUID, context: GroupMutationContext) -> Bool {
+        ownsExpenseUpsert(expenseId, token: token, context: context) && !Task.isCancelled
+    }
+
+    @MainActor
+    private func rollbackExpenseUpsert(_ optimistic: Expense, token: UUID, context: GroupMutationContext) throws {
+        guard ownsExpenseUpsert(optimistic.id, token: token, context: context) else { throw CancellationError() }
+        let mutation = latestExpenseUpsertMutationIds.removeValue(forKey: optimistic.id)
+        let wasPending = pendingExpenseUpsertIds.remove(optimistic.id) != nil
+        // A snapshot may already have acknowledged this write or another action may
+        // have changed the row. Cancellation owns cleanup, not those newer values.
+        guard wasPending, let index = expenses.firstIndex(where: { $0.id == optimistic.id }),
+              expenseWithProjection(optimistic, from: expenses[index]) == expenses[index] else { return }
+        if let authoritative = mutation?.latestServerExpense {
+            expenses[index] = authoritative
+        } else {
+            expenses.remove(at: index)
+        }
+        persistCurrentState()
+    }
+
+    @MainActor
+    private func acknowledgeExpenseUpsert(_ saved: SavedExpenseResult, expenseId: UUID, token: UUID, context: GroupMutationContext) throws {
+        guard isCurrentExpenseUpsert(expenseId, token: token, context: context) else { throw CancellationError() }
+        // The canonical response confirms the write. Invalidate older hydration so
+        // clearing its optimistic guard cannot allow a pre-commit snapshot to win.
+        invalidateRemoteLoad()
+        pendingExpenseUpsertIds.remove(expenseId)
+        let startedGeneration = latestExpenseUpsertMutationIds.removeValue(forKey: expenseId)?.snapshotGeneration
+        var canonical = saved.expense
+        if startedGeneration != financialSnapshotPublicationGeneration,
+           let current = expenses.first(where: { $0.id == expenseId }) {
+            canonical = expenseWithProjection(canonical, from: current)
+        }
+        if let settlement = pendingExpenseSettlementExpectations[expenseId] {
+            canonical = applyingSettlementState(to: canonical, splitIds: settlement.splitIds, settled: settlement.settled)
+        }
+        if let index = expenses.firstIndex(where: { $0.id == expenseId }) { expenses[index] = canonical }
+        commitDirectExpenseLedgerIfNeeded(saved.group)
+        persistCurrentState()
+    }
+
     private func doesRemoteExpense(
         _ expense: Expense,
         acknowledge expectation: SettlementRealtimeExpectation
@@ -1892,20 +1969,19 @@ func completeAuthentication(id: String, email: String, name: String?) {
     private func queueExpenseUpsert(_ expense: Expense, participants: [ExpenseParticipant]) {
         guard session != nil, !isImporting else { return }
         let expenseToSync = expenseForCloudSync(expense)
+        let token = UUID()
         pendingExpenseDeleteIds.remove(expense.id)
         pendingExpenseUpsertIds.insert(expense.id)
-
+        latestExpenseUpsertMutationIds[expense.id] = ExpenseUpsertMutationToken(id: token, snapshotGeneration: financialSnapshotPublicationGeneration)
         let context = GroupMutationContext(accountId: session?.account.id, dataEpoch: dataEpoch)
         Task { [retryPolicy, expenseCloudService, expenseToSync, participants] in
             do {
-                try await retryPolicy.execute {
-                    guard await self.isCurrentGroupMutation(context) else { throw CancellationError() }
-                    _ = try await expenseCloudService.saveExpense(expenseToSync, participants: participants, expectedAccountId: context.accountId ?? "")
+                let saved = try await retryPolicy.execute {
+                    guard await self.isCurrentExpenseUpsert(expense.id, token: token, context: context) else { throw CancellationError() }
+                    return try await expenseCloudService.saveExpense(expenseToSync, participants: participants, expectedAccountId: context.accountId ?? "")
                 }
+                try await self.acknowledgeExpenseUpsert(saved, expenseId: expense.id, token: token, context: context)
             } catch {
-                // Do not remove pendingExpenseUpsertIds here — concurrent in-flight writes
-                // for the same expense would lose their pending guard. The realtime reconciler
-                // clears the flag when it observes matching remote data.
                 #if DEBUG
                 print("⚠️ Failed to sync expense upsert \(expenseToSync.id): \(error.localizedDescription)")
                 #endif
@@ -1917,6 +1993,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     private func queueExpenseDelete(_ expenseId: UUID) {
         guard session != nil, !isImporting else { return }
         pendingExpenseUpsertIds.remove(expenseId)
+        latestExpenseUpsertMutationIds.removeValue(forKey: expenseId)
         pendingExpenseSettlementExpectations.removeValue(forKey: expenseId)
         latestSettlementMutationIdByExpense.removeValue(forKey: expenseId)
         pendingExpenseDeleteIds.insert(expenseId)
@@ -1942,6 +2019,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         _ expense: Expense,
         directExpenseLedger: SpendingGroup? = nil
     ) async throws {
+        try Task.checkCancellation()
         if let directExpenseLedger {
             guard directExpenseLedger.isDirect == true, directExpenseLedger.id == expense.groupId else {
                 throw PayBackError.underlying(message: "Direct expense ledger does not match the expense.")
@@ -1976,24 +2054,20 @@ func completeAuthentication(id: String, email: String, name: String?) {
         let participants = makeParticipants(for: expenseToStore)
         pendingExpenseDeleteIds.remove(expenseToStore.id)
         pendingExpenseUpsertIds.insert(expenseToStore.id)
+        let mutationToken = UUID()
+        latestExpenseUpsertMutationIds[expenseToStore.id] = ExpenseUpsertMutationToken(id: mutationToken, snapshotGeneration: financialSnapshotPublicationGeneration)
 
         do {
             let saved = try await retryPolicy.execute {
-                guard self.isCurrentGroupMutation(mutationContext) else { throw CancellationError() }
+                guard self.isCurrentExpenseUpsert(expenseToStore.id, token: mutationToken, context: mutationContext) else { throw CancellationError() }
                 return try await self.expenseCloudService.saveExpense(expenseToStore, participants: participants, expectedAccountId: mutationContext.accountId ?? "")
             }
             try Task.checkCancellation()
-            guard isCurrentGroupMutation(mutationContext) else { throw CancellationError() }
-            if let index = expenses.firstIndex(where: { $0.id == expenseToStore.id }) {
-                expenses[index] = saved.expense
-            }
+            try acknowledgeExpenseUpsert(saved, expenseId: expenseToStore.id, token: mutationToken, context: mutationContext)
             commitDirectExpenseLedgerIfNeeded(saved.group ?? directExpenseLedger)
             persistCurrentState()
         } catch {
-            guard isCurrentGroupMutation(mutationContext) else { throw CancellationError() }
-            pendingExpenseUpsertIds.remove(expenseToStore.id)
-            expenses.removeAll { $0.id == expenseToStore.id }
-            persistCurrentState()
+            try rollbackExpenseUpsert(expenseToStore, token: mutationToken, context: mutationContext)
             throw error
         }
     }
@@ -2585,6 +2659,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
                 }
             }
             groups = normalization.groups
+            financialSnapshotPublicationGeneration &+= 1
             expenses = mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: normalization.expenses)
             hasCompletedInitialRemoteLoad = true
             dataSyncRecoveryMessage = nil
@@ -3519,6 +3594,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
         expenses.removeAll()
         friends.removeAll()
         pendingExpenseUpsertIds.removeAll()
+        latestExpenseUpsertMutationIds.removeAll()
         pendingExpenseSettlementExpectations.removeAll()
         latestSettlementMutationIdByExpense.removeAll()
         pendingExpenseDeleteIds.removeAll()

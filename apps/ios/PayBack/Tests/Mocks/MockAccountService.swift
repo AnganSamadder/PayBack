@@ -11,6 +11,9 @@ actor MockAccountServiceForAppStore: AccountService {
     private var shouldFailLinkedMemberUpdate = false
     private var shouldFailNextFriendFetch = false
     private var shouldSuspendNextFriendFetch = false
+    private var shouldSuspendNextFriendSync = false
+    private var friendSyncWaiters: [CheckedContinuation<Void, Never>] = []
+    private var friendSyncContinuation: CheckedContinuation<Void, Never>?
     private var friendFetchWaiters: [CheckedContinuation<Void, Never>] = []
     private var friendFetchContinuation: CheckedContinuation<Void, Never>?
     private var selfDeleteCallCount = 0
@@ -129,6 +132,15 @@ actor MockAccountServiceForAppStore: AccountService {
     }
 
     func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {
+        if shouldSuspendNextFriendSync {
+            shouldSuspendNextFriendSync = false
+            await withCheckedContinuation { continuation in
+                friendSyncContinuation = continuation
+                let waiters = friendSyncWaiters
+                friendSyncWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
@@ -203,6 +215,20 @@ actor MockAccountServiceForAppStore: AccountService {
         shouldFailLinkedMemberUpdate = fail
     }
 
+    func suspendNextFriendSync() {
+        shouldSuspendNextFriendSync = true
+    }
+
+    func waitUntilFriendSyncSuspends() async {
+        if friendSyncContinuation != nil { return }
+        await withCheckedContinuation { friendSyncWaiters.append($0) }
+    }
+
+    func resumeFriendSync() {
+        friendSyncContinuation?.resume()
+        friendSyncContinuation = nil
+    }
+
     func suspendNextFriendFetch() {
         shouldSuspendNextFriendFetch = true
     }
@@ -239,6 +265,11 @@ actor MockAccountServiceForAppStore: AccountService {
         shouldFailLinkedMemberUpdate = false
         shouldFailNextFriendFetch = false
         shouldSuspendNextFriendFetch = false
+        shouldSuspendNextFriendSync = false
+        friendSyncWaiters.forEach { $0.resume() }
+        friendSyncWaiters.removeAll()
+        friendSyncContinuation?.resume()
+        friendSyncContinuation = nil
         friendFetchWaiters.forEach { $0.resume() }
         friendFetchWaiters.removeAll()
         friendFetchContinuation?.resume()

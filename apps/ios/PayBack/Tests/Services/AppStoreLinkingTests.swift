@@ -2,6 +2,206 @@ import XCTest
 @testable import PayBack
 
 extension AppStoreLinkingTests {
+    private func cancellationExpenseFixture() async -> Expense {
+        let me = sut.currentUser.id
+        let account = UserAccount(id: "cancel-owner", email: "cancel@example.test", displayName: "Owner", linkedMemberId: me)
+        sut.session = UserSession(account: account)
+        await mockAccountService.addAccount(account)
+        return Expense(groupId: UUID(), description: "Cancelable save", totalAmount: 10, paidByMemberId: me,
+            involvedMemberIds: [me], splits: [ExpenseSplit(memberId: me, amount: 10)],
+            ownerEmail: account.email, ownerAccountId: account.id, financialIdentityMap: [me: me])
+    }
+
+    private func waitForSuspendedUpsert() async throws {
+        for _ in 0..<100 {
+            if await mockExpenseCloudService.isUpsertSuspended() { return }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("Save did not reach controlled suspension")
+    }
+
+    func testReview_CancelledExpenseSaveBeforeSendPublishesNothing() async throws {
+        let expense = await cancellationExpenseFixture()
+        let task = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await sut.addExpenseAndSync(expense)
+        }
+        do { try await task.value; XCTFail("Cancelled save must fail") } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertTrue(sut.expenses.isEmpty)
+        let calls = await mockExpenseCloudService.currentUpsertInvocationCount()
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testReview_CancelledSuspendedExpenseSaveRemovesOwnedOptimisticRow() async throws {
+        let expense = await cancellationExpenseFixture()
+        await mockExpenseCloudService.setCancellationBeforeUpsertCommit(true)
+        await mockExpenseCloudService.suspendNextUpsert()
+        let task = Task { try await sut.addExpenseAndSync(expense) }
+        try await waitForSuspendedUpsert()
+        task.cancel()
+        await mockExpenseCloudService.resumeUpsert()
+        do { try await task.value; XCTFail("Cancelled save must fail") } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertTrue(sut.expenses.isEmpty)
+        await sut.loadRemoteData()
+        XCTAssertTrue(sut.expenses.isEmpty)
+        XCTAssertTrue(mockPersistence.storedData().expenses.isEmpty)
+    }
+
+    func testReview_CancelledPostCommitSaveAcceptsLaterAuthoritativeSnapshot() async throws {
+        let expense = await cancellationExpenseFixture()
+        await mockExpenseCloudService.suspendNextUpsertAfterCommit()
+        let task = Task { try await sut.addExpenseAndSync(expense) }
+        try await waitForSuspendedUpsert()
+        task.cancel()
+        await mockExpenseCloudService.resumeUpsert()
+        do { try await task.value; XCTFail("Cancelled save must fail") } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertTrue(sut.expenses.isEmpty, "An ambiguous response cannot report a completed save")
+        await sut.loadRemoteData()
+        XCTAssertEqual(sut.expenses.map(\.id), [expense.id], "Committed server state remains recoverable")
+        var newer = expense
+        newer.description = "Changed on another device"
+        await mockExpenseCloudService.addExpense(newer)
+        await sut.loadRemoteData()
+        XCTAssertEqual(sut.expenses.first?.description, newer.description, "Cancelled pending token must not pin an older payload")
+    }
+
+    func testReview_CancelledSavePreservesNewerAuthoritativeProjectionAndSettlement() async throws {
+        let expense = await cancellationExpenseFixture()
+        await mockExpenseCloudService.suspendNextUpsertAfterCommit()
+        let task = Task { try await sut.addExpenseAndSync(expense) }
+        try await waitForSuspendedUpsert()
+        let canonical = UUID()
+        var remote = Expense(id: expense.id, groupId: expense.groupId, description: expense.description, date: expense.date,
+            totalAmount: expense.totalAmount, paidByMemberId: expense.paidByMemberId,
+            involvedMemberIds: expense.involvedMemberIds, splits: expense.splits,
+            ownerEmail: expense.ownerEmail, ownerAccountId: expense.ownerAccountId,
+            financialIdentityMap: [expense.paidByMemberId: canonical])
+        remote.splits[0].isSettled = true
+        remote.isSettled = true
+        await mockExpenseCloudService.addExpense(remote)
+        await sut.loadRemoteData()
+        XCTAssertEqual(sut.expenses.first?.financialIdentityMap?[expense.paidByMemberId], canonical)
+        XCTAssertEqual(sut.expenses.first?.isSettled, false, "Authored optimistic fields still await acknowledgement")
+        task.cancel()
+        await mockExpenseCloudService.resumeUpsert()
+        do { try await task.value; XCTFail("Cancelled save must fail") } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(sut.expenses.first?.isSettled, true)
+        XCTAssertEqual(sut.expenses.first?.financialIdentityMap?[expense.paidByMemberId], canonical)
+    }
+
+    func testReview_CancelledOlderSaveCannotRollbackNewerExpenseEdit() async throws {
+        let expense = await cancellationExpenseFixture()
+        await mockExpenseCloudService.suspendNextUpsertAfterCommit()
+        let task = Task { try await sut.addExpenseAndSync(expense) }
+        try await waitForSuspendedUpsert()
+        var newer = expense
+        newer.description = "Newer local edit"
+        sut.updateExpense(newer)
+        for _ in 0..<100 {
+            if await mockExpenseCloudService.currentUpsertInvocationCount() >= 2 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        await Task.yield()
+        task.cancel()
+        await mockExpenseCloudService.resumeUpsert()
+        do { try await task.value; XCTFail("Superseded save must fail") } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(sut.expenses.first?.description, newer.description)
+        await sut.loadRemoteData()
+        XCTAssertEqual(sut.expenses.first?.description, newer.description)
+    }
+
+    func testReview_GroupRollbackPreservesNewerServerIdentityProjection() async throws {
+        let removed = GroupMember(name: "Removed")
+        let retained = GroupMember(name: "Retained")
+        let canonical = UUID()
+        let original = SpendingGroup(name: "Group", members: [sut.currentUser, removed, retained],
+            memberIdentityMap: [retained.id: retained.id])
+        sut.session = UserSession(account: UserAccount(id: "owner", email: "owner@example.test", displayName: "Owner"))
+        sut.groups = [original]
+        await mockGroupCloudService.addGroup(original)
+        await mockGroupCloudService.suspendNextMemberRemovals(1)
+        let removal = Task { try await sut.removeMemberFromGroup(groupId: original.id, memberId: removed.id) }
+        for _ in 0..<100 {
+            if await mockGroupCloudService.currentRemoveMemberInvocationCount() > 0 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let optimistic = try XCTUnwrap(sut.groups.first)
+        sut.groups = [SpendingGroup(id: optimistic.id, name: optimistic.name, members: optimistic.members,
+            createdAt: optimistic.createdAt, isDirect: optimistic.isDirect, isDebug: optimistic.isDebug,
+            memberIdentityMap: [retained.id: canonical])]
+        await mockGroupCloudService.setShouldFail(true)
+        await mockGroupCloudService.resumeNextMemberRemoval()
+        do { try await removal.value; XCTFail("Expected member removal failure") } catch {}
+        XCTAssertEqual(sut.groups.first?.members.map(\.id), original.members.map(\.id))
+        XCTAssertEqual(sut.groups.first?.memberIdentityMap?[retained.id], canonical)
+    }
+
+    func testReview_PendingAuthoredEditAdoptsProjectionAndLateSaveCannotRestoreOldMap() async throws {
+        let me = sut.currentUser.id
+        let placeholder = UUID()
+        let target = UUID()
+        let account = UserAccount(id: "projection-owner", email: "projection@example.test", displayName: "Owner", linkedMemberId: me)
+        sut.session = UserSession(account: account)
+        await mockAccountService.addAccount(account)
+        let initial = Expense(groupId: UUID(), description: "Before edit", totalAmount: 20,
+            paidByMemberId: me, involvedMemberIds: [me, placeholder],
+            splits: [ExpenseSplit(memberId: me, amount: 10), ExpenseSplit(memberId: placeholder, amount: 10)],
+            ownerEmail: account.email, ownerAccountId: account.id, financialIdentityMap: [me: me, placeholder: placeholder])
+        sut.expenses = [initial]
+        await mockExpenseCloudService.addExpense(initial)
+        var edited = initial
+        edited.description = "Pending authored edit"
+        await mockExpenseCloudService.configureCanonicalSaveResult(SavedExpenseResult(expense: edited, group: nil))
+        await mockExpenseCloudService.suspendNextUpsert()
+        sut.updateExpense(edited)
+        for _ in 0..<100 {
+            if await mockExpenseCloudService.currentUpsertInvocationCount() > 0 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let remote = Expense(id: initial.id, groupId: initial.groupId, description: initial.description, date: initial.date,
+            totalAmount: 20, paidByMemberId: me, involvedMemberIds: initial.involvedMemberIds, splits: initial.splits,
+            ownerEmail: account.email, ownerAccountId: account.id, financialIdentityMap: [me: me, placeholder: target])
+        await mockExpenseCloudService.addExpense(remote)
+        await mockAccountService.configureSnapshotGenerations(["merged-while-save-pending"])
+        await sut.loadRemoteData()
+        XCTAssertEqual(sut.expenses.first?.description, edited.description)
+        XCTAssertEqual(sut.expenses.first?.financialIdentityMap?[placeholder], target)
+        await mockExpenseCloudService.resumeUpsert()
+        for _ in 0..<100 {
+            await Task.yield()
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(sut.expenses.first?.description, edited.description)
+        XCTAssertEqual(sut.expenses.first?.financialIdentityMap?[placeholder], target, "Older mutation response cannot undo a newer complete projection")
+        var latest = remote
+        latest.description = edited.description
+        latest.splits[1].isSettled = true
+        await mockExpenseCloudService.addExpense(latest)
+        await sut.loadRemoteData()
+        XCTAssertEqual(sut.expenses.first?.splits[1].isSettled, true)
+    }
+
+    func testReview_OlderExpenseSaveCompletionCannotOverwriteNewerEdit() async throws {
+        let me = sut.currentUser.id
+        sut.session = UserSession(account: UserAccount(id: "owner", email: "owner@example.test", displayName: "Owner"))
+        let initial = Expense(groupId: UUID(), description: "Initial", totalAmount: 10, paidByMemberId: me,
+            involvedMemberIds: [me], splits: [ExpenseSplit(memberId: me, amount: 10)])
+        sut.expenses = [initial]
+        await mockExpenseCloudService.setUpsertDelaysNanoseconds([100_000_000, 0])
+        var first = initial
+        first.description = "Older edit"
+        sut.updateExpense(first)
+        for _ in 0..<100 {
+            if await mockExpenseCloudService.currentUpsertInvocationCount() > 0 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        var newer = initial
+        newer.description = "Newer edit"
+        sut.updateExpense(newer)
+        try await Task.sleep(nanoseconds: 180_000_000)
+        XCTAssertEqual(sut.expenses.first?.description, "Newer edit")
+    }
+
     func testReview_ExplicitLoginFailedIdentityShowsRecoveryInsteadOfEmptyRoot() async throws {
         let account = UserAccount(id: UUID().uuidString, email: "failed-identity@example.test", displayName: "Owner")
         await mockAccountService.addAccount(account)

@@ -21,6 +21,8 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var upsertDelaysNanoseconds: [UInt64] = []
     private var upsertInvocationCount = 0
     private var shouldSuspendUpsert = false
+    private var shouldSuspendAfterUpsertCommit = false
+    private var checksCancellationBeforeUpsertCommit = false
     private var upsertContinuation: CheckedContinuation<Void, Never>?
     private var settlementInvocationCount = 0
     private var queuedSettlementResponses: [QueuedSettlementResponse] = []
@@ -47,6 +49,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         }
         upsertInvocationCount += 1
         if shouldSuspendUpsert {
+            shouldSuspendUpsert = false
             await withCheckedContinuation { continuation in
                 upsertContinuation = continuation
             }
@@ -55,8 +58,13 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         if delay > 0 {
             try await Task.sleep(nanoseconds: delay)
         }
+        if checksCancellationBeforeUpsertCommit { try Task.checkCancellation() }
         expenses[expense.id] = expense
         participantsByExpenseId[expense.id] = participants
+        if shouldSuspendAfterUpsertCommit {
+            shouldSuspendAfterUpsertCommit = false
+            await withCheckedContinuation { upsertContinuation = $0 }
+        }
     }
 
     func fetchExpenses() async throws -> [Expense] {
@@ -168,6 +176,10 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         shouldSuspendUpsert = true
     }
 
+    func suspendNextUpsertAfterCommit() { shouldSuspendAfterUpsertCommit = true }
+    func setCancellationBeforeUpsertCommit(_ enabled: Bool) { checksCancellationBeforeUpsertCommit = enabled }
+    func isUpsertSuspended() -> Bool { upsertContinuation != nil }
+
     func resumeUpsert() {
         shouldSuspendUpsert = false
         upsertContinuation?.resume()
@@ -223,6 +235,8 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         upsertDelaysNanoseconds.removeAll()
         upsertInvocationCount = 0
         shouldSuspendUpsert = false
+        shouldSuspendAfterUpsertCommit = false
+        checksCancellationBeforeUpsertCommit = false
         upsertContinuation?.resume()
         upsertContinuation = nil
         settlementInvocationCount = 0

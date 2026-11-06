@@ -173,6 +173,51 @@ final class ConvexExpenseMoneyTransportTests: XCTestCase {
         try JSONDecoder().decode(type, from: Data(try XCTUnwrap(json).utf8))
     }
 
+    @MainActor
+    func testCanonicalSaveThenIdentityChangeAcceptsEveryNewCoordinatedSnapshot() async throws {
+        let account = UserAccount(id: "account-a", email: "a@example.test", displayName: "A", linkedMemberId: a)
+        let placeholder = b
+        let linkedFriend = c
+        let group = SpendingGroup(name: "Dinner", members: [GroupMember(id: a, name: "A"), GroupMember(id: placeholder, name: "Placeholder")])
+        let expense = Expense(groupId: group.id, description: "Saved before merge", totalAmount: 20, paidByMemberId: a,
+            involvedMemberIds: [a, placeholder], splits: [ExpenseSplit(memberId: a, amount: 10), ExpenseSplit(memberId: placeholder, amount: 10)],
+            ownerEmail: account.email, ownerAccountId: account.id, financialIdentityMap: [a: a, placeholder: placeholder])
+        let wire = ExpenseMoneyRecordingTransport(responses: [try savedJSON(expense, groupId: group.id)])
+        let cloud = ProjectionSnapshotExpenseService(adapter: ConvexExpenseService(transport: wire))
+        let accounts = MockAccountServiceForAppStore()
+        await accounts.addAccount(account)
+        let groups = MockGroupCloudServiceForAppStore()
+        await groups.addGroup(group)
+        let store = AppStore(persistence: MockPersistenceService(), accountService: accounts,
+            expenseCloudService: cloud, groupCloudService: groups,
+            linkRequestService: MockLinkRequestServiceForAppStore(), inviteLinkService: MockInviteLinkServiceForTests(), skipClerkInit: true)
+        store.session = UserSession(account: account)
+        store.currentUser = GroupMember(id: a, name: "A", isCurrentUser: true)
+        try await store.addExpenseAndSync(expense)
+        XCTAssertEqual(store.expenses.first?.financialIdentityMap?[placeholder], placeholder)
+
+        try await accounts.syncFriends(accountEmail: account.email, friends: [AccountFriend(memberId: linkedFriend, name: "B", aliasMemberIds: [placeholder])])
+        let mapped = Expense(id: expense.id, groupId: group.id, description: expense.description, date: expense.date,
+            totalAmount: 20, paidByMemberId: a, involvedMemberIds: expense.involvedMemberIds, splits: expense.splits,
+            ownerEmail: account.email, ownerAccountId: account.id, financialIdentityMap: [a: a, placeholder: linkedFriend])
+        await cloud.setSnapshot(mapped)
+        for generation in 1...3 {
+            await accounts.configureSnapshotGenerations(["merged-\(generation)"])
+            await store.loadRemoteData()
+            XCTAssertEqual(store.expenses.first?.financialIdentityMap?[placeholder], linkedFriend)
+            XCTAssertEqual(store.balanceByCurrency(forFriend: GroupMember(id: linkedFriend, name: "B"))["USD"], 10)
+        }
+        var remotelySettled = mapped
+        remotelySettled.splits[1].isSettled = true
+        await cloud.setSnapshot(remotelySettled)
+        await accounts.configureSnapshotGenerations(["settled-by-second-device"])
+        await store.loadRemoteData()
+        XCTAssertEqual(store.expenses.first?.splits[1].isSettled, true)
+        XCTAssertEqual(store.balanceByCurrency(forFriend: GroupMember(id: linkedFriend, name: "B"))["USD"], 0)
+        let calls = await wire.recordedCalls()
+        XCTAssertEqual(calls.map(\.name), ["expenses:createV2"])
+    }
+
     private func savedJSON(_ expense: Expense, groupId: UUID) throws -> Data {
         var row: [String: Any] = [
             "id": expense.id.uuidString, "group_id": groupId.uuidString,
@@ -188,5 +233,22 @@ final class ConvexExpenseMoneyTransportTests: XCTestCase {
         let group: [String: Any] = ["id": groupId.uuidString, "name": "Canonical", "created_at": 100, "members": [], "is_direct": expense.contextKind == .direct]
         return try JSONSerialization.data(withJSONObject: ["expense": row, "group": group])
     }
+}
+/// Keeps the actual production save/DTO path while supplying deterministic full snapshots.
+private actor ProjectionSnapshotExpenseService: ExpenseCloudService {
+    let adapter: ConvexExpenseService
+    var snapshot: Expense?
+    init(adapter: ConvexExpenseService) { self.adapter = adapter }
+    func setSnapshot(_ expense: Expense) { snapshot = expense }
+    func saveExpense(_ expense: Expense, participants: [ExpenseParticipant], expectedAccountId: String) async throws -> SavedExpenseResult {
+        try await adapter.saveExpense(expense, participants: participants, expectedAccountId: expectedAccountId)
+    }
+    func fetchExpenses() async throws -> [Expense] { snapshot.map { [$0] } ?? [] }
+    func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws { throw PayBackError.networkUnavailable }
+    func setSettlementState(expenseId: UUID, memberIds: Set<UUID>, settled: Bool) async throws -> Expense { throw PayBackError.networkUnavailable }
+    func upsertDebugExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {}
+    func deleteExpense(_ id: UUID) async throws {}
+    func deleteDebugExpenses() async throws {}
+    func clearLegacyMockExpenses() async throws {}
 }
 #endif
