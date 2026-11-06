@@ -19,6 +19,20 @@ protocol AccountService: Actor {
     func uploadProfileImage(_ data: Data) async throws -> String
     func uploadProfileImage(_ data: Data, expectedAccountId: String) async throws -> String
     func clearFriends() async throws
+    func bootstrapMemberIdentity(accountId: String) async throws -> UUID
+    func pendingIdentityOperation() async throws -> IdentityOperationResult?
+    func deleteFriendAcknowledged(memberId: UUID, linked: Bool, expectedAccountId: String) async throws -> DeleteFriendResult
+    func resumePendingFriendDeletion(expectedAccountId: String) async throws
+    func cancelPendingFriendDeletion(expectedAccountId: String) async throws
+    func snapshotGeneration() async throws -> String?
+    func resumeIdentityOperation(_ operationId: String, expectedAccountId: String) async throws -> IdentityOperationResult
+    func beginFriendMerge(source: UUID, target: UUID, expectedAccountId: String) async throws -> IdentityOperationResult
+
+    func clearFriends(expectedAccountId: String) async throws
+    func updateProfile(colorHex: String?, imageUrl: String?, expectedAccountId: String) async throws -> String?
+    func updateSettings(preferNicknames: Bool, preferWholeNames: Bool, expectedAccountId: String) async throws
+    func selfDeleteAccount(expectedAccountId: String) async throws
+    func selfDeleteAccount(expectedAccountEmail: String) async throws
 
     /// Checks if the user is authenticated on the backend
     func checkAuthentication() async throws -> Bool
@@ -68,7 +82,40 @@ protocol AccountService: Actor {
 }
 
 extension AccountService {
+    func clearFriends(expectedAccountId: String) async throws { try await clearFriends() }
+    func updateProfile(colorHex: String?, imageUrl: String?, expectedAccountId: String) async throws -> String? {
+        try await updateProfile(colorHex: colorHex, imageUrl: imageUrl)
+    }
+    func updateSettings(preferNicknames: Bool, preferWholeNames: Bool, expectedAccountId: String) async throws {
+        try await updateSettings(preferNicknames: preferNicknames, preferWholeNames: preferWholeNames)
+    }
+    func selfDeleteAccount(expectedAccountId: String) async throws { try await selfDeleteAccount() }
+    func selfDeleteAccount(expectedAccountEmail: String) async throws { try await selfDeleteAccount() }
+
     func clearFriends() async throws {}
+    func bootstrapMemberIdentity(accountId: String) async throws -> UUID {
+        let memberId = UUID()
+        try await updateLinkedMember(accountId: accountId, memberId: memberId)
+        return memberId
+    }
+    func snapshotGeneration() async throws -> String? { nil }
+    func pendingIdentityOperation() async throws -> IdentityOperationResult? { nil }
+    func resumePendingFriendDeletion(expectedAccountId: String) async throws {}
+    func cancelPendingFriendDeletion(expectedAccountId: String) async throws {}
+    func deleteFriendAcknowledged(memberId: UUID, linked: Bool, expectedAccountId: String) async throws -> DeleteFriendResult {
+        if linked {
+            try await deleteLinkedFriend(memberId: memberId)
+            return DeleteFriendResult(groupsModified: 0, expensesDeleted: 0, expensesModified: 0, aliasesDeleted: 0)
+        }
+        return try await deleteUnlinkedFriend(memberId: memberId)
+    }
+    func resumeIdentityOperation(_ operationId: String, expectedAccountId: String) async throws -> IdentityOperationResult {
+        throw PayBackError.underlying(message: "This operation cannot resume with the current service.")
+    }
+    func beginFriendMerge(source: UUID, target: UUID, expectedAccountId: String) async throws -> IdentityOperationResult {
+        try await mergeUnlinkedFriends(friendId1: target.uuidString, friendId2: source.uuidString)
+        return IdentityOperationResult(operationId: "", status: "complete")
+    }
 
     func uploadProfileImage(_ data: Data, expectedAccountId: String) async throws -> String {
         try await uploadProfileImage(data)
@@ -278,4 +325,26 @@ actor MockAccountService: AccountService {
         )
     }
     #endif
+}
+
+/// Identity-neutral acknowledgement. Aliases are loaded only with a complete financial snapshot.
+public struct IdentityOperationResult: Decodable, Sendable {
+    public let operationId: String
+    public let status: String
+    public let error: String?
+    public let outcome: String?
+    public var legacyResult: LinkAcceptResult? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case operationId = "operation_id"
+        case status, error, outcome
+    }
+
+    init(operationId: String, status: String, error: String? = nil, outcome: String? = nil, legacyResult: LinkAcceptResult? = nil) {
+        self.operationId = operationId
+        self.status = status
+        self.error = error
+        self.outcome = outcome
+        self.legacyResult = legacyResult
+    }
 }

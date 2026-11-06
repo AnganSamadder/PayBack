@@ -32,6 +32,67 @@ actor MockAccountServiceForAppStore: AccountService {
     private var profileImageUploadInvocationCount = 0
     private var profileImageUploadExpectedAccountIds: [String] = []
 
+    private var snapshotGenerations: [String] = []
+    private var pendingOperation: IdentityOperationResult?
+    private var resumedOperation: IdentityOperationResult?
+    private var operationResumeCount = 0
+    private var accountAfterIdentityResume: UserAccount?
+    private var friendDeletionResumeError: PayBackError?
+    private var failLookupAfterDeletionResume = false
+    func configureFriendDeletionResumeFailure(_ error: PayBackError?) { friendDeletionResumeError = error }
+    func configureLookupFailureAfterDeletionResume() { failLookupAfterDeletionResume = true }
+    func resumePendingFriendDeletion(expectedAccountId: String) async throws {
+        if let friendDeletionResumeError { throw friendDeletionResumeError }
+        if failLookupAfterDeletionResume { shouldFail = true }
+    }
+    private var suspendBootstrap = false
+    private var bootstrapContinuation: CheckedContinuation<Void, Never>?
+    private var bootstrapWaiters: [CheckedContinuation<Void, Never>] = []
+    func suspendNextBootstrap() { suspendBootstrap = true }
+    func waitUntilBootstrapSuspends() async {
+        if bootstrapContinuation != nil { return }
+        await withCheckedContinuation { bootstrapWaiters.append($0) }
+    }
+    func resumeBootstrap() {
+        bootstrapContinuation?.resume()
+        bootstrapContinuation = nil
+    }
+
+    func configureSnapshotGenerations(_ values: [String]) { snapshotGenerations = values }
+    func snapshotGeneration() async throws -> String? {
+        guard !snapshotGenerations.isEmpty else { return nil }
+        if snapshotGenerations.count == 1 { return snapshotGenerations[0] }
+        return snapshotGenerations.removeFirst()
+    }
+    func configurePendingOperation(_ pending: IdentityOperationResult?, resumed: IdentityOperationResult?) {
+        pendingOperation = pending
+        resumedOperation = resumed
+    }
+    func pendingIdentityOperation() async throws -> IdentityOperationResult? { pendingOperation }
+    func resumeIdentityOperation(_ operationId: String, expectedAccountId: String) async throws -> IdentityOperationResult {
+        operationResumeCount += 1
+        guard let resumedOperation else { throw PayBackError.networkUnavailable }
+        pendingOperation = resumedOperation.status == "complete" ? nil : resumedOperation
+        if pendingOperation == nil, let accountAfterIdentityResume { accounts[accountAfterIdentityResume.email] = accountAfterIdentityResume }
+        return resumedOperation
+    }
+    func identityResumeCount() -> Int { operationResumeCount }
+    func configureAccountAfterIdentityResume(_ account: UserAccount) { accountAfterIdentityResume = account }
+    func bootstrapMemberIdentity(accountId: String) async throws -> UUID {
+        guard pendingOperation == nil else { throw PayBackError.underlying(message: "IDENTITY_OPERATION_PENDING") }
+        if suspendBootstrap {
+            suspendBootstrap = false
+            await withCheckedContinuation { continuation in
+                bootstrapContinuation = continuation
+                bootstrapWaiters.forEach { $0.resume() }
+                bootstrapWaiters.removeAll()
+            }
+        }
+        let id = UUID()
+        try await updateLinkedMember(accountId: accountId, memberId: id)
+        return id
+    }
+
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return trimmed
@@ -159,6 +220,18 @@ actor MockAccountServiceForAppStore: AccountService {
     }
 
     func reset() {
+        snapshotGenerations = []
+        pendingOperation = nil
+        resumedOperation = nil
+        operationResumeCount = 0
+        accountAfterIdentityResume = nil
+        friendDeletionResumeError = nil
+        failLookupAfterDeletionResume = false
+        suspendBootstrap = false
+        bootstrapContinuation?.resume()
+        bootstrapContinuation = nil
+        bootstrapWaiters.forEach { $0.resume() }
+        bootstrapWaiters.removeAll()
         accounts.removeAll()
         friends.removeAll()
         friendSyncHistory.removeAll()

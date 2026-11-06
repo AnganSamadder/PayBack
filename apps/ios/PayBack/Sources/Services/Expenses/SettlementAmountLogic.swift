@@ -23,6 +23,17 @@ enum SettlementAmountLogic {
         }
     }
 
+    static func totalToSettle(
+        expenses: [Expense],
+        isCurrentUserInExpense: (UUID, Expense) -> Bool
+    ) -> Double {
+        expenses.reduce(0) { total, expense in
+            total + expense.splits
+                .filter { isCurrentUserInExpense($0.memberId, expense) && !$0.isSettled }
+                .reduce(0) { $0 + $1.amount }
+        }
+    }
+
     static func identitySummary(
         for expense: Expense,
         matchesIdentity: (UUID) -> Bool

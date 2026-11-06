@@ -26,7 +26,7 @@ struct MergeExistingFriendSheet: View {
         friends.map { friend in
             MergeExistingFriendBalanceRow(
                 friend: friend,
-                balance: store.netBalance(forFriend: friend.asGroupMember)
+                balance: displayBalance(for: friend.asGroupMember)
             )
         }
         .sorted { lhs, rhs in
@@ -191,7 +191,7 @@ struct MergeExistingFriendSheet: View {
                 Spacer(minLength: 8)
 
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(balanceLabel(for: row.balance))
+                    Text(ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: row.friend.asGroupMember), unknownExpenses: store.unknownCurrencyExpenses(forFriend: row.friend.asGroupMember)))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(balanceColor(for: row.balance))
 
@@ -234,14 +234,10 @@ struct MergeExistingFriendSheet: View {
         .padding(.top, AppMetrics.emptyStateTopPadding)
     }
 
-    private func balanceLabel(for balance: Double) -> String {
-        if abs(balance) < 0.01 {
-            return "Settled"
-        }
-
-        let currencyCode = Locale.current.currency?.identifier ?? "USD"
-        let formatted = abs(balance).formatted(.currency(code: currencyCode))
-        return balance >= 0 ? "Owes you \(formatted)" : "You owe \(formatted)"
+    private func displayBalance(for member: GroupMember) -> Double {
+        let balances = store.balanceByCurrency(forFriend: member)
+        guard balances.count == 1, store.unknownCurrencyExpenses(forFriend: member).isEmpty else { return 0 }
+        return balances.values.first ?? 0
     }
 
     private func balanceColor(for balance: Double) -> Color {

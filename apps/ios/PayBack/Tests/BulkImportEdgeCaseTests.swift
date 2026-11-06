@@ -50,7 +50,9 @@ final class BulkImportEdgeCaseTests: XCTestCase {
 
         let result = await DataImportService.performBulkImport(
             from: parsedData,
-            accountService: mockAccountService
+            accountService: mockAccountService,
+            expectedAccountID: "test-account", expectedAccountEmail: "test@example.test",
+            isCurrent: { true }
         )
 
         guard case .success(let summary) = result else {
@@ -77,7 +79,9 @@ final class BulkImportEdgeCaseTests: XCTestCase {
 
         let result = await DataImportService.performBulkImport(
             from: parsedData,
-            accountService: mockAccountService
+            accountService: mockAccountService,
+            expectedAccountID: "test-account", expectedAccountEmail: "test@example.test",
+            isCurrent: { true }
         )
 
         guard case .success = result else {
@@ -100,7 +104,9 @@ final class BulkImportEdgeCaseTests: XCTestCase {
 
         let result = await DataImportService.performBulkImport(
             from: parsedData,
-            accountService: mockAccountService
+            accountService: mockAccountService,
+            expectedAccountID: "test-account", expectedAccountEmail: "test@example.test",
+            isCurrent: { true }
         )
 
         guard case .success = result else {
@@ -121,7 +127,9 @@ final class BulkImportEdgeCaseTests: XCTestCase {
 
         let result = await DataImportService.performBulkImport(
             from: parsedData,
-            accountService: mockAccountService
+            accountService: mockAccountService,
+            expectedAccountID: "test-account", expectedAccountEmail: "test@example.test",
+            isCurrent: { true }
         )
 
         guard case .success = result else {
@@ -167,7 +175,9 @@ final class BulkImportEdgeCaseTests: XCTestCase {
 
         let result = await DataImportService.performBulkImport(
             from: parsedData,
-            accountService: mockAccountService
+            accountService: mockAccountService,
+            expectedAccountID: "test-account", expectedAccountEmail: "test@example.test",
+            isCurrent: { true }
         )
 
         guard case .success = result else {
@@ -199,7 +209,9 @@ final class BulkImportEdgeCaseTests: XCTestCase {
 
         let result = await DataImportService.performBulkImport(
             from: parsedData,
-            accountService: mockAccountService
+            accountService: mockAccountService,
+            expectedAccountID: "test-account", expectedAccountEmail: "test@example.test",
+            isCurrent: { true }
         )
 
         guard case .success = result else {
@@ -224,7 +236,9 @@ final class BulkImportEdgeCaseTests: XCTestCase {
 
          let result = await DataImportService.performBulkImport(
              from: parsedData,
-             accountService: mockAccountService
+             accountService: mockAccountService,
+            expectedAccountID: "test-account", expectedAccountEmail: "test@example.test",
+            isCurrent: { true }
          )
 
          guard case .success = result else { return }

@@ -16,6 +16,10 @@ public protocol LinkRequestService: Sendable {
         targetMemberName: String
     ) async throws -> LinkRequest
 
+    func createLinkRequest(requestId: UUID, recipientEmail: String, targetMemberId: UUID, targetMemberName: String, expectedAccountId: String) async throws -> LinkRequest
+    func declineLinkRequest(_ requestId: UUID, expectedAccountId: String) async throws
+    func cancelLinkRequest(_ requestId: UUID, expectedAccountId: String) async throws
+
     /// Fetches all incoming link requests for the current user
     func fetchIncomingRequests() async throws -> [LinkRequest]
 
@@ -26,6 +30,7 @@ public protocol LinkRequestService: Sendable {
     func fetchPreviousRequests() async throws -> [LinkRequest]
 
     /// Accepts a link request and links the account to the member
+    func beginLinkAcceptance(_ requestId: UUID, mergeLocalFriendMemberId: UUID?, expectedAccountId: String) async throws -> IdentityOperationResult
     func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult
 
     /// Declines a link request
@@ -36,6 +41,18 @@ public protocol LinkRequestService: Sendable {
 }
 
 public extension LinkRequestService {
+    func createLinkRequest(requestId: UUID, recipientEmail: String, targetMemberId: UUID, targetMemberName: String, expectedAccountId: String) async throws -> LinkRequest {
+        try await createLinkRequest(requestId: requestId, recipientEmail: recipientEmail, targetMemberId: targetMemberId, targetMemberName: targetMemberName)
+    }
+    func declineLinkRequest(_ requestId: UUID, expectedAccountId: String) async throws { try await declineLinkRequest(requestId) }
+    func cancelLinkRequest(_ requestId: UUID, expectedAccountId: String) async throws { try await cancelLinkRequest(requestId) }
+
+    func beginLinkAcceptance(_ requestId: UUID, mergeLocalFriendMemberId: UUID?, expectedAccountId: String) async throws -> IdentityOperationResult {
+        guard mergeLocalFriendMemberId == nil else { throw PayBackError.linkInvalid }
+        let result = try await acceptLinkRequest(requestId)
+        return IdentityOperationResult(operationId: "", status: "complete", legacyResult: result)
+    }
+
     func createLinkRequest(
         recipientEmail: String,
         targetMemberId: UUID,

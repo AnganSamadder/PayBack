@@ -4,6 +4,12 @@ import Combine
 #if !PAYBACK_CI_NO_CONVEX
 import ConvexMobile
 
+private struct ConvexLinkRequestsPageDTO: Decodable {
+    let page: [ConvexLinkRequestDTO]
+    let continueCursor: String
+    let isDone: Bool
+}
+
 /// Manages real-time Convex subscriptions and publishes updates to the UI.
 /// This is the single source of truth for synced data.
 @MainActor
@@ -103,62 +109,15 @@ final class ConvexSyncManager: ObservableObject {
             await self?.runExpensesSyncLoop(generation: generation)
         }
 
-        // Subscribe to friends
-        friendsTask = Task { [weak self] in
-            guard let self = self else { return }
-            do {
-                for try await dtos in self.client.subscribe(to: "friends:list", yielding: [ConvexAccountFriendDTO].self).values {
-                    #if DEBUG
-                    print("[ConvexSyncManager] Received \(dtos.count) friends from Convex")
-                    #endif
-                    try self.ensureCanPublish(generation: generation)
-                    self.friends = dtos.compactMap { $0.toAccountFriend() }
-                    self.clearSyncError(for: .friends)
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                self.recordSyncError(error, for: .friends)
-            }
-        }
-
-        // Subscribe to incoming requests
-        incomingRequestsTask = Task { [weak self] in
-            guard let self = self else { return }
-            do {
-                for try await dtos in self.client.subscribe(to: "linkRequests:listIncoming", yielding: [ConvexLinkRequestDTO].self).values {
-                    try self.ensureCanPublish(generation: generation)
-                    self.incomingLinkRequests = dtos.compactMap { $0.toLinkRequest() }
-                    self.clearSyncError(for: .incomingLinkRequests)
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                self.recordSyncError(error, for: .incomingLinkRequests)
-            }
-        }
-
-        // Subscribe to outgoing requests
-        outgoingRequestsTask = Task { [weak self] in
-            guard let self = self else { return }
-            do {
-                for try await dtos in self.client.subscribe(to: "linkRequests:listOutgoing", yielding: [ConvexLinkRequestDTO].self).values {
-                    try self.ensureCanPublish(generation: generation)
-                    self.outgoingLinkRequests = dtos.compactMap { $0.toLinkRequest() }
-                    self.clearSyncError(for: .outgoingLinkRequests)
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                self.recordSyncError(error, for: .outgoingLinkRequests)
-            }
-        }
+        friendsTask = Task { [weak self] in await self?.runFriendsSyncLoop(generation: generation) }
+        incomingRequestsTask = Task { [weak self] in await self?.runRequestSyncLoop(incoming: true, generation: generation) }
+        outgoingRequestsTask = Task { [weak self] in await self?.runRequestSyncLoop(incoming: false, generation: generation) }
 
         // Subscribe to invite tokens
         inviteTokensTask = Task { [weak self] in
             guard let self = self else { return }
             do {
-                for try await dtos in self.client.subscribe(to: "inviteTokens:listByCreator", yielding: [ConvexInviteTokenDTO].self).values {
+                for try await dtos in self.client.subscribe(to: "inviteTokens:listByCreator", with: ["financial_contract_version": 2.0], yielding: [ConvexInviteTokenDTO].self).values {
                     try self.ensureCanPublish(generation: generation)
                     self.activeInviteTokens = dtos.compactMap { $0.toInviteToken() }
                     self.clearSyncError(for: .inviteTokens)
@@ -211,6 +170,54 @@ final class ConvexSyncManager: ObservableObject {
     func restartSync() {
         stopSync()
         startSync()
+    }
+
+    private func runFriendsSyncLoop(generation: UInt64) async {
+        var failures = 0
+        while !Task.isCancelled, syncGeneration.isCurrent(generation) {
+            do {
+                for try await dtos in client.subscribe(to: "friends:list", with: ["financial_contract_version": 2.0], yielding: [ConvexAccountFriendDTO].self).values {
+                    try ensureCanPublish(generation: generation)
+                    friends = dtos.compactMap { $0.toAccountFriend() }
+                    clearSyncError(for: .friends)
+                    failures = 0
+                }
+                throw ConvexRevisionedSyncError.streamEndedWithoutValue
+            } catch is CancellationError { return }
+            catch {
+                guard syncGeneration.isCurrent(generation) else { return }
+                recordSyncError(error, for: .friends)
+                failures += 1
+                do { try await Task.sleep(nanoseconds: ConvexSyncRetryPolicy.delayNanoseconds(afterFailureCount: failures)) }
+                catch { return }
+            }
+        }
+    }
+
+    private func runRequestSyncLoop(incoming: Bool, generation: UInt64) async {
+        let query = incoming ? "linkRequests:listIncomingPage" : "linkRequests:listOutgoingPage"
+        let channel: ConvexSyncChannel = incoming ? .incomingLinkRequests : .outgoingLinkRequests
+        let service = ConvexLinkRequestService(client: client)
+        var failures = 0
+        while !Task.isCancelled, syncGeneration.isCurrent(generation) {
+            do {
+                for try await _ in client.subscribe(to: query, with: ["cursor": nil, "numItems": 50.0, "financial_contract_version": 2.0], yielding: ConvexLinkRequestsPageDTO.self).values {
+                    let requests = incoming ? try await service.fetchIncomingRequests() : try await service.fetchOutgoingRequests()
+                    try ensureCanPublish(generation: generation)
+                    if incoming { incomingLinkRequests = requests } else { outgoingLinkRequests = requests }
+                    clearSyncError(for: channel)
+                    failures = 0
+                }
+                throw ConvexRevisionedSyncError.streamEndedWithoutValue
+            } catch is CancellationError { return }
+            catch {
+                guard syncGeneration.isCurrent(generation) else { return }
+                recordSyncError(error, for: channel)
+                failures += 1
+                do { try await Task.sleep(nanoseconds: ConvexSyncRetryPolicy.delayNanoseconds(afterFailureCount: failures)) }
+                catch { return }
+            }
+        }
     }
 
     private func runGroupsSyncLoop(generation: UInt64) async {
@@ -303,7 +310,9 @@ final class ConvexSyncManager: ObservableObject {
         generation: UInt64,
         onPublish: () -> Void
     ) async throws {
-        let args = ConvexRevisionedSync.groupArguments(cursor: nil, expectedRevision: nil)
+        // This subscription only triggers a complete paged refresh. A minimal
+        // trigger page must not prevent the adaptive snapshot reader from running.
+        let args = ConvexRevisionedSync.groupArguments(cursor: nil, expectedRevision: nil, numItems: 1)
         for try await _ in client.subscribe(
             to: "groups:listV2",
             with: args,
@@ -322,6 +331,7 @@ final class ConvexSyncManager: ObservableObject {
     private func consumeLegacyGroups(generation: UInt64) async throws {
         for try await groupDTOs in client.subscribe(
             to: "groups:list",
+            with: ["financial_contract_version": 2.0],
             yielding: [ConvexGroupDTO].self
         ).values {
             try Task.checkCancellation()
@@ -370,6 +380,7 @@ final class ConvexSyncManager: ObservableObject {
     private func consumeLegacyExpenses(generation: UInt64) async throws {
         for try await expenseDTOs in client.subscribe(
             to: "expenses:list",
+            with: ["financial_contract_version": 2.0],
             yielding: [ConvexExpenseDTO].self
         ).values {
             try Task.checkCancellation()
@@ -411,10 +422,7 @@ final class ConvexSyncManager: ObservableObject {
         defer { isFetchingMoreGroups = false }
 
         do {
-            let args: [String: ConvexEncodable?] = [
-                "cursor": nextGroupsCursor,
-                "limit": limit
-            ]
+            let args = ConvexTransportArguments.page(cursor: nextGroupsCursor, limit: limit)
 
             for try await result in client.subscribe(to: "groups:listPaginated", with: args, yielding: ConvexPaginatedGroupsDTO.self).values {
                 let preparedGroups = try ConvexRevisionedSync.prepareGroups(result.items)
@@ -458,14 +466,8 @@ final class ConvexSyncManager: ObservableObject {
         defer { groupIsFetchingExpenses[groupId] = false }
 
         do {
-            var args: [String: ConvexEncodable?] = [
-                "groupId": convexDocId,
-                "limit": limit
-            ]
-
-            if let cursor = groupExpensesCursors[groupId] {
-                args["cursor"] = cursor
-            }
+            var args = ConvexTransportArguments.page(cursor: groupExpensesCursors[groupId], limit: limit)
+            args["groupId"] = convexDocId
 
             for try await result in client.subscribe(to: "expenses:listByGroupPaginated", with: args, yielding: ConvexPaginatedExpensesDTO.self).values {
                 let newExpenses = result.items.map { $0.toExpense() }

@@ -353,15 +353,14 @@ final class DataImportServiceParsingTests: XCTestCase {
         XCTAssertNotNil(data) // Should not throw
     }
 
-    func testParseExport_invalidFriendData_skipped() throws {
+    func testParseExport_invalidFriendData_rejected() throws {
         let export = """
         ===PAYBACK_EXPORT===
         [FRIENDS]
         invalid-uuid,Alice,Ali,true,account-123,alice@example.com
         ===END_PAYBACK_EXPORT===
         """
-        let data = try DataImportService.parseExport(export)
-        XCTAssertTrue(data.friends.isEmpty) // Invalid friend skipped
+        XCTAssertThrowsError(try DataImportService.parseExport(export))
     }
 
     func testParseExport_quotedCSVValues() throws {

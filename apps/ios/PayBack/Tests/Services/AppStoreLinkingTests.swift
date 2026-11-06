@@ -1,6 +1,267 @@
 import XCTest
 @testable import PayBack
 
+extension AppStoreLinkingTests {
+    func testReview_ExplicitLoginFailedIdentityShowsRecoveryInsteadOfEmptyRoot() async throws {
+        let account = UserAccount(id: UUID().uuidString, email: "failed-identity@example.test", displayName: "Owner")
+        await mockAccountService.addAccount(account)
+        await mockAccountService.configurePendingOperation(IdentityOperationResult(operationId: UUID().uuidString, status: "failed"), resumed: nil)
+        do { try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName); XCTFail("Expected recovery failure") }
+        catch {}
+        XCTAssertNil(sut.session)
+        XCTAssertFalse(sut.isCheckingAuth)
+        XCTAssertTrue(sut.isAuthenticationSessionRecoveryBlocking)
+        XCTAssertNotNil(sut.authenticationSessionRecoveryMessage)
+        XCTAssertFalse(sut.canPresentAuthenticationFlow, "Provider sign-in remains available for recovery")
+    }
+
+    func testReview_ExplicitLoginFailedDeletionOrRefreshShowsRecovery() async throws {
+        for failsDeletion in [true, false] {
+            await mockAccountService.reset()
+            let account = UserAccount(id: UUID().uuidString, email: "failed-resume@example.test", displayName: "Owner")
+            await mockAccountService.addAccount(account)
+            if failsDeletion { await mockAccountService.configureFriendDeletionResumeFailure(.networkUnavailable) }
+            else { await mockAccountService.configureLookupFailureAfterDeletionResume() }
+            do { try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName); XCTFail("Expected recovery failure") }
+            catch {}
+            XCTAssertNil(sut.session)
+            XCTAssertFalse(sut.isCheckingAuth)
+            XCTAssertTrue(sut.isAuthenticationSessionRecoveryBlocking)
+        }
+    }
+
+    func testReview_ExplicitLoginFailedInitialHydrationShowsRecovery() async throws {
+        let account = UserAccount(id: UUID().uuidString, email: "failed-hydration@example.test", displayName: "Owner", linkedMemberId: UUID())
+        await mockAccountService.addAccount(account)
+        await mockExpenseCloudService.setShouldFail(true)
+        do { try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName); XCTFail("Expected hydration recovery") }
+        catch {}
+        XCTAssertNil(sut.session)
+        XCTAssertFalse(sut.isCheckingAuth)
+        XCTAssertTrue(sut.isAuthenticationSessionRecoveryBlocking)
+    }
+
+    func testReview_ExplicitLoginBootstrapCompletionCannotOverwriteNewAccount() async throws {
+        let first = UserAccount(id: "bootstrap-first", email: "first@example.test", displayName: "First")
+        await mockAccountService.addAccount(first)
+        await mockAccountService.suspendNextBootstrap()
+        let login = Task { try await sut.completeAuthenticationAndWait(email: first.email, name: first.displayName) }
+        await mockAccountService.waitUntilBootstrapSuspends()
+        XCTAssertTrue(sut.isCheckingAuth, "Temporary neutral session must not expose RootView")
+        let secondID = UUID()
+        let second = UserAccount(id: "bootstrap-second", email: "second@example.test", displayName: "Second", linkedMemberId: secondID)
+        sut.session = UserSession(account: second)
+        sut.currentUser = GroupMember(id: secondID, name: "Second", isCurrentUser: true)
+        await mockAccountService.resumeBootstrap()
+        do { try await login.value; XCTFail("Stale login must not succeed") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(sut.session?.account.id, second.id)
+        XCTAssertEqual(sut.currentUser.id, secondID)
+        XCTAssertTrue(sut.isCheckingAuth, "Old login must not dismiss the new account loading state")
+        XCTAssertNil(sut.authenticationSessionRecoveryMessage)
+    }
+
+    func testReview_ExplicitLoginResumesPendingIdentityBeforeBootstrap() async throws {
+        let neutralAccount = UserAccount(id: UUID().uuidString, email: "recover-login@example.com", displayName: "Owner")
+        var completedAccount = neutralAccount
+        completedAccount.linkedMemberId = UUID()
+        await mockAccountService.addAccount(neutralAccount)
+        await mockAccountService.configurePendingOperation(
+            IdentityOperationResult(operationId: "pending-login", status: "pending"),
+            resumed: IdentityOperationResult(operationId: "pending-login", status: "complete")
+        )
+        await mockAccountService.configureAccountAfterIdentityResume(completedAccount)
+
+        try await sut.completeAuthenticationAndWait(email: neutralAccount.email, name: neutralAccount.displayName)
+
+        XCTAssertEqual(sut.session?.account.linkedMemberId, completedAccount.linkedMemberId)
+        let resumeCount = await mockAccountService.identityResumeCount()
+        XCTAssertEqual(resumeCount, 1)
+    }
+
+    func testReview_FirstExpenseCommitsServerSelectedLedger() async throws {
+        let account = UserAccount(id: "canonical-save-owner", email: "save@example.com", displayName: "Owner", linkedMemberId: sut.currentUser.id)
+        sut.session = UserSession(account: account)
+        let friend = GroupMember(name: "Alex")
+        sut.friends = [AccountFriend(memberId: friend.id, name: friend.name, status: "friend")]
+        let draft = SpendingGroup(name: "Alex", members: [sut.currentUser, friend], isDirect: true)
+        let canonical = SpendingGroup(name: "Alex", members: draft.members, isDirect: true)
+        let expense = Expense(groupId: draft.id, description: "Dinner", totalAmount: 20, paidByMemberId: sut.currentUser.id,
+                              involvedMemberIds: draft.members.map(\.id), splits: draft.members.map { ExpenseSplit(memberId: $0.id, amount: 10) })
+        let saved = Expense(id: expense.id, groupId: canonical.id, description: expense.description,
+                            totalAmount: expense.totalAmount, paidByMemberId: expense.paidByMemberId,
+                            involvedMemberIds: expense.involvedMemberIds, splits: expense.splits)
+        await mockExpenseCloudService.configureCanonicalSaveResult(SavedExpenseResult(expense: saved, group: canonical))
+
+        try await sut.addExpenseAndSync(expense, directExpenseLedger: draft)
+
+        XCTAssertEqual(sut.expenses.first?.groupId, canonical.id)
+        XCTAssertEqual(sut.groups.map(\.id), [canonical.id])
+        let expectedActors = await mockExpenseCloudService.expectedSaveActors()
+        XCTAssertEqual(expectedActors, [account.id])
+    }
+
+    func testReview_BlockedFinancialRefreshDoesNotPublishNewIdentity() async throws {
+        let selfId = UUID()
+        let canonical = UUID()
+        let alias = UUID()
+        let account = UserAccount(id: "generation-owner", email: "generation@example.com", displayName: "Owner", linkedMemberId: selfId)
+        sut.session = UserSession(account: account)
+        sut.currentUser = GroupMember(id: selfId, name: "Owner", isCurrentUser: true)
+        let oldFriend = AccountFriend(memberId: canonical, name: "Alex", status: "friend")
+        sut.processFriendsUpdate([oldFriend])
+        let expense = Expense(groupId: UUID(), description: "Mixed settlement history", totalAmount: 25,
+                              paidByMemberId: selfId, involvedMemberIds: [selfId, canonical, alias],
+                              splits: [ExpenseSplit(memberId: canonical, amount: 10, isSettled: true),
+                                       ExpenseSplit(memberId: alias, amount: 15, isSettled: false)])
+        sut.expenses = [expense]
+        var newFriend = oldFriend
+        newFriend.aliasMemberIds = [alias]
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [newFriend])
+        var updated = account
+        updated.equivalentMemberIds = [UUID()]
+        await mockAccountService.addAccount(updated)
+        await mockAccountService.configureSnapshotGenerations(["complete-2"])
+        await mockExpenseCloudService.setShouldFail(true)
+
+        sut.handleRealtimeAccountUpdate(updated)
+        await sut.loadRemoteData()
+
+        XCTAssertEqual(sut.session?.account, account)
+        XCTAssertFalse(sut.areSamePerson(canonical, alias))
+        XCTAssertEqual(sut.expenses, [expense])
+        XCTAssertEqual(sut.expenses[0].splits.map(\.isSettled), [true, false])
+    }
+
+    func testReview_ChangedGenerationDiscardsEntireCandidate() async throws {
+        let account = UserAccount(id: "generation-owner", email: "generation@example.com", displayName: "Owner", linkedMemberId: UUID())
+        sut.session = UserSession(account: account)
+        let oldFriend = AccountFriend(memberId: UUID(), name: "Before", status: "friend")
+        sut.friends = [oldFriend]
+        let newFriend = AccountFriend(memberId: UUID(), name: "After", status: "friend")
+        try await mockAccountService.syncFriends(accountEmail: account.email, friends: [newFriend])
+        await mockAccountService.configureSnapshotGenerations(["1", "2", "3", "4", "5", "6"])
+
+        await sut.loadRemoteData()
+
+        XCTAssertEqual(sut.friends, [oldFriend])
+        XCTAssertNotNil(sut.dataSyncRecoveryMessage)
+    }
+
+    func testReview_RelaunchFindsPendingOperationWithoutLocalReceipt() async throws {
+        let account = UserAccount(id: UUID().uuidString, email: "resume@example.com", displayName: "Owner", linkedMemberId: UUID())
+        sut.session = UserSession(account: account)
+        await mockAccountService.configurePendingOperation(
+            IdentityOperationResult(operationId: "durable-operation", status: "pending"),
+            resumed: IdentityOperationResult(operationId: "durable-operation", status: "complete")
+        )
+        try await sut.resumePendingIdentityOperation()
+        let resumes = await mockAccountService.identityResumeCount()
+        XCTAssertEqual(resumes, 1)
+        XCTAssertFalse(sut.isLinkingProcessing)
+        XCTAssertNil(sut.linkingRecoveryMessage)
+    }
+
+    func testReview_KnownCurrenciesRemainSeparateAndUnknownRecordsStayIndividual() {
+        let selfId = sut.currentUser.id
+        let other = UUID()
+        func expense(_ amount: Double, _ code: String?) -> Expense {
+            Expense(groupId: UUID(), description: "History", totalAmount: amount, paidByMemberId: selfId,
+                    involvedMemberIds: [selfId, other], splits: [ExpenseSplit(memberId: other, amount: amount)], currencyCode: code)
+        }
+        sut.expenses = [expense(10, "USD"), expense(20, "EUR"), expense(30, nil), expense(40, nil)]
+        XCTAssertEqual(sut.overallNetBalance(), 10)
+        XCTAssertEqual(sut.overallNetBalanceByCurrency(), ["USD": 10, "EUR": 20])
+        XCTAssertEqual(sut.overallUnknownCurrencyExpenses().map(\.totalAmount), [30, 40])
+    }
+
+    func testReview_RemoteHydrationPreservesDistinctPersonWithCurrentUsersName() async throws {
+        let selfId = UUID()
+        let account = UserAccount(id: "review-owner", email: "review-owner@example.com", displayName: "Alex Smith", linkedMemberId: selfId)
+        sut.session = UserSession(account: account)
+        sut.currentUser = GroupMember(id: selfId, name: account.displayName, isCurrentUser: true)
+        let otherAlex = GroupMember(name: "Alex Smith")
+        let thirdPerson = GroupMember(name: "Morgan")
+        let group = SpendingGroup(name: "Three People", members: [sut.currentUser, otherAlex, thirdPerson])
+        let expense = Expense(
+            groupId: group.id,
+            description: "Dinner paid by the other Alex",
+            totalAmount: 90,
+            paidByMemberId: otherAlex.id,
+            involvedMemberIds: [selfId, otherAlex.id, thirdPerson.id],
+            splits: [
+                ExpenseSplit(memberId: selfId, amount: 30, isSettled: true),
+                ExpenseSplit(memberId: otherAlex.id, amount: 30),
+                ExpenseSplit(memberId: thirdPerson.id, amount: 30)
+            ]
+        )
+        await mockGroupCloudService.addGroup(group)
+        await mockExpenseCloudService.addExpense(expense)
+
+        await sut.loadRemoteData()
+
+        let loadedGroup = try XCTUnwrap(sut.groups.first { $0.id == group.id })
+        let loadedExpense = try XCTUnwrap(sut.expenses.first { $0.id == expense.id })
+        XCTAssertTrue(loadedGroup.members.contains { $0.id == otherAlex.id })
+        XCTAssertEqual(loadedExpense.paidByMemberId, otherAlex.id)
+        XCTAssertEqual(loadedExpense.splits.count, 3)
+        XCTAssertEqual(loadedExpense.splits.first { $0.memberId == selfId }?.amount, 30)
+        XCTAssertEqual(loadedExpense.splits.first { $0.memberId == selfId }?.isSettled, true)
+    }
+
+    func testReview_ReconciliationDoesNotImportPreviousAccountsFriends() async throws {
+        let accountA = UserAccount(id: "review-account-a", email: "review-a@example.com", displayName: "Owner A")
+        let accountB = UserAccount(id: "review-account-b", email: "review-b@example.com", displayName: "Owner B")
+        let friendA = AccountFriend(memberId: UUID(), name: "Private A Friend", status: "friend")
+        let friendB = AccountFriend(memberId: UUID(), name: "Private B Friend", status: "friend")
+        sut.session = UserSession(account: accountA)
+        sut.friends = [friendA]
+        try await mockAccountService.syncFriends(accountEmail: accountA.email, friends: [friendA])
+        await mockAccountService.suspendNextFriendFetch()
+
+        let recovery = Task { await sut.reconcileAfterNetworkRecovery() }
+        await mockAccountService.waitUntilFriendFetchSuspends()
+        sut.session = UserSession(account: accountB)
+        sut.friends = [friendB]
+        await mockAccountService.resumeFriendFetch()
+        await recovery.value
+
+        XCTAssertEqual(sut.session?.account.id, accountB.id)
+        XCTAssertEqual(Set(sut.friends.map(\.memberId)), Set([friendB.memberId]))
+    }
+
+    func testReview_FailedEmailFriendPersistenceDoesNotConfirmFriend() async throws {
+        let account = UserAccount(id: "review-owner", email: "review-owner@example.com", displayName: "Owner")
+        let candidate = GroupMember(name: "Unpersisted Friend")
+        sut.session = UserSession(account: account)
+        await mockAccountService.setShouldFail(true)
+
+        do {
+            try await sut.sendLinkRequest(toEmail: "review-recipient@example.com", forFriend: candidate)
+            XCTFail("Expected friend persistence to fail")
+        } catch {
+            XCTAssertTrue(sut.confirmedFriends.isEmpty, "A failed first friend write must not create a confirmed friend")
+            XCTAssertTrue(sut.outgoingLinkRequests.isEmpty)
+        }
+    }
+
+    func testReview_ManualFriendDoesNotPickOneOfTwoUnrelatedSameNameParticipants() {
+        let account = UserAccount(id: "review-owner", email: "review-owner@example.com", displayName: "Owner")
+        sut.session = UserSession(account: account)
+        let firstAlex = GroupMember(name: "Alex")
+        let secondAlex = GroupMember(name: "Alex")
+        sut.groups = [
+            SpendingGroup(name: "Work", members: [sut.currentUser, firstAlex]),
+            SpendingGroup(name: "School", members: [sut.currentUser, secondAlex])
+        ]
+
+        let candidate = sut.manualFriendCandidate(named: "Alex")
+
+        XCTAssertNotEqual(candidate.id, firstAlex.id)
+        XCTAssertNotEqual(candidate.id, secondAlex.id)
+    }
+}
+
 @MainActor
 final class AppStoreLinkingTests: XCTestCase {
     var sut: AppStore!
@@ -475,6 +736,11 @@ final class AppStoreLinkingTests: XCTestCase {
         let targetMemberId = UUID()
         let creatorMemberId = UUID()
         let claimerCanonicalMemberId = await mockInviteLinkService.claimerCanonicalMemberId()
+        // The server transaction commits this account snapshot before acknowledging the claim.
+        var committedAccount = try XCTUnwrap(sut.session?.account)
+        committedAccount.linkedMemberId = claimerCanonicalMemberId
+        committedAccount.equivalentMemberIds = [targetMemberId]
+        await mockAccountService.addAccount(committedAccount)
         let mergeFriend = AccountFriend(memberId: UUID(), name: "Chuck", hasLinkedAccount: false)
         let canonicalFriend = AccountFriend(
             memberId: creatorMemberId,
@@ -519,6 +785,11 @@ final class AppStoreLinkingTests: XCTestCase {
         let targetMemberId = UUID()
         let creatorMemberId = UUID()
         let claimerCanonicalMemberId = await mockInviteLinkService.claimerCanonicalMemberId()
+        // The server transaction commits this account snapshot before acknowledging the claim.
+        var committedAccount = try XCTUnwrap(sut.session?.account)
+        committedAccount.linkedMemberId = claimerCanonicalMemberId
+        committedAccount.equivalentMemberIds = [targetMemberId]
+        await mockAccountService.addAccount(committedAccount)
         let mergeFriend = AccountFriend(memberId: UUID(), name: "Chuck", hasLinkedAccount: false)
         let canonicalFriend = AccountFriend(
             memberId: creatorMemberId,
@@ -1273,12 +1544,8 @@ final class AppStoreLinkingTests: XCTestCase {
         await mockExpenseCloudService.setUpsertDelaysNanoseconds([250_000_000])
         await sut.loadRemoteData()
 
-        for _ in 0..<100 {
-            if await mockExpenseCloudService.currentUpsertInvocationCount() > 0 { break }
-            try await Task.sleep(nanoseconds: 1_000_000)
-        }
         let initialUpsertInvocationCount = await mockExpenseCloudService.currentUpsertInvocationCount()
-        XCTAssertEqual(initialUpsertInvocationCount, 1)
+        XCTAssertEqual(initialUpsertInvocationCount, 0, "Hydration must not rewrite historical expenses")
 
         try await sut.renameUnlinkedFriend(memberId: canonicalId, to: "  New Name  ")
         try await Task.sleep(nanoseconds: 300_000_000)

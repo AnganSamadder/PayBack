@@ -79,9 +79,9 @@ final class AppStoreExtendedTests: XCTestCase {
         XCTAssertTrue(store.isCurrentUser(member))
     }
 
-    func testIsCurrentUser_MatchesByYou() {
+    func testIsCurrentUser_DoesNotInferIdentityFromYouLabel() {
         let member = GroupMember(id: UUID(), name: "You")
-        XCTAssertTrue(store.isCurrentUser(member))
+        XCTAssertFalse(store.isCurrentUser(member))
     }
 
     func testIsCurrentUser_DifferentMember_ReturnsFalse() {

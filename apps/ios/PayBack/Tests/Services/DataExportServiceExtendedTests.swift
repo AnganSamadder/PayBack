@@ -118,10 +118,10 @@ final class DataExportServiceExtendedTests: XCTestCase {
         XCTAssertTrue(result.contains(expense.id.uuidString))
         XCTAssertTrue(result.contains(groupId.uuidString))
         XCTAssertTrue(result.contains("Dinner"))
-        XCTAssertTrue(result.contains("100.50"))
+        XCTAssertEqual(try? DataImportService.parseExport(result).expenses.first?.totalAmount, 100.50)
     }
 
-    func testExportAllData_zeroAmountSplits_areFiltered() {
+    func testExportAllData_zeroAmountSplits_arePreserved() {
         let memberId = UUID()
         let expense = Expense(
             groupId: UUID(),
@@ -131,7 +131,7 @@ final class DataExportServiceExtendedTests: XCTestCase {
             involvedMemberIds: [memberId],
             splits: [
                 ExpenseSplit(memberId: memberId, amount: 100),
-                ExpenseSplit(memberId: UUID(), amount: 0) // Should be filtered
+                ExpenseSplit(memberId: UUID(), amount: 0) // Must survive a backup
             ]
         )
         let currentUser = GroupMember(name: "User")
@@ -149,8 +149,8 @@ final class DataExportServiceExtendedTests: XCTestCase {
             .filter { $0.contains(expense.id.uuidString) && !$0.contains("[") }
             .filter { $0.components(separatedBy: ",").count == 5 }
 
-        // Only one non-zero split should be present
-        XCTAssertEqual(splitLines.count, 1)
+        // Both the zero and nonzero shares must be present
+        XCTAssertEqual(splitLines.count, 2)
     }
 
     func testExportAllData_subexpenses_areExported() {
@@ -174,7 +174,7 @@ final class DataExportServiceExtendedTests: XCTestCase {
         )
 
         XCTAssertTrue(result.contains("[EXPENSE_SUBEXPENSES]"))
-        XCTAssertTrue(result.contains("50.00"))
+        XCTAssertEqual(try? DataImportService.parseExport(result).expenseSubexpenses.map(\.amount), [50, 50])
     }
 
     func testExportAllData_participantNames_areExported() {

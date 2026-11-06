@@ -5,7 +5,7 @@ struct DataExportService {
 
     // MARK: - Export Format Constants
 
-    // Simplified header without version number as requested
+    // Version 2 retains financial precision and expense context.
     private static let headerMarker = "===PAYBACK_EXPORT==="
     private static let endMarker = "===END_PAYBACK_EXPORT==="
 
@@ -30,6 +30,7 @@ struct DataExportService {
 
         // Header
         lines.append(headerMarker)
+        lines.append("FORMAT_VERSION: 2")
         lines.append("EXPORTED_AT: \(ISO8601DateFormatter().string(from: Date()))")
         lines.append("ACCOUNT_EMAIL: \(accountEmail)")
         lines.append("CURRENT_USER_ID: \(currentUser.id.uuidString)")
@@ -90,17 +91,20 @@ struct DataExportService {
 
         // Expenses section
         lines.append("[EXPENSES]")
-        lines.append("# expense_id,group_id,description,date,total_amount,paid_by_member_id,is_settled,is_debug")
+        lines.append("# expense_id,group_id,description,date,total_amount,paid_by_member_id,is_settled,is_debug,context_kind,notes,currency_code")
         for expense in expenses {
             let row = [
                 expense.id.uuidString,
                 expense.groupId.uuidString,
                 escapeCSV(expense.description),
                 ISO8601DateFormatter().string(from: expense.date),
-                String(format: "%.2f", expense.totalAmount),
+                String(expense.totalAmount),
                 expense.paidByMemberId.uuidString,
                 String(expense.isSettled),
-                String(expense.isDebug)
+                String(expense.isDebug),
+                expense.contextKind.rawValue,
+                escapeCSV(expense.notes ?? ""),
+                expense.currencyCode ?? ""
             ].joined(separator: ",")
             lines.append(row)
         }
@@ -125,13 +129,13 @@ struct DataExportService {
         lines.append("# expense_id,split_id,member_id,amount,is_settled")
         for expense in expenses {
             for split in expense.splits {
-                // Filter out zero-amount splits as requested
-                if split.amount > 0.001 {
+                // Keep zero and fractional historical shares.
+                do {
                     let row = [
                         expense.id.uuidString,
                         split.id.uuidString,
                         split.memberId.uuidString,
-                        String(format: "%.2f", split.amount),
+                        String(split.amount),
                         String(split.isSettled)
                     ].joined(separator: ",")
                     lines.append(row)
@@ -146,12 +150,12 @@ struct DataExportService {
         for expense in expenses {
             if let subexpenses = expense.subexpenses {
                 for sub in subexpenses {
-                    // Filter out zero/empty amounts as requested
-                    if sub.amount > 0.001 {
+                    // Keep every historical subexpense.
+                    do {
                         let row = [
                             expense.id.uuidString,
                             sub.id.uuidString,
-                            String(format: "%.2f", sub.amount)
+                            String(sub.amount)
                         ].joined(separator: ",")
                         lines.append(row)
                     }
@@ -205,7 +209,7 @@ struct DataExportService {
     private static func escapeCSV(_ value: String) -> String {
         var escaped = value
         // If contains comma, newline, or quote, wrap in quotes
-        if escaped.contains(",") || escaped.contains("\n") || escaped.contains("\"") {
+        if escaped.contains(",") || escaped.contains("\n") || escaped.contains("\r") || escaped.contains("\"") {
             // Escape existing quotes by doubling them
             escaped = escaped.replacingOccurrences(of: "\"", with: "\"\"")
             escaped = "\"\(escaped)\""

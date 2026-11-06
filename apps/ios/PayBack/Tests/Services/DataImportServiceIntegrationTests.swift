@@ -10,7 +10,7 @@ final class DataImportServiceIntegrationTests: XCTestCase {
     override func setUp() {
         super.setUp()
         Dependencies.reset()
-        store = AppStore(skipClerkInit: true)
+        store = makeAuthenticatedBackupTestStore()
     }
 
     override func tearDown() {
@@ -109,27 +109,23 @@ final class DataImportServiceIntegrationTests: XCTestCase {
         }
     }
 
-    func testImportData_DuplicateFriend_DoesNotAddAgain() async {
-        // First, add a friend
-        let friend = AccountFriend(memberId: UUID(), name: "Existing Friend", hasLinkedAccount: false)
-        store.addImportedFriend(friend)
-
-        // Create export with same friend name
-        let exportText = createExportWithFriend(friendId: UUID(), friendName: "Existing Friend")
-
-        let initialFriendCount = store.friends.count
+    func testImportData_RepeatedSourceFriendID_DoesNotAddAgain() async {
+        let friendID = UUID()
+        let exportText = createExportWithFriend(friendId: friendID, friendName: "Existing Friend")
+        _ = await DataImportService.importData(from: exportText, into: store)
         let result = await DataImportService.importData(from: exportText, into: store)
+        guard case .success(let summary) = result else { return XCTFail("Expected idempotent success: \(result)") }
+        XCTAssertEqual(summary.friendsAdded, 0)
+        XCTAssertEqual(store.friends.map(\.memberId), [friendID])
+    }
 
-        switch result {
-        case .success(let summary):
-            XCTAssertEqual(summary.friendsAdded, 0) // Should not add duplicate
-            XCTAssertEqual(store.friends.count, initialFriendCount)
-        case .partialSuccess, .incompatibleFormat:
-            XCTAssertEqual(store.friends.count, initialFriendCount)
-        case .needsResolution(let conflicts):
-             XCTAssertEqual(conflicts.count, 1)
-             XCTAssertEqual(store.friends.count, initialFriendCount)
-        }
+    func testImportData_DifferentSourceIDsWithSameNameRemainDistinct() async {
+        let first = UUID(), second = UUID()
+        _ = await DataImportService.importData(from: createExportWithFriend(friendId: first, friendName: "Same Name"), into: store)
+        let result = await DataImportService.importData(from: createExportWithFriend(friendId: second, friendName: "Same Name"), into: store)
+        guard case .success(let summary) = result else { return XCTFail("Expected distinct friend: \(result)") }
+        XCTAssertEqual(summary.friendsAdded, 1)
+        XCTAssertEqual(Set(store.friends.map(\.memberId)), Set([first, second]))
     }
 
     func testImportData_PreservesImportedExpenseSplitAndSubexpenseIds() async {
@@ -240,3 +236,76 @@ final class DataImportServiceIntegrationTests: XCTestCase {
         """
     }
 }
+
+/// A matching authenticated actor plus a recording server boundary. Import and
+/// account adapters stay real; published rows arrive only through remote fetches.
+@MainActor
+func makeAuthenticatedBackupTestStore() -> AppStore {
+    let account = MockAccountServiceForAppStore()
+    let groups = MockGroupCloudServiceForAppStore()
+    let expenses = MockExpenseCloudServiceForAppStore()
+    let currentUser = GroupMember(name: "Backup Owner")
+    let user = UserAccount(id: "backup-test-account", email: "test@example.com", displayName: "Backup Owner", linkedMemberId: currentUser.id)
+    #if !PAYBACK_CI_NO_CONVEX
+    let transport = BackupImportRecordingTransport(account: account, groups: groups, expenses: expenses)
+    Dependencies.current = Dependencies.mock(accountService: ConvexAccountService(transport: transport),
+        expenseService: expenses, groupService: groups)
+    #else
+    Dependencies.current = Dependencies.mock(accountService: account, expenseService: expenses, groupService: groups)
+    #endif
+    let store = AppStore(persistence: MockPersistenceService(), accountService: account,
+        expenseCloudService: expenses, groupCloudService: groups, skipClerkInit: true)
+    store.currentUser = currentUser
+    store.session = UserSession(account: user)
+    return store
+}
+
+#if !PAYBACK_CI_NO_CONVEX
+private actor BackupImportRecordingTransport: ConvexServiceTransport {
+    let account: MockAccountServiceForAppStore
+    let groups: MockGroupCloudServiceForAppStore
+    let expenses: MockExpenseCloudServiceForAppStore
+    init(account: MockAccountServiceForAppStore, groups: MockGroupCloudServiceForAppStore, expenses: MockExpenseCloudServiceForAppStore) {
+        self.account = account; self.groups = groups; self.expenses = expenses
+    }
+    func query<Response: Decodable & Sendable>(_ name: String, arguments: [String: String], yielding: Response.Type) async throws -> Response {
+        guard name == "users:viewer" || name == "users:authenticationStatus" else { throw PayBackError.authSessionMissing }
+        let json = "{\"id\":\"backup-test-account\",\"email\":\"test@example.com\",\"display_name\":\"Backup Owner\"}"
+        return try JSONDecoder().decode(Response.self, from: Data(json.utf8))
+    }
+    func mutation<Response: Decodable & Sendable>(_ name: String, arguments: [String: String], yielding: Response.Type) async throws -> Response {
+        guard name == "bulkImport:bulkImport",
+              arguments["expected_account_id"] == "\"backup-test-account\"",
+              arguments["expected_account_email"] == "\"test@example.com\"",
+              arguments["financial_contract_version"] == "2" else { throw PayBackError.authSessionMissing }
+        let decoder = JSONDecoder()
+        let friends = try decoder.decode([BulkFriendDTO].self, from: Data((arguments["friends"] ?? "[]").utf8))
+        let importedGroups = try decoder.decode([BulkGroupDTO].self, from: Data((arguments["groups"] ?? "[]").utf8))
+        let importedExpenses = try decoder.decode([BulkExpenseDTO].self, from: Data((arguments["expenses"] ?? "[]").utf8))
+        let previousFriends = try await account.fetchFriends(accountEmail: "test@example.com")
+        let newFriends = friends.filter { row in !previousFriends.contains { $0.memberId.uuidString == row.member_id } }.map {
+            AccountFriend(memberId: UUID(uuidString: $0.member_id)!, name: $0.name, nickname: $0.nickname,
+                hasLinkedAccount: false, profileImageUrl: $0.profile_image_url, profileColorHex: $0.profile_avatar_color,
+                status: $0.status ?? "friend")
+        }
+        try await account.syncFriends(accountEmail: "test@example.com", friends: previousFriends + newFriends)
+        for group in importedGroups {
+            try await groups.upsertGroup(SpendingGroup(id: UUID(uuidString: group.id)!, name: group.name,
+                members: group.members.map { GroupMember(id: UUID(uuidString: $0.id)!, name: $0.name, profileImageUrl: $0.profile_image_url, profileColorHex: $0.profile_avatar_color) }, isDirect: group.is_direct))
+        }
+        for expense in importedExpenses {
+            let model = Expense(id: UUID(uuidString: expense.id)!, groupId: UUID(uuidString: expense.group_id)!,
+                description: expense.description, date: Date(timeIntervalSince1970: expense.date / 1000),
+                totalAmount: expense.total_amount, paidByMemberId: UUID(uuidString: expense.paid_by_member_id)!,
+                involvedMemberIds: expense.involved_member_ids.compactMap(UUID.init(uuidString:)),
+                splits: expense.splits.map { ExpenseSplit(id: UUID(uuidString: $0.id)!, memberId: UUID(uuidString: $0.member_id)!, amount: $0.amount, isSettled: $0.is_settled) },
+                isSettled: expense.is_settled, contextKind: ExpenseContextKind(rawValue: expense.context_kind ?? "group")!,
+                subexpenses: expense.subexpenses?.map { Subexpense(id: UUID(uuidString: $0.id)!, amount: $0.amount) },
+                notes: expense.notes, currencyCode: expense.currency_code)
+            try await expenses.upsertExpense(model, participants: [])
+        }
+        let json = "{\"success\":true,\"created\":{\"friends\":\(newFriends.count),\"groups\":\(importedGroups.count),\"expenses\":\(importedExpenses.count)},\"errors\":[]}"
+        return try decoder.decode(Response.self, from: Data(json.utf8))
+    }
+}
+#endif

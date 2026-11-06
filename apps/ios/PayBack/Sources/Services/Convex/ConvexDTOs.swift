@@ -126,6 +126,8 @@ struct ConvexExpenseDTO: Decodable, Sendable {
     let context_kind: String?
     let description: String
     let date: Double
+    let currency_code: String?
+    let financial_identity_map: [String: String]?
     let total_amount: Double
     let paid_by_member_id: String
     let involved_member_ids: [String]
@@ -154,7 +156,9 @@ struct ConvexExpenseDTO: Decodable, Sendable {
         participant_member_ids: [String]?,
         participants: [ConvexParticipantDTO]?,
         subexpenses: [ConvexSubexpenseDTO]?,
-        notes: String? = nil
+        notes: String? = nil,
+        currency_code: String? = nil,
+        financial_identity_map: [String: String]? = nil
     ) {
         self.id = id
         self.group_id = group_id
@@ -172,6 +176,8 @@ struct ConvexExpenseDTO: Decodable, Sendable {
         self.participants = participants
         self.subexpenses = subexpenses
         self.notes = notes
+        self.currency_code = currency_code
+        self.financial_identity_map = financial_identity_map
     }
 
     /// Maps Convex DTO to domain Expense model
@@ -207,7 +213,9 @@ struct ConvexExpenseDTO: Decodable, Sendable {
             subexpenses: subexpenses?.map { $0.toSubexpense() },
             notes: notes,
             ownerEmail: owner_email,
-            ownerAccountId: owner_account_id
+            ownerAccountId: owner_account_id,
+            currencyCode: currency_code,
+            financialIdentityMap: try? validatedFinancialIdentityMap()
         )
     }
 }
@@ -291,6 +299,7 @@ struct ConvexGroupDTO: Decodable, Sendable {
     let members: [ConvexGroupMemberDTO]
     let is_direct: Bool?
     let is_payback_generated_mock_data: Bool?
+    var member_identity_map: [String: String]? = nil
     var _id: String? = nil // Convex document ID (e.g., "jd7..." format)
 
     /// Maps Convex DTO to domain SpendingGroup
@@ -306,7 +315,8 @@ struct ConvexGroupDTO: Decodable, Sendable {
             members: members,
             createdAt: createdAt,
             isDirect: is_direct ?? false,
-            isDebug: is_payback_generated_mock_data ?? false
+            isDebug: is_payback_generated_mock_data ?? false,
+            memberIdentityMap: try? validatedMemberIdentityMap()
         )
     }
 }
@@ -686,5 +696,40 @@ struct ConvexLinkAcceptResultDTO: Decodable, Sendable {
 
     var resolved_contract_version: Int {
         return contract_version ?? 1
+    }
+}
+
+struct ConvexSavedExpenseDTO: Decodable, Sendable {
+    let expense: ConvexExpenseDTO
+    let group: ConvexGroupDTO?
+}
+
+extension ConvexExpenseDTO {
+    func validatedFinancialIdentityMap() throws -> [UUID: UUID]? {
+        guard let financial_identity_map else { return nil }
+        var result: [UUID: UUID] = [:]
+        for (raw, canonical) in financial_identity_map {
+            guard let rawId = UUID(uuidString: raw), let canonicalId = UUID(uuidString: canonical),
+                  result[rawId] == nil || result[rawId] == canonicalId else {
+                throw ConvexRevisionedSyncError.invalidExpense(field: "financial_identity_map")
+            }
+            result[rawId] = canonicalId
+        }
+        return result
+    }
+}
+
+extension ConvexGroupDTO {
+    func validatedMemberIdentityMap() throws -> [UUID: UUID]? {
+        guard let member_identity_map else { return nil }
+        var result: [UUID: UUID] = [:]
+        for (raw, canonical) in member_identity_map {
+            guard let rawId = UUID(uuidString: raw), let canonicalId = UUID(uuidString: canonical),
+                  result[rawId] == nil || result[rawId] == canonicalId else {
+                throw ConvexRevisionedSyncError.invalidGroup(field: "member_identity_map")
+            }
+            result[rawId] = canonicalId
+        }
+        return result
     }
 }

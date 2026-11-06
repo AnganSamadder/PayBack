@@ -255,7 +255,7 @@ final class DataExportServiceTests: XCTestCase {
         XCTAssertTrue(result.contains("[EXPENSE_SPLITS]"))
     }
 
-    func testExportAllData_FiltersZeroAmountSplits() {
+    func testExportAllData_PreservesZeroAmountSplits() {
         let group = createTestGroup()
         let memberId = UUID()
         let expense = Expense(
@@ -281,13 +281,13 @@ final class DataExportServiceTests: XCTestCase {
             accountEmail: "test@example.com"
         )
 
-        // Count split lines - should only have 1 (non-zero)
+        // Count every split, including the historical zero share.
         let lines = result.components(separatedBy: "\n")
         let splitSection = lines.drop(while: { !$0.contains("[EXPENSE_SPLITS]") })
             .prefix(while: { !$0.hasPrefix("[") || $0.contains("[EXPENSE_SPLITS]") })
             .filter { !$0.hasPrefix("#") && !$0.isEmpty && !$0.contains("[") }
 
-        XCTAssertEqual(splitSection.count, 1)
+        XCTAssertEqual(splitSection.count, 2)
     }
 
     func testExportAllData_WithInvolvedMembers_IncludesInvolvedMembersSection() {

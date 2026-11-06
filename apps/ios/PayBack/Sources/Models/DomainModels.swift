@@ -45,6 +45,8 @@ struct SpendingGroup: Identifiable, Codable, Hashable, Sendable {
     var isDirect: Bool?
     // Whether this is debug/test data
     var isDebug: Bool?
+    /// Read-only server projection cached with this group, never mutation authority.
+    let memberIdentityMap: [UUID: UUID]?
 
     init(
         id: UUID = UUID(),
@@ -52,7 +54,8 @@ struct SpendingGroup: Identifiable, Codable, Hashable, Sendable {
         members: [GroupMember],
         createdAt: Date = Date(),
         isDirect: Bool? = false,
-        isDebug: Bool? = false
+        isDebug: Bool? = false,
+        memberIdentityMap: [UUID: UUID]? = nil
     ) {
         self.id = id
         self.name = name
@@ -60,6 +63,7 @@ struct SpendingGroup: Identifiable, Codable, Hashable, Sendable {
         self.createdAt = createdAt
         self.isDirect = isDirect
         self.isDebug = isDebug
+        self.memberIdentityMap = memberIdentityMap
     }
 
     // Equality based on ID only (entity identity)
@@ -122,9 +126,14 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
     var notes: String?
     var ownerEmail: String?
     var ownerAccountId: String?
+    /// Nil means the historical denomination was never recorded.
+    let currencyCode: String?
+    /// Server-derived owner-scoped identity retained with the trusted local snapshot.
+    /// Portable imports and mutation DTOs never accept it as authority.
+    let financialIdentityMap: [UUID: UUID]?
 
     enum CodingKeys: String, CodingKey {
-        case id, groupId, contextKind, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug, subexpenses, notes, ownerEmail, ownerAccountId
+        case id, groupId, contextKind, description, date, totalAmount, paidByMemberId, involvedMemberIds, splits, isSettled, participantNames, isDebug, subexpenses, notes, ownerEmail, ownerAccountId, currencyCode, financialIdentityMap
     }
 
     init(from decoder: Decoder) throws {
@@ -148,6 +157,8 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         notes = try container.decodeIfPresent(String.self, forKey: .notes)
         ownerEmail = try container.decodeIfPresent(String.self, forKey: .ownerEmail)
         ownerAccountId = try container.decodeIfPresent(String.self, forKey: .ownerAccountId)
+        currencyCode = try container.decodeIfPresent(String.self, forKey: .currencyCode)
+        financialIdentityMap = try container.decodeIfPresent([UUID: UUID].self, forKey: .financialIdentityMap)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -158,6 +169,8 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         try container.encode(description, forKey: .description)
         try container.encode(date, forKey: .date)
         try container.encode(totalAmount, forKey: .totalAmount)
+        try container.encodeIfPresent(currencyCode, forKey: .currencyCode)
+        try container.encodeIfPresent(financialIdentityMap, forKey: .financialIdentityMap)
         try container.encode(paidByMemberId, forKey: .paidByMemberId)
         try container.encode(involvedMemberIds, forKey: .involvedMemberIds)
         try container.encode(splits, forKey: .splits)
@@ -201,7 +214,9 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         subexpenses: [Subexpense]? = nil,
         notes: String? = nil,
         ownerEmail: String? = nil,
-        ownerAccountId: String? = nil
+        ownerAccountId: String? = nil,
+        currencyCode: String? = "USD",
+        financialIdentityMap: [UUID: UUID]? = nil
     ) {
         self.id = id
         self.groupId = groupId
@@ -220,6 +235,8 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
         self.notes = trimmedNotes?.isEmpty == false ? trimmedNotes : nil
         self.ownerEmail = ownerEmail
         self.ownerAccountId = ownerAccountId
+        self.currencyCode = currencyCode
+        self.financialIdentityMap = financialIdentityMap
     }
 
     // Computed property to check if all splits are settled
@@ -239,12 +256,16 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
 
     // Check if a specific member's split is settled
     func isSettled(for memberId: UUID) -> Bool {
-        splits.first { $0.memberId == memberId }?.isSettled ?? false
+        let matching = splits.filter { $0.memberId == memberId }
+        return !matching.isEmpty && matching.allSatisfy(\.isSettled)
     }
 
     // Get split for a specific member
     func split(for memberId: UUID) -> ExpenseSplit? {
-        splits.first { $0.memberId == memberId }
+        let matching = splits.filter { $0.memberId == memberId }
+        guard let first = matching.first else { return nil }
+        // A read-only summary; the original stable rows remain in `splits`.
+        return ExpenseSplit(id: first.id, memberId: memberId, amount: matching.reduce(0) { $0 + $1.amount }, isSettled: matching.allSatisfy(\.isSettled))
     }
 
     // Check if expense has subexpenses breakdown

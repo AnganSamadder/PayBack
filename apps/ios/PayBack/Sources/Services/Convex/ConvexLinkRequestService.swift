@@ -24,11 +24,23 @@ actor ConvexLinkRequestService: LinkRequestService {
         targetMemberId: UUID,
         targetMemberName: String
     ) async throws -> LinkRequest {
+        throw PayBackError.authSessionMissing
+    }
+
+    func createLinkRequest(
+        requestId: UUID,
+        recipientEmail: String,
+        targetMemberId: UUID,
+        targetMemberName: String,
+        expectedAccountId: String
+    ) async throws -> LinkRequest {
         let args: [String: ConvexEncodable?] = [
             "id": requestId.uuidString,
             "recipient_email": recipientEmail.lowercased(),
             "target_member_id": targetMemberId.uuidString,
-            "target_member_name": targetMemberName
+            "target_member_name": targetMemberName,
+            "financial_contract_version": 2.0,
+            "expected_account_id": expectedAccountId
         ]
 
         let dto: ConvexLinkRequestDTO = try await client.mutation(
@@ -41,18 +53,47 @@ actor ConvexLinkRequestService: LinkRequestService {
         return request
     }
 
+    private struct RequestPage: Decodable {
+        let page: [ConvexLinkRequestDTO]
+        let continueCursor: String
+        let isDone: Bool
+    }
+
+    private func fetchRequests(query: String) async throws -> [LinkRequest] {
+        var cursor: String?
+        var requests: [LinkRequest] = []
+        var seen: Set<UUID> = []
+        repeat {
+            try Task.checkCancellation()
+            var fetched: RequestPage?
+            for try await page in client.subscribe(to: query, with: ["cursor": cursor, "numItems": 50.0, "financial_contract_version": 2.0], yielding: RequestPage.self).values {
+                fetched = page
+                break
+            }
+            guard let page = fetched else { throw CancellationError() }
+            try Task.checkCancellation()
+            for request in page.page.compactMap({ $0.toLinkRequest() }) where seen.insert(request.id).inserted {
+                requests.append(request)
+            }
+            if page.isDone { return requests }
+            guard page.continueCursor != cursor else { throw PayBackError.linkInvalid }
+            cursor = page.continueCursor
+        } while true
+    }
+
     func fetchIncomingRequests() async throws -> [LinkRequest] {
-        for try await dtos in client.subscribe(to: "linkRequests:listIncoming", yielding: [ConvexLinkRequestDTO].self).values {
-            return dtos.compactMap { $0.toLinkRequest() }
-        }
-        return []
+        try await fetchRequests(query: "linkRequests:listIncomingPage")
     }
 
     func fetchOutgoingRequests() async throws -> [LinkRequest] {
-        for try await dtos in client.subscribe(to: "linkRequests:listOutgoing", yielding: [ConvexLinkRequestDTO].self).values {
-            return dtos.compactMap { $0.toLinkRequest() }
-        }
-        return []
+        try await fetchRequests(query: "linkRequests:listOutgoingPage")
+    }
+
+    func beginLinkAcceptance(_ requestId: UUID, mergeLocalFriendMemberId: UUID?, expectedAccountId: String) async throws -> IdentityOperationResult {
+        try Task.checkCancellation()
+        var args: [String: ConvexEncodable?] = ["id": requestId.uuidString, "financial_contract_version": 2.0, "expected_account_id": expectedAccountId]
+        if let mergeLocalFriendMemberId { args["mergeLocalFriendMemberId"] = mergeLocalFriendMemberId.uuidString }
+        return try await client.mutation("linkRequests:acceptV3", with: args)
     }
 
     func fetchPreviousRequests() async throws -> [LinkRequest] {
@@ -65,35 +106,26 @@ actor ConvexLinkRequestService: LinkRequestService {
     }
 
     func acceptLinkRequest(_ requestId: UUID) async throws -> LinkAcceptResult {
-        let args: [String: ConvexEncodable?] = ["id": requestId.uuidString]
-
-        // Use mutation for one-shot operation
-        let result: ConvexLinkAcceptResultDTO = try await client.mutation("linkRequests:accept", with: args)
-
-        guard let canonicalMemberId = UUID(uuidString: result.linked_member_id) else {
-            throw PayBackError.linkInvalid
-        }
-        guard let targetMemberId = UUID(uuidString: result.resolved_target_member_id) else {
-            throw PayBackError.linkInvalid
-        }
-
-        return LinkAcceptResult(
-            targetMemberId: targetMemberId,
-            canonicalMemberId: canonicalMemberId,
-            aliasMemberIds: (result.alias_member_ids ?? []).compactMap { UUID(uuidString: $0) },
-            contractVersion: result.resolved_contract_version,
-            linkedAccountId: result.linked_account_id,
-            linkedAccountEmail: result.linked_account_email
-        )
+        throw ConvexServiceTransportError.expectedActorRequired
     }
 
     func declineLinkRequest(_ requestId: UUID) async throws {
-        let args: [String: ConvexEncodable?] = ["id": requestId.uuidString]
+        throw PayBackError.authSessionMissing
+    }
+
+    func declineLinkRequest(_ requestId: UUID, expectedAccountId: String) async throws {
+        try Task.checkCancellation()
+        let args: [String: ConvexEncodable?] = ["id": requestId.uuidString, "expected_account_id": expectedAccountId, "financial_contract_version": 2.0]
         _ = try await client.mutation("linkRequests:decline", with: args)
     }
 
     func cancelLinkRequest(_ requestId: UUID) async throws {
-        let args: [String: ConvexEncodable?] = ["id": requestId.uuidString]
+        throw PayBackError.authSessionMissing
+    }
+
+    func cancelLinkRequest(_ requestId: UUID, expectedAccountId: String) async throws {
+        try Task.checkCancellation()
+        let args: [String: ConvexEncodable?] = ["id": requestId.uuidString, "expected_account_id": expectedAccountId, "financial_contract_version": 2.0]
         _ = try await client.mutation("linkRequests:cancel", with: args)
     }
 }

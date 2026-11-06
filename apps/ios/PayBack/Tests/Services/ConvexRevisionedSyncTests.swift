@@ -114,6 +114,19 @@ final class ConvexRevisionedSyncTests: XCTestCase {
         )
     }
 
+    func testPendingOrUpgradeErrorsNeverSelectLegacyFinancialReads() {
+        for code in ["IDENTITY_OPERATION_PENDING", "FINANCIAL_CONTRACT_UPGRADE_REQUIRED"] {
+            XCTAssertFalse(ConvexSyncErrorClassifier.isV2Unavailable(ClientError.ConvexError(data: code)))
+            XCTAssertFalse(ConvexSyncErrorClassifier.isV2Unavailable(ClientError.ServerError(msg: code)))
+        }
+    }
+
+    func testRevisionAndCapabilityUseConvexNumberEncoding() {
+        let arguments = ConvexRevisionedSync.expenseArguments(cursor: "next", expectedRevision: 7)
+        XCTAssertEqual(arguments["expectedRevision"] as? Double, 7)
+        XCTAssertEqual(arguments["financial_contract_version"] as? Double, 2)
+    }
+
     func testRetryPolicyBacksOffAndCapsAtSixteenSeconds() {
         XCTAssertEqual(ConvexSyncRetryPolicy.delayNanoseconds(afterFailureCount: 1), 1_000_000_000)
         XCTAssertEqual(ConvexSyncRetryPolicy.delayNanoseconds(afterFailureCount: 2), 2_000_000_000)

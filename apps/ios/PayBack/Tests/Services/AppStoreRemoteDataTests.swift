@@ -198,12 +198,15 @@ final class AppStoreRemoteDataTests: XCTestCase {
 
         await sut.checkSession()
 
-        XCTAssertEqual(sut.session?.account.id, account.id)
+        XCTAssertNil(sut.session, "Initial production hydration must complete before exposing the account")
         XCTAssertTrue(sut.groups.isEmpty)
         XCTAssertTrue(sut.expenses.isEmpty)
         XCTAssertTrue(mockPersistence.storedData().groups.isEmpty)
         XCTAssertTrue(mockPersistence.storedData().expenses.isEmpty)
         XCTAssertTrue(sut.isAuthenticationSessionRecoveryBlocking)
+        XCTAssertFalse(sut.canPresentAuthenticationFlow)
+        XCTAssertNotNil(sut.authenticationSessionRecoveryMessage)
+        XCTAssertNotNil(sut.dataSyncRecoveryMessage)
 
         let friend = GroupMember(name: "Production Friend")
         let productionGroup = SpendingGroup(
@@ -228,6 +231,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         await sut.checkSession()
 
         XCTAssertFalse(sut.isAuthenticationSessionRecoveryBlocking)
+        XCTAssertEqual(sut.session?.account.id, account.id)
         XCTAssertEqual(sut.groups.map(\.id), [productionGroup.id])
         XCTAssertEqual(sut.expenses.map(\.id), [productionExpense.id])
         XCTAssertEqual(sut.overallNetBalance(), 10, accuracy: 0.001)
@@ -401,7 +405,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
         XCTAssertEqual(expenseCleanupCount, 0)
     }
 
-    func testRemoteLoad_FriendFailureDoesNotHideFinancialData() async throws {
+    func testRemoteLoad_FriendFailurePreservesPreviousCompleteGeneration() async throws {
         sut = makeSUT(environment: .production)
         sut.session = UserSession(account: UserAccount(
             id: "production-account",
@@ -426,10 +430,11 @@ final class AppStoreRemoteDataTests: XCTestCase {
 
         await sut.loadRemoteData()
 
-        XCTAssertEqual(sut.groups.map(\.id), [group.id])
-        XCTAssertEqual(sut.expenses.map(\.id), [expense.id])
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertTrue(sut.expenses.isEmpty)
         XCTAssertFalse(sut.isAuthenticationSessionRecoveryBlocking)
-        XCTAssertEqual(sut.overallNetBalance(), 20, accuracy: 0.001)
+        XCTAssertEqual(sut.overallNetBalance(), 0, accuracy: 0.001)
+        XCTAssertNotNil(sut.dataSyncRecoveryMessage)
     }
 
     func testCompleteAuthentication_LoadsRemoteData() async throws {
@@ -789,7 +794,7 @@ final class AppStoreRemoteDataTests: XCTestCase {
 
     // MARK: - Complex Normalization Tests (to increase coverage)
 
-    func testCompleteAuthentication_WithCurrentUserAliasInGroup() async throws {
+    func testCompleteAuthentication_PreservesDistinctSameNameGroupMember() async throws {
         // Given: Remote group has member with current user's name but different ID (alias)
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         _ = UserSession(account: account)
@@ -808,14 +813,9 @@ final class AppStoreRemoteDataTests: XCTestCase {
         sut.completeAuthentication(id: account.id, email: account.email, name: account.displayName)
         try await Task.sleep(nanoseconds: 1_000_000_000)
 
-        // Then: Alias should be replaced with actual current user
-        XCTAssertGreaterThanOrEqual(sut.groups.count, 1, "Should have loaded group")
-        if sut.groups.count > 0 {
-            let normalizedGroup = sut.groups[0]
-            // Should have Alice + current user (alias removed)
-            XCTAssertEqual(normalizedGroup.members.count, 2, "Should have 2 members")
-            XCTAssertTrue(normalizedGroup.members.contains { $0.id == sut.currentUser.id }, "Should contain actual current user ID")
-        }
+        let loaded = try XCTUnwrap(sut.groups.first { $0.id == remoteGroup.id })
+        XCTAssertEqual(loaded.members, remoteGroup.members)
+        XCTAssertFalse(loaded.members.contains { $0.id == sut.currentUser.id })
     }
 
     func testCompleteAuthentication_WithComplexAliasChain() async throws {

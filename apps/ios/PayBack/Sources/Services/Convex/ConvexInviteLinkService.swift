@@ -50,34 +50,29 @@ actor ConvexInviteLinkService: InviteLinkService {
         targetMemberId: UUID,
         targetMemberName: String
     ) async throws -> InviteLink {
+        throw PayBackError.authSessionMissing
+    }
+
+    func generateInviteLink(
+        targetMemberId: UUID,
+        targetMemberName: String,
+        expectedAccountId: String
+    ) async throws -> InviteLink {
         let tokenId = UUID()
 
         // Create token in Convex
         let args: [String: ConvexEncodable?] = [
             "id": tokenId.uuidString,
             "target_member_id": targetMemberId.uuidString,
-            "target_member_name": targetMemberName
+            "target_member_name": targetMemberName,
+            "financial_contract_version": 2.0,
+            "expected_account_id": expectedAccountId
         ]
-        _ = try await client.mutation("inviteTokens:create", with: args)
-
-        // Build the token locally (Convex will have created it)
-        let createdAt = Date()
-        let expiresAt = Calendar.current.date(byAdding: .day, value: 30, to: createdAt) ?? Date()
-
-        let token = InviteToken(
-            id: tokenId,
-            creatorId: "",
-            creatorEmail: "",
-            creatorName: nil,
-            creatorProfileImageUrl: nil,
-            targetMemberId: targetMemberId,
-            targetMemberName: targetMemberName,
-            createdAt: createdAt,
-            expiresAt: expiresAt
-        )
+        let dto: ConvexInviteTokenDTO = try await client.mutation("inviteTokens:createV2", with: args)
+        guard let token = dto.toInviteToken() else { throw PayBackError.linkInvalid }
 
         // Build URL - using custom scheme for now
-        let url = URL(string: "payback://link/claim?token=\(tokenId.uuidString)")!
+        let url = URL(string: "payback://link/claim?token=\(token.id.uuidString)")!
 
         let shareText = """
         Hi! I've added you to PayBack for tracking shared expenses.
@@ -93,7 +88,7 @@ actor ConvexInviteLinkService: InviteLinkService {
 
     func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation {
         // Use subscribe for one-shot query
-        let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString]
+        let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString, "financial_contract_version": 2.0]
         for try await result in client.subscribe(to: "inviteTokens:validate", with: args, yielding: ConvexInviteTokenValidationDTO.self).values {
             let token = result.token?.toInviteToken()
             let preview = result.expense_preview.map { previewDTO in
@@ -124,7 +119,7 @@ actor ConvexInviteLinkService: InviteLinkService {
 
     /// Subscribe to live updates for invite validation - updates whenever expenses change
     nonisolated func subscribeToInviteValidation(_ tokenId: UUID) -> AsyncThrowingStream<InviteTokenValidation, Error> {
-        let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString]
+        let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString, "financial_contract_version": 2.0]
 
         return makeCancellableAsyncThrowingStream { [client] continuation in
             do {
@@ -156,49 +151,29 @@ actor ConvexInviteLinkService: InviteLinkService {
         }
     }
 
+    func beginInviteClaim(_ tokenId: UUID, mergeLocalFriendMemberId: UUID?, expectedAccountId: String) async throws -> IdentityOperationResult {
+        try Task.checkCancellation()
+        var args: [String: ConvexEncodable?] = ["id": tokenId.uuidString, "financial_contract_version": 2.0, "expected_account_id": expectedAccountId]
+        if let mergeLocalFriendMemberId { args["mergeLocalFriendMemberId"] = mergeLocalFriendMemberId.uuidString }
+        return try await client.mutation("inviteTokens:claimV3", with: args)
+    }
+
     func claimInviteToken(
         _ tokenId: UUID,
         mergeLocalFriendMemberId: UUID?
     ) async throws -> LinkAcceptResult {
-        let claimArguments = InviteClaimArgumentBuilder.build(
-            tokenId: tokenId,
-            mergeLocalFriendMemberId: mergeLocalFriendMemberId
-        )
-        var args: [String: ConvexEncodable?] = [:]
-        for (key, value) in claimArguments {
-            args[key] = value
-        }
-
-        // Mutation returns the result directly
-        let result: ConvexLinkAcceptResultDTO = try await client.mutation("inviteTokens:claim", with: args)
-
-        guard let canonicalMemberId = UUID(uuidString: result.linked_member_id) else {
-            throw PayBackError.linkInvalid
-        }
-        guard let targetMemberId = UUID(uuidString: result.resolved_target_member_id) else {
-            throw PayBackError.linkInvalid
-        }
-
-        return LinkAcceptResult(
-            targetMemberId: targetMemberId,
-            canonicalMemberId: canonicalMemberId,
-            aliasMemberIds: (result.alias_member_ids ?? []).compactMap { UUID(uuidString: $0) },
-            contractVersion: result.resolved_contract_version,
-            linkedAccountId: result.linked_account_id,
-            linkedAccountEmail: result.linked_account_email
-        )
+        throw ConvexServiceTransportError.expectedActorRequired
     }
 
     func fetchActiveInvites() async throws -> [InviteToken] {
-        for try await dtos in client.subscribe(to: "inviteTokens:listByCreator", yielding: [ConvexInviteTokenDTO].self).values {
+        for try await dtos in client.subscribe(to: "inviteTokens:listByCreator", with: ["financial_contract_version": 2.0], yielding: [ConvexInviteTokenDTO].self).values {
             return dtos.compactMap { $0.toInviteToken() }
         }
         return []
     }
 
     func revokeInvite(_ tokenId: UUID) async throws {
-        let args: [String: ConvexEncodable?] = ["id": tokenId.uuidString]
-        _ = try await client.mutation("inviteTokens:revoke", with: args)
+        throw ConvexServiceTransportError.expectedActorRequired
     }
 }
 

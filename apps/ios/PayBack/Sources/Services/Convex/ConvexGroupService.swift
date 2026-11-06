@@ -1,13 +1,26 @@
 import Foundation
 
 #if !PAYBACK_CI_NO_CONVEX
-@preconcurrency import ConvexMobile
+import ConvexMobile
 
-final class ConvexGroupService: GroupCloudService, Sendable {
-    private let client: ConvexClient
+actor ConvexGroupService: GroupCloudService {
+    private let liveSDKClient: ConvexClient?
+    private let transport: any ConvexServiceTransport
+    private var client: ConvexClient {
+        get throws {
+            guard let liveSDKClient else { throw ConvexServiceTransportError.liveClientUnavailable }
+            return liveSDKClient
+        }
+    }
 
     init(client: ConvexClient) {
-        self.client = client
+        self.liveSDKClient = client
+        self.transport = LiveConvexServiceTransport(client: client)
+    }
+
+    init(transport: any ConvexServiceTransport) {
+        self.liveSDKClient = nil
+        self.transport = transport
     }
 
     func fetchGroups() async throws -> [SpendingGroup] {
@@ -29,8 +42,9 @@ final class ConvexGroupService: GroupCloudService, Sendable {
     }
 
     private func fetchUnboundedLegacyGroups() async throws -> [SpendingGroup] {
-        for try await result in client.subscribe(
+        for try await result in try client.subscribe(
             to: "groups:list",
+            with: ["financial_contract_version": 2.0],
             yielding: [ConvexGroupDTO].self
         ).values {
             return try result.map { try $0.validatedSpendingGroup() }
@@ -39,23 +53,28 @@ final class ConvexGroupService: GroupCloudService, Sendable {
     }
 
     func fetchGroupsPaginated(cursor: String? = nil, limit: Int = 20) async throws -> (groups: [SpendingGroup], nextCursor: String?) {
-        let args: [String: ConvexEncodable?] = [
-            "cursor": cursor,
-            "limit": limit
-        ]
-
-        for try await result in client.subscribe(to: "groups:listPaginated", with: args, yielding: ConvexPaginatedGroupsDTO.self).values {
-            let groups = try result.items.map { try $0.validatedSpendingGroup() }
-            return (groups, result.nextCursor)
-        }
-        return ([], nil)
+        let args = ConvexTransportArguments.page(cursor: cursor, limit: limit)
+        let result = try await transport.query("groups:listPaginated",
+            arguments: ConvexTransportArguments.encode(args), yielding: ConvexPaginatedGroupsDTO.self)
+        let groups = try result.items.map { try $0.validatedSpendingGroup() }
+        return (groups, result.nextCursor)
     }
 
     func upsertGroup(_ group: SpendingGroup) async throws {
-        try await createGroup(group)
+        throw ConvexServiceTransportError.expectedActorRequired
     }
 
-func upsertDebugGroup(_ group: SpendingGroup) async throws {
+    func upsertGroup(_ group: SpendingGroup, expectedAccountId: String) async throws {
+        try Task.checkCancellation()
+        try await createGroup(group, expectedAccountId: expectedAccountId)
+    }
+
+    func upsertDebugGroup(_ group: SpendingGroup) async throws {
+        throw ConvexServiceTransportError.expectedActorRequired
+    }
+
+    func upsertDebugGroup(_ group: SpendingGroup, expectedAccountId: String) async throws {
+        try Task.checkCancellation()
         let membersArgs: [ConvexEncodable?] = group.members.map {
             GroupMemberArg(
                 id: $0.id.uuidString,
@@ -70,11 +89,14 @@ func upsertDebugGroup(_ group: SpendingGroup) async throws {
             "id": group.id.uuidString,
             "name": group.name,
             "members": membersArgs,
+            "financial_contract_version": 2.0,
+            "expected_account_id": expectedAccountId,
             "is_direct": group.isDirect ?? false,
             "is_payback_generated_mock_data": true
         ]
 
-        _ = try await client.mutation("groups:create", with: args)
+        _ = try await transport.mutation("groups:create",
+            arguments: ConvexTransportArguments.encode(args), yielding: ConvexIgnoredResult.self)
     }
 
     private struct GroupMemberArg: Codable, ConvexEncodable {
@@ -85,7 +107,7 @@ func upsertDebugGroup(_ group: SpendingGroup) async throws {
         let is_current_user: Bool?
     }
 
-    private func createGroup(_ group: SpendingGroup) async throws {
+    private func createGroup(_ group: SpendingGroup, expectedAccountId: String) async throws {
          let membersArgs: [ConvexEncodable?] = group.members.map {
              GroupMemberArg(
                  id: $0.id.uuidString,
@@ -100,40 +122,68 @@ func upsertDebugGroup(_ group: SpendingGroup) async throws {
             "id": group.id.uuidString, // Send client UUID for deduplication
             "name": group.name,
             "members": membersArgs,
+            "financial_contract_version": 2.0,
+            "expected_account_id": expectedAccountId,
             "is_direct": group.isDirect ?? false
          ]
 
-         _ = try await client.mutation("groups:create", with: args)
+         _ = try await transport.mutation("groups:create",
+            arguments: ConvexTransportArguments.encode(args), yielding: ConvexIgnoredResult.self)
     }
 
     func deleteGroups(_ ids: [UUID]) async throws {
+        throw ConvexServiceTransportError.expectedActorRequired
+    }
+
+    func deleteGroups(_ ids: [UUID], expectedAccountId: String) async throws {
+        try Task.checkCancellation()
         let idsArray: [ConvexEncodable?] = ids.map { $0.uuidString }
-        let args: [String: ConvexEncodable?] = ["ids": idsArray]
-        _ = try await client.mutation("groups:deleteGroups", with: args)
+        let args: [String: ConvexEncodable?] = ["ids": idsArray, "financial_contract_version": 2.0, "expected_account_id": expectedAccountId]
+        _ = try await transport.mutation("groups:deleteGroups",
+            arguments: ConvexTransportArguments.encode(args), yielding: ConvexIgnoredResult.self)
     }
 
     func removeMemberFromGroup(_ groupId: UUID, memberId: UUID) async throws {
-        let args: [String: ConvexEncodable?] = [
-            "id": groupId.uuidString,
-            "memberId": memberId.uuidString
-        ]
-        _ = try await client.mutation("groups:removeMemberAndExpenses", with: args)
+        throw ConvexServiceTransportError.expectedActorRequired
     }
 
-func deleteDebugGroups() async throws {
-        _ = try await client.mutation("groups:clearDebugDataForUser", with: [:])
+    func removeMemberFromGroup(_ groupId: UUID, memberId: UUID, expectedAccountId: String) async throws {
+        try Task.checkCancellation()
+        let args: [String: ConvexEncodable?] = [
+            "id": groupId.uuidString,
+            "memberId": memberId.uuidString,
+            "financial_contract_version": 2.0,
+            "expected_account_id": expectedAccountId
+        ]
+        _ = try await transport.mutation("groups:removeMemberAndExpenses",
+            arguments: ConvexTransportArguments.encode(args), yielding: ConvexIgnoredResult.self)
+    }
+
+    func deleteDebugGroups() async throws {
+        throw ConvexServiceTransportError.expectedActorRequired
+    }
+
+    func deleteDebugGroups(expectedAccountId: String) async throws {
+        try Task.checkCancellation()
+        _ = try await transport.mutation("groups:clearDebugDataForUser",
+            arguments: ConvexTransportArguments.encode(["financial_contract_version": 2.0, "expected_account_id": expectedAccountId]),
+            yielding: ConvexIgnoredResult.self)
     }
 
     func clearAllData() async throws {
+        throw ConvexServiceTransportError.expectedActorRequired
+    }
+
+    func clearAllData(expectedAccountId: String) async throws {
+        try Task.checkCancellation()
         var cutoff: Double?
         while true {
             try Task.checkCancellation()
-            var args: [String: ConvexEncodable?] = [:]
-            args.updateValue(cutoff, forKey: "cutoff")
-            let result: ConvexClearAllProgressDTO = try await client.mutation(
-                "groups:clearAllForUserV2",
-                with: args
-            )
+            var args: [String: ConvexEncodable?] = ["financial_contract_version": 2.0, "expected_account_id": expectedAccountId]
+            if let cutoff { args["cutoff"] = cutoff }
+            let result = try await transport.mutation("groups:clearAllForUserV2",
+                arguments: ConvexTransportArguments.encode(args), yielding: ConvexClearAllProgressDTO.self)
+            try Task.checkCancellation()
             if !result.inProgress { return }
             guard result.processed > 0 else { throw ConvexClearAllError.stalled }
             cutoff = result.cutoff
@@ -141,8 +191,14 @@ func deleteDebugGroups() async throws {
     }
 
     func leaveGroup(_ groupId: UUID) async throws {
-        let args: [String: ConvexEncodable?] = ["id": groupId.uuidString]
-        _ = try await client.mutation("groups:leaveGroup", with: args)
+        throw ConvexServiceTransportError.expectedActorRequired
+    }
+
+    func leaveGroup(_ groupId: UUID, expectedAccountId: String) async throws {
+        try Task.checkCancellation()
+        let args: [String: ConvexEncodable?] = ["id": groupId.uuidString, "financial_contract_version": 2.0, "expected_account_id": expectedAccountId]
+        _ = try await transport.mutation("groups:leaveGroup",
+            arguments: ConvexTransportArguments.encode(args), yielding: ConvexIgnoredResult.self)
     }
 }
 

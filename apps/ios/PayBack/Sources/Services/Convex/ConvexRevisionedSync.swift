@@ -137,6 +137,16 @@ struct ConvexLegacySnapshotAccumulator<Value> {
 }
 
 enum ConvexSyncErrorClassifier {
+    static func isGroupProjectionPageTooLarge(_ error: Error) -> Bool {
+        guard let clientError = error as? ClientError,
+              case .ServerError(let message) = clientError else { return false }
+        let code = "GROUP_PROJECTION_PAGE_TOO_LARGE"
+        // Ordinary backend Error messages include an "Uncaught Error:" prefix.
+        // Match a complete code token so unrelated resource failures are not retried.
+        return message.components(separatedBy: .whitespacesAndNewlines)
+            .contains { $0 == code || $0 == code + ":" }
+    }
+
     static func isRevisionMismatch(_ error: Error) -> Bool {
         convexErrorData(error)?.contains("SYNC_REVISION_CHANGED") == true
     }
@@ -173,13 +183,18 @@ enum ConvexRevisionedSync {
     static let pageSize = 8
 
     static func fetchGroupDTOs(client: ConvexClient) async throws -> [ConvexGroupDTO] {
+        try await fetchGroupDTOs(transport: LiveConvexServiceTransport(client: client))
+    }
+
+    static func fetchGroupDTOs(transport: any ConvexServiceTransport) async throws -> [ConvexGroupDTO] {
+        let reader = AdaptiveGroupPageReader(transport: transport)
         let paginator = RevisionedSnapshotPaginator<ConvexGroupDTO, Int, String>(
             fetchPage: { cursor, expectedRevision in
-                let response: ConvexRevisionedGroupsPageDTO = try await fetchPage(
-                    client: client,
+                let response = try await reader.fetch(
                     query: "groups:listV2",
                     cursor: cursor,
-                    expectedRevision: expectedRevision
+                    expectedRevision: expectedRevision,
+                    yielding: ConvexRevisionedGroupsPageDTO.self
                 )
                 return RevisionedSnapshotPage(
                     items: response.page,
@@ -221,15 +236,20 @@ enum ConvexRevisionedSync {
     }
 
     static func fetchLegacyGroupDTOs(client: ConvexClient) async throws -> [ConvexGroupDTO] {
+        try await fetchLegacyGroupDTOs(transport: LiveConvexServiceTransport(client: client))
+    }
+
+    static func fetchLegacyGroupDTOs(transport: any ConvexServiceTransport) async throws -> [ConvexGroupDTO] {
+        let reader = AdaptiveGroupPageReader(transport: transport)
         var cursor: String?
         var accumulator = ConvexLegacySnapshotAccumulator<ConvexGroupDTO>()
         repeat {
             try Task.checkCancellation()
-            let response: ConvexLegacyGroupsPageDTO = try await fetchPage(
-                client: client,
+            let response = try await reader.fetch(
                 query: "groups:listLegacyPage",
                 cursor: cursor,
-                expectedRevision: nil
+                expectedRevision: nil,
+                yielding: ConvexLegacyGroupsPageDTO.self
             )
             response.page.forEach { accumulator.append($0, id: $0.id) }
             if response.isDone { return accumulator.values }
@@ -283,9 +303,10 @@ enum ConvexRevisionedSync {
 
     static func groupArguments(
         cursor: String?,
-        expectedRevision: Int?
+        expectedRevision: Int?,
+        numItems: Int = ConvexRevisionedSync.pageSize
     ) -> [String: ConvexEncodable?] {
-        arguments(cursor: cursor, expectedRevision: expectedRevision)
+        arguments(cursor: cursor, expectedRevision: expectedRevision, numItems: numItems)
     }
 
     static func expenseArguments(
@@ -297,15 +318,16 @@ enum ConvexRevisionedSync {
 
     private static func arguments(
         cursor: String?,
-        expectedRevision: Int?
+        expectedRevision: Int?,
+        numItems: Int = ConvexRevisionedSync.pageSize
     ) -> [String: ConvexEncodable?] {
         let paginationOptions: [String: ConvexEncodable?] = [
             "cursor": cursor,
-            "numItems": Double(pageSize)
+            "numItems": Double(numItems)
         ]
-        var arguments: [String: ConvexEncodable?] = ["paginationOpts": paginationOptions]
+        var arguments: [String: ConvexEncodable?] = ["paginationOpts": paginationOptions, "financial_contract_version": 2.0]
         if let expectedRevision {
-            arguments["expectedRevision"] = expectedRevision
+            arguments["expectedRevision"] = Double(expectedRevision)
         }
         return arguments
     }
@@ -325,6 +347,35 @@ enum ConvexRevisionedSync {
             return response
         }
         throw ConvexRevisionedSyncError.streamEndedWithoutValue
+    }
+}
+
+/// Learns a safe page size for this snapshot, retaining it across continuation
+/// pages and revision restarts. No partial page is appended when a read fails.
+private actor AdaptiveGroupPageReader {
+    private let transport: any ConvexServiceTransport
+    private var numItems = ConvexRevisionedSync.pageSize
+
+    init(transport: any ConvexServiceTransport) { self.transport = transport }
+
+    func fetch<Response: Decodable & Sendable>(
+        query: String, cursor: String?, expectedRevision: Int?, yielding: Response.Type
+    ) async throws -> Response {
+        while true {
+            try Task.checkCancellation()
+            let requestedSize = numItems
+            do {
+                let arguments = ConvexRevisionedSync.groupArguments(
+                    cursor: cursor, expectedRevision: expectedRevision, numItems: requestedSize)
+                return try await transport.query(query,
+                    arguments: ConvexTransportArguments.encode(arguments), yielding: Response.self)
+            } catch {
+                try Task.checkCancellation()
+                guard requestedSize > 1,
+                      ConvexSyncErrorClassifier.isGroupProjectionPageTooLarge(error) else { throw error }
+                numItems = max(1, requestedSize / 2)
+            }
+        }
     }
 }
 
@@ -351,7 +402,8 @@ extension ConvexGroupDTO {
             members: validatedMembers,
             createdAt: Date(timeIntervalSince1970: created_at / 1_000),
             isDirect: is_direct ?? false,
-            isDebug: is_payback_generated_mock_data ?? false
+            isDebug: is_payback_generated_mock_data ?? false,
+            memberIdentityMap: try validatedMemberIdentityMap()
         )
     }
 }
@@ -419,7 +471,9 @@ extension ConvexExpenseDTO {
             subexpenses: validatedSubexpenses,
             notes: notes,
             ownerEmail: owner_email,
-            ownerAccountId: owner_account_id
+            ownerAccountId: owner_account_id,
+            currencyCode: currency_code,
+            financialIdentityMap: try validatedFinancialIdentityMap()
         )
     }
 

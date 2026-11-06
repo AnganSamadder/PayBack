@@ -660,12 +660,7 @@ struct DashboardView: View {
     // MARK: - Helpers
 
     private var balanceText: String {
-        let net = calculateOverallNetBalance()
-        return ActivityBalancePresentation.overallText(
-            net: net,
-            formattedCurrency: currency(net),
-            hasUnsettledExposure: store.hasUnsettledBalanceExposure()
-        )
+        ExpenseMoneyText.overview(store.overallNetBalanceByCurrency(), unknownExpenses: store.overallUnknownCurrencyExpenses())
     }
 
     private var balanceColor: Color {
@@ -676,11 +671,7 @@ struct DashboardView: View {
     }
 
     private var balanceDescription: String {
-        let net = calculateOverallNetBalance()
-        return ActivityBalancePresentation.overallDescription(
-            net: net,
-            hasUnsettledExposure: store.hasUnsettledBalanceExposure()
-        )
+        "Balances by recorded currency"
     }
 
     private var gradientColors: [Color] {
@@ -694,13 +685,10 @@ struct DashboardView: View {
         }
     }
 
-    private func currency(_ v: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
-        return v.formatted(.currency(code: id))
-    }
-
     private func calculateOverallNetBalance() -> Double {
-        store.overallNetBalance()
+        let balances = store.overallNetBalanceByCurrency()
+        guard balances.count == 1, store.overallUnknownCurrencyExpenses().isEmpty else { return 0 }
+        return balances.values.first ?? 0
     }
 }
 
@@ -755,16 +743,13 @@ struct CompactGroupCard: View {
     }
 
     private func calculateNetBalance() -> Double {
-        store.netBalance(for: group)
+        let balances = store.netBalanceByCurrency(in: group)
+        guard balances.count == 1, store.unknownCurrencyExpenses(in: group).isEmpty else { return 0 }
+        return balances.values.first ?? 0
     }
 
     private func balanceText(_ net: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
-        return ActivityBalancePresentation.groupText(
-            net: net,
-            formattedAbsoluteCurrency: abs(net).formatted(.currency(code: id)),
-            hasUnsettledExposure: store.hasUnsettledBalanceExposure(in: group.id)
-        )
+        ExpenseMoneyText.overview(store.netBalanceByCurrency(in: group), unknownExpenses: store.unknownCurrencyExpenses(in: group))
     }
 
     private func balanceColor(_ net: Double) -> Color {
@@ -797,7 +782,7 @@ struct ActivityRow: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 4) {
-                Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
                     .font(.system(.callout, design: .rounded, weight: .semibold))
                     .foregroundStyle(expense.isSettled ? .secondary : .primary)
 
@@ -862,7 +847,7 @@ struct HistoryView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
 
-                            Text(e.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                            Text(ExpenseMoneyText.format(e.totalAmount, currencyCode: e.currencyCode))
                                 .font(.headline)
                                 .foregroundStyle(e.isSettled ? .secondary : .primary)
                                 .lineLimit(1)

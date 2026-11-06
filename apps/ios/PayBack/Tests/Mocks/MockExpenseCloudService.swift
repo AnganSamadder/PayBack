@@ -31,6 +31,16 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var shouldSuspendClearAll = false
     private var clearAllContinuation: CheckedContinuation<Void, Never>?
 
+    private var canonicalSaveResult: SavedExpenseResult?
+    private var savedExpectedActorIds: [String] = []
+    func configureCanonicalSaveResult(_ result: SavedExpenseResult) { canonicalSaveResult = result }
+    func expectedSaveActors() -> [String] { savedExpectedActorIds }
+    func saveExpense(_ expense: Expense, participants: [ExpenseParticipant], expectedAccountId: String) async throws -> SavedExpenseResult {
+        savedExpectedActorIds.append(expectedAccountId)
+        try await upsertExpense(expense, participants: participants)
+        return canonicalSaveResult ?? SavedExpenseResult(expense: expense, group: nil)
+    }
+
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
         if shouldFail {
             throw PayBackError.authSessionMissing
@@ -57,6 +67,12 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     }
 
     func setSettlementState(expenseId: UUID, memberIds: Set<UUID>, settled: Bool) async throws -> Expense {
+        guard let expense = expenses[expenseId] else { throw PayBackError.expenseNotFound(id: expenseId) }
+        let splitIds = Set(expense.splits.filter { memberIds.contains($0.memberId) }.map(\.id))
+        return try await setSettlementState(expenseId: expenseId, splitIds: splitIds, settled: settled, expectedAccountId: "mock")
+    }
+
+    func setSettlementState(expenseId: UUID, splitIds: Set<UUID>, settled: Bool, expectedAccountId: String) async throws -> Expense {
         settlementInvocationCount += 1
         if !queuedSettlementResponses.isEmpty {
             let response = queuedSettlementResponses.removeFirst()
@@ -83,7 +99,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         }
 
         expense.splits = expense.splits.map { split in
-            guard memberIds.contains(split.memberId) else { return split }
+            guard splitIds.contains(split.id) else { return split }
             var updatedSplit = split
             updatedSplit.isSettled = settled
             return updatedSplit
@@ -199,6 +215,8 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     }
 
     func reset() {
+        canonicalSaveResult = nil
+        savedExpectedActorIds = []
         expenses.removeAll()
         participantsByExpenseId.removeAll()
         shouldFail = false

@@ -39,6 +39,7 @@ struct FriendDetailView: View {
     @State private var displayPreferenceSelection: String? = nil
     @State private var isSavingNickname = false
     @State private var showDeleteConfirmation = false
+    @State private var isAddingFriend = false
 
     init(friend: GroupMember, onBack: (() -> Void)? = nil, onExpenseSelected: ((Expense) -> Void)? = nil) {
         self.friend = friend
@@ -56,18 +57,17 @@ struct FriendDetailView: View {
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
 
-    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
-
-    private func isFriend(_ memberId: UUID) -> Bool {
-        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
-    }
-
     private var netBalance: Double {
         store.netBalance(forFriend: friend)
     }
 
     private var isSettled: Bool {
-        abs(netBalance) < 0.01
+        store.balanceByCurrency(forFriend: friend).values.allSatisfy { abs($0) < 0.01 }
+            && store.unknownCurrencyExpenses(forFriend: friend).isEmpty
+    }
+
+    private var balanceOverview: String {
+        ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: friend), unknownExpenses: store.unknownCurrencyExpenses(forFriend: friend))
     }
 
     private var isPositive: Bool {
@@ -248,7 +248,8 @@ struct FriendDetailView: View {
                     Image(systemName: "person.badge.plus")
                         .font(.system(size: 16, weight: .semibold))
 
-                    Text("Add Friend")
+                    if isAddingFriend { ProgressView().tint(.white) }
+                    Text(isAddingFriend ? "Adding Friend…" : "Add Friend")
                         .font(.system(.body, design: .rounded, weight: .semibold))
                 }
                 .foregroundStyle(.white)
@@ -260,6 +261,7 @@ struct FriendDetailView: View {
                 )
             }
             .buttonStyle(.plain)
+            .disabled(isAddingFriend)
 
         }
     }
@@ -510,12 +512,12 @@ struct FriendDetailView: View {
     // MARK: - Helper Functions
 
     private func currency(_ amount: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
+        let id = "USD"
         return amount.formatted(.currency(code: id))
     }
 
     private func currencyPositive(_ amount: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
+        let id = "USD"
         let positiveAmount = abs(amount)
         return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
     }
@@ -591,16 +593,19 @@ struct FriendDetailView: View {
     }
 
     private func addAsFriend() async {
-        let newFriend = AccountFriend(
-            memberId: friend.id,
-            name: friend.name,
-            profileImageUrl: friend.profileImageUrl,
-            profileColorHex: friend.profileColorHex,
-            status: "friend"
-        )
-        store.addImportedFriend(newFriend)
-        await MainActor.run {
+        guard !isAddingFriend else { return }
+        isAddingFriend = true
+        let accountId = store.session?.account.id
+        defer { isAddingFriend = false }
+        do {
+            try await store.addUnlinkedFriend(friend)
+            guard !Task.isCancelled, store.session?.account.id == accountId else { return }
             Haptics.notify(.success)
+        } catch {
+            guard !Task.isCancelled, !(error is CancellationError), store.session?.account.id == accountId else { return }
+            linkError = FriendNameEditingLogic.displayError(from: error)
+            showErrorAlert = true
+            Haptics.notify(.error)
         }
     }
 
@@ -609,6 +614,7 @@ struct FriendDetailView: View {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: AppMetrics.FriendDetail.verticalStackSpacing) {
                     // Hero balance card with gradient
+                    LinkingOperationStatusView()
                     heroBalanceCard
 
                     // Tab selector
@@ -693,10 +699,8 @@ struct FriendDetailView: View {
                 message = "Delete \(displayName)? This will remove them from all your groups and expenses."
             }
 
-            if abs(netBalance) > 0.01 {
-                let currencyCode = Locale.current.currency?.identifier ?? "USD"
-                let formattedAmount = abs(netBalance).formatted(.currency(code: currencyCode))
-                message += "\n\n⚠️ You have unsettled expenses totaling \(formattedAmount). Deleting will remove these."
+            if !isSettled {
+                message += "\n\nReview the recorded balances before deleting: \(balanceOverview)."
             }
 
             return Text(message)
@@ -708,9 +712,12 @@ struct FriendDetailView: View {
     private func generateInviteLink() async {
         isGeneratingInviteLink = true
         showSuccessMessage = false
+        let accountId = store.session?.account.id
+        defer { isGeneratingInviteLink = false }
 
         do {
             let inviteLink = try await store.generateInviteLink(forFriend: friend)
+            guard !Task.isCancelled, store.session?.account.id == accountId else { return }
 
             await MainActor.run {
                 // Trigger success haptic
@@ -852,29 +859,14 @@ struct FriendDetailView: View {
 
                          // Balance display with gradient background
              VStack(spacing: AppMetrics.FriendDetail.balanceDisplaySpacing) {
-                 if isSettled {
-                     Text("All Settled")
-                         .font(.system(.title3, design: .rounded, weight: .semibold))
-                         .foregroundStyle(AppTheme.brand)
-                 } else {
-                     HStack(spacing: AppMetrics.FriendDetail.balanceIconSpacing) {
-                         Image(systemName: balanceIcon)
-                             .font(.system(size: AppMetrics.FriendDetail.balanceIconSize, weight: .semibold))
-                             .foregroundStyle(balanceColor)
-
-                         VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.balanceTextSpacing) {
-                             Text(balanceText)
-                                 .font(.system(.body, design: .rounded, weight: .medium))
-                                 .foregroundStyle(.primary)
-
-                             Text(balanceAmount)
-                                 .font(.system(.title, design: .rounded, weight: .bold))
-                                 .foregroundStyle(balanceColor)
-                         }
-
-                         Spacer()
-                     }
-                 }
+                 Text("Balances by currency")
+                     .font(.system(.body, design: .rounded, weight: .medium))
+                 Text(balanceOverview)
+                     .font(.system(.title3, design: .rounded, weight: .semibold))
+                     .foregroundStyle(.primary)
+                 Text("Positive balances are owed to you; negative balances are owed by you. Records with unknown currency are listed separately.")
+                     .font(.caption)
+                     .foregroundStyle(.secondary)
              }
              .frame(maxWidth: .infinity)
              .padding(.horizontal, AppMetrics.FriendDetail.balanceHorizontalPadding)
@@ -1020,12 +1012,6 @@ struct DirectExpensesView: View {
         self.onExpenseTap = onExpenseTap
     }
 
-    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
-
-    private func isFriend(_ memberId: UUID) -> Bool {
-        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
-    }
-
     fileprivate var directExpenses: [Expense] {
         store.expenses(forFriend: friend)
     }
@@ -1047,14 +1033,7 @@ struct DirectExpensesView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func getDirectGroup() -> SpendingGroup? {
-        return store.groups.first { group in
-            (group.isDirect ?? false) &&
-            group.members.count == 2 &&
-            group.members.contains(where: { isMe($0.id) }) &&
-            group.members.contains(where: { isFriend($0.id) })
-        }
-    }
+
 }
 
 // MARK: - Group Expenses View
@@ -1072,29 +1051,16 @@ struct GroupExpensesView: View {
     private var groupExpenses: [SpendingGroup: [Expense]] {
         var result: [SpendingGroup: [Expense]] = [:]
 
-        func isFriend(_ memberId: UUID) -> Bool {
-            if store.areSamePerson(memberId, friend.id) { return true }
-            if let accountFriendMemberId = friend.accountFriendMemberId {
-                return store.areSamePerson(memberId, accountFriendMemberId)
-            }
-            return false
-        }
-
-        // TODO: DATABASE_INTEGRATION - Replace store.groups with database query
-        // Example: SELECT * FROM groups WHERE member_ids CONTAINS friend.id AND is_direct = false
         for group in store.groups {
             // Skip direct groups - those are handled separately
             guard !(group.isDirect ?? false) else {
                 continue
             }
 
-            guard group.members.contains(where: { isFriend($0.id) }) else { continue }
-
-            // TODO: DATABASE_INTEGRATION - Replace store.expenses(in:) with database query
-            // Example: SELECT * FROM expenses WHERE group_id = group.id AND involved_member_ids CONTAINS friend.id
+            // Group member labels do not determine the identities on a historical expense.
             let expenses = store.expenses(in: group.id)
                 .filter { expense in
-                    expense.involvedMemberIds.contains { isFriend($0) }
+                    FriendExpenseIdentity(store: store, expense: expense, friend: friend).involvesFriend
                 }
 
             if !expenses.isEmpty {
@@ -1130,28 +1096,66 @@ struct GroupExpensesView: View {
 
 // MARK: - Supporting Views
 
+/// Every financial row is interpreted in the scope supplied by its expense owner.
+/// The same projection drives list inclusion, payer direction and both card summaries.
+@MainActor
+struct FriendExpenseIdentity {
+    let store: AppStore
+    let expense: Expense
+    let friend: GroupMember
+
+    func isMe(_ memberId: UUID) -> Bool {
+        store.isMe(memberId, in: expense)
+    }
+
+    func isFriend(_ memberId: UUID) -> Bool {
+        store.isFriendMember(memberId, friendId: friend.id,
+                             accountFriendMemberId: friend.accountFriendMemberId, in: expense)
+    }
+
+    var involvesFriend: Bool {
+        isFriend(expense.paidByMemberId) ||
+            expense.involvedMemberIds.contains(where: isFriend) ||
+            expense.splits.contains { isFriend($0.memberId) }
+    }
+
+    var friendSplitSummary: IdentitySplitSummary {
+        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isFriend)
+    }
+
+    var mySplitSummary: IdentitySplitSummary {
+        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isMe)
+    }
+
+    var relevantSplitSummary: IdentitySplitSummary {
+        isMe(expense.paidByMemberId) ? friendSplitSummary : mySplitSummary
+    }
+}
+
 struct DirectExpenseCard: View {
     @EnvironmentObject var store: AppStore
     let expense: Expense
     let friend: GroupMember
     let onTap: ((Expense) -> Void)?
 
-    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
-
-    private func isFriend(_ memberId: UUID) -> Bool {
-        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
+    private var identity: FriendExpenseIdentity {
+        FriendExpenseIdentity(store: store, expense: expense, friend: friend)
     }
 
+    private func isMe(_ memberId: UUID) -> Bool { identity.isMe(memberId) }
+
+    private func isFriend(_ memberId: UUID) -> Bool { identity.isFriend(memberId) }
+
     private var friendSplitSummary: IdentitySplitSummary {
-        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isFriend)
+        identity.friendSplitSummary
     }
 
     private var mySplitSummary: IdentitySplitSummary {
-        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isMe)
+        identity.mySplitSummary
     }
 
     private var relevantSplitSummary: IdentitySplitSummary {
-        isMe(expense.paidByMemberId) ? friendSplitSummary : mySplitSummary
+        identity.relevantSplitSummary
     }
 
     private var isRelevantSplitSettled: Bool {
@@ -1206,7 +1210,7 @@ struct DirectExpenseCard: View {
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.expenseAmountSpacing) {
-                    Text(primaryAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    Text(ExpenseMoneyText.format(primaryAmount, currencyCode: expense.currencyCode))
                         .font(.system(.body, design: .rounded, weight: .semibold))
                         .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
 
@@ -1254,14 +1258,11 @@ struct DirectExpenseCard: View {
     }
 
     private func currency(_ amount: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
-        return amount.formatted(.currency(code: id))
+        ExpenseMoneyText.format(amount, currencyCode: expense.currencyCode)
     }
 
     private func currencyPositive(_ amount: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
-        let positiveAmount = abs(amount)
-        return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
+        ExpenseMoneyText.format(abs(amount), currencyCode: expense.currencyCode)
     }
 
     private func memberName(for id: UUID) -> String {
@@ -1322,22 +1323,24 @@ struct GroupExpenseRow: View {
     let expense: Expense
     let friend: GroupMember
 
-    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
-
-    private func isFriend(_ memberId: UUID) -> Bool {
-        store.isFriendMember(memberId, friendId: friend.id, accountFriendMemberId: friend.accountFriendMemberId)
+    private var identity: FriendExpenseIdentity {
+        FriendExpenseIdentity(store: store, expense: expense, friend: friend)
     }
 
+    private func isMe(_ memberId: UUID) -> Bool { identity.isMe(memberId) }
+
+    private func isFriend(_ memberId: UUID) -> Bool { identity.isFriend(memberId) }
+
     private var friendSplitSummary: IdentitySplitSummary {
-        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isFriend)
+        identity.friendSplitSummary
     }
 
     private var mySplitSummary: IdentitySplitSummary {
-        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: isMe)
+        identity.mySplitSummary
     }
 
     private var relevantSplitSummary: IdentitySplitSummary {
-        isMe(expense.paidByMemberId) ? friendSplitSummary : mySplitSummary
+        identity.relevantSplitSummary
     }
 
     private var isRelevantSplitSettled: Bool {
@@ -1364,7 +1367,7 @@ struct GroupExpenseRow: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.groupExpenseAmountSpacing) {
-                Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
                     .font(.system(.body, design: .rounded, weight: .semibold))
                     .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
 
@@ -1410,14 +1413,11 @@ struct GroupExpenseRow: View {
     }
 
     private func currency(_ amount: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
-        return amount.formatted(.currency(code: id))
+        ExpenseMoneyText.format(amount, currencyCode: expense.currencyCode)
     }
 
     private func currencyPositive(_ amount: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
-        let positiveAmount = abs(amount)
-        return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
+        ExpenseMoneyText.format(abs(amount), currencyCode: expense.currencyCode)
     }
 
     private func memberName(for id: UUID) -> String {

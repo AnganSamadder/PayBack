@@ -409,24 +409,18 @@ final class DataImportServiceTests: XCTestCase {
 
     // MARK: - Invalid Data Handling Tests
 
-    func testParseExport_WithInvalidUUID_SkipsRow() throws {
+    func testParseExport_WithInvalidUUID_RejectsBackup() throws {
         let friendData = "not-a-uuid,Alice,,false,,"
         let text = createValidExportText(friends: friendData)
 
-        let parsed = try DataImportService.parseExport(text)
-
-        // Should skip invalid row
-        XCTAssertTrue(parsed.friends.isEmpty)
+        XCTAssertThrowsError(try DataImportService.parseExport(text))
     }
 
-    func testParseExport_WithMissingFields_SkipsRow() throws {
+    func testParseExport_WithMissingFields_RejectsBackup() throws {
         let friendData = "incomplete-data"
         let text = createValidExportText(friends: friendData)
 
-        let parsed = try DataImportService.parseExport(text)
-
-        // Should skip malformed row
-        XCTAssertTrue(parsed.friends.isEmpty)
+        XCTAssertThrowsError(try DataImportService.parseExport(text))
     }
 
     // MARK: - Bulk Import Integration Tests
@@ -582,7 +576,9 @@ final class DataImportServiceTests: XCTestCase {
 
         let result = await DataImportService.performBulkImport(
             from: parsedData,
-            accountService: mockAccountService
+            accountService: mockAccountService,
+            expectedAccountID: "test-account", expectedAccountEmail: "test@example.test",
+            isCurrent: { true }
         )
 
         switch result {

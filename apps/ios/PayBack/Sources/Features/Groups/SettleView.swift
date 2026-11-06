@@ -50,6 +50,7 @@ struct SettleView: View {
                         Button("Settle") {
                             showConfirmDialog = true
                         }
+                        .disabled(ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses) == nil)
                         .foregroundStyle(AppTheme.brand)
                         .font(.system(.subheadline, design: .rounded, weight: .semibold))
                     }
@@ -65,7 +66,7 @@ struct SettleView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This will mark \(selectedExpenseIds.count) expense\(selectedExpenseIds.count == 1 ? "" : "s") as settled. This action cannot be undone.")
+                Text("This will mark \(selectedExpenseIds.count) expense\(selectedExpenseIds.count == 1 ? "" : "s") as settled. Individual shares can be marked unpaid again from the expense details.")
             }
             .alert("Unable to Update Settlement", isPresented: $showSettlementError) {
                 Button("OK", role: .cancel) { }
@@ -81,10 +82,15 @@ struct SettleView: View {
         }
     }
 
+    private var selectedExpenses: [Expense] {
+        unsettledExpenses.filter { selectedExpenseIds.contains($0.id) }
+    }
+
     private var selectedTotal: Double {
-        SettlementAmountLogic.totalToSettle(
+        guard ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses) != nil else { return 0 }
+        return SettlementAmountLogic.totalToSettle(
             expenses: unsettledExpenses.filter { selectedExpenseIds.contains($0.id) },
-            isCurrentUser: store.isMe
+            isCurrentUserInExpense: { store.isMe($0, in: $1) }
         )
     }
 
@@ -94,7 +100,7 @@ struct SettleView: View {
                 .font(.system(.caption, design: .rounded, weight: .medium))
                 .foregroundStyle(.secondary)
 
-            Text(selectedTotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+            Text(ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses).map { ExpenseMoneyText.format(selectedTotal, currencyCode: $0) } ?? "Select one recorded currency")
                 .font(.system(.title, design: .rounded, weight: .bold))
                 .foregroundStyle(AppTheme.brand)
         }
@@ -165,7 +171,7 @@ struct SettleView: View {
 
                     Spacer()
 
-                    Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
                         .font(.system(.subheadline, design: .rounded, weight: .semibold))
                         .foregroundStyle(AppTheme.brand)
                 }
@@ -214,6 +220,7 @@ struct SettleView: View {
     }
 
     private func settleSelectedExpenses() async {
+        guard ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses) != nil else { return }
         for expenseId in selectedExpenseIds {
             if let expense = unsettledExpenses.first(where: { $0.id == expenseId }) {
                 // Only settle if current user can settle this expense

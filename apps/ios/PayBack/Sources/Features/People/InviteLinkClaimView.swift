@@ -18,7 +18,7 @@ struct InviteLinkClaimSuccessCopy: Equatable {
 enum InviteLinkClaimFailureCopy {
     static func message(mergingExistingFriend: Bool) -> String {
         if mergingExistingFriend {
-            return "We couldn’t claim this invite. Your existing friend was not changed."
+            return "Linking did not finish. Resume linking before changing your merge selection."
         }
 
         return "We couldn’t claim this invite. Please try again."
@@ -74,7 +74,7 @@ struct InviteLinkClaimMergeConfirmation: Identifiable, Equatable {
     var id: UUID { sourceMemberId }
     var title: String { "Merge \(sourceName) into \(destinationName)?" }
     var message: String {
-        "All expenses and balances assigned to \(sourceName) will move to \(destinationName), and \(sourceName) will be removed from your friends. This cannot be undone."
+        "Your record for \(sourceName) will be combined with \(destinationName) in your account. Original expenses and balances retain their amounts and settlement records. This cannot be undone."
     }
     var actionTitle: String { "Merge & Link" }
 }
@@ -94,11 +94,7 @@ enum InviteMergeClaimSource {
         for confirmation: InviteLinkClaimMergeConfirmation,
         availableFriends: [AccountFriend]
     ) -> AccountFriend? {
-        guard availableFriends.contains(where: {
-            $0.memberId == confirmation.sourceMemberId
-        }) else {
-            return nil
-        }
+        guard availableFriends.contains(where: { $0.memberId == confirmation.sourceMemberId }) else { return nil }
         return confirmation.sourceFriend
     }
 }
@@ -122,6 +118,7 @@ struct InviteLinkClaimView: View {
 
     // Merge Flow State
     @State private var showMergeSheet = false
+    @State private var showClaimConfirmation = false
     @State private var selectedMergeFriend: AccountFriend?
     @State private var mergedFriendName: String?
     @State private var mergeSelectionWarning: String?
@@ -157,6 +154,8 @@ struct InviteLinkClaimView: View {
             ZStack {
                 if needsAuthentication {
                     authenticationRequiredView
+                } else if store.isLinkingProcessing || store.linkingRecoveryMessage != nil {
+                    LinkingOperationStatusView(onRecovered: { dismiss() })
                 } else if isLoading {
                     loadingView
                 } else if claimSucceeded || showSuccess {
@@ -184,10 +183,9 @@ struct InviteLinkClaimView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Cancel") {
+                    Button(isProcessing ? "Close" : "Cancel") {
                         dismiss()
                     }
-                    .disabled(isProcessing)
                 }
             }
             .task {
@@ -220,10 +218,18 @@ struct InviteLinkClaimView: View {
             .onChange(of: store.friends) { _, _ in
                 validateSelectedMergeFriend()
             }
+            .confirmationDialog("Link this identity to your account?", isPresented: $showClaimConfirmation, titleVisibility: .visible) {
+                Button("Confirm & Link Account") { startClaimTask(merging: nil) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                if let token = validation?.token {
+                    Text("You are signed in as \(store.session?.account.email ?? "your account"). This attaches \(token.creatorName ?? token.creatorEmail)’s record named \(token.targetMemberName) to your account. Only continue if that record is you, even if this link was forwarded.")
+                }
+            }
             .alert(item: $mergeConfirmation) { confirmation in
                 Alert(
                     title: Text(confirmation.title),
-                    message: Text(confirmation.message),
+                    message: Text(confirmation.message + "\n\n" + attachmentConfirmation),
                     primaryButton: .destructive(Text(confirmation.actionTitle)) {
                         guard let confirmedFriend = InviteMergeClaimSource.validatedFriend(
                             for: confirmation,
@@ -240,7 +246,6 @@ struct InviteLinkClaimView: View {
                 )
             }
         }
-        .interactiveDismissDisabled(isProcessing)
     }
 
     // MARK: - Authentication Required View
@@ -309,9 +314,9 @@ struct InviteLinkClaimView: View {
             if let errorMessage {
                 errorSection(message: errorMessage)
             }
-            if let preview = preview {
-                expensePreviewSection(token: token, preview: preview)
-            }
+            Text(PeopleLinkingLogic.unavailableHistory)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             if !showSuccess {
                 actionButtons
             }
@@ -492,130 +497,6 @@ struct InviteLinkClaimView: View {
         }
     }
 
-    // MARK: - Expense Preview Section
-
-    @ViewBuilder
-    private func expensePreviewSection(token: InviteToken, preview: ExpensePreview) -> some View {
-        VStack(spacing: 16) {
-            // Summary header
-            VStack(spacing: 8) {
-                Text("Expense History")
-                    .font(.headline)
-
-                Text("Here's what will be linked to your account")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            // Balance card
-            balanceCard(balance: preview.totalBalance)
-
-            // Expense and group counts
-            HStack(spacing: 16) {
-                expenseCountCard(
-                    count: preview.expenseCount,
-                    label: "Expenses",
-                    icon: "dollarsign.circle"
-                )
-
-                expenseCountCard(
-                    count: preview.groupNames.count,
-                    label: "Groups",
-                    icon: "person.3"
-                )
-            }
-
-            // Friends section (Direct Groups)
-            if !preview.personalExpenses.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Friends")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-
-                    // Show the target member (friend in direct group)
-                    HStack(spacing: 12) {
-                        AvatarView(name: token.targetMemberName, size: 32)
-                        Text(token.targetMemberName)
-                            .font(.headline)
-                        Spacer()
-                    }
-                    .padding(.vertical, 4)
-                }
-                .padding()
-                .background(Color(.systemGray6))
-                .cornerRadius(12)
-            }
-
-            // Groups section (Multi-person groups only - exclude direct groups)
-            let multiPersonGroups = preview.groupNames.filter { groupName in
-                // Exclude direct groups (typically named after the friend)
-                groupName.lowercased().trimmingCharacters(in: .whitespaces) != token.targetMemberName.lowercased().trimmingCharacters(in: .whitespaces)
-            }
-
-            if !multiPersonGroups.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Groups")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-
-                    ForEach(multiPersonGroups, id: \.self) { groupName in
-                        HStack {
-                            Image(systemName: "person.3.fill")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(groupName)
-                                .font(.subheadline)
-                            Spacer()
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-                .padding()
-                .background(Color(.systemGray6))
-                .cornerRadius(12)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func balanceCard(balance: Double) -> some View {
-        VStack(spacing: 8) {
-            Text("Total Balance")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            Text(formatBalance(balance))
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(balanceColor(balance))
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-        .background(Color(.systemBackground))
-        .cornerRadius(12)
-        .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 2)
-    }
-
-    @ViewBuilder
-    private func expenseCountCard(count: Int, label: String, icon: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(AppTheme.brand)
-
-            Text("\(count)")
-                .font(.title2)
-                .fontWeight(.bold)
-
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(12)
-    }
-
     // MARK: - Error View
 
     @ViewBuilder
@@ -714,7 +595,7 @@ struct InviteLinkClaimView: View {
                         )
                     )
                 } else {
-                    startClaimTask(merging: nil)
+                    showClaimConfirmation = true
                 }
             }) {
                 HStack {
@@ -839,12 +720,14 @@ struct InviteLinkClaimView: View {
         subscriptionTask = nil
         isProcessing = true
         errorMessage = nil
+        let accountId = store.session?.account.id
+        defer { isProcessing = false }
 
         do {
             try await store.claimInviteToken(tokenId, mergingLocalFriend: mergeFriend)
 
             await MainActor.run {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, store.session?.account.id == accountId else { return }
                 isProcessing = false
                 errorMessage = nil
                 claimSucceeded = true
@@ -859,14 +742,10 @@ struct InviteLinkClaimView: View {
                 withAnimation(AppAnimation.springy) {
                     showSuccess = true
                 }
-
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    dismiss()
-                }
             }
         } catch {
             await MainActor.run {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, !(error is CancellationError), store.session?.account.id == accountId else { return }
                 isProcessing = false
                 errorMessage = error.userFacingMessage(
                     fallback: InviteLinkClaimFailureCopy.message(
@@ -878,21 +757,6 @@ struct InviteLinkClaimView: View {
                 startValidationSubscription(clearError: false)
                 claimTask = nil
             }
-        }
-    }
-
-    private func formatBalance(_ balance: Double) -> String {
-        if abs(balance) < 0.01 {
-            return "$0.00"
-        }
-
-        let currencyCode = Locale.current.currency?.identifier ?? "USD"
-        let formatted = abs(balance).formatted(.currency(code: currencyCode))
-
-        if balance >= 0 {
-            return "You're owed \(formatted)"
-        } else {
-            return "You owe \(formatted)"
         }
     }
 
@@ -946,11 +810,13 @@ struct InviteLinkClaimView: View {
     }
 
     private func mergeFriendBalanceText(_ friend: AccountFriend) -> String {
-        let balance = mergeFriendBalance(friend)
-        if abs(balance) < 0.01 {
-            return "Settled"
-        }
-        return formatBalance(balance)
+        let member = GroupMember(id: friend.memberId, name: friend.name, accountFriendMemberId: friend.memberId)
+        return ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: member), unknownExpenses: store.unknownCurrencyExpenses(forFriend: member))
+    }
+
+    private var attachmentConfirmation: String {
+        guard let token = validation?.token else { return "" }
+        return "Signed in as \(store.session?.account.email ?? "your account"). You are attaching \(token.creatorName ?? token.creatorEmail)’s record named \(token.targetMemberName) to your account. Only continue if that record is you."
     }
 
     private var mergeCardAccessibilityLabel: String {
@@ -958,7 +824,6 @@ struct InviteLinkClaimView: View {
             return "Merge with existing friend"
         }
 
-        let balance = mergeFriendBalance(selectedMergeFriend)
-        return "Merging with \(mergeFriendDisplayName(selectedMergeFriend)), \(formatBalance(balance))"
+        return "Merging with \(mergeFriendDisplayName(selectedMergeFriend)), \(mergeFriendBalanceText(selectedMergeFriend))"
     }
 }

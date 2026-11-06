@@ -308,10 +308,20 @@ targets:
       configs:
         Debug:
           PAYBACK_CONVEX_ENV: development
+          PAYBACK_CLERK_PUBLISHABLE_KEY: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA=="
+          PAYBACK_CLERK_ISSUER: "https://accurate-eagle-80.clerk.accounts.dev"
+          PAYBACK_AUTH_ASSOCIATED_DOMAIN: "webcredentials:accurate-eagle-80.clerk.accounts.dev"
         Internal:
           PAYBACK_CONVEX_ENV: development
+          PAYBACK_CLERK_PUBLISHABLE_KEY: "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA=="
+          PAYBACK_CLERK_ISSUER: "https://accurate-eagle-80.clerk.accounts.dev"
+          PAYBACK_AUTH_ASSOCIATED_DOMAIN: "webcredentials:accurate-eagle-80.clerk.accounts.dev"
         Release:
           PAYBACK_CONVEX_ENV: production
+          PAYBACK_CLERK_PUBLISHABLE_KEY: "$(PAYBACK_PRODUCTION_CLERK_PUBLISHABLE_KEY)"
+          PAYBACK_CLERK_ISSUER: "$(PAYBACK_PRODUCTION_CLERK_ISSUER)"
+          PAYBACK_AUTH_ASSOCIATED_DOMAIN: "$(PAYBACK_PRODUCTION_AUTH_ASSOCIATED_DOMAIN)"
+          PAYBACK_AUTH_CONTINUITY_VERIFIED: "$(PAYBACK_PRODUCTION_AUTH_CONTINUITY_VERIFIED)"
 
       # configs:
       #   Debug:
@@ -321,8 +331,10 @@ targets:
       #     SWIFT_OPTIMIZATION_LEVEL: -O
       #     SWIFT_COMPILATION_MODE: wholemodule
 
-    # Pre/Post build scripts
-    # preBuildScripts:
+    preBuildScripts:
+      - name: Validate authentication environment
+        script: python3 "$SRCROOT/scripts/validate-auth-config.py"
+        basedOnDependencyAnalysis: false
 
     # Info.plist configuration
     info:
@@ -339,6 +351,8 @@ targets:
             CFBundleURLSchemes:
               - payback
         PAYBACK_CONVEX_ENV: $(PAYBACK_CONVEX_ENV)
+        PAYBACK_CLERK_PUBLISHABLE_KEY: $(PAYBACK_CLERK_PUBLISHABLE_KEY)
+        PAYBACK_CLERK_ISSUER: $(PAYBACK_CLERK_ISSUER)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -364,7 +378,7 @@ targets:
       path: apps/ios/PayBack/PayBack.entitlements
       properties:
         com.apple.developer.associated-domains:
-          - webcredentials:accurate-eagle-80.clerk.accounts.dev
+          - $(PAYBACK_AUTH_ASSOCIATED_DOMAIN)
 
     # Scheme (target-specific)
     # scheme:

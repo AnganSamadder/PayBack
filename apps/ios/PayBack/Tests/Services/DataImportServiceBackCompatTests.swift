@@ -9,7 +9,7 @@ final class DataImportServiceBackCompatTests: XCTestCase {
     override func setUp() {
         super.setUp()
         Dependencies.reset()
-        store = AppStore(skipClerkInit: true)
+        store = makeAuthenticatedBackupTestStore()
     }
 
     override func tearDown() {
@@ -146,7 +146,7 @@ final class DataImportServiceBackCompatTests: XCTestCase {
 
         for variant in variants {
             Dependencies.reset()
-            store = AppStore(skipClerkInit: true)
+            store = makeAuthenticatedBackupTestStore()
 
             let exportText = try loadCSVFixture(variant)
             let result = await DataImportService.importData(from: exportText, into: store)
