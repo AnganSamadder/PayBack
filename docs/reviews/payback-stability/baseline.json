@@ -502,9 +502,7 @@
       "intended": "B sees request after registration",
       "actual": "Resumable signup deletes it",
       "evidence": "review_email_linking signup resumable=true",
-      "findings": [
-        "F01"
-      ]
+      "findings": ["F01"]
     },
     {
       "id": "C006",
@@ -514,9 +512,7 @@
       "intended": "B sees request after registration",
       "actual": "Legacy signup deletes it",
       "evidence": "review_email_linking signup resumable=false",
-      "findings": [
-        "F01"
-      ]
+      "findings": ["F01"]
     },
     {
       "id": "C007",
@@ -536,9 +532,7 @@
       "intended": "Confirm only after persistence",
       "actual": "Detail shows success through local import helper",
       "evidence": "FriendDetailView.swift:593",
-      "findings": [
-        "F23"
-      ]
+      "findings": ["F23"]
     },
     {
       "id": "C009",
@@ -548,9 +542,7 @@
       "intended": "No confirmed unsaved friend",
       "actual": "Local friend was appended before failing write",
       "evidence": "iOS executed testReview_FailedEmailFriendPersistenceDoesNotConfirmFriend",
-      "findings": [
-        "F23"
-      ]
+      "findings": ["F23"]
     },
     {
       "id": "C010",
@@ -580,9 +572,7 @@
       "intended": "Preserve ambiguity or create new ID",
       "actual": "Name projection makes one candidate look unique",
       "evidence": "AppStore.swift:1772,3083; executed iOS regression",
-      "findings": [
-        "F24"
-      ]
+      "findings": ["F24"]
     },
     {
       "id": "C013",
@@ -592,9 +582,7 @@
       "intended": "Keep people separate",
       "actual": "Remote normalization treats the other as self",
       "evidence": "AppStore.swift:2774; executed iOS regression",
-      "findings": [
-        "F02"
-      ]
+      "findings": ["F02"]
     },
     {
       "id": "C014",
@@ -624,9 +612,7 @@
       "intended": "Explicitly merge selected manual A into linked A",
       "actual": "Two visible rows remain; Settings cannot merge linked target",
       "evidence": "review_email_linking one-way acceptance; Settings eligibility",
-      "findings": [
-        "F27"
-      ]
+      "findings": ["F27"]
     },
     {
       "id": "C017",
@@ -766,9 +752,7 @@
       "intended": "Reject terminal action",
       "actual": "Accepted history changes to declined",
       "evidence": "review_email_linking stale decline",
-      "findings": [
-        "F15"
-      ]
+      "findings": ["F15"]
     },
     {
       "id": "C031",
@@ -778,9 +762,7 @@
       "intended": "Reject terminal action",
       "actual": "Accepted history is deleted",
       "evidence": "review_email_linking stale cancel",
-      "findings": [
-        "F15"
-      ]
+      "findings": ["F15"]
     },
     {
       "id": "C032",
@@ -790,9 +772,7 @@
       "intended": "Preserve proven link",
       "actual": "Visible has_linked_account changes true to false",
       "evidence": "review_email_linking legacy provenance pair",
-      "findings": [
-        "F15"
-      ]
+      "findings": ["F15"]
     },
     {
       "id": "C033",
@@ -832,9 +812,7 @@
       "intended": "Retain confirmed status",
       "actual": "Status becomes request_sent, linked flags survive",
       "evidence": "review_email_linking legacy repeat",
-      "findings": [
-        "F26"
-      ]
+      "findings": ["F26"]
     },
     {
       "id": "C037",
@@ -1094,9 +1072,7 @@
       "intended": "B sees shared history after claim",
       "actual": "Claim succeeds but V2 group/expense feed omits it",
       "evidence": "review_invite_claims inviter-owned invite/email pair",
-      "findings": [
-        "F05"
-      ]
+      "findings": ["F05"]
     },
     {
       "id": "C063",
@@ -1106,9 +1082,7 @@
       "intended": "B sees shared history after claim",
       "actual": "Alias-aware legacy query sees it; V2 feeds omit it",
       "evidence": "review_invite_claims third-party invite/email pair",
-      "findings": [
-        "F05"
-      ]
+      "findings": ["F05"]
     },
     {
       "id": "C064",
@@ -1118,9 +1092,7 @@
       "intended": "Recover same link or replace deliberately",
       "actual": "Fresh client UUID rejected; no in-app recover/revoke caller",
       "evidence": "linking_abuse_controls.test.ts:153 + iOS trace",
-      "findings": [
-        "F14"
-      ]
+      "findings": ["F14"]
     },
     {
       "id": "C065",
@@ -1170,9 +1142,7 @@
       "intended": "Preserve outstanding balance",
       "actual": "$10 paid + $15 unpaid becomes $25 unpaid",
       "evidence": "review_identity_merges mixed settlement",
-      "findings": [
-        "F03"
-      ]
+      "findings": ["F03"]
     },
     {
       "id": "C070",
@@ -1282,9 +1252,7 @@
       "intended": "Keep references required by foreign expense",
       "actual": "Foreign-reference preservation passes; separate visibility defect remains",
       "evidence": "local_friend_merge.test.ts:728",
-      "findings": [
-        "F05"
-      ]
+      "findings": ["F05"]
     },
     {
       "id": "C081",
@@ -1404,9 +1372,7 @@
       "intended": "Complete through safe continuation",
       "actual": "Permanent safe rejection; no continuation",
       "evidence": "local_friend_merge.test.ts:1081; claim helper",
-      "findings": [
-        "F16"
-      ]
+      "findings": ["F16"]
     },
     {
       "id": "C093",
@@ -1416,9 +1382,7 @@
       "intended": "Remain usable for normal history",
       "actual": "Worst-case priced lookups exceed 1,024",
       "evidence": "review_identity_merges 12-person regression",
-      "findings": [
-        "F16"
-      ]
+      "findings": ["F16"]
     },
     {
       "id": "C094",
@@ -1438,9 +1402,7 @@
       "intended": "One server ledger per equivalent pair",
       "actual": "Two direct containers inserted; not inherently duplicate debt",
       "evidence": "review_expenses_math stale clients",
-      "findings": [
-        "F20"
-      ]
+      "findings": ["F20"]
     },
     {
       "id": "C096",
@@ -1520,9 +1482,7 @@
       "intended": "Reject inconsistent financial identities",
       "actual": "C is persisted and gets new-expense visibility",
       "evidence": "review_expenses_math hidden third-party",
-      "findings": [
-        "F21"
-      ]
+      "findings": ["F21"]
     },
     {
       "id": "C104",
@@ -1532,9 +1492,7 @@
       "intended": "Reject unauthorized participant exposure",
       "actual": "Foreign payer/split accepted and visibility added",
       "evidence": "review_expenses_math foreign account",
-      "findings": [
-        "F21"
-      ]
+      "findings": ["F21"]
     },
     {
       "id": "C105",
@@ -1544,9 +1502,7 @@
       "intended": "Keep B unlinked; do not grant C access",
       "actual": "C reads newly created expense",
       "evidence": "review_expenses_math untrusted linked email",
-      "findings": [
-        "F22"
-      ]
+      "findings": ["F22"]
     },
     {
       "id": "C106",
@@ -1556,9 +1512,7 @@
       "intended": "Reject new direct expense without friendship",
       "actual": "Creator-relative is_current_user skips A check",
       "evidence": "review_expenses_math real accepted request lifecycle",
-      "findings": [
-        "F28"
-      ]
+      "findings": ["F28"]
     },
     {
       "id": "C107",
@@ -1568,9 +1522,7 @@
       "intended": "Allow unchanged historical owner edit",
       "actual": "Rejected as not a confirmed friend",
       "evidence": "review_expenses_math notes-only edit",
-      "findings": [
-        "F28"
-      ]
+      "findings": ["F28"]
     },
     {
       "id": "C108",
@@ -1590,9 +1542,7 @@
       "intended": "Reject/rebalance",
       "actual": "Negative \u22125 split on 20 total persists",
       "evidence": "review_expenses_math adjustments",
-      "findings": [
-        "F06"
-      ]
+      "findings": ["F06"]
     },
     {
       "id": "C110",
@@ -1602,9 +1552,7 @@
       "intended": "Reject nonfinite money",
       "actual": "Nonfinite numbers persist",
       "evidence": "review_expenses_math nonfinite money",
-      "findings": [
-        "F06"
-      ]
+      "findings": ["F06"]
     },
     {
       "id": "C111",
@@ -1614,9 +1562,7 @@
       "intended": "Deterministic minor-unit allocation",
       "actual": "Three repeating fractions; display sum $9.99",
       "evidence": "AddExpenseView.swift:217; test-only helper comparison",
-      "findings": [
-        "F29"
-      ]
+      "findings": ["F29"]
     },
     {
       "id": "C112",
@@ -1626,9 +1572,7 @@
       "intended": "Preserve currency and value",
       "actual": "Denomination absent; same number relabeled",
       "evidence": "AddExpenseView.swift:333,709; ExpenseDetailView.swift:142",
-      "findings": [
-        "F07"
-      ]
+      "findings": ["F07"]
     },
     {
       "id": "C113",
@@ -1678,9 +1622,7 @@
       "intended": "Discard old result",
       "actual": "Optional context is absent; A/B local friend lists can mix",
       "evidence": "Executed iOS reconciliation regression",
-      "findings": [
-        "F08"
-      ]
+      "findings": ["F08"]
     },
     {
       "id": "C118",
@@ -1690,9 +1632,7 @@
       "intended": "Stop or reject old writes",
       "actual": "No per-write expected actor/session fence",
       "evidence": "ConvexAccountService.swift:181",
-      "findings": [
-        "F09"
-      ]
+      "findings": ["F09"]
     },
     {
       "id": "C119",
@@ -1702,9 +1642,7 @@
       "intended": "Stop/reject later chunks",
       "actual": "Shared-client sequential loop lacks import-level captured fence; backend may reject some chunks",
       "evidence": "DataImportService.swift:1207",
-      "findings": [
-        "F09"
-      ]
+      "findings": ["F09"]
     },
     {
       "id": "C120",
@@ -1784,9 +1722,7 @@
       "intended": "Complete through targeted/resumable work",
       "actual": "Global owned-expense bound rejects",
       "evidence": "review_unlink_cleanup 513 expenses",
-      "findings": [
-        "F19"
-      ]
+      "findings": ["F19"]
     },
     {
       "id": "C128",
@@ -1796,9 +1732,7 @@
       "intended": "Handle current state or report failure",
       "actual": "Backend success:false is discarded; local tombstone hides server row",
       "evidence": "review_unlink_cleanup + iOS adapter trace",
-      "findings": [
-        "F18"
-      ]
+      "findings": ["F18"]
     },
     {
       "id": "C129",
@@ -1828,9 +1762,7 @@
       "intended": "Keep B detached",
       "actual": "Visibility is reconstructed and old data returns",
       "evidence": "review_unlink_cleanup settlement after clear",
-      "findings": [
-        "F17"
-      ]
+      "findings": ["F17"]
     },
     {
       "id": "C132",
@@ -1910,9 +1842,7 @@
       "intended": "Preserve distinct identities",
       "actual": "2 Bobs become 1 even under createNew",
       "evidence": "ImportExportHarness actual source",
-      "findings": [
-        "F10"
-      ]
+      "findings": ["F10"]
     },
     {
       "id": "C140",
@@ -1922,9 +1852,7 @@
       "intended": "Restore expense and context",
       "actual": "Expense skipped: group not found",
       "evidence": "ImportExportHarness actual source",
-      "findings": [
-        "F11"
-      ]
+      "findings": ["F11"]
     },
     {
       "id": "C141",
@@ -1934,9 +1862,7 @@
       "intended": "Preserve logical CSV record",
       "actual": "1 exported expense becomes 0 parsed",
       "evidence": "ImportExportHarness actual source",
-      "findings": [
-        "F12"
-      ]
+      "findings": ["F12"]
     },
     {
       "id": "C142",
@@ -1946,9 +1872,7 @@
       "intended": "Preserve notes",
       "actual": "Notes are absent after round-trip",
       "evidence": "ImportExportHarness actual source",
-      "findings": [
-        "F11"
-      ]
+      "findings": ["F11"]
     },
     {
       "id": "C143",
@@ -1958,9 +1882,7 @@
       "intended": "Keep group-only identity",
       "actual": "Local confirmed friend is created",
       "evidence": "ImportExportHarness actual source",
-      "findings": [
-        "F13"
-      ]
+      "findings": ["F13"]
     },
     {
       "id": "C144",
@@ -1980,9 +1902,7 @@
       "intended": "Production identity infrastructure",
       "actual": "Single pk_test_ key and accounts.dev issuer remain",
       "evidence": "AppConfig.swift:13; auth.config.ts:4; official Clerk docs",
-      "findings": [
-        "F25"
-      ]
+      "findings": ["F25"]
     },
     {
       "id": "C146",
@@ -2002,9 +1922,7 @@
       "intended": "Consent-bound claim only",
       "actual": "Previously forbidden group and expense become readable",
       "evidence": "review_security_auth bootstrap",
-      "findings": [
-        "F04"
-      ]
+      "findings": ["F04"]
     },
     {
       "id": "C148",
