@@ -2,12 +2,18 @@ import { validateExpenseMoney } from "./moneyValidation";
 import {
   assertExpectedActor,
   assertFinancialContract,
-  assertMemberFinancialContract
+  assertMemberFinancialContract,
+  withIdentityReadBudget
 } from "./financialContract";
 import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { assertAccountCanAcceptChanges, getCurrentUserOrThrow } from "./helpers";
+import {
+  assertAccountCanAcceptChanges,
+  getCurrentUserOrThrow,
+  createExpenseIdentityResolutionCache,
+  deriveOwnerScopedFinancialIdentityMap
+} from "./helpers";
 import {
   assertIdentityMaterializationReady,
   findDirectAccountByMemberId,
@@ -773,6 +779,11 @@ export const bulkImport = mutation({
 
     // Process Expenses
     const expenseOperations: ExpenseWriteOperation[] = [];
+    const restoreIdentityCache = createExpenseIdentityResolutionCache();
+    const restoreIdentityContext = withIdentityReadBudget(ctx, {
+      chargeQueries: (count) => chargeImportQueries(importBudget, count),
+      chargeRows: (rows) => accountImportRows(importBudget, rows)
+    });
     for (const expense of importedExpenses) {
       if (existingImportedExpenses.get(expense.id)) continue;
       if (fencedGroupClientIds.has(expense.group_id)) {
@@ -846,7 +857,7 @@ export const bulkImport = mutation({
 
       // Legacy backups may omit display rows, but never financial rows. Fill names only
       // from this authorized owner's existing context; preserve every split verbatim.
-      const restoredGroup = groupRef ? await ctx.db.get(groupRef) : null;
+      const restoredGroup = groupRef ? await restoreIdentityContext.db.get(groupRef) : null;
       for (const memberId of remappedParticipantIds) {
         if (remappedParticipants.some((participant) => participant.member_id === memberId))
           continue;
@@ -877,11 +888,26 @@ export const bulkImport = mutation({
         errors.push(`expenses[${expense.id}]: participant, payer and split identities must agree`);
         continue;
       }
-      if (groupRef) {
-        const allowed = new Set(
-          restoredGroup?.members.map((member) => normalizeMemberId(member.id))
+      if (restoredGroup) {
+        // Authoring can save canonical IDs while the group's historical roster still
+        // contains owner-local placeholders. Compare the live owner's scope only for
+        // authorization; never rewrite restored financial rows or the stored roster.
+        const groupIdentity = await deriveOwnerScopedFinancialIdentityMap(
+          restoreIdentityContext,
+          restoredGroup,
+          restoredGroup.members.map((member) => member.id),
+          new Set(),
+          restoreIdentityCache
         );
-        if (remappedInvolved.some((member) => !allowed.has(member))) {
+        const expenseIdentity = await deriveOwnerScopedFinancialIdentityMap(
+          restoreIdentityContext,
+          restoredGroup,
+          remappedInvolved,
+          new Set(),
+          restoreIdentityCache
+        );
+        const allowed = new Set(Object.values(groupIdentity));
+        if (remappedInvolved.some((member) => !allowed.has(expenseIdentity[member]))) {
           errors.push(`expenses[${expense.id}]: participant is not a group member`);
           continue;
         }

@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
+import type { Doc } from "../_generated/dataModel";
 import { modules } from "../test.setup";
 
 async function fixture() {
@@ -198,4 +199,248 @@ test("historical metadata retains original raw rows after group projection becom
   expect(response.expense.paid_by_member_id).toBe("x");
   expect(response.expense.splits).toEqual(original.splits);
   expect(response.expense.notes).toBe("Historical receipt");
+});
+
+test("create then delete then restore authorizes canonical history through the live group owner", async () => {
+  const { t } = await fixture();
+  const a = t.withIdentity({ subject: "a-auth", email: "a@example.com" });
+  const saved = await a.mutation(api.expenses.createV2, {
+    ...input(),
+    expected_account_id: "a-auth"
+  });
+  expect(saved.expense.involved_member_ids).toEqual(["a", "b"]);
+  await a.mutation(api.expenses.deleteExpense, {
+    id: saved.expense.id,
+    financial_contract_version: 2
+  });
+  await t.run(async (ctx) => {
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: 1
+    });
+  });
+  const record = restoreRecord(saved.expense);
+  const result = await a.mutation(api.bulkImport.bulkImport, {
+    financial_contract_version: 2,
+    expected_account_id: "a-auth",
+    friends: [],
+    groups: [],
+    expenses: [record]
+  });
+  expect(result.errors).toEqual([]);
+  expect(result.created.expenses).toBe(1);
+  const restored = await t.run((ctx) => ctx.db.query("expenses").unique());
+  expect(restored?.splits).toEqual(saved.expense.splits);
+  expect(restored?.involved_member_ids).toEqual(saved.expense.involved_member_ids);
+  expect(restored?.paid_by_member_id).toBe(saved.expense.paid_by_member_id);
+  expect(
+    (await t.run((ctx) => ctx.db.query("groups").unique()))?.members.map((row) => row.id)
+  ).toEqual(["a", "x"]);
+});
+
+function restoreRecord(e: Doc<"expenses">) {
+  return {
+    id: e.id,
+    group_id: e.group_id,
+    context_kind: e.context_kind,
+    description: e.description,
+    notes: e.notes,
+    date: e.date,
+    total_amount: e.total_amount,
+    currency_code: e.currency_code,
+    paid_by_member_id: e.paid_by_member_id,
+    involved_member_ids: e.involved_member_ids,
+    participant_member_ids: e.participant_member_ids,
+    participants: e.participants,
+    splits: e.splits,
+    is_settled: e.is_settled,
+    subexpenses: e.subexpenses
+  };
+}
+
+for (const invalidation of ["removed alias", "reclaimed raw member"] as const) {
+  test(`restore rejects canonical membership after ${invalidation}, including a forged incoming roster`, async () => {
+    const { t } = await fixture();
+    const a = t.withIdentity({ subject: "a-auth", email: "a@example.com" });
+    const saved = await a.mutation(api.expenses.createV2, {
+      ...input(),
+      expected_account_id: "a-auth"
+    });
+    await a.mutation(api.expenses.deleteExpense, {
+      id: saved.expense.id,
+      financial_contract_version: 2
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("identity_materialization_state", {
+        key: "member_identity_v3",
+        status: "ready",
+        phase: "complete",
+        updated_at: 1
+      });
+      if (invalidation === "removed alias") {
+        const friend = (await ctx.db.query("account_friends").unique())!;
+        await ctx.db.patch(friend._id, { local_alias_member_ids: [] });
+      } else {
+        const c = (await ctx.db
+          .query("accounts")
+          .withIndex("by_auth_id", (q) => q.eq("id", "c-auth"))
+          .unique())!;
+        await ctx.db.patch(c._id, { member_id: "x" });
+      }
+    });
+    const result = await a.mutation(api.bulkImport.bulkImport, {
+      financial_contract_version: 2,
+      expected_account_id: "a-auth",
+      friends: [],
+      groups: [
+        {
+          id: "group",
+          name: "Forged expanded roster",
+          members: [
+            { id: "a", name: "A" },
+            { id: "b", name: "B" }
+          ]
+        }
+      ],
+      expenses: [restoreRecord(saved.expense)]
+    });
+    expect(result.errors).toEqual(["expenses[expense]: participant is not a group member"]);
+    expect(result.created.expenses).toBe(0);
+    expect(await t.run((ctx) => ctx.db.query("expenses").collect())).toEqual([]);
+    expect(
+      (await t.run((ctx) => ctx.db.query("groups").unique()))?.members.map((row) => row.id)
+    ).toEqual(["a", "x"]);
+  });
+}
+
+test("full clear then portable restore retains explicit raw and canonical group history without link authority", async () => {
+  const { t } = await fixture();
+  const a = t.withIdentity({ subject: "a-auth", email: "a@example.com" });
+  const saved = await a.mutation(api.expenses.createV2, {
+    ...input(),
+    expected_account_id: "a-auth"
+  });
+  await t.run(async (ctx) => {
+    await ctx.db.insert("identity_materialization_state", {
+      key: "member_identity_v3",
+      status: "ready",
+      phase: "complete",
+      updated_at: 1
+    });
+    await ctx.db.insert("sync_materialization_state", {
+      key: "group_visibility_v1",
+      status: "ready",
+      processed: 0,
+      updated_at: 1
+    });
+  });
+  const cap = { financial_contract_version: 2, expected_account_id: "a-auth" };
+  for (const endpoint of [
+    api.expenses.clearAllForUserV2,
+    api.groups.clearAllForUserV2,
+    api.friends.clearAllForUserV2
+  ]) {
+    let progress = await a.mutation(endpoint, cap);
+    for (let step = 0; progress.inProgress && step < 20; step++)
+      progress = await a.mutation(endpoint, { ...cap, cutoff: progress.cutoff });
+    expect(progress.inProgress).toBe(false);
+  }
+  expect(await t.run((ctx) => ctx.db.query("account_friends").collect())).toEqual([]);
+  expect(await t.run((ctx) => ctx.db.query("groups").collect())).toEqual([]);
+  // Portable export materializes CURRENT group member representatives explicitly.
+  // It retains X alongside B; it sends neither derived maps nor trusted linkage.
+  const record = restoreRecord(saved.expense);
+  record.participants = record.participants.map(({ member_id, name }) => ({ member_id, name }));
+  const result = await a.mutation(api.bulkImport.bulkImport, {
+    ...cap,
+    friends: [],
+    groups: [
+      {
+        id: "group",
+        name: "Shared",
+        members: [
+          { id: "a", name: "A" },
+          { id: "x", name: "B (original)" },
+          { id: "b", name: "B" }
+        ]
+      }
+    ],
+    expenses: [record]
+  });
+  expect(result.errors).toEqual([]);
+  expect(result.created).toEqual({ friends: 0, groups: 1, expenses: 1 });
+  const restored = (await t.run((ctx) => ctx.db.query("expenses").unique()))!;
+  expect(restored.splits).toEqual(saved.expense.splits);
+  expect(restored.paid_by_member_id).toBe(saved.expense.paid_by_member_id);
+  expect(await t.run((ctx) => ctx.db.query("account_friends").collect())).toEqual([]);
+  expect(await t.run((ctx) => ctx.db.query("member_aliases").collect())).toEqual([]);
+  expect(await t.run((ctx) => ctx.db.query("owner_member_aliases").collect())).toEqual([]);
+});
+
+test("owner-local target pending globally blocks reads and expense edits before authorization", async () => {
+  const { t } = await fixture();
+  const a = t.withIdentity({ subject: "a-auth", email: "a@example.com" });
+  const saved = await a.mutation(api.expenses.createV2, {
+    ...input(),
+    expected_account_id: "a-auth"
+  });
+  await t.run(async (ctx) => {
+    const accounts = await ctx.db.query("accounts").collect();
+    const b = accounts.find((row) => row.id === "b-auth")!;
+    const c = accounts.find((row) => row.id === "c-auth")!;
+    // Existing history may retain X while the live owner-local graph points to B.
+    await ctx.db.patch(saved.expense._id, {
+      paid_by_member_id: "x",
+      involved_member_ids: ["a", "x"],
+      participant_member_ids: ["a", "x"],
+      participants: [
+        { member_id: "a", name: "A" },
+        { member_id: "x", name: "B" }
+      ],
+      splits: saved.expense.splits.map((row) => ({
+        ...row,
+        member_id: row.member_id === "b" ? "x" : row.member_id
+      }))
+    });
+    const operation = await ctx.db.insert("identity_operations", {
+      actor_id: b._id,
+      creator_id: c._id,
+      kind: "claim",
+      source_member_ids: ["other-placeholder"],
+      target_member_id: "b",
+      generation: "pending-global",
+      cutoff: Date.now(),
+      phase: "expenses",
+      member_index: 0,
+      attempts: 0,
+      created_at: 1,
+      updated_at: 1
+    });
+    await ctx.db.insert("identity_operation_members", {
+      operation_id: operation,
+      member_id: "b",
+      required_financial_contract: 2,
+      active: true
+    });
+  });
+  const cap = { financial_contract_version: 2, expected_account_id: "a-auth" };
+  for (const action of [
+    () => a.query(api.expenses.list, { financial_contract_version: 2 }),
+    () =>
+      a.mutation(api.expenses.setSettlementState, {
+        ...cap,
+        expenseId: "expense",
+        splitIds: ["sx"],
+        settled: true
+      }),
+    () => a.mutation(api.expenses.deleteExpense, { ...cap, id: "expense" }),
+    () => a.mutation(api.expenses.deleteExpenses, { ...cap, ids: ["expense"] }),
+    () => a.mutation(api.expenses.create, { ...input(), ...cap, notes: "changed" })
+  ])
+    await expect(action()).rejects.toThrow("IDENTITY_OPERATION_PENDING");
+  const unchanged = (await t.run((ctx) => ctx.db.query("expenses").unique()))!;
+  expect(unchanged.notes).toBeUndefined();
+  expect(unchanged.splits.every((row) => !row.is_settled)).toBe(true);
 });

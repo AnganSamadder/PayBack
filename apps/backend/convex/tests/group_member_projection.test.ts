@@ -206,13 +206,13 @@ test("an oversized projection page supports smaller-page continuation without ga
   ).rejects.toThrow("GROUP_PROJECTION_PAGE_TOO_LARGE");
   let page = await f.b.query(api.groups.listV2, {
     financial_contract_version: 2,
-    paginationOpts: { cursor: null, numItems: 4 }
+    paginationOpts: { cursor: null, numItems: 2 }
   });
   const ids = page.page.map((group) => group.id);
-  for (let i = 0; i < 4 && !page.isDone; i++) {
+  for (let i = 0; i < 8 && !page.isDone; i++) {
     page = await f.b.query(api.groups.listV2, {
       financial_contract_version: 2,
-      paginationOpts: { cursor: page.continueCursor, numItems: 4 },
+      paginationOpts: { cursor: page.continueCursor, numItems: 2 },
       expectedRevision: page.revision
     });
     ids.push(...page.page.map((group) => group.id));

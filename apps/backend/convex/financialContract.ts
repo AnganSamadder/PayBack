@@ -1,4 +1,4 @@
-import type { Value } from "convex/values";
+import { getConvexSize, type Value } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { DatabaseReader, MutationCtx, QueryCtx } from "./_generated/server";
 import { normalizeMemberIds, normalizeMemberId, findAccountByMemberId } from "./identity";
@@ -23,7 +23,14 @@ export async function pendingIdentityOperation(
   ctx: Pick<QueryCtx, "db">,
   accountId: Id<"accounts">
 ): Promise<Doc<"identity_operations"> | null> {
-  for (const phase of ["groups", "expenses", "failed"] as const) {
+  for (const phase of [
+    "groups",
+    "expenses",
+    "owner_aliases",
+    "dependent_references",
+    "dependent_reset",
+    "failed"
+  ] as const) {
     const actor = await ctx.db
       .query("identity_operations")
       .withIndex("by_actor_phase", (q) =>
@@ -82,10 +89,14 @@ export async function assertMemberFinancialContract(
   ctx: Pick<QueryCtx, "db">,
   memberIds: readonly string[],
   version?: number,
-  ownerId?: Id<"accounts">
+  ownerId?: Id<"accounts">,
+  readyMembers = new Set<string>()
 ): Promise<void> {
   if (ownerId) await assertSourceOwnerFinancialReady(ctx, ownerId);
-  if ((version ?? 0) >= FINANCIAL_CONTRACT_VERSION) return;
+  if ((version ?? 0) >= FINANCIAL_CONTRACT_VERSION) {
+    await assertMemberIdentityReady(ctx, memberIds, ownerId, readyMembers);
+    return;
+  }
   for (const memberId of normalizeMemberIds([...memberIds])) {
     const global = await ctx.db
       .query("identity_operation_members")
@@ -105,6 +116,83 @@ export async function assertMemberFinancialContract(
           .withIndex("by_member", (q) => q.eq("member_id", memberId))
           .first();
     if (global || local) throw new Error(FINANCIAL_CONTRACT_UPGRADE_REQUIRED);
+  }
+  await assertMemberIdentityReady(ctx, memberIds, ownerId, readyMembers);
+}
+
+/** Permanent capability markers and active reconciliation barriers have separate lifetimes. */
+export async function assertMemberIdentityReady(
+  ctx: Pick<QueryCtx, "db">,
+  memberIds: readonly string[],
+  ownerId?: Id<"accounts">,
+  readyMembers = new Set<string>()
+): Promise<void> {
+  let bytes = 0;
+  const budgeted = withIdentityReadBudget(ctx, {
+    chargeRows: (rows) => {
+      bytes += rows.reduce<number>((total, row) => total + getConvexSize(row), 0);
+      if (bytes > 4 * 1024 * 1024)
+        throw new Error(
+          "IDENTITY_OPERATION_PENDING: Legacy identity barrier reads require maintenance."
+        );
+    }
+  });
+  const operations = new Map<string, boolean>();
+  for (const memberId of normalizeMemberIds([...memberIds])) {
+    for (const scope of ownerId ? [undefined, ownerId] : [undefined]) {
+      const key = `${scope ?? "global"}:${memberId}`;
+      if (readyMembers.has(key)) continue;
+      const active = await budgeted.db
+        .query("identity_operation_members")
+        .withIndex("by_member_owner_active", (q) =>
+          q.eq("member_id", memberId).eq("local_owner_id", scope).eq("active", true)
+        )
+        .first();
+      if (active) throw new Error(IDENTITY_OPERATION_PENDING);
+      // Documents written before the active index must be checked against operation truth.
+      // Never let an old completed marker hide a newer pending operation.
+      const legacy = await budgeted.db
+        .query("identity_operation_members")
+        .withIndex("by_member_owner_active", (q) =>
+          q.eq("member_id", memberId).eq("local_owner_id", scope).eq("active", undefined)
+        )
+        .take(33);
+      if (legacy.length > 32)
+        throw new Error(
+          "IDENTITY_OPERATION_PENDING: Legacy identity barriers require maintenance before this snapshot can publish."
+        );
+      for (const marker of legacy) {
+        if (!operations.has(marker.operation_id)) {
+          const operation = await budgeted.db.get(marker.operation_id);
+          operations.set(
+            marker.operation_id,
+            !operation || (operation.phase !== "complete" && !operation.terminal_reconciled)
+          );
+        }
+        if (operations.get(marker.operation_id)) throw new Error(IDENTITY_OPERATION_PENDING);
+      }
+      if (scope) {
+        const dependents = await budgeted.db
+          .query("identity_operation_dependents")
+          .withIndex("by_owner_member", (q) => q.eq("owner_id", scope).eq("member_id", memberId))
+          .take(33);
+        if (dependents.length > 32)
+          throw new Error(
+            "IDENTITY_OPERATION_PENDING: Dependent identity barriers require maintenance."
+          );
+        for (const item of dependents) {
+          if (!operations.has(item.operation_id)) {
+            const operation = await budgeted.db.get(item.operation_id);
+            operations.set(
+              item.operation_id,
+              !operation || (operation.phase !== "complete" && !operation.terminal_reconciled)
+            );
+          }
+          if (operations.get(item.operation_id)) throw new Error(IDENTITY_OPERATION_PENDING);
+        }
+      }
+      readyMembers.add(key);
+    }
   }
 }
 

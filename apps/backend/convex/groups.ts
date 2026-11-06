@@ -2,6 +2,7 @@ import {
   assertFinancialContract,
   assertExpectedActor,
   assertMemberFinancialContract,
+  assertMemberIdentityReady,
   withIdentityReadBudget,
   resolveLiveAccountForMember
 } from "./financialContract";
@@ -68,6 +69,21 @@ async function canReadGroup(
   return false;
 }
 
+/** Public mutations must also fence global claims of owner-local alias targets. */
+async function assertGroupMemberFinancialContract(
+  ctx: Pick<QueryCtx, "db">,
+  memberIds: readonly string[],
+  version: number | undefined,
+  ownerId: Doc<"accounts">["_id"]
+) {
+  const ready = new Set<string>();
+  await assertMemberFinancialContract(ctx, memberIds, version, ownerId, ready);
+  const owner = await ctx.db.get(ownerId);
+  if (!owner) return;
+  const aliases = await getOwnerLocalAliasMap(ctx, owner.email, { memberIds });
+  await assertMemberIdentityReady(ctx, [...aliases.values()], ownerId, ready);
+}
+
 export const GROUP_PROJECTION_PAGE_TOO_LARGE =
   "GROUP_PROJECTION_PAGE_TOO_LARGE: Retry with a smaller groups:listV2 page; a single oversized group requires maintenance.";
 const MAX_LEGACY_GROUP_SOURCE_ROWS = 64;
@@ -120,7 +136,8 @@ async function projectReadableGroupPage(
         budgeted,
         group.members.map((member) => member.id),
         version,
-        group.owner_id
+        group.owner_id,
+        cache.readyIdentityMembers
       );
       if (group.deletion_token) continue;
       const member_identity_map = await deriveOwnerScopedFinancialIdentityMap(
@@ -445,7 +462,7 @@ export const create = mutation({
     const { identity, user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found in database");
 
-    await assertMemberFinancialContract(
+    await assertGroupMemberFinancialContract(
       ctx,
       args.members.map((member) => member.id),
       args.financial_contract_version,
@@ -464,7 +481,7 @@ export const create = mutation({
           throw new Error("Forbidden: cannot update a group you do not own");
         }
         assertGroupWritable(existing);
-        await assertMemberFinancialContract(
+        await assertGroupMemberFinancialContract(
           ctx,
           existing.members.map((member) => member.id),
           args.financial_contract_version,
@@ -683,7 +700,7 @@ export const removeMemberAndExpenses = mutation({
       .withIndex("by_client_id", (query) => query.eq("id", args.id))
       .unique();
     if (!group) throw new Error("Group not found");
-    await assertMemberFinancialContract(
+    await assertGroupMemberFinancialContract(
       ctx,
       group.members.map((member) => member.id),
       args.financial_contract_version,
@@ -759,7 +776,7 @@ export const deleteGroup = mutation({
       .unique();
 
     if (!group) return;
-    await assertMemberFinancialContract(
+    await assertGroupMemberFinancialContract(
       ctx,
       group.members.map((member) => member.id),
       args.financial_contract_version,
@@ -812,7 +829,7 @@ export const deleteGroups = mutation({
         .unique();
 
       if (!group) continue;
-      await assertMemberFinancialContract(
+      await assertGroupMemberFinancialContract(
         ctx,
         group.members.map((member) => member.id),
         args.financial_contract_version,
@@ -913,6 +930,12 @@ async function processClearAllGroupStep(
     .filter((q: any) => q.lte(q.field("created_at"), cutoff))
     .first();
   if (ownedGroup) {
+    await assertGroupMemberFinancialContract(
+      ctx,
+      ownedGroup.members.map((member: { id: string }) => member.id),
+      2,
+      ownedGroup.owner_id
+    );
     const fenced = await fenceGroupForDeletion(ctx, ownedGroup);
     await processGroupCascadeStep(ctx, fenced.group);
     return { inProgress: true, processed: 1, cutoff };
@@ -934,6 +957,12 @@ async function processClearAllGroupStep(
     return { inProgress: false, processed: 0, cutoff };
   }
 
+  await assertGroupMemberFinancialContract(
+    ctx,
+    group.members.map((member: { id: string }) => member.id),
+    2,
+    group.owner_id
+  );
   const membershipIds = await groupMemberIdsForAccount(ctx, group, user);
   const remainingMembers = group.members.filter(
     (member) => !membershipIds.has(normalizeMemberId(member.id))
@@ -1075,7 +1104,7 @@ export const leaveGroup = mutation({
       .unique();
 
     if (!group) throw new Error("Group not found");
-    await assertMemberFinancialContract(
+    await assertGroupMemberFinancialContract(
       ctx,
       group.members.map((member) => member.id),
       args.financial_contract_version,

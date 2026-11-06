@@ -20,7 +20,6 @@ import { v, type Infer } from "convex/values";
 import {
   deriveExpenseFinancialIdentityMap,
   deriveOwnerScopedFinancialIdentityMap,
-  resolveExpenseFinancialProjectionOwner,
   createExpenseIdentityResolutionCache,
   type ExpenseIdentityResolutionCache,
   canonicalizeExpenseParticipantLinks,
@@ -68,7 +67,7 @@ async function canReadExpense(
   user: Doc<"accounts">,
   expense: Doc<"expenses">,
   version?: number,
-  cache?: ExpenseIdentityResolutionCache
+  cache: ExpenseIdentityResolutionCache = createExpenseIdentityResolutionCache()
 ): Promise<boolean> {
   await assertMemberFinancialContract(
     ctx,
@@ -82,7 +81,9 @@ async function canReadExpense(
   );
   if (expense.currency_code !== undefined && (version ?? 0) < 2)
     throw new Error("FINANCIAL_CONTRACT_UPGRADE_REQUIRED");
-  await resolveExpenseFinancialProjectionOwner(ctx, expense, cache);
+  // Check both raw identities and owner-local targets before filtering access.
+  // A pending global claim may otherwise hide a row before its projection is gated.
+  await deriveExpenseFinancialIdentityMap(ctx, expense, cache);
   if (await isExpenseAttachedToDeletingGroup(ctx, expense)) return false;
   return (
     await resolveActiveExpenseParticipantAccounts(ctx, expense, new Set(), cache, user._id)
@@ -538,7 +539,7 @@ const expenseMutationDefinition = {
       .withIndex("by_client_id", (q) => q.eq("id", args.id))
       .unique();
 
-    if (existing) await resolveAuthoritativeExpenseOwnerAccount(ctx, existing);
+    if (existing) await deriveExpenseFinancialIdentityMap(ctx, existing);
     if (!existing) validateExpenseMoney(args, "authoring");
     if (!existing && (args.financial_contract_version ?? 0) < 2)
       throw new Error("FINANCIAL_CONTRACT_UPGRADE_REQUIRED");
@@ -1777,6 +1778,8 @@ export const deleteExpense = mutation({
 
     if (!expense) return;
 
+    await deriveExpenseFinancialIdentityMap(ctx, expense);
+
     const isCreator =
       (await resolveAuthoritativeExpenseOwnerAccount(ctx, expense))?._id === user._id;
     await assertMemberFinancialContract(
@@ -1821,6 +1824,7 @@ export const deleteExpenses = mutation({
     const userMemberIds = await buildUserEquivalentMemberIds(ctx.db, user);
 
     const operations: ExpenseWriteOperation[] = [];
+    const identityCache = createExpenseIdentityResolutionCache();
     for (const id of new Set(args.ids)) {
       const expense = await ctx.db
         .query("expenses")
@@ -1828,6 +1832,8 @@ export const deleteExpenses = mutation({
         .unique();
 
       if (!expense) continue;
+
+      await deriveExpenseFinancialIdentityMap(ctx, expense, identityCache);
 
       const isCreator =
         (await resolveAuthoritativeExpenseOwnerAccount(ctx, expense))?._id === user._id;

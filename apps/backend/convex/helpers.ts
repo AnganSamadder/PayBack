@@ -1,5 +1,6 @@
 import {
   assertFinancialContract,
+  assertMemberIdentityReady,
   FINANCIAL_CONTRACT_VERSION,
   resolveLiveAccountForMember,
   withIdentityReadBudget,
@@ -120,6 +121,7 @@ export type ExpenseIdentityResolutionCache = {
   ownerLocalAliases: Map<string, Promise<Map<string, string>>>;
   ownerLocalAliasSeeds: Map<string, Set<string>>;
   ownerFinancialProjectionReady: Map<string, Promise<void>>;
+  readyIdentityMembers: Set<string>;
   localAliasQueries: number;
   localAliasRows: number;
   localAliasBytes: number;
@@ -134,6 +136,7 @@ export function createExpenseIdentityResolutionCache(): ExpenseIdentityResolutio
     ownerLocalAliases: new Map(),
     ownerLocalAliasSeeds: new Map(),
     ownerFinancialProjectionReady: new Map(),
+    readyIdentityMembers: new Set(),
     localAliasQueries: 0,
     localAliasRows: 0,
     localAliasBytes: 0
@@ -421,6 +424,12 @@ export async function deriveOwnerScopedFinancialIdentityMap(
   if (rawIds.length > MAX_EXPENSE_VIEWERS)
     throw new Error("Financial identity projection exceeds supported participant bound");
   const owner = await resolveExpenseFinancialProjectionOwner(ctx, ownerSource, cache);
+  await assertMemberIdentityReady(
+    withIdentityReadBudget(ctx, expenseIdentityBudget(cache)!),
+    rawIds,
+    owner?._id,
+    cache.readyIdentityMembers
+  );
   const localAliases = owner
     ? await resolveOwnerLocalExpenseAliases(
         ctx,
@@ -429,6 +438,12 @@ export async function deriveOwnerScopedFinancialIdentityMap(
         cache
       )
     : new Map<string, string>();
+  await assertMemberIdentityReady(
+    withIdentityReadBudget(ctx, expenseIdentityBudget(cache)!),
+    [...localAliases.values()],
+    owner?._id,
+    cache.readyIdentityMembers
+  );
   const result = new Map<string, string>();
   for (const raw of rawIds) {
     if (inactive.has(raw)) {
@@ -578,7 +593,8 @@ export async function resolveActiveExpenseParticipantUserIds(
 export async function reconcileExpenseVisibility(
   ctx: MutationCtx,
   expense: ExpenseVisibilitySource,
-  excludedAccountIds: ReadonlySet<string> = new Set()
+  excludedAccountIds: ReadonlySet<string> = new Set(),
+  options: { forceRevision?: boolean } = {}
 ) {
   const accounts = await resolveActiveExpenseParticipantAccounts(ctx, expense, excludedAccountIds);
   const matches = await ctx.db
@@ -592,7 +608,8 @@ export async function reconcileExpenseVisibility(
     {
       kind: "visibility",
       expense: storedExpense,
-      viewerAccountIds: accounts.map((account) => account._id)
+      viewerAccountIds: accounts.map((account) => account._id),
+      forceRevision: options.forceRevision
     }
   ]);
 }

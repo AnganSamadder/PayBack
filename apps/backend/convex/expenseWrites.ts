@@ -45,6 +45,7 @@ export type ExpenseWriteOperation =
       kind: "visibility";
       expense: Doc<"expenses">;
       viewerAccountIds: readonly Id<"accounts">[];
+      forceRevision?: boolean;
     }
   | {
       kind: "delete";
@@ -381,6 +382,10 @@ async function prepareOperation(
       ? (operation.patch.updated_at ?? Date.now())
       : operation.expense.updated_at;
   if (operation.kind === "visibility") {
+    if (operation.forceRevision) {
+      for (const accountId of beforeAccountIds) revisionAccountIds.add(accountId);
+      for (const accountId of afterAccountIds) revisionAccountIds.add(accountId);
+    }
     for (const accountId of beforeAccountIds) {
       if (!afterAccountIds.has(accountId)) revisionAccountIds.add(accountId);
     }

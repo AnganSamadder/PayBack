@@ -15,6 +15,8 @@ export default defineSchema({
     friend_id: v.id("account_friends"),
     member_id: v.string(),
     member_ids: v.array(v.string()),
+    local_member_ids: v.optional(v.array(v.string())),
+    preserve_linked_history: v.optional(v.boolean()),
     linked: v.boolean(),
     phase: v.union(
       v.literal("preflight_groups"),
@@ -69,7 +71,8 @@ export default defineSchema({
   })
     .index("by_owner_member", ["owner_email", "member_id"])
     .index("by_friend", ["friend_id"])
-    .index("by_owner_target", ["owner_email", "target_member_id"]),
+    .index("by_owner_target", ["owner_email", "target_member_id"])
+    .index("by_target", ["target_member_id"]),
   member_references: defineTable({
     entity_kind: v.union(v.literal("group"), v.literal("expense")),
     entity_document_id: v.string(),
@@ -91,6 +94,17 @@ export default defineSchema({
     cursor: v.optional(v.string()),
     updated_at: v.number()
   }).index("by_key", ["key"]),
+  identity_operation_dependents: defineTable({
+    operation_id: v.id("identity_operations"),
+    owner_id: v.id("accounts"),
+    member_id: v.string(),
+    phase: v.union(v.literal("groups"), v.literal("expenses"), v.literal("complete")),
+    cursor: v.optional(v.string())
+  })
+    .index("by_operation", ["operation_id"])
+    .index("by_owner_member", ["owner_id", "member_id"])
+    .index("by_operation_phase", ["operation_id", "phase"])
+    .index("by_operation_owner_member", ["operation_id", "owner_id", "member_id"]),
   identity_operations: defineTable({
     actor_id: v.id("accounts"),
     creator_id: v.id("accounts"),
@@ -108,6 +122,9 @@ export default defineSchema({
     phase: v.union(
       v.literal("groups"),
       v.literal("expenses"),
+      v.literal("owner_aliases"),
+      v.literal("dependent_references"),
+      v.literal("dependent_reset"),
       v.literal("complete"),
       v.literal("failed")
     ),
@@ -135,10 +152,12 @@ export default defineSchema({
     operation_id: v.id("identity_operations"),
     member_id: v.string(),
     required_financial_contract: v.number(),
+    active: v.optional(v.boolean()),
     local_owner_id: v.optional(v.id("accounts"))
   })
     .index("by_member", ["member_id"])
     .index("by_member_owner", ["member_id", "local_owner_id"])
+    .index("by_member_owner_active", ["member_id", "local_owner_id", "active"])
     .index("by_operation", ["operation_id"]),
 
   accounts: defineTable({

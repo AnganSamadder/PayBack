@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { getConvexSize, v } from "convex/values";
 import {
   internalAction,
   internalMutation,
@@ -14,14 +14,16 @@ import {
   assertFinancialContract,
   pendingIdentityOperation,
   raiseFinancialContract,
-  resolveLiveAccountForMember
+  resolveLiveAccountForMember,
+  withIdentityReadBudget
 } from "./financialContract";
 import {
   assertMemberReferencesReady,
   deleteMemberReferences,
   expenseReferenceMemberIds
 } from "./memberReferences";
-import { normalizeMemberIds } from "./identity";
+import { normalizeMemberIds, findAccountsByEmailIdentity } from "./identity";
+import { getOwnerLocalAliasMap } from "./aliases";
 import {
   getCurrentUserOrThrow,
   isAccountDeletionFenced,
@@ -85,7 +87,12 @@ export async function createIdentityOperation(
     throw new Error("Account deletion takes precedence over linking");
   const now = Date.now();
   const lastReference = await ctx.db.query("member_references").order("desc").first();
-  const cutoff = Math.max(now, lastReference?._creationTime ?? now);
+  const lastLocalAlias = await ctx.db.query("owner_member_aliases").order("desc").first();
+  const cutoff = Math.max(
+    now,
+    lastReference?._creationTime ?? now,
+    lastLocalAlias?._creationTime ?? now
+  );
   const operationId = await ctx.db.insert("identity_operations", {
     actor_id: args.actor._id,
     creator_id: args.creator._id,
@@ -111,6 +118,7 @@ export async function createIdentityOperation(
       operation_id: operationId,
       member_id,
       required_financial_contract: 2,
+      active: true,
       local_owner_id: args.localOwnerId
     });
   }
@@ -119,6 +127,15 @@ export async function createIdentityOperation(
   await bumpAccountSyncRevisions(ctx, [args.actor._id, args.creator._id], "expenses");
   await ctx.scheduler.runAfter(0, internal.identityOperations.run, { operation_id: operationId });
   return identityOperationResult((await ctx.db.get(operationId))!);
+}
+/** One operation has at most 256 sources plus its target, so retirement is bounded and atomic. */
+async function retireOperationBarriers(ctx: MutationCtx, operationId: Id<"identity_operations">) {
+  const markers = await ctx.db
+    .query("identity_operation_members")
+    .withIndex("by_operation", (q) => q.eq("operation_id", operationId))
+    .take(258);
+  if (markers.length > 257) throw new Error("Identity operation marker bound exceeded");
+  for (const marker of markers) await ctx.db.patch(marker._id, { active: false });
 }
 async function provenanceIsLive(
   ctx: MutationCtx,
@@ -149,6 +166,247 @@ async function provenanceIsLive(
   return true;
 }
 /** One small transaction. An action catches failure outside this transaction, so no partial writes survive. */
+async function scheduleContinuation(
+  ctx: MutationCtx,
+  operation: Doc<"identity_operations">,
+  scheduleNext?: boolean
+) {
+  if (scheduleNext)
+    await ctx.scheduler.runAfter(0, internal.identityOperations.run, {
+      operation_id: operation._id
+    });
+  return { continue: true };
+}
+async function finishOperation(
+  ctx: MutationCtx,
+  operation: Doc<"identity_operations">,
+  scheduleNext?: boolean
+) {
+  const dependency = operation.dependency_operation_id
+    ? await ctx.db.get(operation.dependency_operation_id)
+    : null;
+  if (dependency && dependency.phase !== "complete" && !dependency.terminal_reconciled) {
+    if (dependency.phase === "failed") throw new Error("Reciprocal merge requires recovery");
+    if (scheduleNext)
+      await ctx.scheduler.runAfter(100, internal.identityOperations.run, {
+        operation_id: operation._id
+      });
+    return { continue: true };
+  }
+  const revoked = operation.revoked || dependency?.terminal_reconciled;
+  await retireOperationBarriers(ctx, operation._id);
+  await ctx.db.patch(operation._id, {
+    phase: revoked ? "failed" : "complete",
+    terminal_reconciled: revoked ? true : undefined,
+    error: revoked ? "Identity consent was revoked; remaining history is reconciled" : undefined,
+    completed_at: revoked ? undefined : Date.now(),
+    updated_at: Date.now(),
+    attempts: 0
+  });
+  await bumpAccountSyncRevisions(ctx, [operation.actor_id, operation.creator_id], "groups");
+  await bumpAccountSyncRevisions(ctx, [operation.actor_id, operation.creator_id], "expenses");
+  if (scheduleNext)
+    await ctx.scheduler.runAfter(0, internal.identityOperations.cleanupDependents, {
+      operation_id: operation._id
+    });
+  return { continue: false };
+}
+/** Terminal metadata cleanup never changes live financial state or releases barriers itself. */
+export const cleanupDependents = internalMutation({
+  args: { operation_id: v.id("identity_operations") },
+  handler: async (ctx, args) => {
+    const operation = await ctx.db.get(args.operation_id);
+    if (!operation || (operation.phase !== "complete" && !operation.terminal_reconciled))
+      return { complete: false, processed: 0 };
+    const items = await ctx.db
+      .query("identity_operation_dependents")
+      .withIndex("by_operation", (q) => q.eq("operation_id", operation._id))
+      .take(8);
+    for (const item of items) await ctx.db.delete(item._id);
+    if (items.length === 8)
+      await ctx.scheduler.runAfter(0, internal.identityOperations.cleanupDependents, args);
+    return { complete: items.length < 8, processed: items.length };
+  }
+});
+/** Discover reverse owner-local dependencies without promoting their IDs into global aliases. */
+async function discoverOwnerDependents(
+  ctx: MutationCtx,
+  operation: Doc<"identity_operations">,
+  scheduleNext?: boolean
+) {
+  let queries = 0,
+    rows = 0,
+    bytes = 0;
+  const check = () => {
+    if (queries > 2048 || rows > 2048 || bytes > 4 * 1024 * 1024)
+      throw new Error("Dependent identity discovery requires bounded maintenance");
+  };
+  const budgeted = withIdentityReadBudget(ctx, {
+    chargeQueries: (count) => {
+      queries += count;
+      check();
+    },
+    chargeRows: (values) => {
+      rows += values.length;
+      bytes += values.reduce<number>((total, value) => total + getConvexSize(value), 0);
+      check();
+    }
+  });
+  const target = operation.source_member_ids[operation.member_index];
+  const options = {
+    cursor: operation.cursor ?? null,
+    numItems: 1,
+    maximumRowsRead: 8,
+    maximumBytesRead: 64 * 1024
+  };
+  const page = await ctx.db
+    .query("owner_member_aliases")
+    .withIndex("by_target", (q) =>
+      q.eq("target_member_id", target).lte("_creationTime", operation.cutoff)
+    )
+    .paginate(options);
+  for (const alias of page.page) {
+    if (alias.member_id === target) continue; // Already covered by the global raw-reference pass.
+    const friend = await budgeted.db.get(alias.friend_id);
+    if (!friend || friend.account_email.trim().toLowerCase() !== alias.owner_email) continue;
+    const owners = await findAccountsByEmailIdentity(budgeted.db, friend.account_email);
+    if (owners.length !== 1) throw new Error("Dependent identity owner requires maintenance");
+    const owner = owners[0]!;
+    const live = await getOwnerLocalAliasMap(budgeted, owner.email, {
+      memberIds: [alias.member_id]
+    });
+    if (live.get(alias.member_id) !== target) continue;
+    const existing = await ctx.db
+      .query("identity_operation_dependents")
+      .withIndex("by_operation_owner_member", (q) =>
+        q
+          .eq("operation_id", operation._id)
+          .eq("owner_id", owner._id)
+          .eq("member_id", alias.member_id)
+      )
+      .first();
+    if (!existing)
+      await ctx.db.insert("identity_operation_dependents", {
+        operation_id: operation._id,
+        owner_id: owner._id,
+        member_id: alias.member_id,
+        phase: "groups"
+      });
+  }
+  const memberIndex = operation.member_index + (page.isDone ? 1 : 0);
+  await ctx.db.patch(operation._id, {
+    phase: memberIndex >= operation.source_member_ids.length ? "dependent_reset" : "owner_aliases",
+    member_index: memberIndex,
+    cursor: page.isDone ? undefined : page.continueCursor,
+    attempts: 0,
+    updated_at: Date.now()
+  });
+  return await scheduleContinuation(ctx, operation, scheduleNext);
+}
+/** Stable operation/creation-order pagination resets prior grants, even if their alias disappeared. */
+async function resetOwnerDependents(
+  ctx: MutationCtx,
+  operation: Doc<"identity_operations">,
+  scheduleNext?: boolean
+) {
+  const options = {
+    cursor: operation.cursor ?? null,
+    numItems: 1,
+    maximumRowsRead: 8,
+    maximumBytesRead: 64 * 1024
+  };
+  const page = await ctx.db
+    .query("identity_operation_dependents")
+    .withIndex("by_operation", (q) => q.eq("operation_id", operation._id))
+    .paginate(options);
+  for (const item of page.page)
+    await ctx.db.patch(item._id, { phase: "groups", cursor: undefined });
+  await ctx.db.patch(operation._id, {
+    phase: page.isDone ? "dependent_references" : "dependent_reset",
+    cursor: page.isDone ? undefined : page.continueCursor,
+    attempts: 0,
+    updated_at: Date.now()
+  });
+  return await scheduleContinuation(ctx, operation, scheduleNext);
+}
+/** Drain immutable scoped candidates; current source/provenance still decides visibility. */
+async function reconcileOwnerDependents(
+  ctx: MutationCtx,
+  operation: Doc<"identity_operations">,
+  scheduleNext?: boolean
+) {
+  const item =
+    (await ctx.db
+      .query("identity_operation_dependents")
+      .withIndex("by_operation_phase", (q) =>
+        q.eq("operation_id", operation._id).eq("phase", "groups")
+      )
+      .first()) ??
+    (await ctx.db
+      .query("identity_operation_dependents")
+      .withIndex("by_operation_phase", (q) =>
+        q.eq("operation_id", operation._id).eq("phase", "expenses")
+      )
+      .first());
+  if (!item) return await finishOperation(ctx, operation, scheduleNext);
+  const kind = item.phase === "groups" ? "group" : "expense";
+  const options = {
+    cursor: item.cursor ?? null,
+    numItems: 1,
+    maximumRowsRead: 8,
+    maximumBytesRead: 64 * 1024
+  };
+  const page = await ctx.db
+    .query("member_references")
+    .withIndex("by_owner_member_kind", (q) =>
+      q
+        .eq("owner_id", item.owner_id)
+        .eq("member_id", item.member_id)
+        .eq("entity_kind", kind)
+        .lte("_creationTime", operation.cutoff)
+    )
+    .paginate(options);
+  for (const reference of page.page) {
+    if (kind === "group") {
+      const id = ctx.db.normalizeId("groups", reference.entity_document_id);
+      const group = id ? await ctx.db.get(id) : null;
+      if (
+        group &&
+        group.owner_id === item.owner_id &&
+        !group.deletion_token &&
+        group.members.some((member) => member.id.trim().toLowerCase() === item.member_id)
+      ) {
+        const result = await reconcileGroupVisibility(ctx, group, { forceRevision: true });
+        await raiseFinancialContract(ctx, result.visibleAccountIds);
+      }
+    } else {
+      const id = ctx.db.normalizeId("expenses", reference.entity_document_id);
+      const expense = id ? await ctx.db.get(id) : null;
+      if (
+        expense &&
+        expense.owner_id === item.owner_id &&
+        expenseReferenceMemberIds(expense).includes(item.member_id)
+      ) {
+        await reconcileExpenseVisibility(ctx, expense, new Set(), { forceRevision: true });
+        await raiseFinancialContract(
+          ctx,
+          (await resolveActiveExpenseParticipantAccounts(ctx, expense)).map(
+            (account) => account._id
+          )
+        );
+      }
+    }
+  }
+  if (page.isDone && item.phase === "expenses")
+    await ctx.db.patch(item._id, { phase: "complete", cursor: undefined });
+  else
+    await ctx.db.patch(item._id, {
+      phase: page.isDone ? "expenses" : item.phase,
+      cursor: page.isDone ? undefined : page.continueCursor
+    });
+  await ctx.db.patch(operation._id, { attempts: 0, updated_at: Date.now() });
+  return await scheduleContinuation(ctx, operation, scheduleNext);
+}
 export const step = internalMutation({
   args: { operation_id: v.id("identity_operations"), scheduleNext: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
@@ -167,6 +425,12 @@ export const step = internalMutation({
       });
       operation = (await ctx.db.get(operation._id))!;
     }
+    if (operation.phase === "owner_aliases")
+      return await discoverOwnerDependents(ctx, operation, args.scheduleNext);
+    if (operation.phase === "dependent_reset")
+      return await resetOwnerDependents(ctx, operation, args.scheduleNext);
+    if (operation.phase === "dependent_references")
+      return await reconcileOwnerDependents(ctx, operation, args.scheduleNext);
     const kind = operation.phase === "groups" ? "group" : "expense";
     const memberId = operation.source_member_ids[operation.member_index];
     const candidates = operation.local_owner_id
@@ -222,7 +486,7 @@ export const step = internalMutation({
           !expenseReferenceMemberIds(expense).includes(memberId)
         )
           continue;
-        await reconcileExpenseVisibility(ctx, expense);
+        await reconcileExpenseVisibility(ctx, expense, new Set(), { forceRevision: true });
         await raiseFinancialContract(
           ctx,
           (await resolveActiveExpenseParticipantAccounts(ctx, expense)).map(
@@ -231,7 +495,7 @@ export const step = internalMutation({
         );
       }
     }
-    let phase = operation.phase;
+    let phase: Doc<"identity_operations">["phase"] = operation.phase;
     let memberIndex = operation.member_index;
     if (page.isDone) memberIndex += 1;
     if (memberIndex >= operation.source_member_ids.length) {
@@ -239,39 +503,10 @@ export const step = internalMutation({
         phase = "expenses";
         memberIndex = 0;
       } else {
-        const dependency = operation.dependency_operation_id
-          ? await ctx.db.get(operation.dependency_operation_id)
-          : null;
-        if (dependency && dependency.phase !== "complete") {
-          if (dependency.phase === "failed" && dependency.terminal_reconciled) {
-            await ctx.db.patch(operation._id, {
-              phase: "failed",
-              terminal_reconciled: true,
-              error: "Reciprocal identity consent was revoked; remaining history is reconciled",
-              updated_at: Date.now()
-            });
-            await bumpAccountSyncRevisions(
-              ctx,
-              [operation.actor_id, operation.creator_id],
-              "groups"
-            );
-            await bumpAccountSyncRevisions(
-              ctx,
-              [operation.actor_id, operation.creator_id],
-              "expenses"
-            );
-            return { continue: false };
-          }
-          if (dependency.phase === "failed") throw new Error("Reciprocal merge requires recovery");
-          if (args.scheduleNext)
-            await ctx.scheduler.runAfter(100, internal.identityOperations.run, {
-              operation_id: operation._id
-            });
-          return { continue: true };
-        }
-        phase = operation.revoked ? "failed" : "complete";
-        await bumpAccountSyncRevisions(ctx, [operation.actor_id, operation.creator_id], "groups");
-        await bumpAccountSyncRevisions(ctx, [operation.actor_id, operation.creator_id], "expenses");
+        if (operation.local_owner_id)
+          return await finishOperation(ctx, operation, args.scheduleNext);
+        phase = "owner_aliases";
+        memberIndex = 0;
       }
     }
     await ctx.db.patch(operation._id, {
@@ -280,16 +515,9 @@ export const step = internalMutation({
       cursor: page.isDone ? undefined : page.continueCursor,
       attempts: 0,
       updated_at: Date.now(),
-      ...(!operation.revoked ? { error: undefined } : {}),
-      ...(phase === "complete" ? { completed_at: Date.now() } : {}),
-      ...(phase === "failed" && operation.revoked ? { terminal_reconciled: true } : {})
+      ...(!operation.revoked ? { error: undefined } : {})
     });
-    const continuing = phase === "groups" || phase === "expenses";
-    if (continuing && args.scheduleNext)
-      await ctx.scheduler.runAfter(0, internal.identityOperations.run, {
-        operation_id: operation._id
-      });
-    return { continue: continuing };
+    return await scheduleContinuation(ctx, operation, args.scheduleNext);
   }
 });
 export const recordFailure = internalMutation({
@@ -324,6 +552,30 @@ export const run = internalAction({
         error: String(error)
       });
     }
+  }
+});
+/** Rollout maintenance for pre-index markers; each page derives state from the live operation. */
+export const backfillMemberBarriers = internalMutation({
+  args: { cursor: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const options = {
+      cursor: args.cursor ?? null,
+      numItems: 8,
+      maximumRowsRead: 8,
+      maximumBytesRead: 64 * 1024
+    };
+    const page = await ctx.db.query("identity_operation_members").paginate(options);
+    for (const marker of page.page) {
+      const operation = await ctx.db.get(marker.operation_id);
+      await ctx.db.patch(marker._id, {
+        active: !operation || (operation.phase !== "complete" && !operation.terminal_reconciled)
+      });
+    }
+    return {
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+      processed: page.page.length
+    };
   }
 });
 export const status = query({
@@ -416,6 +668,44 @@ export async function prepareLegacyIdentityVisibility(
     .unique();
   rows(state ? [state] : []);
   const limit = 8;
+  const budgeted = withIdentityReadBudget(ctx, { chargeQueries: query, chargeRows: rows });
+  const globalMembers = new Set(
+    sources
+      .filter((source) => !source.ownerId)
+      .flatMap((source) => normalizeMemberIds(source.memberIds))
+  );
+  const covered = (ownerId: Id<"accounts">, memberId: string) =>
+    sources.some(
+      (source) =>
+        (!source.ownerId || source.ownerId === ownerId) &&
+        normalizeMemberIds(source.memberIds).includes(memberId)
+    );
+  const unsupportedDependent = () =>
+    new Error(
+      "FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Use resumable linking for owner-local dependent history"
+    );
+  if (state?.phase === "ready") {
+    for (const member of globalMembers) {
+      const candidates = await budgeted.db
+        .query("owner_member_aliases")
+        .withIndex("by_target", (q) => q.eq("target_member_id", member))
+        .take(limit + 1);
+      if (candidates.length > limit) throw unsupportedDependent();
+      for (const candidate of candidates) {
+        const friend = await budgeted.db.get(candidate.friend_id);
+        if (!friend || friend.account_email.trim().toLowerCase() !== candidate.owner_email)
+          continue;
+        const owners = await findAccountsByEmailIdentity(budgeted.db, friend.account_email);
+        if (owners.length !== 1) throw unsupportedDependent();
+        const owner = owners[0]!;
+        if (covered(owner._id, candidate.member_id)) continue;
+        const aliases = await getOwnerLocalAliasMap(budgeted, owner.email, {
+          memberIds: [candidate.member_id]
+        });
+        if (aliases.get(candidate.member_id) === member) throw unsupportedDependent();
+      }
+    }
+  }
   for (const kind of ["group", "expense"] as const) {
     const found = new Set<string>();
     if (state?.phase === "ready") {
@@ -457,6 +747,18 @@ export async function prepareLegacyIdentityVisibility(
           kind === "group"
             ? (document as Doc<"groups">).members.map((m) => m.id.trim().toLowerCase())
             : expenseReferenceMemberIds(document as Doc<"expenses">);
+        if (globalMembers.size) {
+          const owner = await budgeted.db.get(document.owner_id);
+          if (!owner) throw unsupportedDependent();
+          const aliases = await getOwnerLocalAliasMap(budgeted, owner.email, {
+            memberIds: members
+          });
+          for (const member of members) {
+            const target = aliases.get(member);
+            if (target && globalMembers.has(target) && !covered(owner._id, member))
+              throw unsupportedDependent();
+          }
+        }
         if (
           sources.some(
             (source) =>
@@ -568,6 +870,6 @@ export async function applyLegacyIdentityVisibility(
   }
   for (const id of plan.expenses) {
     const expense = await ctx.db.get(id);
-    if (expense) await reconcileExpenseVisibility(ctx, expense);
+    if (expense) await reconcileExpenseVisibility(ctx, expense, new Set(), { forceRevision: true });
   }
 }

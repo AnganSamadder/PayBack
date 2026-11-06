@@ -2592,7 +2592,8 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     for (const syncState of state.syncStates) {
       // Full foreign visibility reconciliation can publish more than one group revision.
       expect(syncState.groups_revision).toBeGreaterThanOrEqual(1);
-      expect(syncState.expenses_revision).toBe(1);
+      // One financial batch and two alias-visibility passes invalidate retained expense snapshots.
+      expect(syncState.expenses_revision).toBe(3);
     }
   }, 30_000);
 });

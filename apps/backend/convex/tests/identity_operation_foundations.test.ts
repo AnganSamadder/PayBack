@@ -1,5 +1,7 @@
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
+afterEach(() => vi.useRealTimers());
 import { api, internal } from "../_generated/api";
 import schema from "../schema";
 import type { Id } from "../_generated/dataModel";
@@ -146,6 +148,10 @@ describe("identity reference and operation foundations", () => {
     await expect(
       f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], undefined, f.owner))
     ).rejects.toThrow("FINANCIAL_CONTRACT_UPGRADE_REQUIRED");
+    await expect(
+      f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner))
+    ).rejects.toThrow("IDENTITY_OPERATION_PENDING");
+    await drain(f.t, f.operation);
     await f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner));
   });
   test("revocation removes already materialized visibility and finishes as reconciled failure", async () => {
@@ -170,6 +176,16 @@ describe("identity reference and operation foundations", () => {
     const result = await f.t.run((ctx) => ctx.db.get(f.operation));
     expect(result?.phase).toBe("failed");
     expect(result?.terminal_reconciled).toBe(true);
+    await f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner));
+    const retired = await f.t.run((ctx) =>
+      ctx.db
+        .query("identity_operation_members")
+        .withIndex("by_operation", (q) => q.eq("operation_id", f.operation))
+        .collect()
+    );
+    expect(retired.every((marker) => marker.active === false)).toBe(true);
+    await f.t.mutation(internal.identityOperations.step, { operation_id: f.operation });
+    await f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner));
     const visible = await f.t.run((ctx) =>
       ctx.db
         .query("user_expenses")
@@ -424,4 +440,96 @@ test("reference backfill indexes legacy local aliases before publishing readines
     )
   );
   expect(localTarget).toBe("first");
+});
+
+test("completed permanent markers cannot hide later active or pre-index pending operations", async () => {
+  const f = await fixture();
+  await drain(f.t, f.operation);
+  await f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner));
+  const pending = await f.t.run(async (ctx) => {
+    const original = (await ctx.db.get(f.operation))!;
+    const { _id, _creationTime, completed_at, ...fields } = original;
+    void _id;
+    void _creationTime;
+    void completed_at;
+    const next = await ctx.db.insert("identity_operations", {
+      ...fields,
+      phase: "groups",
+      member_index: 0,
+      generation: "next"
+    });
+    const marker = await ctx.db.insert("identity_operation_members", {
+      operation_id: next,
+      member_id: "placeholder",
+      required_financial_contract: 2,
+      active: true
+    });
+    return { next, marker };
+  });
+  await expect(
+    f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner))
+  ).rejects.toThrow("IDENTITY_OPERATION_PENDING");
+  await f.t.run((ctx) => ctx.db.patch(pending.marker, { active: undefined }));
+  await expect(
+    f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner))
+  ).rejects.toThrow("IDENTITY_OPERATION_PENDING");
+  await f.t.run((ctx) => ctx.db.patch(pending.next, { phase: "failed", error: "Retry needed" }));
+  await expect(
+    f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner))
+  ).rejects.toThrow("IDENTITY_OPERATION_PENDING");
+  await f.t.run((ctx) => ctx.db.patch(pending.next, { terminal_reconciled: true }));
+  await f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner));
+});
+
+test("legacy barrier overflow fails closed and bounded maintenance restores completed history reads", async () => {
+  const f = await fixture();
+  await drain(f.t, f.operation);
+  await f.t.run(async (ctx) => {
+    for (let i = 0; i < 33; i++)
+      await ctx.db.insert("identity_operation_members", {
+        operation_id: f.operation,
+        member_id: "historical",
+        required_financial_contract: 2
+      });
+  });
+  await expect(
+    f.t.run((ctx) => assertMemberFinancialContract(ctx, ["historical"], 2, f.owner))
+  ).rejects.toThrow("require maintenance");
+  let cursor: string | undefined;
+  for (let i = 0; i < 8; i++) {
+    const page = await f.t.mutation(internal.identityOperations.backfillMemberBarriers, { cursor });
+    expect(page.processed).toBeLessThanOrEqual(8);
+    if (page.isDone) break;
+    cursor = page.continueCursor;
+  }
+  await f.t.run((ctx) => assertMemberFinancialContract(ctx, ["historical"], 2, f.owner));
+});
+
+test("recoverable failures keep active barriers until a resumed operation completes", async () => {
+  vi.useFakeTimers();
+  const f = await fixture();
+  await f.t.run(async (ctx) => {
+    await ctx.db.patch(f.operation, { phase: "failed", error: "Temporary failure" });
+    for (const marker of await ctx.db
+      .query("identity_operation_members")
+      .withIndex("by_operation", (q) => q.eq("operation_id", f.operation))
+      .collect())
+      await ctx.db.patch(marker._id, { active: true });
+  });
+  await expect(
+    f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner))
+  ).rejects.toThrow("IDENTITY_OPERATION_PENDING");
+  const claimant = f.t.withIdentity({ subject: "claimant", email: "claimant@test.com" });
+  expect(
+    (await claimant.mutation(api.identityOperations.resume, { operation_id: f.operation })).status
+  ).toBe("pending");
+  await expect(
+    f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner))
+  ).rejects.toThrow("IDENTITY_OPERATION_PENDING");
+  await drain(f.t, f.operation);
+  expect(
+    (await claimant.mutation(api.identityOperations.resume, { operation_id: f.operation })).status
+  ).toBe("complete");
+  await f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner));
+  await finishScheduledFunctions(f.t);
 });

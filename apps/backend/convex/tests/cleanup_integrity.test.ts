@@ -311,7 +311,7 @@ test("cleanup.deleteUnlinkedFriend reconciles user_expenses after patching share
       email: "removed@test.com",
       display_name: "Removed",
       created_at: Date.now(),
-      member_id: "friend_member"
+      member_id: "unrelated_removed_member"
     });
 
     await ctx.db.insert("account_friends", {
@@ -441,24 +441,16 @@ test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across ever
       email: "removed@test.com",
       display_name: "Removed",
       created_at: Date.now(),
-      member_id: canonicalFriendId,
-      alias_member_ids: [friendAlias]
+      member_id: "unrelated_removed_member"
     });
     await ctx.db.insert("account_friends", {
       account_email: "owner@test.com",
       member_id: friendAlias,
+      local_alias_member_ids: [canonicalFriendId],
       name: "Friend",
       profile_avatar_color: "#654321",
       has_linked_account: false,
       updated_at: Date.now()
-    });
-    await ctx.db.insert("member_aliases", {
-      account_email: "owner@test.com",
-      canonical_member_id: canonicalFriendId,
-      alias_member_id: friendAlias,
-      materialization_source: "account_alias",
-      source_account_id: "removed_auth",
-      created_at: Date.now()
     });
 
     const sharedGroup = await ctx.db.insert("groups", {
@@ -2072,6 +2064,13 @@ test("cleanup.deleteLinkedFriend removes history referenced only by an owner-loc
       created_at: now,
       member_id: "owner_member"
     });
+    await ctx.db.insert("accounts", {
+      id: "friend_auth",
+      email: "friend@test.com",
+      display_name: "Friend",
+      member_id: "friend_member",
+      created_at: now
+    });
     await ctx.db.insert("account_friends", {
       account_email: "owner@test.com",
       member_id: "friend_member",
@@ -2079,6 +2078,7 @@ test("cleanup.deleteLinkedFriend removes history referenced only by an owner-loc
       name: "Friend",
       profile_avatar_color: "#123456",
       has_linked_account: true,
+      link_state: "linked",
       linked_account_id: "friend_auth",
       linked_account_email: "friend@test.com",
       updated_at: now
