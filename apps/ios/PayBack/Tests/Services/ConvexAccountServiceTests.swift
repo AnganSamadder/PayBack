@@ -333,32 +333,39 @@ final class ConvexAccountServiceTests: XCTestCase {
 
     // MARK: - Bulk Import Tests
 
-    func testBulkImport() async throws {
+    func testBulkImport_UnconfiguredServiceRejectsEmptyRequest() async throws {
         let service = MockAccountService()
         let request = BulkImportRequest(friends: [], groups: [], expenses: [])
 
-        let result = try await service.bulkImport(request: request)
-
-        XCTAssertTrue(result.success)
-        XCTAssertEqual(result.created.friends, 0)
-        XCTAssertEqual(result.created.groups, 0)
-        XCTAssertEqual(result.created.expenses, 0)
-        XCTAssertTrue(result.errors.isEmpty)
+        do {
+            _ = try await service.bulkImport(request: request)
+            XCTFail("An unconfigured service must not acknowledge an import")
+        } catch {
+            XCTAssertEqual(error as? ImportTransportError, .rejected(code: "IMPORT_UNSUPPORTED_SERVICE"))
+        }
+        let friends = try await service.fetchFriends(accountEmail: "test@example.com")
+        XCTAssertTrue(friends.isEmpty)
     }
 
-    func testBulkImport_WithData_ReturnsCorrectCounts() async throws {
+    func testBulkImport_UnconfiguredServiceRejectsDataWithoutChangingFriends() async throws {
         let service = MockAccountService()
+        let existing = AccountFriend(memberId: UUID(), name: "Existing friend")
+        try await service.syncFriends(accountEmail: "test@example.com", friends: [existing])
+        let importedMemberID = UUID().uuidString
         let request = BulkImportRequest(
-            friends: [BulkFriendDTO(member_id: UUID().uuidString, name: "Friend")],
-            groups: [BulkGroupDTO(id: UUID().uuidString, name: "Group", members: [], is_direct: false)],
+            friends: [BulkFriendDTO(member_id: importedMemberID, name: "Imported friend")],
+            groups: [BulkGroupDTO(id: UUID().uuidString, name: "Group",
+                members: [BulkGroupMemberDTO(id: importedMemberID, name: "Imported friend")], is_direct: false)],
             expenses: []
         )
 
-        let result = try await service.bulkImport(request: request)
-
-        XCTAssertTrue(result.success)
-        XCTAssertEqual(result.created.friends, 1)
-        XCTAssertEqual(result.created.groups, 1)
-        XCTAssertEqual(result.created.expenses, 0)
+        do {
+            _ = try await service.bulkImport(request: request)
+            XCTFail("An unconfigured service must not invent persisted rows or creation counts")
+        } catch {
+            XCTAssertEqual(error as? ImportTransportError, .rejected(code: "IMPORT_UNSUPPORTED_SERVICE"))
+        }
+        let friends = try await service.fetchFriends(accountEmail: "test@example.com")
+        XCTAssertEqual(friends, [existing])
     }
 }
