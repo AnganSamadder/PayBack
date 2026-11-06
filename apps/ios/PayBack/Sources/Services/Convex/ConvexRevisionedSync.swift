@@ -332,21 +332,15 @@ enum ConvexRevisionedSync {
         return arguments
     }
 
-    private static func fetchPage<Response: Decodable>(
+    private static func fetchPage<Response: Decodable & Sendable>(
         client: ConvexClient,
         query: String,
         cursor: String?,
         expectedRevision: Int?
     ) async throws -> Response {
         let args = arguments(cursor: cursor, expectedRevision: expectedRevision)
-        for try await response in client.subscribe(
-            to: query,
-            with: args,
-            yielding: Response.self
-        ).values {
-            return response
-        }
-        throw ConvexRevisionedSyncError.streamEndedWithoutValue
+        return try await LiveConvexServiceTransport(client: client).queryPreservingHistory(query,
+            arguments: ConvexTransportArguments.encode(args), yielding: Response.self)
     }
 }
 
@@ -367,7 +361,7 @@ private actor AdaptiveGroupPageReader {
             do {
                 let arguments = ConvexRevisionedSync.groupArguments(
                     cursor: cursor, expectedRevision: expectedRevision, numItems: requestedSize)
-                return try await transport.query(query,
+                return try await transport.queryPreservingHistory(query,
                     arguments: ConvexTransportArguments.encode(arguments), yielding: Response.self)
             } catch {
                 try Task.checkCancellation()

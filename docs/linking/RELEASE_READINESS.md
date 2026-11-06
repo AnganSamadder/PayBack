@@ -46,6 +46,21 @@ before and after a nonproduction rehearsal. Unknown historical currency stays un
 Backup version 2 preserves numeric Double text, source member UUIDs, all raw shares and their
 settlement flags, subexpenses, notes, context, and absent currency. Explicit friend rows alone
 create confirmed relationships. Linked metadata in backups cannot grant trusted account links.
+Restore keeps the original group roster and declares every raw financial participant of each
+GROUP/DIRECT expense in a request-local history manifest. Declarations preserve private financial
+history; they grant no group membership, friendship, alias, account link, or automatic sharing.
+Current server authorization controls sharing, and deleted-party display details may be scrubbed
+without changing financial rows. Grouped-individual history uses its existing separate rules.
+Repeated export/restore does not grow group rosters or weaken restored-history restrictions.
+
+The client sends bounded friend, group, then expense requests. It subdivides only after the exact
+structured rollback-budget error, and retries an uncertain request with identical IDs at most three
+times. A missing/malformed item acknowledgement, rejected row, cancellation, or failed final snapshot
+returns incomplete progress. Earlier confirmed requests remain saved. An uncertain committed write
+later acknowledged as already present is reported as present, not provably newly created. Completed
+import requires a successful actor/generation-bound authoritative refresh; source arrays are never
+replayed locally over server suppression or sanitized data.
+
 Legacy backups remain readable, but prior exports already discarded notes/context, rounded
 amounts, and removed tiny/zero shares; that information cannot be reconstructed. Invalid financial
 rows fail with an actionable error instead of inventing payer liability. Import is not an unhide

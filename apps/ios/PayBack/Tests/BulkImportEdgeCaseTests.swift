@@ -65,12 +65,12 @@ final class BulkImportEdgeCaseTests: XCTestCase {
         XCTAssertEqual(summary.expensesAdded, 1)
 
         let calls = await mockAccountService.bulkImportCalls
-        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.count, 3)
 
         let request = calls[0]
         XCTAssertEqual(request.friends.first?.profile_image_url, nil)
         XCTAssertEqual(request.friends.first?.profile_avatar_color, "#64748B")
-        XCTAssertEqual(request.expenses.first?.subexpenses?.count ?? 0, 0)
+        XCTAssertEqual(calls.last?.expenses.first?.subexpenses?.count ?? 0, 0)
     }
 
     func testBulkImportVariantB_CurrentFormat() async throws {
@@ -90,12 +90,12 @@ final class BulkImportEdgeCaseTests: XCTestCase {
         }
 
         let calls = await mockAccountService.bulkImportCalls
-        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.count, 3)
 
         let request = calls[0]
         XCTAssertEqual(request.friends.first?.profile_image_url, "https://example.com/bob.jpg")
         XCTAssertEqual(request.friends.first?.profile_avatar_color, "#FF5733")
-        XCTAssertEqual(request.expenses.first?.subexpenses?.count ?? 0, 2)
+        XCTAssertEqual(calls.last?.expenses.first?.subexpenses?.count ?? 0, 2)
     }
 
     func testBulkImportVariantC_DirectGroups() async throws {
@@ -115,7 +115,7 @@ final class BulkImportEdgeCaseTests: XCTestCase {
         }
 
         let calls = await mockAccountService.bulkImportCalls
-        let request = calls[0]
+        let request = try XCTUnwrap(calls.first { !$0.groups.isEmpty })
 
         XCTAssertEqual(request.groups.count, 1)
         XCTAssertTrue(request.groups.first?.is_direct ?? false)
@@ -180,16 +180,9 @@ final class BulkImportEdgeCaseTests: XCTestCase {
             isCurrent: { true }
         )
 
-        guard case .success = result else {
-             XCTFail("Expected success even with duplicates (service might dedupe or backend handles it)")
-             return
-        }
-
+        guard case .incompatibleFormat = result else { return XCTFail("Duplicate IDs must reject before writes") }
         let calls = await mockAccountService.bulkImportCalls
-        let request = calls[0]
-
-        XCTAssertEqual(request.expenses.count, 2)
-        XCTAssertEqual(request.expenses[0].id, request.expenses[1].id)
+        XCTAssertTrue(calls.isEmpty)
     }
 
     func testBulkImport_LargeBatch() async throws {
@@ -220,9 +213,12 @@ final class BulkImportEdgeCaseTests: XCTestCase {
         }
 
         let calls = await mockAccountService.bulkImportCalls
-        XCTAssertEqual(calls.count, 2)
-        XCTAssertEqual(calls[0].expenses.count, 100)
-        XCTAssertEqual(calls[1].expenses.count, 50)
+        XCTAssertEqual(calls.count, 20) // One group request followed by 19 bounded expense requests.
+        let expenseCalls = calls.filter { !$0.expenses.isEmpty }
+        XCTAssertEqual(expenseCalls.count, 19)
+        XCTAssertTrue(expenseCalls.allSatisfy { $0.expenses.count <= 8 && $0.groups.isEmpty })
+        XCTAssertEqual(expenseCalls.flatMap(\.expenses).count, 150)
+        XCTAssertTrue(expenseCalls.allSatisfy { $0.history_manifest?.count == $0.expenses.count })
     }
 
     func testBulkImport_InvalidForeignKey() async throws {
@@ -241,11 +237,9 @@ final class BulkImportEdgeCaseTests: XCTestCase {
             isCurrent: { true }
          )
 
-         guard case .success = result else { return }
-
+         guard case .incompatibleFormat = result else { return XCTFail("Missing source group must reject") }
          let calls = await mockAccountService.bulkImportCalls
-         let request = calls[0]
-         XCTAssertEqual(request.expenses.first?.group_id, nonExistentGroupId.uuidString)
+         XCTAssertTrue(calls.isEmpty)
     }
 
 }
@@ -297,7 +291,10 @@ actor MockBulkImportEdgeCaseAccountService: AccountService {
                 groups: request.groups.count,
                 expenses: request.expenses.count
             ),
-            errors: bulkImportErrors
+            errors: bulkImportErrors,
+            outcomes: request.friends.map { BulkImportResult.ItemOutcome(kind: "friend", id: $0.member_id, status: "created") }
+                + request.groups.map { BulkImportResult.ItemOutcome(kind: "group", id: $0.id, status: "created") }
+                + request.expenses.map { BulkImportResult.ItemOutcome(kind: "expense", id: $0.id, status: "created") }
         )
     }
 }

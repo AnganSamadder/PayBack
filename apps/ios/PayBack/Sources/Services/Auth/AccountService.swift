@@ -27,6 +27,9 @@ protocol AccountService: Actor {
     func snapshotGeneration() async throws -> String?
     func resumeIdentityOperation(_ operationId: String, expectedAccountId: String) async throws -> IdentityOperationResult
     func beginFriendMerge(source: UUID, target: UUID, expectedAccountId: String) async throws -> IdentityOperationResult
+    func pendingGroupHistory(expectedAccountId: String) async throws -> [GroupHistoryJob]
+    func groupHistoryStatus(jobId: String, visibleExpenseId: String?, expectedAccountId: String) async throws -> GroupHistoryJob
+    func resumeGroupHistory(jobId: String, visibleExpenseId: String?, expectedAccountId: String) async throws -> GroupHistoryJob
 
     func clearFriends(expectedAccountId: String) async throws
     func updateProfile(colorHex: String?, imageUrl: String?, expectedAccountId: String) async throws -> String?
@@ -82,6 +85,13 @@ protocol AccountService: Actor {
 }
 
 extension AccountService {
+    func pendingGroupHistory(expectedAccountId: String) async throws -> [GroupHistoryJob] { [] }
+    func groupHistoryStatus(jobId: String, visibleExpenseId: String?, expectedAccountId: String) async throws -> GroupHistoryJob {
+        throw GroupHistoryServiceError.unsupported
+    }
+    func resumeGroupHistory(jobId: String, visibleExpenseId: String?, expectedAccountId: String) async throws -> GroupHistoryJob {
+        throw GroupHistoryServiceError.unsupported
+    }
     func clearFriends(expectedAccountId: String) async throws { try await clearFriends() }
     func updateProfile(colorHex: String?, imageUrl: String?, expectedAccountId: String) async throws -> String? {
         try await updateProfile(colorHex: colorHex, imageUrl: imageUrl)
@@ -129,6 +139,49 @@ extension AccountService {
             inProgress: false
         )
     }
+}
+
+struct GroupHistoryJob: Decodable, Sendable, Equatable, Identifiable {
+    let jobId: String
+    let groupId: String
+    let phase: String
+    let retryable: Bool
+    let errorCode: String?
+    var id: String { jobId }
+    var maintenanceRequired: Bool { phase == "failed" && !retryable }
+
+    enum CodingKeys: String, CodingKey {
+        case jobId = "job_id", groupId = "group_id", errorCode = "error_code"
+        case phase, retryable
+    }
+
+    init(jobId: String, groupId: String, phase: String, retryable: Bool, errorCode: String? = nil) {
+        self.jobId = jobId; self.groupId = groupId; self.phase = phase
+        self.retryable = retryable; self.errorCode = errorCode
+    }
+}
+
+struct GroupHistoryRecoveryError: Error, Decodable, Sendable, Equatable {
+    let code: String
+    let retryable: Bool
+    let jobId: String?
+    let groupId: String?
+    let visibleExpenseId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case code, retryable
+        case jobId = "job_id", groupId = "group_id", visibleExpenseId = "visible_expense_id"
+    }
+
+    init(code: String, retryable: Bool, jobId: String? = nil, groupId: String? = nil, visibleExpenseId: String? = nil) {
+        self.code = code; self.retryable = retryable; self.jobId = jobId
+        self.groupId = groupId; self.visibleExpenseId = visibleExpenseId
+    }
+}
+
+enum GroupHistoryServiceError: Error, Sendable, Equatable {
+    case unsupported
+    case invalidResponse
 }
 
 struct AccountSelfDeletionStatus: Sendable, Equatable {
@@ -318,11 +371,7 @@ actor MockAccountService: AccountService {
 
     #if !PAYBACK_CI_NO_CONVEX
     func bulkImport(request: BulkImportRequest) async throws -> BulkImportResult {
-        return BulkImportResult(
-            success: true,
-            created: .init(friends: request.friends.count, groups: request.groups.count, expenses: request.expenses.count),
-            errors: []
-        )
+        throw ImportTransportError.rejected(code: "IMPORT_UNSUPPORTED_SERVICE")
     }
     #endif
 }

@@ -14,6 +14,22 @@ protocol ConvexServiceTransport: Sendable {
     ) async throws -> Response
 }
 
+extension ConvexServiceTransport {
+    func queryPreservingHistory<Response: Decodable & Sendable>(
+        _ name: String, arguments: [String: String], yielding: Response.Type
+    ) async throws -> Response {
+        do { return try await query(name, arguments: arguments, yielding: yielding) }
+        catch { throw ConvexBackendErrorMapper.preservingHistory(error) }
+    }
+
+    func mutationPreservingHistory<Response: Decodable & Sendable>(
+        _ name: String, arguments: [String: String], yielding: Response.Type
+    ) async throws -> Response {
+        do { return try await mutation(name, arguments: arguments, yielding: yielding) }
+        catch { throw ConvexBackendErrorMapper.preservingHistory(error) }
+    }
+}
+
 enum ConvexTransportArguments {
     static func encode(_ arguments: [String: ConvexEncodable?]) throws -> [String: String] {
         try arguments.mapValues { try $0?.convexEncode() ?? "null" }
@@ -58,11 +74,15 @@ actor LiveConvexServiceTransport: ConvexServiceTransport {
         _ name: String, arguments encoded: [String: String], yielding: Response.Type
     ) async throws -> Response {
         try Task.checkCancellation()
-        for try await response in client.subscribe(
-            to: name, with: arguments(encoded), yielding: Response.self
-        ).values {
-            try Task.checkCancellation()
-            return response
+        do {
+            for try await response in client.subscribe(
+                to: name, with: arguments(encoded), yielding: Response.self
+            ).values {
+                try Task.checkCancellation()
+                return response
+            }
+        } catch {
+            throw ConvexBackendErrorMapper.preservingHistory(error)
         }
         throw ConvexServiceTransportError.streamEndedWithoutValue
     }
@@ -71,9 +91,11 @@ actor LiveConvexServiceTransport: ConvexServiceTransport {
         _ name: String, arguments encoded: [String: String], yielding: Response.Type
     ) async throws -> Response {
         try Task.checkCancellation()
-        let result: Response = try await client.mutation(name, with: arguments(encoded))
-        try Task.checkCancellation()
-        return result
+        do {
+            let result: Response = try await client.mutation(name, with: arguments(encoded))
+            try Task.checkCancellation()
+            return result
+        } catch { throw ConvexBackendErrorMapper.preservingHistory(error) }
     }
 }
 #endif

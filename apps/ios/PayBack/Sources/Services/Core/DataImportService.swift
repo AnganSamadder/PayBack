@@ -34,26 +34,42 @@ struct ImportSummary: Sendable {
     let friendsAdded: Int
     let groupsAdded: Int
     let expensesAdded: Int
+    var processedItems: Int
+    var alreadyPresentItems: Int
+    var updatedItems: Int
+    var scrubbedItems: Int
+    var incompletePhase: String?
+    var incompleteReason: String?
 
-    var totalItems: Int {
-        friendsAdded + groupsAdded + expensesAdded
+    init(friendsAdded: Int, groupsAdded: Int, expensesAdded: Int, processedItems: Int? = nil,
+         alreadyPresentItems: Int = 0, updatedItems: Int = 0, scrubbedItems: Int = 0,
+         incompletePhase: String? = nil, incompleteReason: String? = nil) {
+        self.friendsAdded = friendsAdded; self.groupsAdded = groupsAdded; self.expensesAdded = expensesAdded
+        self.processedItems = processedItems ?? (friendsAdded + groupsAdded + expensesAdded)
+        self.alreadyPresentItems = alreadyPresentItems; self.updatedItems = updatedItems
+        self.scrubbedItems = scrubbedItems; self.incompletePhase = incompletePhase; self.incompleteReason = incompleteReason
     }
 
+    var totalItems: Int { friendsAdded + groupsAdded + expensesAdded }
+
     var description: String {
-        var parts: [String] = []
-        if friendsAdded > 0 {
-            parts.append("\(friendsAdded) friend\(friendsAdded == 1 ? "" : "s")")
+        var parts = ["Confirmed \(processedItems) item\(processedItems == 1 ? "" : "s")."]
+        var added: [String] = []
+        for (count, name) in [(friendsAdded, "friend"), (groupsAdded, "group"), (expensesAdded, "expense")] where count > 0 {
+            added.append("\(count) \(name)\(count == 1 ? "" : "s")")
         }
-        if groupsAdded > 0 {
-            parts.append("\(groupsAdded) group\(groupsAdded == 1 ? "" : "s")")
+        if !added.isEmpty { parts.append("Added " + added.joined(separator: ", ") + ".") }
+        if updatedItems > 0 { parts.append("\(updatedItems) updated.") }
+        if alreadyPresentItems > 0 {
+            parts.append("\(alreadyPresentItems) already present or saved by an earlier attempt.")
         }
-        if expensesAdded > 0 {
-            parts.append("\(expensesAdded) expense\(expensesAdded == 1 ? "" : "s")")
+        if scrubbedItems > 0 {
+            parts.append("Deleted-account details were removed from \(scrubbedItems) item\(scrubbedItems == 1 ? "" : "s"); financial history was retained.")
         }
-        if parts.isEmpty {
-            return "No new data imported"
+        if let incompletePhase {
+            parts.append("Import is incomplete during \(incompletePhase). Earlier confirmed items remain saved.")
         }
-        return "Added " + parts.joined(separator: ", ")
+        return parts.joined(separator: " ")
     }
 }
 
@@ -312,10 +328,10 @@ struct DataImportService {
         catch { return .incompatibleFormat(error.localizedDescription) }
         let epoch = store.dataEpoch
         let accountID = store.session?.account.id
-        let accountEmail = store.session?.account.email
+        let accountEmail = store.session?.account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         func ownsSession() -> Bool {
             store.dataEpoch == epoch && store.session?.account.id == accountID
-                && store.session?.account.email == accountEmail
+                && store.session?.account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == accountEmail
         }
         func sessionIsCurrent() -> Bool { ownsSession() && !Task.isCancelled }
         guard !store.isImporting else { return .incompatibleFormat("An import is already running.") }
@@ -348,13 +364,31 @@ struct DataImportService {
             accountService: Dependencies.current.accountService,
             expectedAccountID: accountID, expectedAccountEmail: accountEmail,
             isCurrent: sessionIsCurrent)
-        guard sessionIsCurrent() else { return .incompatibleFormat("Import stopped because the signed-in account changed.") }
-        // The server may skip existing records, resolve canonical IDs, or retain
-        // suppression. Only its complete snapshot may publish restored state.
+        // Keep acknowledged progress even if cancellation/session change stops refresh.
+        func incompleteRefresh(_ reason: String) -> ImportResult {
+            var progress: ImportSummary
+            var errors: [String]
+            switch result {
+            case .success(let summary): progress = summary; errors = []
+            case .partialSuccess(let summary, let existing): progress = summary; errors = existing
+            case .incompatibleFormat, .needsResolution: return result
+            }
+            progress.incompletePhase = progress.incompletePhase ?? "refresh"
+            progress.incompleteReason = reason
+            errors.append(reason)
+            return .partialSuccess(progress, errors: errors)
+        }
+        guard sessionIsCurrent() else {
+            return incompleteRefresh("Import stopped after cancellation or an account change. Earlier confirmed items remain saved.")
+        }
+        // Only the complete actor-bound server snapshot may publish restored data.
         store.isImporting = false
         ownsImportGate = false
-        await store.loadRemoteData()
-        guard sessionIsCurrent() else { return .incompatibleFormat("Import stopped because the signed-in account changed.") }
+        let hydration = await store.refreshAfterImport(expectedAccountID: accountID, expectedDataEpoch: epoch)
+        guard sessionIsCurrent() else { return incompleteRefresh("The account changed before refresh completed.") }
+        guard case .complete = hydration else {
+            return incompleteRefresh("Import requests finished, but your data could not be refreshed. Retry refresh to see the saved items.")
+        }
         return result
         #else
         guard sessionIsCurrent() else { return .incompatibleFormat("Import stopped because the signed-in account changed.") }
@@ -651,7 +685,20 @@ extension DataImportService {
 
     // MARK: - Bulk Import Methods
 
-    static func convertToBulkImportRequest(from parsed: ParsedExportData) -> BulkImportRequest {
+    static func convertToBulkImportRequest(from parsed: ParsedExportData) throws -> BulkImportRequest {
+        let groupIDs = Set(parsed.groups.map(\.id))
+        let manifests = try parsed.expenses.compactMap { expense -> BulkHistoryManifestDTO? in
+            guard expense.contextKind != .groupedIndividual else { return nil }
+            guard groupIDs.contains(expense.groupId) else {
+                throw ImportError.parsingFailed("A historical expense refers to a missing source group.")
+            }
+            let financialIDs = Set([expense.paidByMemberId]
+                + parsed.expenseInvolvedMembers.filter { $0.expenseId == expense.id }.map(\.memberId)
+                + parsed.expenseSplits.filter { $0.expenseId == expense.id }.map(\.memberId))
+            return BulkHistoryManifestDTO(expense_id: expense.id.uuidString,
+                group_id: expense.groupId.uuidString,
+                historical_member_ids: financialIDs.map(\.uuidString).sorted())
+        }
         let friendsByMemberId: [UUID: ParsedFriend] = Dictionary(
             parsed.friends.map { ($0.memberId, $0) },
             uniquingKeysWith: { _, new in new }
@@ -794,7 +841,8 @@ extension DataImportService {
             )
         }
 
-        return BulkImportRequest(friends: friends, groups: groups, expenses: expenses)
+        return BulkImportRequest(friends: friends, groups: groups, expenses: expenses,
+            history_manifest: manifests.isEmpty ? nil : manifests)
     }
 
     static func chunkExpenses(from parsed: ParsedExportData, maxPerChunk: Int = 100) -> [[ParsedExpense]] {
@@ -882,78 +930,119 @@ extension DataImportService {
         groupIdMapping: [UUID: UUID] = [:],
         accountService: AccountService,
         expectedAccountID: String, expectedAccountEmail: String,
-        isCurrent: () -> Bool
+        isCurrent: () -> Bool,
+        sleeper: (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
     ) async -> ImportResult {
-        let remappedParsed = applyRemappings(
-            to: parsed,
-            memberIdMapping: memberIdMapping,
-            groupIdMapping: groupIdMapping
-        )
-        let chunks = chunkExpenses(from: remappedParsed, maxPerChunk: 100)
-
-        var totalFriendsAdded = 0
-        var totalGroupsAdded = 0
-        var totalExpensesAdded = 0
-        var allErrors: [String] = []
-
-        if chunks.isEmpty {
-            guard !Task.isCancelled && isCurrent() else { return .incompatibleFormat("Import stopped because the signed-in account changed.") }
-            var request = convertToBulkImportRequest(from: remappedParsed)
+        let source = applyRemappings(to: parsed, memberIdMapping: memberIdMapping, groupIdMapping: groupIdMapping)
+        let converted: BulkImportRequest
+        do { converted = try convertToBulkImportRequest(from: source) }
+        catch { return .incompatibleFormat(error.localizedDescription) }
+        let phases: [(kind: String, count: Int, size: Int)] = [
+            ("friend", converted.friends.count, 16), ("group", converted.groups.count, 4), ("expense", converted.expenses.count, 8)
+        ]
+        var terminal: [String: BulkImportResult.ItemOutcome] = [:]
+        func key(_ kind: String, _ id: String) -> String { kind + ":" + id.lowercased() }
+        func requestIDs(_ request: BulkImportRequest, kind: String) -> [String] {
+            switch kind {
+            case "friend": return request.friends.map(\.member_id)
+            case "group": return request.groups.map(\.id)
+            default: return request.expenses.map(\.id)
+            }
+        }
+        func summary(phase: String? = nil, reason: String? = nil) -> ImportSummary {
+            let values = Array(terminal.values)
+            return ImportSummary(
+                friendsAdded: values.filter { $0.kind == "friend" && $0.status == "created" }.count,
+                groupsAdded: values.filter { $0.kind == "group" && $0.status == "created" }.count,
+                expensesAdded: values.filter { $0.kind == "expense" && $0.status == "created" }.count,
+                processedItems: values.filter { $0.status != "rejected" }.count,
+                alreadyPresentItems: values.filter { $0.status == "already_present" }.count,
+                updatedItems: values.filter { $0.status == "updated" }.count,
+                scrubbedItems: values.filter { $0.notice == "inactive_party_scrubbed" && $0.status != "rejected" }.count,
+                incompletePhase: phase, incompleteReason: reason)
+        }
+        func incomplete(_ phase: String, _ reason: String) -> ImportResult {
+            .partialSuccess(summary(phase: phase, reason: reason), errors: [reason])
+        }
+        func current() -> Bool { !Task.isCancelled && isCurrent() }
+        func makeRequest(kind: String, range: Range<Int>) -> BulkImportRequest {
+            let expenses = kind == "expense" ? Array(converted.expenses[range]) : []
+            let expenseIDs = Set(expenses.map(\.id))
+            let manifest = converted.history_manifest?.filter { expenseIDs.contains($0.expense_id) }
+            var request = BulkImportRequest(
+                friends: kind == "friend" ? Array(converted.friends[range]) : [],
+                groups: kind == "group" ? Array(converted.groups[range]) : [], expenses: expenses,
+                history_manifest: manifest?.isEmpty == false ? manifest : nil)
             request.expected_account_id = expectedAccountID
             request.expected_account_email = expectedAccountEmail
-            do {
-                let result = try await accountService.bulkImport(request: request)
-                guard !Task.isCancelled && isCurrent() else { return .incompatibleFormat("Import stopped because the signed-in account changed.") }
-                totalFriendsAdded = result.created.friends
-                totalGroupsAdded = result.created.groups
-                totalExpensesAdded = result.created.expenses
-                allErrors.append(contentsOf: result.errors)
-                if !result.success && result.errors.isEmpty { allErrors.append("The server did not complete this import.") }
-            } catch {
-                guard !Task.isCancelled && isCurrent() else { return .incompatibleFormat("Import stopped because the signed-in account changed.") }
-                return .incompatibleFormat("Bulk import failed: \(error.localizedDescription)")
+            return request
+        }
+        // Reject duplicate source items before any phase can commit.
+        for phase in phases {
+            let ids = requestIDs(converted, kind: phase.kind).map { $0.lowercased() }
+            guard Set(ids).count == ids.count else {
+                return .incompatibleFormat("The backup contains duplicate \(phase.kind) IDs.")
             }
-        } else {
-            for (index, chunk) in chunks.enumerated() {
-                var chunkParsed = remappedParsed
-                chunkParsed.expenses = chunk
-
-                guard !Task.isCancelled && isCurrent() else { return .incompatibleFormat("Import stopped because the signed-in account changed.") }
-                // Keep all display metadata during conversion; only omit already-sent
-                // relationship/group writes from subsequent network requests.
-                let converted = convertToBulkImportRequest(from: chunkParsed)
-                var request = BulkImportRequest(friends: index == 0 ? converted.friends : [],
-                    groups: index == 0 ? converted.groups : [], expenses: converted.expenses)
-                request.expected_account_id = expectedAccountID
-                request.expected_account_email = expectedAccountEmail
-
-                do {
-                    let result = try await accountService.bulkImport(request: request)
-                    guard !Task.isCancelled && isCurrent() else { return .incompatibleFormat("Import stopped because the signed-in account changed.") }
-                    totalFriendsAdded += result.created.friends
-                    totalGroupsAdded += result.created.groups
-                    totalExpensesAdded += result.created.expenses
-                    allErrors.append(contentsOf: result.errors)
-                    if !result.success && result.errors.isEmpty { allErrors.append("The server did not complete this import.") }
-                } catch {
-                    guard !Task.isCancelled && isCurrent() else { return .incompatibleFormat("Import stopped because the signed-in account changed.") }
-                    allErrors.append("Chunk \(index + 1) failed: \(error.localizedDescription)")
-                    break
+        }
+        for phase in phases {
+            var queue = stride(from: 0, to: phase.count, by: phase.size).map { $0..<min($0 + phase.size, phase.count) }
+            while !queue.isEmpty {
+                guard current() else { return incomplete(phase.kind, "Import stopped after cancellation or an account change.") }
+                let range = queue.removeFirst()
+                let request = makeRequest(kind: phase.kind, range: range)
+                let expected = Set(requestIDs(request, kind: phase.kind).map { key(phase.kind, $0) })
+                var attempt = 0
+                requestAttempts: while true {
+                    guard current() else { return incomplete(phase.kind, "Import stopped after cancellation or an account change.") }
+                    attempt += 1
+                    do {
+                        let response = try await accountService.bulkImport(request: request)
+                        guard current() else { return incomplete(phase.kind, "Import stopped after cancellation or an account change; the last request may have been saved.") }
+                        guard let outcomes = response.outcomes,
+                              outcomes.count == expected.count,
+                              Set(outcomes.map { key($0.kind, $0.id) }) == expected,
+                              outcomes.allSatisfy({ ["created", "updated", "already_present", "rejected"].contains($0.status) }) else {
+                            return incomplete(phase.kind, "The server did not confirm every requested item. Some data may be saved; refresh before retrying.")
+                        }
+                        // Exact unique coverage is checked before recording any acknowledgement.
+                        for outcome in outcomes { terminal[key(outcome.kind, outcome.id)] = outcome }
+                        if !response.success || !response.errors.isEmpty || outcomes.contains(where: { $0.status == "rejected" }) {
+                            let rejectedIDs = outcomes.filter { $0.status == "rejected" }.map(\.id).prefix(3).joined(separator: ", ")
+                            return incomplete(phase.kind, "Some \(phase.kind) items were not restored.\(rejectedIDs.isEmpty ? "" : " IDs: " + rejectedIDs)")
+                        }
+                        break requestAttempts
+                    } catch let error as ImportTransportError {
+                        guard current() else { return incomplete(phase.kind, "Import stopped after cancellation or an account change.") }
+                        switch error {
+                        case .budgetExceeded:
+                            guard range.count > 1 else {
+                                return incomplete(phase.kind, "This \(phase.kind) item exceeds the supported restore limit: \(requestIDs(request, kind: phase.kind)[0]).")
+                            }
+                            let middle = range.lowerBound + range.count / 2
+                            queue.insert(contentsOf: [range.lowerBound..<middle, middle..<range.upperBound], at: 0)
+                            break requestAttempts
+                        case .uncertainOutcome:
+                            guard attempt < 3 else {
+                                return incomplete(phase.kind, "The server response could not be confirmed after three attempts. The last request may already be saved.")
+                            }
+                            do { try await sleeper(UInt64(attempt) * 250_000_000) }
+                            catch { return incomplete(phase.kind, "Import was cancelled while waiting to retry.") }
+                            guard current() else { return incomplete(phase.kind, "Import stopped after cancellation or an account change.") }
+                            // Retry this immutable request, never generate replacement IDs.
+                            continue requestAttempts
+                        case .rejected(let code):
+                            return incomplete(phase.kind, "The server could not restore this request (\(code)).")
+                        }
+                    } catch is CancellationError {
+                        return incomplete(phase.kind, "Import was cancelled. Earlier confirmed items remain saved.")
+                    } catch {
+                        return incomplete(phase.kind, "The restore request failed. Earlier confirmed items remain saved.")
+                    }
                 }
             }
         }
-
-        let summary = ImportSummary(
-            friendsAdded: totalFriendsAdded,
-            groupsAdded: totalGroupsAdded,
-            expensesAdded: totalExpensesAdded
-        )
-
-        if allErrors.isEmpty {
-            return .success(summary)
-        } else {
-            return .partialSuccess(summary, errors: allErrors)
-        }
+        guard current() else { return incomplete("refresh", "Import stopped after cancellation or an account change.") }
+        return .success(summary())
     }
     #endif
 }

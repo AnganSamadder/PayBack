@@ -7,7 +7,7 @@ final class DataImportExportExtendedTests: XCTestCase {
 
     @MainActor
     override func setUp() async throws {
-        store = makeAuthenticatedBackupTestStore()
+        store = await makeAuthenticatedBackupTestStore()
     }
 
     override func tearDown() {

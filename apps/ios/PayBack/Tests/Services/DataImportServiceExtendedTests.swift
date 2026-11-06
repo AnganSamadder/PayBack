@@ -54,7 +54,7 @@ final class DataImportServiceExtendedTests: XCTestCase {
 
     func testImportSummary_Description_Empty() {
         let summary = ImportSummary(friendsAdded: 0, groupsAdded: 0, expensesAdded: 0)
-        XCTAssertEqual(summary.description, "No new data imported")
+        XCTAssertEqual(summary.description, "Confirmed 0 items.")
     }
 
     func testImportSummary_Description_SingularPlural() {

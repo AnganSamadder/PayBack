@@ -29,7 +29,7 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
     }
 
     private func mutate<Response: Decodable & Sendable>(_ name: String, arguments: [String: ConvexEncodable?], yielding: Response.Type) async throws -> Response {
-        try await transport.mutation(name, arguments: ConvexTransportArguments.encode(arguments), yielding: yielding)
+        try await transport.mutationPreservingHistory(name, arguments: ConvexTransportArguments.encode(arguments), yielding: yielding)
     }
 
     func fetchExpenses() async throws -> [Expense] {
@@ -37,8 +37,9 @@ final class ConvexExpenseService: ExpenseCloudService, Sendable {
             return try await ConvexRevisionedSync.fetchExpenseDTOs(client: client)
                 .map { try $0.validatedExpense() }
         } catch where ConvexSyncErrorClassifier.isV2Unavailable(error) {
-            return try await fetchLegacyExpenses()
-        }
+            do { return try await fetchLegacyExpenses() }
+            catch { throw ConvexBackendErrorMapper.preservingHistory(error) }
+        } catch { throw ConvexBackendErrorMapper.preservingHistory(error) }
     }
 
     private func fetchLegacyExpenses() async throws -> [Expense] {

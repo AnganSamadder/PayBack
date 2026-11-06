@@ -35,6 +35,47 @@ actor MockAccountServiceForAppStore: AccountService {
     private var profileImageUploadInvocationCount = 0
     private var profileImageUploadExpectedAccountIds: [String] = []
 
+    private var historyJobs: [GroupHistoryJob] = []
+    private var historyResumeResult: GroupHistoryJob?
+    private var historySnapshotError: GroupHistoryRecoveryError?
+    private var historyResumeCalls = 0
+    private var knownHistoryJobs: [String: GroupHistoryJob] = [:]
+    private var historyResumeFailure: PayBackError?
+    private var historyStatusFailure: PayBackError?
+    func configureHistoryStatusFailure(_ error: PayBackError?) { historyStatusFailure = error }
+    private var suspendHistoryResume = false
+    private var historyResumeContinuation: CheckedContinuation<Void, Never>?
+    func configureForeignHistoryJob(_ job: GroupHistoryJob) { knownHistoryJobs[job.jobId] = job }
+    func configureHistoryResumeFailure(_ error: PayBackError?) { historyResumeFailure = error }
+    func suspendNextHistoryResume() { suspendHistoryResume = true }
+    func isHistoryResumeSuspended() -> Bool { historyResumeContinuation != nil }
+    func continueHistoryResume() { historyResumeContinuation?.resume(); historyResumeContinuation = nil }
+    private var bootstrapCalls = 0
+    func configureHistoryRecovery(jobs: [GroupHistoryJob], snapshotError: GroupHistoryRecoveryError?, resumed: GroupHistoryJob? = nil) {
+        historyJobs = jobs
+        historySnapshotError = snapshotError
+        historyResumeResult = resumed
+    }
+    func historyRecoveryResumeCount() -> Int { historyResumeCalls }
+    func bootstrapInvocationCount() -> Int { bootstrapCalls }
+    func pendingGroupHistory(expectedAccountId: String) async throws -> [GroupHistoryJob] { historyJobs.filter { $0.phase != "complete" } }
+    func groupHistoryStatus(jobId: String, visibleExpenseId: String?, expectedAccountId: String) async throws -> GroupHistoryJob {
+        if let historyStatusFailure { throw historyStatusFailure }
+        guard let result = historyJobs.first(where: { $0.jobId == jobId }) ?? knownHistoryJobs[jobId] ?? historyResumeResult else { throw PayBackError.networkUnavailable }
+        return result
+    }
+    func resumeGroupHistory(jobId: String, visibleExpenseId: String?, expectedAccountId: String) async throws -> GroupHistoryJob {
+        historyResumeCalls += 1
+        if suspendHistoryResume {
+            suspendHistoryResume = false
+            await withCheckedContinuation { historyResumeContinuation = $0 }
+        }
+        if let historyResumeFailure { throw historyResumeFailure }
+        guard let result = historyResumeResult ?? historyJobs.first(where: { $0.jobId == jobId }) ?? knownHistoryJobs[jobId] else { throw PayBackError.networkUnavailable }
+        if result.phase == "complete" { historyJobs = []; knownHistoryJobs[jobId] = result; historySnapshotError = nil }
+        return result
+    }
+
     private var snapshotGenerations: [String] = []
     private var pendingOperation: IdentityOperationResult?
     private var resumedOperation: IdentityOperationResult?
@@ -63,6 +104,7 @@ actor MockAccountServiceForAppStore: AccountService {
 
     func configureSnapshotGenerations(_ values: [String]) { snapshotGenerations = values }
     func snapshotGeneration() async throws -> String? {
+        if let historySnapshotError { throw historySnapshotError }
         guard !snapshotGenerations.isEmpty else { return nil }
         if snapshotGenerations.count == 1 { return snapshotGenerations[0] }
         return snapshotGenerations.removeFirst()
@@ -82,6 +124,7 @@ actor MockAccountServiceForAppStore: AccountService {
     func identityResumeCount() -> Int { operationResumeCount }
     func configureAccountAfterIdentityResume(_ account: UserAccount) { accountAfterIdentityResume = account }
     func bootstrapMemberIdentity(accountId: String) async throws -> UUID {
+        bootstrapCalls += 1
         guard pendingOperation == nil else { throw PayBackError.underlying(message: "IDENTITY_OPERATION_PENDING") }
         if suspendBootstrap {
             suspendBootstrap = false
@@ -246,6 +289,17 @@ actor MockAccountServiceForAppStore: AccountService {
     }
 
     func reset() {
+        historyJobs = []
+        historyResumeResult = nil
+        historySnapshotError = nil
+        historyResumeCalls = 0
+        knownHistoryJobs = [:]
+        historyResumeFailure = nil
+        historyStatusFailure = nil
+        suspendHistoryResume = false
+        historyResumeContinuation?.resume()
+        historyResumeContinuation = nil
+        bootstrapCalls = 0
         snapshotGenerations = []
         pendingOperation = nil
         resumedOperation = nil

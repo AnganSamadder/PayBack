@@ -435,7 +435,7 @@ final class DataImportServiceTests: XCTestCase {
 
         let csvText = try String(contentsOf: fixtureURL, encoding: .utf8)
         let parsedData = try DataImportService.parseExport(csvText)
-        let request = DataImportService.convertToBulkImportRequest(from: parsedData)
+        let request = try DataImportService.convertToBulkImportRequest(from: parsedData)
 
         XCTAssertEqual(request.friends.count, 1)
         let bob = request.friends.first!
@@ -520,7 +520,7 @@ final class DataImportServiceTests: XCTestCase {
         ]
 
         // When
-        let request = DataImportService.convertToBulkImportRequest(from: parsedData)
+        let request = try DataImportService.convertToBulkImportRequest(from: parsedData)
 
         // Then
         XCTAssertEqual(request.expenses.count, 1)
@@ -583,11 +583,12 @@ final class DataImportServiceTests: XCTestCase {
 
         switch result {
         case .partialSuccess(let summary, let errors):
-            XCTAssertGreaterThan(summary.expensesAdded, 0)
+            XCTAssertEqual(summary.expensesAdded, 0)
+            XCTAssertEqual(summary.incompletePhase, "friend")
             XCTAssertEqual(errors.count, 1)
-            XCTAssertTrue(errors[0].contains("group not found"))
+            XCTAssertTrue(errors[0].contains("friend"))
         case .success:
-            break
+            XCTFail("Row-level errors must report incomplete progress")
         case .incompatibleFormat:
             XCTFail("Should not return incompatibleFormat for partial errors")
         case .needsResolution:
@@ -674,7 +675,10 @@ actor MockBulkImportAccountService: AccountService {
                 groups: request.groups.count,
                 expenses: request.expenses.count
             ),
-            errors: bulkImportErrors
+            errors: bulkImportErrors,
+            outcomes: request.friends.map { BulkImportResult.ItemOutcome(kind: "friend", id: $0.member_id, status: "created") }
+                + request.groups.map { BulkImportResult.ItemOutcome(kind: "group", id: $0.id, status: "created") }
+                + request.expenses.map { BulkImportResult.ItemOutcome(kind: "expense", id: $0.id, status: "created") }
         )
     }
 }

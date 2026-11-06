@@ -150,6 +150,20 @@ struct BulkExpenseDTO: Codable {
     }
 }
 
+struct BulkHistoryManifestDTO: Codable, Sendable {
+    let expense_id: String
+    let group_id: String
+    let historical_member_ids: [String]
+}
+
+/// Only the concrete adapter classifies SDK failures into these categories.
+/// A budget error is proof of a rolled-back transaction; uncertainty is not.
+enum ImportTransportError: Error, Sendable, Equatable {
+    case budgetExceeded(scope: String)
+    case uncertainOutcome
+    case rejected(code: String)
+}
+
 struct BulkImportRequest: Codable {
     let friends: [BulkFriendDTO]
     let groups: [BulkGroupDTO]
@@ -157,8 +171,10 @@ struct BulkImportRequest: Codable {
     var expected_account_id: String? = nil
     var expected_account_email: String? = nil
     let financial_contract_version: Double
+    let history_manifest: [BulkHistoryManifestDTO]?
 
-    init(friends: [BulkFriendDTO], groups: [BulkGroupDTO], expenses: [BulkExpenseDTO]) {
+    init(friends: [BulkFriendDTO], groups: [BulkGroupDTO], expenses: [BulkExpenseDTO], history_manifest: [BulkHistoryManifestDTO]? = nil) {
+        self.history_manifest = history_manifest
         self.financial_contract_version = 2
         self.friends = friends
         self.groups = groups
@@ -172,9 +188,26 @@ struct BulkImportResult: Decodable, Sendable {
         let groups: Int
         let expenses: Int
     }
+    struct ItemOutcome: Decodable, Sendable {
+        let kind: String
+        let id: String
+        let status: String
+        let error_code: String?
+        let notice: String?
+
+        init(kind: String, id: String, status: String, error_code: String? = nil, notice: String? = nil) {
+            self.kind = kind; self.id = id; self.status = status
+            self.error_code = error_code; self.notice = notice
+        }
+    }
+    let outcomes: [ItemOutcome]?
     let success: Bool
     let created: CreatedCounts
     let errors: [String]
+
+    init(success: Bool, created: CreatedCounts, errors: [String], outcomes: [ItemOutcome]? = nil) {
+        self.success = success; self.created = created; self.errors = errors; self.outcomes = outcomes
+    }
 }
 
 #if !PAYBACK_CI_NO_CONVEX
@@ -186,4 +219,5 @@ extension BulkSubexpenseDTO: ConvexEncodable {}
 extension BulkParticipantDTO: ConvexEncodable {}
 extension BulkExpenseDTO: ConvexEncodable {}
 extension BulkImportRequest: ConvexEncodable {}
+extension BulkHistoryManifestDTO: ConvexEncodable {}
 #endif

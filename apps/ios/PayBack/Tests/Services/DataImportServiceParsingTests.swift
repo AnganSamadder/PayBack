@@ -8,47 +8,55 @@ final class DataImportServiceParsingTests: XCTestCase {
 
     func testImportSummary_description_allComponents() {
         let summary = ImportSummary(friendsAdded: 2, groupsAdded: 3, expensesAdded: 5)
-        XCTAssertEqual(summary.description, "Added 2 friends, 3 groups, 5 expenses")
+        XCTAssertEqual(summary.description, "Confirmed 10 items. Added 2 friends, 3 groups, 5 expenses.")
     }
 
     func testImportSummary_description_singularForms() {
         let summary = ImportSummary(friendsAdded: 1, groupsAdded: 1, expensesAdded: 1)
-        XCTAssertEqual(summary.description, "Added 1 friend, 1 group, 1 expense")
+        XCTAssertEqual(summary.description, "Confirmed 3 items. Added 1 friend, 1 group, 1 expense.")
     }
 
     func testImportSummary_description_noData() {
         let summary = ImportSummary(friendsAdded: 0, groupsAdded: 0, expensesAdded: 0)
-        XCTAssertEqual(summary.description, "No new data imported")
+        XCTAssertEqual(summary.description, "Confirmed 0 items.")
     }
 
     func testImportSummary_description_onlyFriends() {
         let summary = ImportSummary(friendsAdded: 5, groupsAdded: 0, expensesAdded: 0)
-        XCTAssertEqual(summary.description, "Added 5 friends")
+        XCTAssertEqual(summary.description, "Confirmed 5 items. Added 5 friends.")
     }
 
     func testImportSummary_description_onlyGroups() {
         let summary = ImportSummary(friendsAdded: 0, groupsAdded: 3, expensesAdded: 0)
-        XCTAssertEqual(summary.description, "Added 3 groups")
+        XCTAssertEqual(summary.description, "Confirmed 3 items. Added 3 groups.")
     }
 
     func testImportSummary_description_onlyExpenses() {
         let summary = ImportSummary(friendsAdded: 0, groupsAdded: 0, expensesAdded: 10)
-        XCTAssertEqual(summary.description, "Added 10 expenses")
+        XCTAssertEqual(summary.description, "Confirmed 10 items. Added 10 expenses.")
     }
 
     func testImportSummary_description_friendsAndGroups() {
         let summary = ImportSummary(friendsAdded: 2, groupsAdded: 3, expensesAdded: 0)
-        XCTAssertEqual(summary.description, "Added 2 friends, 3 groups")
+        XCTAssertEqual(summary.description, "Confirmed 5 items. Added 2 friends, 3 groups.")
     }
 
     func testImportSummary_description_friendsAndExpenses() {
         let summary = ImportSummary(friendsAdded: 2, groupsAdded: 0, expensesAdded: 5)
-        XCTAssertEqual(summary.description, "Added 2 friends, 5 expenses")
+        XCTAssertEqual(summary.description, "Confirmed 7 items. Added 2 friends, 5 expenses.")
     }
 
     func testImportSummary_description_groupsAndExpenses() {
         let summary = ImportSummary(friendsAdded: 0, groupsAdded: 3, expensesAdded: 5)
-        XCTAssertEqual(summary.description, "Added 3 groups, 5 expenses")
+        XCTAssertEqual(summary.description, "Confirmed 8 items. Added 3 groups, 5 expenses.")
+    }
+
+    func testImportSummaryAlreadyPresentDoesNotInventNewCreationCount() {
+        let summary = ImportSummary(friendsAdded: 0, groupsAdded: 0, expensesAdded: 0,
+            processedItems: 2, alreadyPresentItems: 2)
+        XCTAssertEqual(summary.totalItems, 0)
+        XCTAssertEqual(summary.description, "Confirmed 2 items. 2 already present or saved by an earlier attempt.")
+        XCTAssertFalse(summary.description.contains("No new"))
     }
 
     func testImportSummary_totalItems() {

@@ -64,7 +64,7 @@ actor ConvexAccountService: AccountService {
     }
 
     func lookupAccount() async throws -> UserAccount? {
-        let dto = try await transport.query("users:viewer",
+        let dto = try await transport.queryPreservingHistory("users:viewer",
             arguments: ConvexTransportArguments.encode(["financial_contract_version": 2.0]),
             yielding: UserViewerDTO?.self)
         try Task.checkCancellation()
@@ -83,13 +83,13 @@ actor ConvexAccountService: AccountService {
         let requestedEmail = try normalizedEmail(from: email)
         do {
             return try await fetchAccount(query: "users:viewer", requestedEmail: requestedEmail)
-        } catch where String(describing: error).contains("IDENTITY_OPERATION_PENDING") || String(describing: error).contains("FINANCIAL_CONTRACT_UPGRADE_REQUIRED") || String(describing: error).contains("FRIEND_DELETION_PENDING") {
+        } catch where error is GroupHistoryRecoveryError || String(describing: error).contains("IDENTITY_OPERATION_PENDING") || String(describing: error).contains("FINANCIAL_CONTRACT_UPGRADE_REQUIRED") || String(describing: error).contains("FRIEND_DELETION_PENDING") {
             return try await fetchAccount(query: "users:authenticationStatus", requestedEmail: requestedEmail)
         }
     }
 
     private func fetchAccount(query: String, requestedEmail: String) async throws -> UserAccount? {
-        let dto = try await transport.query(query,
+        let dto = try await transport.queryPreservingHistory(query,
             arguments: ConvexTransportArguments.encode(["financial_contract_version": 2.0]),
             yielding: UserViewerDTO?.self)
         try Task.checkCancellation()
@@ -213,7 +213,7 @@ actor ConvexAccountService: AccountService {
             var convexArgs = Self.buildFriendUpsertArgs(from: friend)
             convexArgs["expected_account_email"] = email
             convexArgs["financial_contract_version"] = 2.0
-            _ = try await transport.mutation("friends:upsert",
+            _ = try await transport.mutationPreservingHistory("friends:upsert",
                 arguments: ConvexTransportArguments.encode(convexArgs), yielding: String?.self)
             try Task.checkCancellation()
         }
@@ -227,7 +227,7 @@ actor ConvexAccountService: AccountService {
         friendCacheGeneration &+= 1
         let cacheGeneration = friendCacheGeneration
         let email = try normalizedEmail(from: accountEmail)
-        let dtos = try await transport.query("friends:list",
+        let dtos = try await transport.queryPreservingHistory("friends:list",
             arguments: ConvexTransportArguments.encode(["financial_contract_version": 2.0, "expected_account_email": email]),
             yielding: [ConvexAccountFriendDTO].self)
         let friends = dtos.compactMap { $0.toAccountFriend() }
@@ -254,10 +254,10 @@ actor ConvexAccountService: AccountService {
     }
 
     func pendingIdentityOperation() async throws -> IdentityOperationResult? {
-        for try await result in try client.subscribe(to: "identityOperations:pending", yielding: IdentityOperationResult?.self).values {
-            return result
-        }
-        throw CancellationError()
+        let result = try await transport.queryPreservingHistory("identityOperations:pending",
+            arguments: [:], yielding: IdentityOperationResult?.self)
+        try Task.checkCancellation()
+        return result
     }
 
     private struct FriendDeletionProgress: Decodable, Sendable {
@@ -282,7 +282,7 @@ actor ConvexAccountService: AccountService {
             try Task.checkCancellation()
             try await Task.sleep(nanoseconds: 250_000_000)
             try Task.checkCancellation()
-            progress = try await transport.mutation("cleanup:resumeFriendDeletion", arguments: ConvexTransportArguments.encode([
+            progress = try await transport.mutationPreservingHistory("cleanup:resumeFriendDeletion", arguments: ConvexTransportArguments.encode([
                 "operationId": progress.operationId, "expected_account_id": expectedAccountId, "financial_contract_version": 2.0
             ]), yielding: FriendDeletionProgress.self)
         }
@@ -293,7 +293,7 @@ actor ConvexAccountService: AccountService {
         let key = "payback.friendDeletion.\(expectedAccountId)"
         guard let operationId = UserDefaults.standard.string(forKey: key) else { return }
         try Task.checkCancellation()
-        let result: FriendDeletionProgress = try await transport.mutation("cleanup:cancelFriendDeletion", arguments: ConvexTransportArguments.encode([
+        let result: FriendDeletionProgress = try await transport.mutationPreservingHistory("cleanup:cancelFriendDeletion", arguments: ConvexTransportArguments.encode([
             "operationId": operationId, "expected_account_id": expectedAccountId,
             "financial_contract_version": 2.0
         ]), yielding: FriendDeletionProgress.self)
@@ -314,7 +314,7 @@ actor ConvexAccountService: AccountService {
             if let saved = UserDefaults.standard.string(forKey: key) {
                 operationId = saved
             } else {
-                let discovered = try await transport.query("cleanup:pendingFriendDeletion", arguments: ConvexTransportArguments.encode([
+                let discovered = try await transport.queryPreservingHistory("cleanup:pendingFriendDeletion", arguments: ConvexTransportArguments.encode([
                     "expected_account_id": expectedAccountId, "financial_contract_version": 2.0
                 ]), yielding: FriendDeletionProgress?.self)
                 try Task.checkCancellation()
@@ -323,7 +323,7 @@ actor ConvexAccountService: AccountService {
                 UserDefaults.standard.set(operationId, forKey: key)
             }
             try Task.checkCancellation()
-            let result = try await transport.mutation("cleanup:resumeFriendDeletion", arguments: ConvexTransportArguments.encode([
+            let result = try await transport.mutationPreservingHistory("cleanup:resumeFriendDeletion", arguments: ConvexTransportArguments.encode([
                 "operationId": operationId, "expected_account_id": expectedAccountId, "financial_contract_version": 2.0
             ]), yielding: FriendDeletionProgress.self)
             try Task.checkCancellation()
@@ -339,7 +339,7 @@ actor ConvexAccountService: AccountService {
 
     func deleteFriendAcknowledged(memberId: UUID, linked: Bool, expectedAccountId: String) async throws -> DeleteFriendResult {
         try Task.checkCancellation()
-        let progress = try await transport.mutation("cleanup:deleteFriendV3", arguments: ConvexTransportArguments.encode([
+        let progress = try await transport.mutationPreservingHistory("cleanup:deleteFriendV3", arguments: ConvexTransportArguments.encode([
             "friendMemberId": memberId.uuidString, "expected_account_id": expectedAccountId, "financial_contract_version": 2.0
         ]), yielding: FriendDeletionProgress.self)
         try await finishFriendDeletion(progress, expectedAccountId: expectedAccountId)
@@ -347,26 +347,90 @@ actor ConvexAccountService: AccountService {
     }
 
     func snapshotGeneration() async throws -> String? {
-        struct Response: Decodable { let generation: String }
-        for try await response in try client.subscribe(to: "identityOperations:snapshotGeneration", with: ["financial_contract_version": 2.0], yielding: Response.self).values {
-            try Task.checkCancellation()
-            return response.generation
-        }
-        throw CancellationError()
+        struct Response: Decodable, Sendable { let generation: String }
+        let response = try await transport.queryPreservingHistory("identityOperations:snapshotGeneration",
+            arguments: ConvexTransportArguments.encode(["financial_contract_version": 2.0]), yielding: Response.self)
+        try Task.checkCancellation()
+        return response.generation
     }
 
     func resumeIdentityOperation(_ operationId: String, expectedAccountId: String) async throws -> IdentityOperationResult {
         try Task.checkCancellation()
-        return try await client.mutation("identityOperations:resume", with: ["operation_id": operationId, "expected_account_id": expectedAccountId])
+        guard !expectedAccountId.isEmpty else { throw ConvexServiceTransportError.expectedActorRequired }
+        return try await transport.mutationPreservingHistory("identityOperations:resume",
+            arguments: ConvexTransportArguments.encode(["operation_id": operationId, "expected_account_id": expectedAccountId]),
+            yielding: IdentityOperationResult.self)
     }
 
     func beginFriendMerge(source: UUID, target: UUID, expectedAccountId: String) async throws -> IdentityOperationResult {
         try Task.checkCancellation()
-        return try await transport.mutation("aliases:mergeUnlinkedFriendsV3",
+        return try await transport.mutationPreservingHistory("aliases:mergeUnlinkedFriendsV3",
             arguments: ConvexTransportArguments.encode([
                 "friendId1": target.uuidString, "friendId2": source.uuidString,
                 "financial_contract_version": 2.0, "expected_account_id": expectedAccountId
             ]), yielding: IdentityOperationResult.self)
+    }
+
+    private struct GroupHistoryPage: Decodable, Sendable {
+        let page: [GroupHistoryJob]
+        let isDone: Bool
+        let continueCursor: String
+    }
+
+    func pendingGroupHistory(expectedAccountId: String) async throws -> [GroupHistoryJob] {
+        guard !expectedAccountId.isEmpty else { throw ConvexServiceTransportError.expectedActorRequired }
+        var cursor: String?
+        var seenCursors = Set<String>()
+        var jobs: [GroupHistoryJob] = []
+        repeat {
+            try Task.checkCancellation()
+            let pagination: [String: ConvexEncodable?] = ["cursor": cursor, "numItems": 16.0]
+            let page = try await transport.queryPreservingHistory("groupHistory:pending", arguments: ConvexTransportArguments.encode([
+                "paginationOpts": pagination, "expected_account_id": expectedAccountId,
+                "financial_contract_version": 2.0
+            ]), yielding: GroupHistoryPage.self)
+            try Task.checkCancellation()
+            for job in page.page { try validateHistoryJob(job) }
+            jobs.append(contentsOf: page.page)
+            if page.isDone { return jobs }
+            guard seenCursors.insert(page.continueCursor).inserted else { throw GroupHistoryServiceError.invalidResponse }
+            cursor = page.continueCursor
+        } while true
+    }
+
+    func groupHistoryStatus(jobId: String, visibleExpenseId: String?, expectedAccountId: String) async throws -> GroupHistoryJob {
+        let arguments = try historyArguments(jobId: jobId, visibleExpenseId: visibleExpenseId, expectedAccountId: expectedAccountId)
+        do {
+            let result = try await transport.queryPreservingHistory("groupHistory:status", arguments: arguments, yielding: GroupHistoryJob.self)
+            try Task.checkCancellation()
+            try validateHistoryJob(result, expectedJobId: jobId)
+            return result
+        } catch { throw ConvexBackendErrorMapper.preservingHistory(error) }
+    }
+
+    func resumeGroupHistory(jobId: String, visibleExpenseId: String?, expectedAccountId: String) async throws -> GroupHistoryJob {
+        let arguments = try historyArguments(jobId: jobId, visibleExpenseId: visibleExpenseId, expectedAccountId: expectedAccountId)
+        do {
+            let result = try await transport.mutationPreservingHistory("groupHistory:resume", arguments: arguments, yielding: GroupHistoryJob.self)
+            try Task.checkCancellation()
+            try validateHistoryJob(result, expectedJobId: jobId)
+            return result
+        } catch { throw ConvexBackendErrorMapper.preservingHistory(error) }
+    }
+
+    private func historyArguments(jobId: String, visibleExpenseId: String?, expectedAccountId: String) throws -> [String: String] {
+        try Task.checkCancellation()
+        guard !expectedAccountId.isEmpty else { throw ConvexServiceTransportError.expectedActorRequired }
+        var arguments: [String: ConvexEncodable?] = ["job_id": jobId, "expected_account_id": expectedAccountId,
+            "financial_contract_version": 2.0]
+        if let visibleExpenseId { arguments["visible_expense_id"] = visibleExpenseId }
+        return try ConvexTransportArguments.encode(arguments)
+    }
+
+    private func validateHistoryJob(_ job: GroupHistoryJob, expectedJobId: String? = nil) throws {
+        guard !job.jobId.isEmpty, !job.groupId.isEmpty,
+              ["pending", "failed", "complete"].contains(job.phase),
+              expectedJobId == nil || expectedJobId == job.jobId else { throw GroupHistoryServiceError.invalidResponse }
     }
 
     func updateLinkedMember(accountId: String, memberId: UUID?) async throws {
@@ -385,11 +449,28 @@ actor ConvexAccountService: AccountService {
             try Task.checkCancellation()
             var args: [String: ConvexEncodable?] = ["expected_account_id": expectedAccountId, "financial_contract_version": 2.0]
             if let cutoff { args["cutoff"] = cutoff }
-            let result = try await transport.mutation("friends:clearAllForUserV2",
+            let result = try await transport.mutationPreservingHistory("friends:clearAllForUserV2",
                 arguments: ConvexTransportArguments.encode(args), yielding: ConvexClearAllProgressDTO.self)
             try Task.checkCancellation()
             guard cacheGeneration == friendCacheGeneration else { throw CancellationError() }
             if !result.inProgress { break }
+            if result.processed == 0 {
+                // The backend uses zero progress only while this owner's
+                // restricted direct history is reconciling after friend removal.
+                // Resume once and leave the clear incomplete; do not spin or
+                // discard the cache before the remaining clear is acknowledged.
+                let account = try await transport.queryPreservingHistory("users:authenticationStatus",
+                    arguments: ConvexTransportArguments.encode(["financial_contract_version": 2.0]),
+                    yielding: UserViewerDTO?.self)
+                try Task.checkCancellation()
+                guard account?.id == expectedAccountId, cacheGeneration == friendCacheGeneration else { throw CancellationError() }
+                if let operation = try await pendingIdentityOperation(), operation.outcome != "revoked" {
+                    try Task.checkCancellation()
+                    guard cacheGeneration == friendCacheGeneration else { throw CancellationError() }
+                    _ = try await resumeIdentityOperation(operation.operationId, expectedAccountId: expectedAccountId)
+                }
+                throw PayBackError.underlying(message: "Friend cleanup is still reconciling expense history. Retry Clear All My Data after processing finishes.")
+            }
             guard result.processed > 0 else { throw ConvexClearAllError.stalled }
             cutoff = result.cutoff
         }
@@ -406,7 +487,7 @@ actor ConvexAccountService: AccountService {
         var args: [String: ConvexEncodable?] = ["expected_account_id": expectedAccountId]
         if let colorHex { args["profile_avatar_color"] = colorHex }
         if let imageUrl { args["profile_image_url"] = imageUrl }
-        _ = try await transport.mutation("users:updateProfile", arguments: ConvexTransportArguments.encode(args), yielding: ConvexIgnoredResult.self)
+        _ = try await transport.mutationPreservingHistory("users:updateProfile", arguments: ConvexTransportArguments.encode(args), yielding: ConvexIgnoredResult.self)
         return imageUrl
     }
 
@@ -419,7 +500,7 @@ actor ConvexAccountService: AccountService {
             "prefer_whole_names": preferWholeNames,
             "expected_account_id": expectedAccountId
         ]
-        _ = try await transport.mutation("users:updateSettings", arguments: ConvexTransportArguments.encode(args), yielding: ConvexIgnoredResult.self)
+        _ = try await transport.mutationPreservingHistory("users:updateSettings", arguments: ConvexTransportArguments.encode(args), yielding: ConvexIgnoredResult.self)
     }
 
     private struct UploadResponse: Decodable {
@@ -690,7 +771,7 @@ actor ConvexAccountService: AccountService {
         let groups: [ConvexEncodable?] = request.groups
         let expenses: [ConvexEncodable?] = request.expenses
 
-        let args: [String: ConvexEncodable?] = [
+        var args: [String: ConvexEncodable?] = [
             "friends": friends,
             "groups": groups,
             "expenses": expenses,
@@ -698,17 +779,14 @@ actor ConvexAccountService: AccountService {
             "expected_account_email": expectedEmail,
             "financial_contract_version": request.financial_contract_version
         ]
+        if let manifest = request.history_manifest { args["history_manifest"] = manifest as [ConvexEncodable?] }
 
         do {
             // convex/bulkImport.ts exports `bulkImport`, so the public function name is `bulkImport:bulkImport`.
-            return try await transport.mutation("bulkImport:bulkImport",
+            return try await transport.mutationPreservingHistory("bulkImport:bulkImport",
                 arguments: ConvexTransportArguments.encode(args), yielding: BulkImportResult.self)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as PayBackError {
-            throw error
         } catch {
-            throw PayBackError.underlying(message: error.localizedDescription)
+            throw ConvexBackendErrorMapper.importFailure(error)
         }
     }
 }

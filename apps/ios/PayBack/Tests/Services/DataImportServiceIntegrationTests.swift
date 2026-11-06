@@ -7,10 +7,10 @@ final class DataImportServiceIntegrationTests: XCTestCase {
 
     var store: AppStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         Dependencies.reset()
-        store = makeAuthenticatedBackupTestStore()
+        store = await makeAuthenticatedBackupTestStore()
     }
 
     override func tearDown() {
@@ -240,12 +240,13 @@ final class DataImportServiceIntegrationTests: XCTestCase {
 /// A matching authenticated actor plus a recording server boundary. Import and
 /// account adapters stay real; published rows arrive only through remote fetches.
 @MainActor
-func makeAuthenticatedBackupTestStore() -> AppStore {
+func makeAuthenticatedBackupTestStore() async -> AppStore {
     let account = MockAccountServiceForAppStore()
     let groups = MockGroupCloudServiceForAppStore()
     let expenses = MockExpenseCloudServiceForAppStore()
     let currentUser = GroupMember(name: "Backup Owner")
     let user = UserAccount(id: "backup-test-account", email: "test@example.com", displayName: "Backup Owner", linkedMemberId: currentUser.id)
+    await account.addAccount(user)
     #if !PAYBACK_CI_NO_CONVEX
     let transport = BackupImportRecordingTransport(account: account, groups: groups, expenses: expenses)
     Dependencies.current = Dependencies.mock(accountService: ConvexAccountService(transport: transport),
@@ -304,8 +305,11 @@ private actor BackupImportRecordingTransport: ConvexServiceTransport {
                 notes: expense.notes, currencyCode: expense.currency_code)
             try await expenses.upsertExpense(model, participants: [])
         }
-        let json = "{\"success\":true,\"created\":{\"friends\":\(newFriends.count),\"groups\":\(importedGroups.count),\"expenses\":\(importedExpenses.count)},\"errors\":[]}"
-        return try decoder.decode(Response.self, from: Data(json.utf8))
+        let outcomes = friends.map { row in ["kind": "friend", "id": row.member_id, "status": newFriends.contains(where: { $0.memberId.uuidString == row.member_id }) ? "created" : "already_present"] }
+        let groupOutcomes = importedGroups.map { ["kind": "group", "id": $0.id, "status": "created"] }
+        let expenseOutcomes = importedExpenses.map { ["kind": "expense", "id": $0.id, "status": "created"] }
+        let object: [String: Any] = ["success": true, "created": ["friends": newFriends.count, "groups": importedGroups.count, "expenses": importedExpenses.count], "errors": [], "outcomes": outcomes + groupOutcomes + expenseOutcomes]
+        return try decoder.decode(Response.self, from: JSONSerialization.data(withJSONObject: object))
     }
 }
 #endif

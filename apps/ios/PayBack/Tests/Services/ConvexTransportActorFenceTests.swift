@@ -27,7 +27,7 @@ final class ConvexTransportActorFenceTests: XCTestCase {
         guard case .success(let summary) = result else { return XCTFail("Expected complete import: \(result)") }
         XCTAssertEqual(summary.expensesAdded, 201)
         let state = await transport.snapshot()
-        XCTAssertEqual(state.committedActors, ["A", "A", "A"])
+        XCTAssertEqual(state.committedActors, Array(repeating: "A", count: 26))
     }
 
     func testFriendLoopRejectsSecondWriteAfterTransportAuthSwitch() async throws {
@@ -116,7 +116,7 @@ final class ConvexTransportActorFenceTests: XCTestCase {
         guard case .partialSuccess(let summary, let errors) = result else {
             return XCTFail("Expected acknowledged first chunk plus rejection: \(result)")
         }
-        XCTAssertEqual(summary.expensesAdded, 100)
+        XCTAssertEqual(summary.expensesAdded, 8)
         XCTAssertEqual(errors.count, 1)
         let state = await transport.snapshot()
         XCTAssertEqual(state.committedActors, ["A"])
@@ -139,7 +139,9 @@ final class ConvexTransportActorFenceTests: XCTestCase {
         task.cancel()
         await transport.resume(as: "A")
         let result = await task.value
-        guard case .incompatibleFormat = result else { return XCTFail("Cancelled import reported success") }
+        guard case .partialSuccess(let summary, _) = result else { return XCTFail("Cancelled import reported success") }
+        XCTAssertEqual(summary.processedItems, 0)
+        XCTAssertEqual(summary.incompletePhase, "expense")
         let state = await transport.snapshot()
         XCTAssertEqual(state.calls.count, 1)
     }
@@ -536,8 +538,11 @@ private actor AuthSwitchTransport: ConvexServiceTransport {
         if pause == .mutation(calls.count) { await suspend() }
         let json: String
         if name == "bulkImport:bulkImport" {
-            let expenses = try JSONSerialization.jsonObject(with: Data((arguments["expenses"] ?? "[]").utf8)) as? [Any]
-            json = "{\"success\":true,\"created\":{\"friends\":0,\"groups\":0,\"expenses\":\(expenses?.count ?? 0)},\"errors\":[]}"
+            let expenses = try JSONSerialization.jsonObject(with: Data((arguments["expenses"] ?? "[]").utf8)) as? [[String: Any]] ?? []
+            let outcomes = expenses.map { ["kind": "expense", "id": $0["id"] as? String ?? "", "status": "created"] }
+            let response: [String: Any] = ["success": true, "created": ["friends": 0, "groups": 0, "expenses": expenses.count],
+                "errors": [], "outcomes": outcomes]
+            json = String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)
         } else if name == "groups:clearAllForUserV2" {
             json = "{\"inProgress\":true,\"processed\":1,\"cutoff\":42}"
         } else if name == "friends:clearAllForUserV2" {

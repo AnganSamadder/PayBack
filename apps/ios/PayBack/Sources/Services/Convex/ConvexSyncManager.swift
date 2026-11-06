@@ -400,7 +400,7 @@ final class ConvexSyncManager: ObservableObject {
     }
 
     private func recordSyncError(_ error: Error, for channel: ConvexSyncChannel) {
-        channelErrors.record(error, for: channel)
+        channelErrors.record(ConvexBackendErrorMapper.preservingHistory(error), for: channel)
         refreshSyncError()
     }
 

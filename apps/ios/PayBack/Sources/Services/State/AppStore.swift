@@ -18,11 +18,38 @@ struct AuthenticationSessionIdentity: Sendable, Equatable {
     let displayName: String
 }
 
+struct RemoteHydrationReceipt: Sendable, Equatable {
+    let accountID: String
+    let dataEpoch: UUID
+    let generation: UInt64
+    let serverGeneration: String?
+}
+
+struct RemoteHydrationFailure: Sendable, Equatable {
+    enum Reason: Sendable, Equatable { case notAuthenticated, sessionChanged, cancelled, superseded, recoveryRequired, failed }
+    let reason: Reason
+    let message: String
+}
+
+enum RemoteHydrationOutcome: Sendable, Equatable {
+    case complete(RemoteHydrationReceipt)
+    case incomplete(RemoteHydrationFailure)
+}
+
+struct GroupHistoryRecoveryState: Sendable, Equatable {
+    var jobs: [GroupHistoryJob]
+    var message: String
+    var isRetrying: Bool = false
+    var maintenanceRequired: Bool { jobs.contains { $0.maintenanceRequired } }
+}
+
 final class AppStore: ObservableObject {
     private struct RemoteLoadContext: Sendable {
         let generation: UInt64
         let accountId: String
         let accountEmail: String
+        let dataEpoch: UUID
+        let requiresAccountConfirmation: Bool
     }
 
     private struct NormalizedRemoteData {
@@ -86,9 +113,9 @@ final class AppStore: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var friendSyncTask: Task<Void, Never>?
     private var friendUpdateTokens: [UUID: UUID] = [:]
-    private var remoteLoadTask: Task<Void, Never>?
+    private var remoteLoadTask: Task<RemoteHydrationOutcome, Never>?
     private var clearAllDataTask: Task<Void, Never>?
-    private var remoteLoadGeneration: UInt64 = 0
+    private(set) var remoteLoadGeneration: UInt64 = 0
     /// Local expense writes that have been sent to cloud but not yet observed in realtime snapshots.
     private var pendingExpenseUpsertIds: Set<UUID> = []
     private struct ExpenseUpsertMutationToken {
@@ -125,6 +152,12 @@ final class AppStore: ObservableObject {
     @Published private(set) var accountDeletionState: AccountDeletionState = .idle
     @Published private(set) var authenticationSessionRecoveryMessage: String?
     @Published private(set) var dataSyncRecoveryMessage: String?
+    @Published private(set) var groupHistoryRecovery: GroupHistoryRecoveryState?
+    var isGroupHistoryRecoveryBlocking: Bool { session != nil && groupHistoryRecovery != nil && !hasCompletedInitialRemoteLoad }
+    var hasGroupHistoryRecovery: Bool { groupHistoryRecovery != nil }
+    private var historyRecoveryJobIds: Set<String> = []
+    private var historyVisibleExpenseHints: [String: String] = [:]
+    private var historyRecoveryAttemptId: UUID?
     @Published private(set) var friendDeletionRecoveryMessage: String?
     @Published private(set) var isLinkingProcessing = false
     @Published private(set) var linkingRecoveryMessage: String?
@@ -363,7 +396,9 @@ final class AppStore: ObservableObject {
 
     @MainActor
     private func finishAuthenticationSessionCheck(recoveryError: Error?) {
-        if let recoveryError {
+        if groupHistoryRecovery != nil, session != nil {
+            authenticationSessionRecoveryMessage = nil
+        } else if let recoveryError {
             authenticationSessionRecoveryMessage = recoveryError.userFacingMessage(
                 fallback: "We couldn't verify your existing sign-in. Check your connection and try again."
             )
@@ -396,6 +431,14 @@ final class AppStore: ObservableObject {
             try requireCurrentLogin()
             try await accountService.resumePendingFriendDeletion(expectedAccountId: account.id)
             try requireCurrentLogin()
+            let historyContext = HistoryRecoveryContext(accountID: account.id, dataEpoch: loginEpoch,
+                loadGeneration: remoteLoadGeneration, attemptID: nil)
+            guard try await prepareGroupHistory(context: historyContext, resume: true) else {
+                try requireCurrentLogin()
+                isCheckingAuth = false
+                return
+            }
+            try requireCurrentLogin()
             guard let refreshedAccount = try await accountService.lookupAccount(byEmail: account.email),
                   refreshedAccount.id == account.id else {
                 throw PayBackError.accountNotFound(email: account.email)
@@ -407,9 +450,13 @@ final class AppStore: ObservableObject {
 
             try await resumePendingIdentityOperation()
             try requireCurrentLogin()
-            await loadRemoteData()
+            let hydration = await hydrateRemoteData(expectedAccountID: account.id, expectedDataEpoch: loginEpoch)
             try requireCurrentLogin()
-            guard hasCompletedInitialRemoteLoad else {
+            if case .incomplete(let failure) = hydration, failure.reason == .recoveryRequired, groupHistoryRecovery != nil {
+                isCheckingAuth = false
+                return
+            }
+            guard case .complete = hydration, hasCompletedInitialRemoteLoad else {
                 throw PayBackError.underlying(message: dataSyncRecoveryMessage ?? "Your account data is not ready. Reconnect and retry.")
             }
 
@@ -421,6 +468,23 @@ final class AppStore: ObservableObject {
             isCheckingAuth = false
         } catch {
             guard loginEpoch == dataEpoch, session?.account.id == account.id else { throw CancellationError() }
+            if let historyError = typedHistoryRecoveryError(error) {
+                let historyContext = HistoryRecoveryContext(accountID: account.id, dataEpoch: loginEpoch,
+                    loadGeneration: remoteLoadGeneration, attemptID: nil)
+                await recordHistoryRecovery(historyError, context: historyContext)
+                try requireCurrentLogin()
+                isCheckingAuth = false
+                return
+            }
+            if groupHistoryRecovery != nil {
+                if !(error is CancellationError), !Task.isCancelled {
+                    publishHistoryRecovery(groupHistoryRecovery?.jobs ?? [], fallback: error.userFacingMessage(
+                        fallback: "Couldn't check shared history. Reconnect and try again."))
+                }
+                isCheckingAuth = false
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                return
+            }
             // Keep the provider sign-in and durable operation receipts so Retry can
             // resume safely, but never expose an incomplete logical account session.
             session = nil
@@ -443,6 +507,10 @@ final class AppStore: ObservableObject {
         linkingRecoveryMessage = nil
         friendDeletionRecoveryMessage = nil
         dataSyncRecoveryMessage = nil
+        groupHistoryRecovery = nil
+        historyRecoveryJobIds.removeAll()
+        historyVisibleExpenseHints.removeAll()
+        historyRecoveryAttemptId = nil
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
         invalidateRemoteLoad()
@@ -506,6 +574,12 @@ final class AppStore: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] error in
                 guard let self, self.session != nil, let error else { return }
+                if let historyError = self.typedHistoryRecoveryError(error), let account = self.session?.account {
+                    let context = HistoryRecoveryContext(accountID: account.id, dataEpoch: self.dataEpoch,
+                        loadGeneration: self.remoteLoadGeneration, attemptID: nil)
+                    Task { @MainActor [weak self] in await self?.recordHistoryRecovery(historyError, context: context) }
+                    return
+                }
                 let description = String(describing: error)
                 if description.contains("IDENTITY_OPERATION_PENDING") {
                     self.linkingRecoveryMessage = "Account linking is processing. Your last complete balances are still shown."
@@ -815,6 +889,10 @@ func completeAuthentication(id: String, email: String, name: String?) {
         linkingRecoveryMessage = nil
         friendDeletionRecoveryMessage = nil
         dataSyncRecoveryMessage = nil
+        groupHistoryRecovery = nil
+        historyRecoveryJobIds.removeAll()
+        historyVisibleExpenseHints.removeAll()
+        historyRecoveryAttemptId = nil
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
         invalidateRemoteLoad()
@@ -2574,70 +2652,280 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
     }
 
+    private struct HistoryRecoveryContext {
+        let accountID: String
+        let dataEpoch: UUID
+        let loadGeneration: UInt64
+        let attemptID: UUID?
+    }
+
     @MainActor
-    func loadRemoteData() async {
-        guard session?.account.status != "deleting",
-              accountDeletionState == .idle else { return }
-        remoteLoadGeneration &+= 1
-        let generation = remoteLoadGeneration
-        let previousLoad = remoteLoadTask
-        previousLoad?.cancel()
+    private func isCurrentHistoryRecovery(_ context: HistoryRecoveryContext) -> Bool {
+        !Task.isCancelled && session?.account.id == context.accountID && dataEpoch == context.dataEpoch &&
+            remoteLoadGeneration == context.loadGeneration &&
+            (context.attemptID == nil || historyRecoveryAttemptId == context.attemptID)
+    }
 
-        guard let session else {
-            remoteLoadTask = nil
-            #if DEBUG
-            print("⚠️ Cannot load remote data: no active session")
-            #endif
-            return
-        }
+    private func typedHistoryRecoveryError(_ error: Error) -> GroupHistoryRecoveryError? {
+        if let error = error as? GroupHistoryRecoveryError { return error }
+        #if !PAYBACK_CI_NO_CONVEX
+        return ConvexBackendErrorMapper.historyRecovery(error)
+        #else
+        return nil
+        #endif
+    }
 
-        let context = RemoteLoadContext(
-            generation: generation,
-            accountId: session.account.id,
-            accountEmail: session.account.email.lowercased()
-        )
-        let loadTask = Task { @MainActor [weak self] in
-            await previousLoad?.value
-            guard let self else { return }
-            await self.performRemoteLoad(context: context)
+    @MainActor
+    private func publishHistoryRecovery(_ jobs: [GroupHistoryJob], fallback: String? = nil) {
+        let maintenance = jobs.contains { $0.maintenanceRequired }
+        let message = fallback ?? (maintenance
+            ? "Some shared history needs a maintenance repair before it can be shown. Your saved data is preserved."
+            : "Shared history is updating. Your last complete data is preserved. Check again to continue.")
+        groupHistoryRecovery = GroupHistoryRecoveryState(jobs: jobs, message: message, isRetrying: historyRecoveryAttemptId != nil)
+        dataSyncRecoveryMessage = message
+        historyRecoveryJobIds.formUnion(jobs.map(\.jobId))
+    }
+
+    @MainActor
+    private func recordHistoryRecovery(_ error: GroupHistoryRecoveryError, context: HistoryRecoveryContext) async {
+        guard isCurrentHistoryRecovery(context) else { return }
+        if let jobId = error.jobId {
+            historyRecoveryJobIds.insert(jobId)
+            if let hint = error.visibleExpenseId { historyVisibleExpenseHints[jobId] = hint }
+            do {
+                let job = try await accountService.groupHistoryStatus(jobId: jobId,
+                    visibleExpenseId: historyVisibleExpenseHints[jobId], expectedAccountId: context.accountID)
+                guard isCurrentHistoryRecovery(context) else { return }
+                let otherJobs = groupHistoryRecovery?.jobs.filter { $0.jobId != jobId } ?? []
+                publishHistoryRecovery(otherJobs + [job])
+                return
+            } catch {
+                guard isCurrentHistoryRecovery(context) else { return }
+            }
         }
-        remoteLoadTask = loadTask
-        await loadTask.value
-        if remoteLoadGeneration == generation {
-            remoteLoadTask = nil
+        guard isCurrentHistoryRecovery(context) else { return }
+        publishHistoryRecovery(groupHistoryRecovery?.jobs ?? [], fallback: error.retryable
+            ? "Shared history is updating. Check your connection and try again."
+            : "Shared history needs a maintenance check. Your saved data is preserved.")
+    }
+
+    /// Discovery/status/resume never depend on a successful financial snapshot.
+    /// One attempt schedules each retryable job at most once; the server owns paging.
+    @MainActor
+    private func prepareGroupHistory(context: HistoryRecoveryContext, resume: Bool) async throws -> Bool {
+        guard isCurrentHistoryRecovery(context) else { throw CancellationError() }
+        let discovered = try await accountService.pendingGroupHistory(expectedAccountId: context.accountID)
+        guard isCurrentHistoryRecovery(context) else { throw CancellationError() }
+        var jobsByID = Dictionary(discovered.map { ($0.jobId, $0) }, uniquingKeysWith: { _, latest in latest })
+        for jobID in historyRecoveryJobIds.sorted() where jobsByID[jobID] == nil {
+            do {
+                let job = try await accountService.groupHistoryStatus(jobId: jobID,
+                    visibleExpenseId: historyVisibleExpenseHints[jobID], expectedAccountId: context.accountID)
+                guard isCurrentHistoryRecovery(context) else { throw CancellationError() }
+                jobsByID[jobID] = job
+            } catch {
+                guard isCurrentHistoryRecovery(context), !(error is CancellationError) else { throw CancellationError() }
+                // The reader may have lost this relationship, the job may be gone,
+                // or status transport may be unavailable. Never guess a resume.
+                // A complete public snapshot can prove readiness; a blocked/failed
+                // snapshot keeps the hint and recovery gate for the next attempt.
+            }
+        }
+        let outstanding = jobsByID.values.filter { $0.phase != "complete" }.sorted { $0.jobId < $1.jobId }
+        if !outstanding.isEmpty { publishHistoryRecovery(outstanding) }
+        var remaining: [GroupHistoryJob] = []
+        for original in jobsByID.values.sorted(by: { $0.jobId < $1.jobId }) {
+            guard isCurrentHistoryRecovery(context) else { throw CancellationError() }
+            var job = original
+            if job.phase != "complete", resume, job.retryable, !job.maintenanceRequired {
+                job = try await accountService.resumeGroupHistory(jobId: job.jobId,
+                    visibleExpenseId: historyVisibleExpenseHints[job.jobId], expectedAccountId: context.accountID)
+                guard isCurrentHistoryRecovery(context) else { throw CancellationError() }
+            }
+            if job.phase != "complete" { remaining.append(job) }
+            else {
+                historyRecoveryJobIds.remove(job.jobId)
+                historyVisibleExpenseHints.removeValue(forKey: job.jobId)
+            }
+        }
+        guard isCurrentHistoryRecovery(context) else { throw CancellationError() }
+        if !remaining.isEmpty {
+            publishHistoryRecovery(remaining)
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    @discardableResult
+    func retryGroupHistoryRecovery() async -> RemoteHydrationOutcome {
+        guard let account = session?.account else { return hydrationIncomplete(.notAuthenticated, "Sign in before recovering your data.") }
+        guard historyRecoveryAttemptId == nil else { return hydrationIncomplete(.recoveryRequired, "A history check is already running.") }
+        let attemptID = UUID()
+        let epoch = dataEpoch
+        historyRecoveryAttemptId = attemptID
+        groupHistoryRecovery?.isRetrying = true
+        let context = HistoryRecoveryContext(accountID: account.id, dataEpoch: epoch,
+            loadGeneration: remoteLoadGeneration, attemptID: attemptID)
+        defer {
+            if session?.account.id == account.id, dataEpoch == epoch, historyRecoveryAttemptId == attemptID {
+                historyRecoveryAttemptId = nil
+                groupHistoryRecovery?.isRetrying = false
+            }
+        }
+        do {
+            guard try await prepareGroupHistory(context: context, resume: true) else {
+                return hydrationIncomplete(.recoveryRequired, groupHistoryRecovery?.message ?? "Shared history is updating.")
+            }
+            guard isCurrentHistoryRecovery(context) else { throw CancellationError() }
+            // A cold recovery holds only the authenticated actor. Resolve its server
+            // identity after history is ready, without resetting the session epoch/cache.
+            if !hasCompletedInitialRemoteLoad {
+                guard let refreshed = try await accountService.lookupAccount(byEmail: account.email), refreshed.id == account.id else {
+                    throw PayBackError.accountNotFound(email: account.email)
+                }
+                guard isCurrentHistoryRecovery(context) else { throw CancellationError() }
+                let ready = try await ensureCurrentUserIdentity(for: refreshed)
+                guard isCurrentHistoryRecovery(context) else { throw CancellationError() }
+                session = UserSession(account: ready)
+            }
+            let expectedLoadGeneration = remoteLoadGeneration &+ 1
+            let result = await hydrateRemoteData(expectedAccountID: account.id, expectedDataEpoch: epoch)
+            guard session?.account.id == account.id, dataEpoch == epoch, historyRecoveryAttemptId == attemptID else {
+                return hydrationIncomplete(.sessionChanged, "The signed-in account changed during recovery.")
+            }
+            guard remoteLoadGeneration == expectedLoadGeneration else {
+                return hydrationIncomplete(.superseded, "A newer refresh replaced this recovery attempt.")
+            }
+            if case .complete = result {
+                #if !PAYBACK_CI_NO_CONVEX
+                Dependencies.syncManager?.startSync()
+                #endif
+            } else if case .incomplete(let failure) = result,
+                      failure.reason == .failed || failure.reason == .recoveryRequired {
+                publishHistoryRecovery(groupHistoryRecovery?.jobs ?? [], fallback: failure.message)
+            }
+            return result
+        } catch {
+            guard session?.account.id == account.id, dataEpoch == epoch, historyRecoveryAttemptId == attemptID else {
+                return hydrationIncomplete(.sessionChanged, "The signed-in account changed during recovery.")
+            }
+            guard remoteLoadGeneration == context.loadGeneration else {
+                return hydrationIncomplete(.superseded, "A newer refresh replaced this recovery attempt.")
+            }
+            if error is CancellationError || Task.isCancelled { return hydrationIncomplete(.cancelled, "History recovery was cancelled.") }
+            if let historyError = typedHistoryRecoveryError(error) {
+                await recordHistoryRecovery(historyError, context: context)
+                return hydrationIncomplete(.recoveryRequired, groupHistoryRecovery?.message ?? "Shared history is updating.")
+            }
+            let message = error.userFacingMessage(fallback: "Couldn't check shared history. Reconnect and try again.")
+            publishHistoryRecovery(groupHistoryRecovery?.jobs ?? [], fallback: message)
+            return hydrationIncomplete(.failed, message)
         }
     }
 
     @MainActor
-    private func performRemoteLoad(context: RemoteLoadContext, attempt: Int = 0) async {
-        guard isCurrentRemoteLoad(context) else { return }
+    func refreshAfterImport(expectedAccountID: String, expectedDataEpoch: UUID) async -> RemoteHydrationOutcome {
+        guard session?.account.id == expectedAccountID, dataEpoch == expectedDataEpoch else {
+            return hydrationIncomplete(.sessionChanged, "The signed-in account changed before refresh.")
+        }
+        return await hydrateRemoteData(expectedAccountID: expectedAccountID, expectedDataEpoch: expectedDataEpoch)
+    }
+
+    @MainActor
+    func loadRemoteData() async {
+        _ = await hydrateRemoteData()
+    }
+
+    private func hydrationIncomplete(_ reason: RemoteHydrationFailure.Reason, _ message: String) -> RemoteHydrationOutcome {
+        .incomplete(RemoteHydrationFailure(reason: reason, message: message))
+    }
+
+    @MainActor
+    private func obsoleteHydrationOutcome(_ context: RemoteLoadContext) -> RemoteHydrationOutcome {
+        if dataEpoch != context.dataEpoch || session?.account.id != context.accountId {
+            return hydrationIncomplete(.sessionChanged, "The signed-in account changed during refresh.")
+        }
+        if remoteLoadGeneration != context.generation {
+            return hydrationIncomplete(.superseded, "A newer refresh replaced this one.")
+        }
+        return hydrationIncomplete(.cancelled, "Refresh was cancelled.")
+    }
+
+    @MainActor
+    private func hydrateRemoteData(expectedAccountID: String? = nil, expectedDataEpoch: UUID? = nil) async -> RemoteHydrationOutcome {
+        guard !Task.isCancelled else { return hydrationIncomplete(.cancelled, "Refresh was cancelled.") }
+        guard let session else { return hydrationIncomplete(.notAuthenticated, "Sign in before refreshing your data.") }
+        guard expectedAccountID == nil || session.account.id == expectedAccountID,
+              expectedDataEpoch == nil || dataEpoch == expectedDataEpoch else {
+            return hydrationIncomplete(.sessionChanged, "The signed-in account changed before refresh.")
+        }
+        guard session.account.status != "deleting", accountDeletionState == .idle else {
+            return hydrationIncomplete(.recoveryRequired, "Account deletion must finish before data can refresh.")
+        }
+        remoteLoadGeneration &+= 1
+        let generation = remoteLoadGeneration
+        let previousLoad = remoteLoadTask
+        previousLoad?.cancel()
+        let context = RemoteLoadContext(generation: generation, accountId: session.account.id,
+            accountEmail: session.account.email.lowercased(), dataEpoch: dataEpoch,
+            requiresAccountConfirmation: expectedAccountID != nil)
+        let loadTask = Task { @MainActor [weak self] () -> RemoteHydrationOutcome in
+            _ = await previousLoad?.value
+            guard let self else {
+                return .incomplete(RemoteHydrationFailure(reason: .cancelled, message: "Refresh was cancelled."))
+            }
+            return await self.performRemoteLoad(context: context)
+        }
+        remoteLoadTask = loadTask
+        let result = await withTaskCancellationHandler(operation: { await loadTask.value }, onCancel: { loadTask.cancel() })
+        guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
+        remoteLoadTask = nil
+        return result
+    }
+
+    @MainActor
+    private func performRemoteLoad(context: RemoteLoadContext, attempt: Int = 0) async -> RemoteHydrationOutcome {
+        guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
 
         #if DEBUG
         print("[AppStore] Starting remote data fetch...")
         #endif
 
         do {
+            let historyContext = HistoryRecoveryContext(accountID: context.accountId, dataEpoch: context.dataEpoch,
+                loadGeneration: context.generation, attemptID: nil)
+            guard try await prepareGroupHistory(context: historyContext, resume: false) else {
+                return hydrationIncomplete(.recoveryRequired, groupHistoryRecovery?.message ?? "Shared history is updating.")
+            }
+            if groupHistoryRecovery != nil, !hasCompletedInitialRemoteLoad, session?.account.linkedMemberId == nil {
+                let message = "Shared history is ready. Retry to finish loading your account."
+                publishHistoryRecovery([], fallback: message)
+                return hydrationIncomplete(.recoveryRequired, message)
+            }
             if environment != .production {
                 try? await expenseCloudService.clearLegacyMockExpenses(expectedAccountId: context.accountId)
             }
-            guard isCurrentRemoteLoad(context) else { return }
+            guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
 
             let startingGeneration = try await accountService.snapshotGeneration()
-            guard isCurrentRemoteLoad(context) else { return }
+            guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
             let refreshedAccount = try await accountService.lookupAccount(byEmail: context.accountEmail)
-            guard isCurrentRemoteLoad(context) else { return }
+            guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
+            if context.requiresAccountConfirmation, refreshedAccount?.id != context.accountId {
+                throw PayBackError.accountNotFound(email: context.accountEmail)
+            }
             let fetchedGroups = try await groupCloudService.fetchGroups()
-            guard isCurrentRemoteLoad(context) else { return }
+            guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
             let fetchedExpenses = try await expenseCloudService.fetchExpenses()
-            guard isCurrentRemoteLoad(context) else { return }
+            guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
             let remoteFriends = try await accountService.fetchFriends(accountEmail: context.accountEmail)
-            guard isCurrentRemoteLoad(context) else { return }
+            guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
             let endingGeneration = try await accountService.snapshotGeneration()
-            guard isCurrentRemoteLoad(context) else { return }
+            guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
             guard startingGeneration == endingGeneration else {
                 if attempt < 2 {
-                    await performRemoteLoad(context: context, attempt: attempt + 1)
-                    return
+                    return await performRemoteLoad(context: context, attempt: attempt + 1)
                 }
                 throw PayBackError.underlying(message: "Your data changed while syncing. Please refresh.")
             }
@@ -2650,7 +2938,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
             #endif
 
             let normalization = normalizedRemoteData(groups: remoteGroups, expenses: remoteExpenses)
-            guard isCurrentRemoteLoad(context) else { return }
+            guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
 
             if let refreshedAccount, refreshedAccount.id == context.accountId {
                 session = UserSession(account: refreshedAccount)
@@ -2663,6 +2951,9 @@ func completeAuthentication(id: String, email: String, name: String?) {
             expenses = mergedRemoteExpensesPreservingPendingWrites(remoteExpenses: normalization.expenses)
             hasCompletedInitialRemoteLoad = true
             dataSyncRecoveryMessage = nil
+            groupHistoryRecovery = nil
+            historyRecoveryJobIds.removeAll()
+            historyVisibleExpenseHints.removeAll()
             if !isLinkingProcessing { linkingRecoveryMessage = nil }
             persistCurrentState()
             logFetchedData(groups: normalization.groups, expenses: normalization.expenses)
@@ -2675,17 +2966,21 @@ func completeAuthentication(id: String, email: String, name: String?) {
             #if DEBUG
             print("[AppStore] ✅ Remote data sync complete")
             #endif
+            return .complete(RemoteHydrationReceipt(accountID: context.accountId, dataEpoch: context.dataEpoch,
+                generation: context.generation, serverGeneration: endingGeneration))
         } catch {
-            if isCurrentRemoteLoad(context) {
-                // If the initial fetch fails after a valid session exists, allow later realtime
-                // snapshots to repopulate the store once connectivity/auth recovers.
-                dataSyncRecoveryMessage = error.userFacingMessage(
-                    fallback: "We couldn't load your PayBack data. Check your connection and try again."
-                )
+            guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
+            if let historyError = typedHistoryRecoveryError(error) {
+                let historyContext = HistoryRecoveryContext(accountID: context.accountId, dataEpoch: context.dataEpoch,
+                    loadGeneration: context.generation, attemptID: nil)
+                await recordHistoryRecovery(historyError, context: historyContext)
+                guard isCurrentRemoteLoad(context) else { return obsoleteHydrationOutcome(context) }
+                return hydrationIncomplete(.recoveryRequired, groupHistoryRecovery?.message ?? "Shared history is updating.")
             }
-            #if DEBUG
-            print("⚠️ Failed to load remote data: \(error.localizedDescription)")
-            #endif
+            if error is CancellationError { return hydrationIncomplete(.cancelled, "Refresh was cancelled.") }
+            let message = error.userFacingMessage(fallback: "We couldn't load your PayBack data. Check your connection and try again.")
+            dataSyncRecoveryMessage = message
+            return hydrationIncomplete(.failed, message)
         }
     }
 
@@ -2696,7 +2991,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
               let session else {
             return false
         }
-        return session.account.id == context.accountId &&
+        return dataEpoch == context.dataEpoch && session.account.id == context.accountId &&
             session.account.email.lowercased() == context.accountEmail
     }
 

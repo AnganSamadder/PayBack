@@ -2,6 +2,296 @@ import XCTest
 @testable import PayBack
 
 extension AppStoreLinkingTests {
+    func testRestoreHistory_ColdLoginRetainsNeutralActorBehindDataRecovery() async throws {
+        let account = UserAccount(id: "history-owner", email: "history@example.test", displayName: "Owner")
+        await mockAccountService.addAccount(account)
+        let job = GroupHistoryJob(jobId: "history-job", groupId: "group", phase: "pending", retryable: true, errorCode: nil)
+        await mockAccountService.configureHistoryRecovery(jobs: [job], snapshotError: GroupHistoryRecoveryError(
+            code: "HISTORY_RECONCILIATION_PENDING", retryable: true, jobId: job.jobId, groupId: job.groupId))
+        do { try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName) }
+        catch { XCTFail("Pending group history is data recovery, not failed authentication: \(error)") }
+        XCTAssertEqual(sut.session?.account.id, account.id)
+        XCTAssertNil(sut.session?.account.linkedMemberId, "Pending recovery must not bootstrap an invented canonical identity")
+        XCTAssertFalse(sut.isAuthenticationSessionRecoveryBlocking)
+        XCTAssertTrue(sut.isGroupHistoryRecoveryBlocking)
+        XCTAssertFalse(sut.isCheckingAuth)
+        XCTAssertTrue(sut.groups.isEmpty)
+        XCTAssertTrue(sut.expenses.isEmpty)
+        let bootstraps = await mockAccountService.bootstrapInvocationCount()
+        XCTAssertEqual(bootstraps, 0)
+    }
+
+    func testRestoreHistory_BlockedHydrationPreservesLastCompleteGenerationAndVisibleRecovery() async throws {
+        let account = UserAccount(id: "history-owner", email: "history@example.test", displayName: "Owner", linkedMemberId: sut.currentUser.id)
+        await mockAccountService.addAccount(account)
+        sut.session = UserSession(account: account)
+        let expense = Expense(groupId: UUID(), description: "Last complete", totalAmount: 10,
+            paidByMemberId: sut.currentUser.id, involvedMemberIds: [sut.currentUser.id],
+            splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 10)])
+        await mockExpenseCloudService.addExpense(expense)
+        await sut.loadRemoteData()
+        let previousExpenses = sut.expenses
+        let previousGroups = sut.groups
+        let previousEpoch = sut.dataEpoch
+        let job = GroupHistoryJob(jobId: "history-job", groupId: "group", phase: "failed", retryable: false, errorCode: "HISTORY_SOURCE_INVALID")
+        await mockAccountService.configureHistoryRecovery(jobs: [job], snapshotError: GroupHistoryRecoveryError(
+            code: "HISTORY_RECONCILIATION_FAILED", retryable: false, jobId: job.jobId, groupId: job.groupId))
+        await sut.loadRemoteData()
+        XCTAssertEqual(sut.expenses, previousExpenses)
+        XCTAssertEqual(sut.groups, previousGroups)
+        XCTAssertEqual(sut.dataEpoch, previousEpoch)
+        XCTAssertTrue(sut.hasGroupHistoryRecovery)
+        XCTAssertFalse(sut.isGroupHistoryRecoveryBlocking)
+        XCTAssertEqual(sut.groupHistoryRecovery?.maintenanceRequired, true)
+        XCTAssertFalse(sut.isAuthenticationSessionRecoveryBlocking)
+    }
+
+    func testRestoreHistory_CompletedRetryHydratesWithoutRestartingSession() async throws {
+        let account = UserAccount(id: "history-owner", email: "history@example.test", displayName: "Owner")
+        await mockAccountService.addAccount(account)
+        let job = GroupHistoryJob(jobId: "history-job", groupId: "group", phase: "pending", retryable: true)
+        await mockAccountService.configureHistoryRecovery(jobs: [job], snapshotError: GroupHistoryRecoveryError(code: "HISTORY_RECONCILIATION_PENDING", retryable: true, jobId: job.jobId))
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+        let epoch = sut.dataEpoch
+        let complete = GroupHistoryJob(jobId: job.jobId, groupId: job.groupId, phase: "complete", retryable: false)
+        await mockAccountService.configureHistoryRecovery(jobs: [job], snapshotError: nil, resumed: complete)
+        let result = await sut.retryGroupHistoryRecovery()
+        guard case .complete(let receipt) = result else { return XCTFail("Expected authoritative hydration: \(result)") }
+        XCTAssertEqual(receipt.accountID, account.id)
+        XCTAssertEqual(receipt.dataEpoch, epoch)
+        XCTAssertEqual(sut.dataEpoch, epoch)
+        XCTAssertEqual(sut.session?.account.id, account.id)
+        XCTAssertNotNil(sut.session?.account.linkedMemberId)
+        XCTAssertFalse(sut.hasGroupHistoryRecovery)
+        XCTAssertFalse(sut.isAuthenticationSessionRecoveryBlocking)
+    }
+
+    func testRestoreHistory_TransientResumeFailureKeepsNeutralRecoveryAndMaintenanceDoesNotRetry() async throws {
+        let account = UserAccount(id: "history-owner", email: "history@example.test", displayName: "Owner")
+        await mockAccountService.addAccount(account)
+        let job = GroupHistoryJob(jobId: "history-job", groupId: "group", phase: "pending", retryable: true)
+        await mockAccountService.configureHistoryRecovery(jobs: [job], snapshotError: nil)
+        await mockAccountService.configureHistoryResumeFailure(.networkUnavailable)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+        XCTAssertEqual(sut.session?.account.id, account.id)
+        XCTAssertTrue(sut.isGroupHistoryRecoveryBlocking)
+        XCTAssertFalse(sut.isAuthenticationSessionRecoveryBlocking)
+        let failed = GroupHistoryJob(jobId: job.jobId, groupId: job.groupId, phase: "failed", retryable: false, errorCode: "HISTORY_SOURCE_INVALID")
+        await mockAccountService.configureHistoryRecovery(jobs: [failed], snapshotError: nil)
+        let before = await mockAccountService.historyRecoveryResumeCount()
+        let result = await sut.retryGroupHistoryRecovery()
+        guard case .incomplete(let failure) = result else { return XCTFail("Maintenance cannot complete hydration") }
+        XCTAssertEqual(failure.reason, .recoveryRequired)
+        let after = await mockAccountService.historyRecoveryResumeCount()
+        XCTAssertEqual(after, before, "Maintenance needs status/repair, not automatic rescheduling")
+        XCTAssertEqual(sut.groupHistoryRecovery?.maintenanceRequired, true)
+    }
+
+    func testRestoreHistory_ForeignReaderRecoversThroughAuthorizedErrorHint() async throws {
+        let account = UserAccount(id: "reader", email: "reader@example.test", displayName: "Reader", linkedMemberId: sut.currentUser.id)
+        await mockAccountService.addAccount(account)
+        sut.session = UserSession(account: account)
+        let job = GroupHistoryJob(jobId: "foreign-job", groupId: "shared-group", phase: "pending", retryable: true)
+        await mockAccountService.configureForeignHistoryJob(job)
+        await mockAccountService.configureHistoryRecovery(jobs: [], snapshotError: GroupHistoryRecoveryError(code: "HISTORY_RECONCILIATION_PENDING", retryable: true, jobId: job.jobId))
+        await sut.loadRemoteData()
+        XCTAssertEqual(sut.groupHistoryRecovery?.jobs.map(\.jobId), [job.jobId])
+        await mockAccountService.configureHistoryRecovery(jobs: [], snapshotError: nil,
+            resumed: GroupHistoryJob(jobId: job.jobId, groupId: job.groupId, phase: "complete", retryable: false))
+        let result = await sut.retryGroupHistoryRecovery()
+        guard case .complete = result else { return XCTFail("Authorized reader should recover: \(result)") }
+        let resumes = await mockAccountService.historyRecoveryResumeCount()
+        XCTAssertEqual(resumes, 1)
+    }
+
+    func testRestoreHistory_RefreshOutcomeRequiresCurrentSuccessfulCompleteSnapshot() async throws {
+        let account = UserAccount(id: "refresh-owner", email: "refresh@example.test", displayName: "Owner", linkedMemberId: sut.currentUser.id)
+        await mockAccountService.addAccount(account)
+        sut.session = UserSession(account: account)
+        let epoch = sut.dataEpoch
+        await mockAccountService.configureSnapshotGenerations(["confirmed-generation"])
+        let first = await sut.refreshAfterImport(expectedAccountID: account.id, expectedDataEpoch: epoch)
+        guard case .complete(let receipt) = first else { return XCTFail("Expected complete receipt") }
+        XCTAssertEqual(receipt.accountID, account.id)
+        XCTAssertEqual(receipt.dataEpoch, epoch)
+        XCTAssertEqual(receipt.serverGeneration, "confirmed-generation")
+        let previous = sut.expenses
+        await mockExpenseCloudService.setShouldFail(true)
+        let failed = await sut.refreshAfterImport(expectedAccountID: account.id, expectedDataEpoch: epoch)
+        guard case .incomplete(let failure) = failed else { return XCTFail("Previous successful hydration cannot acknowledge this failed refresh") }
+        XCTAssertEqual(failure.reason, .failed)
+        XCTAssertEqual(sut.expenses, previous)
+        let stale = await sut.refreshAfterImport(expectedAccountID: "different-account", expectedDataEpoch: epoch)
+        guard case .incomplete(let staleFailure) = stale else { return XCTFail("Actor mismatch cannot succeed") }
+        XCTAssertEqual(staleFailure.reason, .sessionChanged)
+    }
+
+    func testRestoreHistory_RefreshAfterAccountSwitchNeverAcknowledgesOrPublishesOldData() async throws {
+        let account = UserAccount(id: "refresh-owner", email: "refresh@example.test", displayName: "Owner", linkedMemberId: sut.currentUser.id)
+        await mockAccountService.addAccount(account)
+        sut.session = UserSession(account: account)
+        let epoch = sut.dataEpoch
+        await mockAccountService.suspendNextFriendFetch()
+        let task = Task { await sut.refreshAfterImport(expectedAccountID: account.id, expectedDataEpoch: epoch) }
+        await mockAccountService.waitUntilFriendFetchSuspends()
+        sut.session = UserSession(account: UserAccount(id: "next-account", email: "next@example.test", displayName: "Next"))
+        let newer = Expense(groupId: UUID(), description: "New account", totalAmount: 1, paidByMemberId: sut.currentUser.id,
+            involvedMemberIds: [sut.currentUser.id], splits: [ExpenseSplit(memberId: sut.currentUser.id, amount: 1)])
+        sut.expenses = [newer]
+        await mockAccountService.resumeFriendFetch()
+        let result = await task.value
+        guard case .incomplete(let failure) = result else { return XCTFail("Stale refresh cannot be acknowledged") }
+        XCTAssertEqual(failure.reason, .sessionChanged)
+        XCTAssertEqual(sut.expenses.map(\.id), [newer.id])
+        XCTAssertNil(sut.groupHistoryRecovery)
+    }
+
+    func testRestoreHistory_BackgroundRefreshCannotPublishNeutralIdentityAfterJobCompletes() async throws {
+        let account = UserAccount(id: "history-owner", email: "history@example.test", displayName: "Owner")
+        await mockAccountService.addAccount(account)
+        let job = GroupHistoryJob(jobId: "history-job", groupId: "group", phase: "pending", retryable: true)
+        await mockAccountService.configureHistoryRecovery(jobs: [job], snapshotError: nil)
+        try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
+        let epoch = sut.dataEpoch
+        await mockAccountService.configureHistoryRecovery(jobs: [], snapshotError: nil,
+            resumed: GroupHistoryJob(jobId: job.jobId, groupId: job.groupId, phase: "complete", retryable: false))
+        await sut.loadRemoteData()
+        XCTAssertTrue(sut.isGroupHistoryRecoveryBlocking)
+        XCTAssertNil(sut.session?.account.linkedMemberId)
+        let before = await mockAccountService.bootstrapInvocationCount()
+        XCTAssertEqual(before, 0)
+        let recovered = await sut.retryGroupHistoryRecovery()
+        guard case .complete = recovered else { return XCTFail("Explicit retry must finish canonical identity + hydration") }
+        XCTAssertNotNil(sut.session?.account.linkedMemberId)
+        XCTAssertEqual(sut.dataEpoch, epoch)
+    }
+
+    func testRestoreHistory_CancelledAndSupersededRefreshesNeverReturnCompletion() async throws {
+        let account = UserAccount(id: "refresh-owner", email: "refresh@example.test", displayName: "Owner", linkedMemberId: sut.currentUser.id)
+        await mockAccountService.addAccount(account)
+        sut.session = UserSession(account: account)
+        let epoch = sut.dataEpoch
+        await mockAccountService.suspendNextFriendFetch()
+        let cancelled = Task { await sut.refreshAfterImport(expectedAccountID: account.id, expectedDataEpoch: epoch) }
+        await mockAccountService.waitUntilFriendFetchSuspends()
+        cancelled.cancel()
+        await mockAccountService.resumeFriendFetch()
+        let cancelledResult = await cancelled.value
+        guard case .incomplete(let cancellation) = cancelledResult else { return XCTFail("Cancellation is not successful refresh") }
+        XCTAssertEqual(cancellation.reason, .cancelled)
+        XCTAssertNil(sut.dataSyncRecoveryMessage)
+
+        await mockAccountService.suspendNextFriendFetch()
+        let older = Task { await sut.refreshAfterImport(expectedAccountID: account.id, expectedDataEpoch: epoch) }
+        await mockAccountService.waitUntilFriendFetchSuspends()
+        let oldGeneration = sut.remoteLoadGeneration
+        let newer = Task { await sut.refreshAfterImport(expectedAccountID: account.id, expectedDataEpoch: epoch) }
+        for _ in 0..<100 {
+            if sut.remoteLoadGeneration > oldGeneration { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertGreaterThan(sut.remoteLoadGeneration, oldGeneration)
+        await mockAccountService.resumeFriendFetch()
+        let oldResult = await older.value
+        let newResult = await newer.value
+        guard case .incomplete(let superseded) = oldResult else { return XCTFail("Older request cannot acknowledge a newer refresh") }
+        XCTAssertEqual(superseded.reason, .superseded)
+        guard case .complete = newResult else { return XCTFail("Latest current refresh should complete") }
+    }
+
+    func testRestoreHistory_CancelledRecoveryKeepsGateAndNextAttemptCanComplete() async throws {
+        let account = UserAccount(id: "history-owner", email: "history@example.test", displayName: "Owner", linkedMemberId: sut.currentUser.id)
+        await mockAccountService.addAccount(account)
+        sut.session = UserSession(account: account)
+        let job = GroupHistoryJob(jobId: "history-job", groupId: "group", phase: "pending", retryable: true)
+        await mockAccountService.configureHistoryRecovery(jobs: [job], snapshotError: nil,
+            resumed: GroupHistoryJob(jobId: job.jobId, groupId: job.groupId, phase: "complete", retryable: false))
+        await sut.loadRemoteData()
+        await mockAccountService.suspendNextHistoryResume()
+        let retry = Task { await sut.retryGroupHistoryRecovery() }
+        for _ in 0..<100 {
+            if await mockAccountService.isHistoryResumeSuspended() { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        retry.cancel()
+        await mockAccountService.continueHistoryResume()
+        let result = await retry.value
+        guard case .incomplete(let failure) = result else { return XCTFail("Cancelled recovery cannot report completion") }
+        XCTAssertEqual(failure.reason, .cancelled)
+        XCTAssertTrue(sut.isGroupHistoryRecoveryBlocking)
+        XCTAssertEqual(sut.groupHistoryRecovery?.isRetrying, false)
+        XCTAssertFalse(sut.isAuthenticationSessionRecoveryBlocking)
+        let next = await sut.retryGroupHistoryRecovery()
+        guard case .complete = next else { return XCTFail("Durable completed job should recover on next attempt") }
+    }
+
+    func testRestoreHistory_OldRecoveryCannotOverwriteNewAuthenticatedAccount() async throws {
+        let first = UserAccount(id: "history-owner", email: "history@example.test", displayName: "Owner", linkedMemberId: sut.currentUser.id)
+        await mockAccountService.addAccount(first)
+        sut.session = UserSession(account: first)
+        let job = GroupHistoryJob(jobId: "history-job", groupId: "group", phase: "pending", retryable: true)
+        await mockAccountService.configureHistoryRecovery(jobs: [job], snapshotError: nil)
+        await sut.loadRemoteData()
+        await mockAccountService.suspendNextHistoryResume()
+        let retry = Task { await sut.retryGroupHistoryRecovery() }
+        for _ in 0..<100 {
+            if await mockAccountService.isHistoryResumeSuspended() { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let second = UserAccount(id: "new-owner", email: "new@example.test", displayName: "New", linkedMemberId: UUID())
+        await mockAccountService.addAccount(second)
+        await mockAccountService.configureHistoryRecovery(jobs: [], snapshotError: nil)
+        try await sut.completeAuthenticationAndWait(email: second.email, name: second.displayName)
+        let newEpoch = sut.dataEpoch
+        await mockAccountService.continueHistoryResume()
+        let result = await retry.value
+        guard case .incomplete(let failure) = result else { return XCTFail("Old actor recovery must not complete") }
+        XCTAssertEqual(failure.reason, .sessionChanged)
+        XCTAssertEqual(sut.session?.account.id, second.id)
+        XCTAssertEqual(sut.dataEpoch, newEpoch)
+        XCTAssertNil(sut.groupHistoryRecovery)
+        XCTAssertNil(sut.authenticationSessionRecoveryMessage)
+        XCTAssertFalse(sut.isCheckingAuth)
+    }
+
+    func testRestoreHistory_StaleForeignHintClearsOnlyAfterSuccessfulAuthoritativeSnapshot() async throws {
+        let account = UserAccount(id: "reader", email: "reader@example.test", displayName: "Reader", linkedMemberId: sut.currentUser.id)
+        await mockAccountService.addAccount(account)
+        sut.session = UserSession(account: account)
+        let job = GroupHistoryJob(jobId: "former-shared-job", groupId: "shared-group", phase: "pending", retryable: true)
+        await mockAccountService.configureForeignHistoryJob(job)
+        let pending = GroupHistoryRecoveryError(code: "HISTORY_RECONCILIATION_PENDING", retryable: true, jobId: job.jobId)
+        await mockAccountService.configureHistoryRecovery(jobs: [], snapshotError: pending)
+        await sut.loadRemoteData()
+        XCTAssertTrue(sut.hasGroupHistoryRecovery)
+
+        // Status can become inaccessible after the reader loses membership. Its
+        // generic error is not enough evidence to drop the public snapshot fence.
+        await mockAccountService.configureHistoryStatusFailure(.networkUnavailable)
+        let stillBlocked = await sut.retryGroupHistoryRecovery()
+        guard case .incomplete(let blocked) = stillBlocked else { return XCTFail("Pending snapshot must retain recovery") }
+        XCTAssertEqual(blocked.reason, .recoveryRequired)
+        XCTAssertTrue(sut.hasGroupHistoryRecovery)
+        let attempts = await mockAccountService.historyRecoveryResumeCount()
+        XCTAssertEqual(attempts, 0, "Unverified job hint must never be rescheduled")
+
+        await mockAccountService.configureHistoryRecovery(jobs: [], snapshotError: nil)
+        await mockExpenseCloudService.setShouldFail(true)
+        let failed = await sut.retryGroupHistoryRecovery()
+        guard case .incomplete(let failure) = failed else { return XCTFail("Failed hydration cannot clear the hint") }
+        XCTAssertEqual(failure.reason, .failed)
+        XCTAssertTrue(sut.hasGroupHistoryRecovery)
+        XCTAssertEqual(sut.session?.account.id, account.id)
+
+        await mockExpenseCloudService.setShouldFail(false)
+        await mockAccountService.configureHistoryStatusFailure(.underlying(message: "History reconciliation not found"))
+        let ready = await sut.retryGroupHistoryRecovery()
+        guard case .complete = ready else { return XCTFail("Public complete snapshot should release stale hint: \(ready)") }
+        XCTAssertFalse(sut.hasGroupHistoryRecovery)
+        XCTAssertFalse(sut.isGroupHistoryRecoveryBlocking)
+        XCTAssertFalse(sut.isAuthenticationSessionRecoveryBlocking)
+    }
+
     private func cancellationExpenseFixture() async -> Expense {
         let me = sut.currentUser.id
         let account = UserAccount(id: "cancel-owner", email: "cancel@example.test", displayName: "Owner", linkedMemberId: me)

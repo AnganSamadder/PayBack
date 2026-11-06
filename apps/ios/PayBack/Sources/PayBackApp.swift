@@ -54,10 +54,15 @@ struct RootViewWithStore: View {
                          AppConfig.markTiming("Loading Screen appeared")
                     }
                 }
+            } else if store.isGroupHistoryRecoveryBlocking {
+                groupHistoryRecoveryView
             } else if store.isAuthenticationSessionRecoveryBlocking {
                 authenticationSessionRecoveryView
             } else if store.session != nil {
                 RootView(pendingInviteToken: $pendingInviteToken)
+                    .safeAreaInset(edge: .top) {
+                        if store.hasGroupHistoryRecovery { groupHistoryRecoveryContent.padding().background(.regularMaterial) }
+                    }
                     .onAppear {
                          AppConfig.markTiming("RootView appeared")
                     }
@@ -99,6 +104,52 @@ struct RootViewWithStore: View {
                 )
             }
         }
+    }
+
+    private var groupHistoryRecoveryView: some View {
+        ZStack {
+            Color(.systemGroupedBackground).ignoresSafeArea()
+            groupHistoryRecoveryContent
+                .padding(28)
+                .frame(maxWidth: 520)
+        }
+    }
+
+    private var groupHistoryRecoveryContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(store.groupHistoryRecovery?.maintenanceRequired == true
+                ? "Shared history needs attention" : "Shared history is updating",
+                systemImage: "clock.arrow.circlepath")
+                .font(.headline)
+            Text(store.groupHistoryRecovery?.message ?? "Your account is still signed in. Check again to finish loading shared history.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if let recovery = store.groupHistoryRecovery {
+                ForEach(recovery.jobs.filter(\.maintenanceRequired)) { job in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(historyGroupName(job.groupId)).font(.subheadline.weight(.semibold))
+                        Text("Contact support with code: \(job.errorCode ?? "HISTORY_MAINTENANCE_REQUIRED")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if recovery.isRetrying {
+                    ProgressView("Checking shared history…")
+                } else {
+                    Button(recovery.maintenanceRequired ? "Check status" : "Retry") {
+                        Task { await store.retryGroupHistoryRecovery() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func historyGroupName(_ id: String) -> String {
+        guard let uuid = UUID(uuidString: id), let group = store.group(by: uuid) else { return "Shared group" }
+        return group.name
     }
 
     private var authenticationSessionRecoveryView: some View {
