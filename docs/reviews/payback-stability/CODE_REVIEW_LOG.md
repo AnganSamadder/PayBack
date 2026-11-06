@@ -119,3 +119,7 @@ from the viewer's directory could disappear from the recipient list. The helper
 now retains the canonical aggregation key and the recorded raw payer name as a
 display fallback. Both the amount and recipient remain visible. Production
 helper regressions pass in the canonical suite.
+
+Thread Sanitizer has now passed all 2,845 selected tests with no failures,
+warnings, or sanitizer diagnostics. The existing configuration excludes 42
+performance tests. Address Sanitizer and post-PR review are still pending.

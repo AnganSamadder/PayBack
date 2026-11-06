@@ -1,10 +1,10 @@
 # Before/after cases
 
-All 152 baseline cases are listed. Expected results follow the approved plan; observed results state evidence and limits. Canonical verification passed at d20cd85c: 2,887 SDK-enabled iOS tests with zero failures/skips, 730 backend tests in 73 files, repository checks, web build and one browser smoke. TSan/ASan and fresh post-PR independent approvals remain pending.
+All 152 baseline cases are listed. Expected results follow the approved plan; observed results state evidence and limits. Canonical d20cd85c passed 2,887 SDK-enabled iOS tests, 730 backend tests/73 files, repository checks and browser smoke. Thread Sanitizer passed 2,845 selected SDK tests with zero failures/skips; 42 performance tests were excluded by existing selectors. Address Sanitizer and fresh post-PR independent approvals remain pending.
 
 Full named selectors, source mappings, log hashes and F01–F29 dispositions: [BEFORE_AFTER.md](docs/reviews/payback-stability/BEFORE_AFTER.md) and [before-after.json](docs/reviews/payback-stability/before-after.json).
 
-Evidence: E10 = canonical pass on d20cd85c, 2,887 SDK iOS tests, 730 backend tests/73 files, repository checks and browser smoke. E05 = production import recording harness. E06 = auth configuration checks. Earlier E01–E09 runs remain in the full manifest; historical failed runs do not describe the current canonical result.
+Evidence: E10 = canonical pass on d20cd85c, 2,887 SDK iOS tests, 730 backend tests/73 files, repository checks and browser smoke. E05 = production import recording harness. E06 = auth configuration checks. E11 = Thread Sanitizer 2,845 selected tests passed; 42 performance tests excluded by existing selectors, zero skipped. Earlier E01–E09 runs remain historical.
 
 V3 may report processing until visibility jobs finish; old clients may require upgrade. Production backfill/readiness, Clerk continuity and live provider/device cases remain separate requirements.
 

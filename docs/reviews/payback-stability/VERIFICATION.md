@@ -47,3 +47,11 @@ and Xcode bundles are kept outside Git. Their hashes identify the recorded runs.
 | -------------------- | -------------------------------------------- | ------------------------------------------------------------------ |
 | Canonical standard   | `/tmp/payback-repair-standard4.log`          | `a48693e41bf4137bd505913909f09f49c747870880e36ba1f266a4573f891e14` |
 | Xcode result summary | `/tmp/payback-repair-standard4-summary.json` | `061ce5480da9c05112b58bcf916277547b20ef602927cde49aab2243372d5122` |
+
+Thread Sanitizer used the same simulator and DerivedData path with
+`SANITIZER=thread RUN_WEB_E2E=0`. The browser smoke was already green in the
+standard run. Its warning and sanitizer-output gates passed. Address Sanitizer
+is now running; final post-PR review remains pending.
+
+- Thread Sanitizer wrapper: `/tmp/payback-repair-thread1.log`, SHA256 `fcfb83cb004f8a9047a4a113afda495e822689bec1deca6f5eb1b26dca566713`.
+- Thread Sanitizer Xcode summary: `/tmp/payback-repair-thread1-summary.json`, SHA256 `7d9afb97c5c984df2bef2b1a5dc30ee0960f3e271fa93809d7c2da2d3eb80400`.

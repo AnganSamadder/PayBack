@@ -3,7 +3,7 @@
   "baseline_commit": "4fa2bedecaf14c1079a4eef631c4842557036c6a",
   "plan_revision": "v3",
   "approved_plan_sha256": "63afdaee62354dc30477de42ec091faa271390f3390a445261a9a80e31a0df29",
-  "verification_state": "Canonical verification passed at d20cd85c: 2,887 SDK-enabled iOS tests with zero failures/skips, 730 backend tests in 73 files, repository checks, web build and one browser smoke. TSan/ASan and fresh post-PR independent approvals remain pending.",
+  "verification_state": "Canonical d20cd85c passed 2,887 SDK-enabled iOS tests, 730 backend tests/73 files, repository checks and browser smoke. Thread Sanitizer passed 2,845 selected SDK tests with zero failures/skips; 42 performance tests were excluded by existing selectors. Address Sanitizer and fresh post-PR independent approvals remain pending.",
   "evidence_policy": {
     "baseline": "Baseline evidence describes the original review only. It is not a post-change result.",
     "source_trace": "Source inspection does not establish runtime behavior.",
@@ -67,7 +67,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -113,7 +113,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -180,7 +180,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -222,7 +222,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -293,7 +293,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -352,7 +352,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -412,7 +412,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -468,7 +468,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -542,7 +542,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -586,7 +586,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -652,7 +652,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -696,7 +696,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -748,7 +748,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -796,7 +796,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -863,7 +863,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -922,7 +922,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -972,7 +972,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1030,7 +1030,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1072,7 +1072,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1139,7 +1139,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1191,7 +1191,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1238,7 +1238,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1282,7 +1282,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1326,7 +1326,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1384,7 +1384,7 @@
         "Production Clerk configuration and identity-preserving account continuity verification."
       ],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1425,7 +1425,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1473,7 +1473,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1530,7 +1530,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     },
     {
@@ -1584,7 +1584,7 @@
       ],
       "operational_dependencies": [],
       "remaining_verification": [
-        "TSan/ASan, fresh independent code review and recorded production prerequisites."
+        "Address Sanitizer, fresh independent code review and recorded production prerequisites."
       ]
     }
   ],
@@ -1632,7 +1632,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -1689,7 +1689,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -1746,7 +1746,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -1792,7 +1792,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -1850,7 +1850,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -1908,7 +1908,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -1954,7 +1954,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C008",
@@ -1990,7 +1990,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C009",
@@ -2036,7 +2036,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -2088,7 +2088,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -2140,7 +2140,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -2186,7 +2186,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -2232,7 +2232,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -2268,7 +2268,7 @@
       ],
       "prerequisites": ["External verification required: operator identity recovery."],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C015",
@@ -2302,7 +2302,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C016",
@@ -2361,7 +2361,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C017",
@@ -2411,7 +2411,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -2446,7 +2446,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C019",
@@ -2480,7 +2480,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C020",
@@ -2514,7 +2514,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C021",
@@ -2564,7 +2564,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -2615,7 +2615,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -2666,7 +2666,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -2717,7 +2717,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -2752,7 +2752,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C026",
@@ -2786,7 +2786,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C027",
@@ -2820,7 +2820,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C028",
@@ -2854,7 +2854,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C029",
@@ -2888,7 +2888,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C030",
@@ -2945,7 +2945,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3003,7 +3003,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3055,7 +3055,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3112,7 +3112,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3168,7 +3168,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C035",
@@ -3202,7 +3202,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C036",
@@ -3258,7 +3258,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3303,7 +3303,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C038",
@@ -3337,7 +3337,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C039",
@@ -3387,7 +3387,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3422,7 +3422,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C041",
@@ -3456,7 +3456,7 @@
       ],
       "prerequisites": ["External verification required: live auth deeplink."],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C042",
@@ -3508,7 +3508,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3561,7 +3561,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3596,7 +3596,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C045",
@@ -3635,7 +3635,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C046",
@@ -3690,7 +3690,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3743,7 +3743,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3796,7 +3796,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -3831,7 +3831,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C050",
@@ -3865,7 +3865,7 @@
       ],
       "prerequisites": ["External verification required: live claim contention."],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C051",
@@ -3909,7 +3909,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C052",
@@ -3945,7 +3945,7 @@
         "V3 client and additive backend deployed; reference and identity readiness verified. A pending operation is processing, not completed success. Legacy clients may receive upgrade-required before writes."
       ],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C053",
@@ -3979,7 +3979,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C054",
@@ -4029,7 +4029,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C055",
@@ -4079,7 +4079,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4114,7 +4114,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C057",
@@ -4166,7 +4166,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4217,7 +4217,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4268,7 +4268,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4319,7 +4319,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4372,7 +4372,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C062",
@@ -4427,7 +4427,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4483,7 +4483,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4548,7 +4548,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C065",
@@ -4598,7 +4598,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C066",
@@ -4648,7 +4648,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4701,7 +4701,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C068",
@@ -4763,7 +4763,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4843,7 +4843,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4881,7 +4881,7 @@
         "V3 client and additive backend deployed; reference and identity readiness verified. A pending operation is processing, not completed success. Legacy clients may receive upgrade-required before writes."
       ],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C071",
@@ -4934,7 +4934,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -4982,7 +4982,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5036,7 +5036,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5082,7 +5082,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C075",
@@ -5133,7 +5133,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5179,7 +5179,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5231,7 +5231,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5283,7 +5283,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5337,7 +5337,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5399,7 +5399,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5453,7 +5453,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5505,7 +5505,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5557,7 +5557,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5609,7 +5609,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5645,7 +5645,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C086",
@@ -5703,7 +5703,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5755,7 +5755,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5807,7 +5807,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5859,7 +5859,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C090",
@@ -5910,7 +5910,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -5964,7 +5964,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C092",
@@ -6017,7 +6017,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6077,7 +6077,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C094",
@@ -6112,7 +6112,7 @@
       ],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C095",
@@ -6187,7 +6187,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6239,7 +6239,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6291,7 +6291,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6345,7 +6345,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6397,7 +6397,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6449,7 +6449,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C101",
@@ -6516,7 +6516,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6573,7 +6573,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6630,7 +6630,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6687,7 +6687,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6744,7 +6744,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6801,7 +6801,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6858,7 +6858,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6910,7 +6910,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -6968,7 +6968,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C110",
@@ -7025,7 +7025,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7089,7 +7089,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7153,7 +7153,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7198,7 +7198,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C114",
@@ -7242,7 +7242,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7287,7 +7287,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C116",
@@ -7331,7 +7331,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7391,7 +7391,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7458,7 +7458,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7517,7 +7517,7 @@
           "scope": "Production import with recording service/store protects suppressed/skipped rows and actor-bound refresh/gates; does not itself prove group-only friendship behavior."
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7552,7 +7552,7 @@
       ],
       "prerequisites": ["External verification required: live lost response relaunch."],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C121",
@@ -7596,7 +7596,7 @@
       ],
       "prerequisites": ["External verification required: live device edit race."],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C122",
@@ -7643,7 +7643,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7696,7 +7696,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C124",
@@ -7743,7 +7743,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C125",
@@ -7790,7 +7790,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7838,7 +7838,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C127",
@@ -7890,7 +7890,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -7952,7 +7952,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8000,7 +8000,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8048,7 +8048,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C131",
@@ -8102,7 +8102,7 @@
           "scope": "Production import with recording service/store protects suppressed/skipped rows and actor-bound refresh/gates; does not itself prove group-only friendship behavior."
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8155,7 +8155,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C133",
@@ -8212,7 +8212,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8265,7 +8265,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8323,7 +8323,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C136",
@@ -8375,7 +8375,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8428,7 +8428,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C138",
@@ -8485,7 +8485,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C139",
@@ -8529,7 +8529,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8579,7 +8579,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C141",
@@ -8623,7 +8623,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8664,7 +8664,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8716,7 +8716,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C144",
@@ -8748,7 +8748,7 @@
           "scope": "Build configuration declarations, not a successful production archive."
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C145",
@@ -8796,7 +8796,7 @@
           "scope": "Local build configuration only."
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C146",
@@ -8848,7 +8848,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8895,7 +8895,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8938,7 +8938,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."],
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."],
       "verified_source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
     },
     {
@@ -8968,7 +8968,7 @@
       ],
       "prerequisites": ["External verification required: production backfill and activation."],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C150",
@@ -8988,7 +8988,7 @@
       "verification_targets": [],
       "prerequisites": ["External verification required: deployed backend pagination."],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C151",
@@ -9008,7 +9008,7 @@
       "verification_targets": [],
       "prerequisites": [],
       "evidence": [],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     },
     {
       "id": "C152",
@@ -9050,7 +9050,7 @@
           "scope": "Concrete transport/auth switch regression within the complete passing SDK-enabled target."
         }
       ],
-      "remaining_verification": ["TSan/ASan and fresh independent reviewer approval."]
+      "remaining_verification": ["Address Sanitizer and fresh independent reviewer approval."]
     }
   ],
   "supplemental_requirements": [
@@ -9060,7 +9060,7 @@
       "requirement": "Cached $10 settled + $15 unpaid history must retain its complete identity/financial generation while aliases advance server-side and expense refresh is blocked. Gate users:viewer, friends list/page/realtime, directory, group enrichment and operation responses.",
       "status": "tested_at_recorded_revision",
       "evidence": [],
-      "observed": "E10 passes cached complete-generation, relaunch, explicit-login recovery and wrong-account completion regressions plus backend capability/provenance/deletion-generation gates. Whole canonical suite passes; sanitizer/reviewer gates remain pending."
+      "observed": "E10 passes cached complete-generation, relaunch, explicit-login recovery and wrong-account completion regressions plus backend capability/provenance/deletion-generation gates. Whole canonical suite passes; Address Sanitizer/reviewer gates remain pending."
     },
     {
       "id": "S02",
@@ -9076,7 +9076,7 @@
       "requirement": "All production authoring split modes and emitted payloads use cents; fractional metadata/restore, supported imported currency, unknown nil/nonaggregation, immutable currency and capability floors are covered.",
       "status": "tested_at_recorded_revision",
       "evidence": [],
-      "observed": "E10 passes backend authoring/metadata/restore/exact-settlement and concrete iOS model/mutation transport, People/payer/group-projection tests. Original financial rows remain preserved in named assertions; sanitizer/reviewer gates pending."
+      "observed": "E10 passes backend authoring/metadata/restore/exact-settlement and concrete iOS model/mutation transport, People/payer/group-projection tests. Original financial rows remain preserved in named assertions; Address Sanitizer/reviewer gates pending."
     },
     {
       "id": "S04",
@@ -9100,7 +9100,7 @@
       "requirement": "Full owning backend suites, fresh lint/typecheck/format/CI, concrete iOS parity, Thread Sanitizer, Address Sanitizer and independent final code-review rounds.",
       "status": "sanitizer_and_review_pending",
       "evidence": [],
-      "observed": "Canonical verification passed at d20cd85c: 2,887 SDK-enabled iOS tests with zero failures/skips, 730 backend tests in 73 files, repository checks, web build and one browser smoke. TSan/ASan and fresh post-PR independent approvals remain pending."
+      "observed": "Canonical d20cd85c passed 2,887 SDK-enabled iOS tests, 730 backend tests/73 files, repository checks and browser smoke. Thread Sanitizer passed 2,845 selected SDK tests with zero failures/skips; 42 performance tests were excluded by existing selectors. Address Sanitizer and fresh post-PR independent approvals remain pending."
     }
   ],
   "operational_prerequisites": [
@@ -9191,7 +9191,19 @@
       "summary": "/tmp/payback-repair-standard4-summary.json",
       "summary_sha256": "061ce5480da9c05112b58bcf916277547b20ef602927cde49aab2243372d5122",
       "result": "PASS: 2,887 canonical SDK-enabled iOS tests, zero failures/skips; 730 backend tests across 73 files; lint/typecheck/format/web build; one browser smoke.",
-      "limits": "Committed-source canonical verification. TSan/ASan and fresh post-PR independent reviewer approvals remain pending. Local simulator/transport tests do not prove live provider, multi-device or production deployment behavior."
+      "limits": "Committed-source canonical verification. Thread Sanitizer passed in E11; Address Sanitizer and fresh post-PR independent reviewer approvals remain pending. Local simulator/transport tests do not prove live provider, multi-device or production deployment behavior."
+    },
+    {
+      "id": "E11",
+      "command": "SANITIZER=thread ./scripts/test-ci-locally.sh",
+      "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365",
+      "documentation_head": "c68329a5",
+      "log": "/tmp/payback-repair-thread1.log",
+      "log_sha256": "fcfb83cb004f8a9047a4a113afda495e822689bec1deca6f5eb1b26dca566713",
+      "summary": "/tmp/payback-repair-thread1-summary.json",
+      "summary_sha256": "7d9afb97c5c984df2bef2b1a5dc30ee0960f3e271fa93809d7c2da2d3eb80400",
+      "result": "PASS: Thread Sanitizer SDK target 2,845/2,845, zero failures and zero skips. Sanitizer diagnostic check and warning gate passed.",
+      "limits": "Existing four-class sanitizer selectors exclude 42 performance tests from selection; these are not skipped tests. Source unchanged from d20cd85c. No per-case or live-integration status is inferred from this gate. Address Sanitizer and fresh post-PR independent approvals remain pending."
     }
   ],
   "status_counts": {
@@ -9220,7 +9232,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R02",
@@ -9238,7 +9250,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R03",
@@ -9256,7 +9268,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R04",
@@ -9271,7 +9283,7 @@
           "selector": "Proof.main"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R05",
@@ -9295,7 +9307,7 @@
           "scope": "Session-switch and authoritative refresh/gate checks with recording store/service."
         }
       ],
-      "remaining": "CI-only cancellation gate selector remains source-only; canonical chunk cancellation and production session gate are tested separately. Sanitizers/review pending."
+      "remaining": "CI-only cancellation gate selector remains source-only; canonical chunk cancellation and production session gate are tested separately. Address Sanitizer/review pending."
     },
     {
       "id": "R06",
@@ -9313,7 +9325,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R07",
@@ -9331,7 +9343,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R08",
@@ -9349,7 +9361,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R09",
@@ -9367,7 +9379,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R10",
@@ -9385,7 +9397,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R11",
@@ -9403,7 +9415,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R12",
@@ -9421,7 +9433,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R13",
@@ -9439,7 +9451,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R14",
@@ -9457,7 +9469,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R15",
@@ -9475,7 +9487,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R16",
@@ -9493,7 +9505,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R17",
@@ -9511,7 +9523,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R18",
@@ -9529,7 +9541,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R19",
@@ -9547,7 +9559,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R20",
@@ -9565,7 +9577,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R21",
@@ -9583,7 +9595,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R22",
@@ -9601,7 +9613,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R23",
@@ -9619,7 +9631,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R24",
@@ -9637,7 +9649,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R25",
@@ -9655,7 +9667,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R26",
@@ -9673,7 +9685,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R27",
@@ -9691,7 +9703,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R28",
@@ -9709,7 +9721,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     },
     {
       "id": "R29",
@@ -9726,7 +9738,7 @@
           "source_commit": "d20cd85c648056370b9bd8895099b455bcc1f365"
         }
       ],
-      "remaining": "TSan/ASan and fresh independent reviewer approval."
+      "remaining": "Address Sanitizer and fresh independent reviewer approval."
     }
   ]
 }
