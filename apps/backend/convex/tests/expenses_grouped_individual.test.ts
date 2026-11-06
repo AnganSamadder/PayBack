@@ -95,6 +95,8 @@ async function seedGroupedIndividualFixture() {
 
 function buildGroupedIndividualArgs(overrides: Partial<Record<string, unknown>> = {}) {
   return {
+    financial_contract_version: 2,
+    currency_code: "USD",
     id: "grouped_expense_1",
     context_kind: "grouped_individual" as const,
     group_id: "11111111-1111-4111-8111-111111111111",
@@ -206,6 +208,7 @@ test("expenses:create rejects grouped_individual expense when caller is not incl
     ownerCtx.mutation(
       api.expenses.create,
       buildGroupedIndividualArgs({
+        paid_by_member_id: "alice_member",
         involved_member_ids: ["alice_member", "bob_alias_member"],
         splits: [
           { id: "split_alice", member_id: "alice_member", amount: 45, is_settled: false },
@@ -418,7 +421,7 @@ test("expenses:create rejects grouped_individual owner update when it adds a bra
         ]
       })
     )
-  ).rejects.toThrow("confirmed friend");
+  ).rejects.toThrow("Historical financial amounts and split rows are immutable");
 });
 
 test("expenses:create allows grouped_individual owner update after a historical participant is no longer a friend", async () => {
@@ -484,6 +487,8 @@ test("expenses:create infers direct context for legacy rows without context_kind
   });
 
   await ownerCtx.mutation(api.expenses.create, {
+    financial_contract_version: 2,
+    currency_code: "USD",
     id: "legacy_direct_expense",
     group_id: "legacy_direct_group",
     description: "Legacy coffee",
@@ -523,6 +528,8 @@ test("expenses:create infers group context for legacy rows without context_kind 
   const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
 
   await ownerCtx.mutation(api.expenses.create, {
+    financial_contract_version: 2,
+    currency_code: "USD",
     id: "legacy_group_expense",
     group_id: "shared_group_reference",
     description: "Legacy dinner",

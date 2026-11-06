@@ -9,11 +9,18 @@ test("linked-account resolution does not collect deployment-wide groups or accou
     source.indexOf("\n});", source.indexOf("export const resolveLinkedAccountsForMemberIds")) + 4
   );
 
-  expect(resolver).not.toMatch(/query\("groups"\)\s*\.collect\(\)/);
-  expect(resolver).not.toMatch(/query\("accounts"\)\s*\.collect\(\)/);
-  expect(resolver).not.toMatch(/\.collect\(\)/);
-  expect(resolver).not.toMatch(/\.take\(/);
-  expect(resolver).toMatch(/\.paginate\(/);
-  expect(resolver).toMatch(/maximumRowsRead/);
-  expect(resolver).toMatch(/maximumBytesRead/);
+  const visibleSurface = source.slice(
+    source.indexOf("async function callerVisibleMemberIds"),
+    source.indexOf("export const resolveLinkedAccountsForMemberIds")
+  );
+  expect(resolver).toContain("await callerVisibleMemberIds(ctx, user)");
+  const resolutionPath = resolver + visibleSurface;
+
+  expect(resolutionPath).not.toMatch(/query\("groups"\)\s*\.collect\(\)/);
+  expect(resolutionPath).not.toMatch(/query\("accounts"\)\s*\.collect\(\)/);
+  expect(resolutionPath).not.toMatch(/\.collect\(\)/);
+  expect(resolutionPath).not.toMatch(/\.take\(/);
+  expect(resolutionPath).toMatch(/\.paginate\(/);
+  expect(resolutionPath).toMatch(/maximumRowsRead/);
+  expect(resolutionPath).toMatch(/maximumBytesRead/);
 });

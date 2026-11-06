@@ -139,6 +139,8 @@ async function seedRuntimeAccountsAndGroup(t: ReturnType<typeof convexTest>) {
 
 function runtimeExpenseArgs(description = "Runtime expense") {
   return {
+    financial_contract_version: 2,
+    currency_code: "USD",
     id: "runtime_created_expense",
     context_kind: "group" as const,
     group_id: "runtime_group",
@@ -231,8 +233,9 @@ describe("runtime expense writes", () => {
     await t
       .withIdentity(identity("runtime-owner@test.com", "runtime_owner_auth"))
       .mutation(api.expenses.setSettlementState, {
+        financial_contract_version: 2,
         expenseId: "runtime_expense_0",
-        memberIds: ["runtime_member_member"],
+        splitIds: ["member_split_0"],
         settled: true
       });
 
@@ -256,6 +259,7 @@ describe("runtime expense writes", () => {
     await t
       .withIdentity(identity("runtime-owner@test.com", "runtime_owner_auth"))
       .mutation(api.expenses.deleteExpenses, {
+        financial_contract_version: 2,
         ids: ["runtime_expense_0", "runtime_expense_1"]
       });
 
@@ -277,7 +281,7 @@ describe("runtime expense writes", () => {
 
     await t
       .withIdentity(identity("runtime-owner@test.com", "runtime_owner_auth"))
-      .mutation(api.groups.deleteGroup, { id: "runtime_group" });
+      .mutation(api.groups.deleteGroup, { financial_contract_version: 2, id: "runtime_group" });
 
     const result = await t.run(async (ctx) => ({
       group: await ctx.db.get(fixture.groupId),
@@ -338,7 +342,10 @@ describe("runtime expense writes", () => {
       });
       const owner = t.withIdentity(identity("runtime-owner@test.com", "runtime_owner_auth"));
 
-      await owner.mutation(api.groups.deleteGroup, { id: "runtime_group" });
+      await owner.mutation(api.groups.deleteGroup, {
+        financial_contract_version: 2,
+        id: "runtime_group"
+      });
 
       const canonicalExpenseId = await t.run(async (ctx) => {
         const canonicalGroupId = await ctx.db.insert("groups", {
@@ -394,6 +401,7 @@ describe("runtime expense writes", () => {
 
       await expect(
         owner.mutation(api.groups.create, {
+          financial_contract_version: 2,
           id: "runtime_group",
           name: "Resurrected",
           members: [
@@ -456,7 +464,10 @@ describe("runtime expense writes", () => {
 
     await t
       .withIdentity(identity("runtime-owner@test.com", "runtime_owner_auth"))
-      .mutation(api.groups.deleteGroups, { ids: ["runtime_group", "runtime_group_2"] });
+      .mutation(api.groups.deleteGroups, {
+        financial_contract_version: 2,
+        ids: ["runtime_group", "runtime_group_2"]
+      });
 
     const result = await t.run(async (ctx) => ({
       firstGroup: await ctx.db.get(fixture.groupId),
@@ -495,11 +506,13 @@ describe("runtime expense writes", () => {
 
     await expect(
       owner.mutation(api.expenses.deleteExpenses, {
+        financial_contract_version: 2,
         ids: Array.from({ length: 513 }, (_, index) => `expense_${index}`)
       })
     ).rejects.toThrow("at most 512 IDs");
     await expect(
       owner.mutation(api.groups.deleteGroups, {
+        financial_contract_version: 2,
         ids: Array.from({ length: 513 }, (_, index) => `group_${index}`)
       })
     ).rejects.toThrow("at most 512 IDs");
@@ -507,6 +520,8 @@ describe("runtime expense writes", () => {
     const memberIds = Array.from({ length: 66 }, (_, index) => `member_${index}`);
     await expect(
       owner.mutation(api.expenses.create, {
+        financial_contract_version: 2,
+        currency_code: "USD",
         id: "oversized_expense",
         context_kind: "grouped_individual",
         group_id: "",
@@ -575,9 +590,12 @@ describe("runtime expense writes", () => {
     }
 
     const owner = t.withIdentity(identity("runtime-owner@test.com", "runtime_owner_auth"));
-    let result = await owner.mutation(api.expenses.clearAllForUserV2, {});
+    let result = await owner.mutation(api.expenses.clearAllForUserV2, {
+      financial_contract_version: 2
+    });
     for (let attempt = 0; result.inProgress && attempt < 520; attempt += 1) {
       result = await owner.mutation(api.expenses.clearAllForUserV2, {
+        financial_contract_version: 2,
         cutoff: result.cutoff
       });
     }

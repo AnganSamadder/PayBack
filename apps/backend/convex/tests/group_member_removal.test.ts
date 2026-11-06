@@ -126,6 +126,7 @@ describe("groups.removeMemberAndExpenses", () => {
 
     const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await owner.mutation(api.groups.removeMemberAndExpenses, {
+      financial_contract_version: 2,
       id: "group_member_removal",
       memberId: "member_alias"
     });
@@ -166,6 +167,7 @@ describe("groups.removeMemberAndExpenses", () => {
     const member = t.withIdentity(identity("member@test.com", "member_auth"));
     await expect(
       member.mutation(api.groups.removeMemberAndExpenses, {
+        financial_contract_version: 2,
         id: "group_member_removal",
         memberId: "owner_member"
       })
@@ -193,6 +195,7 @@ describe("groups.removeMemberAndExpenses", () => {
 
     const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await owner.mutation(api.groups.removeMemberAndExpenses, {
+      financial_contract_version: 2,
       id: "group_member_removal",
       memberId: "member_canonical"
     });
@@ -288,6 +291,7 @@ describe("groups.removeMemberAndExpenses", () => {
 
     const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await owner.mutation(api.groups.removeMemberAndExpenses, {
+      financial_contract_version: 2,
       id: "group_member_removal",
       memberId: "member_alias"
     });
@@ -376,6 +380,7 @@ describe("groups.removeMemberAndExpenses", () => {
 
     const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await owner.mutation(api.groups.removeMemberAndExpenses, {
+      financial_contract_version: 2,
       id: "group_member_removal",
       memberId: "member_alias"
     });

@@ -1,9 +1,30 @@
-import { internalMutation, mutation, query } from "./_generated/server";
+import { validateExpenseMoney } from "./moneyValidation";
+import { findCanonicalDirectLedger } from "./directLedger";
+import {
+  assertFinancialContract,
+  assertExpectedActor,
+  assertMemberFinancialContract,
+  resolveLiveAccountForMember
+} from "./financialContract";
+import {
+  internalMutation,
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx
+} from "./_generated/server";
 import { internal } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { Doc, Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import {
+  deriveExpenseFinancialIdentityMap,
+  deriveOwnerScopedFinancialIdentityMap,
+  resolveExpenseFinancialProjectionOwner,
+  createExpenseIdentityResolutionCache,
+  type ExpenseIdentityResolutionCache,
+  canonicalizeExpenseParticipantLinks,
+  resolveAuthoritativeExpenseOwnerAccount,
   assertAccountCanAcceptChanges,
   getCurrentUserOrThrow,
   isAccountDeletionFenced,
@@ -16,7 +37,7 @@ import {
   normalizeMemberId,
   normalizeMemberIds
 } from "./identity";
-import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
+import { getOwnerEquivalentMemberIds } from "./aliases";
 import { resolveProvenFriendLink } from "./friendLinkProvenance";
 import {
   applyExpenseWriteBatch,
@@ -36,6 +57,49 @@ import {
   syncV2NotReadyError
 } from "./syncState";
 import { USER_EXPENSE_REFS_MATERIALIZATION_KEY } from "./migrations/userExpenseRefs";
+
+const financialArgs = {
+  financial_contract_version: v.optional(v.number()),
+  expected_account_id: v.optional(v.string()),
+  expected_account_email: v.optional(v.string())
+};
+async function canReadExpense(
+  ctx: any,
+  user: Doc<"accounts">,
+  expense: Doc<"expenses">,
+  version?: number,
+  cache?: ExpenseIdentityResolutionCache
+): Promise<boolean> {
+  await assertMemberFinancialContract(
+    ctx,
+    [
+      expense.paid_by_member_id,
+      ...expense.involved_member_ids,
+      ...expense.splits.map((split) => split.member_id)
+    ],
+    version,
+    expense.owner_id
+  );
+  if (expense.currency_code !== undefined && (version ?? 0) < 2)
+    throw new Error("FINANCIAL_CONTRACT_UPGRADE_REQUIRED");
+  await resolveExpenseFinancialProjectionOwner(ctx, expense, cache);
+  if (await isExpenseAttachedToDeletingGroup(ctx, expense)) return false;
+  return (
+    await resolveActiveExpenseParticipantAccounts(ctx, expense, new Set(), cache, user._id)
+  ).some((account) => account._id === user._id);
+}
+
+type ExpenseResponse = Doc<"expenses"> & { financial_identity_map: Record<string, string> };
+async function expenseResponse(
+  ctx: Pick<QueryCtx, "db">,
+  expense: Doc<"expenses">,
+  cache?: ExpenseIdentityResolutionCache
+): Promise<ExpenseResponse> {
+  return {
+    ...expense,
+    financial_identity_map: await deriveExpenseFinancialIdentityMap(ctx, expense, cache)
+  };
+}
 
 function assertExpenseArgumentBounds(args: {
   involved_member_ids: readonly string[];
@@ -76,7 +140,11 @@ async function getCurrentUser(ctx: any) {
 function isEligibleDirectFriendRecord(friend: any): boolean {
   const normalizedStatus =
     typeof friend.status === "string" ? friend.status.trim().toLowerCase() : undefined;
-  if (normalizedStatus === "rejected") return false;
+  if (
+    ["rejected", "pending", "ghost"].includes(normalizedStatus ?? "") ||
+    friend.link_state === "ghost"
+  )
+    return false;
   // Backward-compatible acceptance:
   // - explicit friend/accepted/manual rows
   // - linked-account rows
@@ -85,7 +153,6 @@ function isEligibleDirectFriendRecord(friend: any): boolean {
     normalizedStatus === "friend" ||
     normalizedStatus === "accepted" ||
     normalizedStatus === "manual" ||
-    friend.has_linked_account === true ||
     !normalizedStatus
   );
 }
@@ -97,26 +164,16 @@ function intersects(lhs: Set<string>, rhs: Set<string>): boolean {
   return false;
 }
 
-function normalizePersonName(name: string | undefined | null): string | undefined {
-  if (typeof name !== "string") return undefined;
-  const normalized = name.trim().toLowerCase().replace(/\s+/g, " ");
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-async function buildUserEquivalentMemberIds(db: any, user: any): Promise<Set<string>> {
+async function buildUserEquivalentMemberIds(
+  db: MutationCtx["db"],
+  user: Doc<"accounts">
+): Promise<Set<string>> {
   const equivalentIds = new Set<string>();
-  const seeds = [user.member_id, user.id, ...(user.alias_member_ids ?? [])].filter(
-    (value): value is string => typeof value === "string" && value.trim().length > 0
-  );
-
-  for (const seed of seeds) {
-    equivalentIds.add(normalizeMemberId(seed));
-    const aliases = await getAllEquivalentMemberIds(db, seed);
-    for (const id of aliases) {
-      equivalentIds.add(normalizeMemberId(id));
-    }
+  for (const seed of [user.member_id, ...(user.alias_member_ids ?? [])]) {
+    if (!seed) continue;
+    const account = await resolveLiveAccountForMember({ db }, seed);
+    if (account?._id === user._id) equivalentIds.add(normalizeMemberId(seed));
   }
-
   return equivalentIds;
 }
 
@@ -146,8 +203,12 @@ async function requireGroupAccess(
   group: any,
   precomputedEquivalentIds?: Set<string>
 ): Promise<Set<string>> {
+  await resolveAuthoritativeExpenseOwnerAccount(ctx, group);
   const callerEquivalentIds =
     precomputedEquivalentIds ?? (await buildUserEquivalentMemberIds(ctx.db, user));
+  for (const id of [...callerEquivalentIds])
+    for (const equivalent of await getOwnerEquivalentMemberIds(ctx, group.owner_email, id))
+      callerEquivalentIds.add(equivalent);
   if (!isGroupOwner(group, user) && !isGroupMember(group, callerEquivalentIds)) {
     throw new Error("Forbidden: group access denied");
   }
@@ -386,53 +447,83 @@ async function loadExpenseByClientId(ctx: any, expenseId: string) {
   return expense;
 }
 
-export const create = mutation({
-  args: {
-    id: v.string(), // Client UUID
-    context_kind: v.optional(
-      v.union(v.literal("group"), v.literal("direct"), v.literal("grouped_individual"))
-    ),
-    group_id: v.string(),
-    description: v.string(),
-    notes: v.optional(v.union(v.string(), v.null())),
-    date: v.number(),
-    total_amount: v.number(),
-    paid_by_member_id: v.string(),
-    involved_member_ids: v.array(v.string()),
-    splits: v.array(
+const expenseArgs = {
+  financial_contract_version: v.optional(v.number()),
+  expected_account_id: v.optional(v.string()),
+  expected_account_email: v.optional(v.string()),
+  currency_code: v.optional(v.string()),
+  id: v.string(), // Client UUID
+  context_kind: v.optional(
+    v.union(v.literal("group"), v.literal("direct"), v.literal("grouped_individual"))
+  ),
+  group_id: v.string(),
+  description: v.string(),
+  notes: v.optional(v.union(v.string(), v.null())),
+  date: v.number(),
+  total_amount: v.number(),
+  paid_by_member_id: v.string(),
+  involved_member_ids: v.array(v.string()),
+  splits: v.array(
+    v.object({
+      id: v.string(),
+      member_id: v.string(),
+      amount: v.number(),
+      is_settled: v.boolean()
+    })
+  ),
+  is_settled: v.boolean(),
+  owner_email: v.optional(v.string()),
+  owner_account_id: v.optional(v.string()),
+  participant_member_ids: v.array(v.string()),
+  participants: v.array(
+    v.object({
+      member_id: v.string(),
+      name: v.string(),
+      linked_account_id: v.optional(v.string()),
+      linked_account_email: v.optional(v.string())
+    })
+  ),
+  subexpenses: v.optional(
+    v.array(
       v.object({
         id: v.string(),
-        member_id: v.string(),
-        amount: v.number(),
-        is_settled: v.boolean()
+        amount: v.number()
       })
-    ),
-    is_settled: v.boolean(),
-    owner_email: v.optional(v.string()),
-    owner_account_id: v.optional(v.string()),
-    participant_member_ids: v.array(v.string()),
-    participants: v.array(
-      v.object({
-        member_id: v.string(),
-        name: v.string(),
-        linked_account_id: v.optional(v.string()),
-        linked_account_email: v.optional(v.string())
-      })
-    ),
-    subexpenses: v.optional(
-      v.array(
-        v.object({
-          id: v.string(),
-          amount: v.number()
-        })
-      )
-    ),
-    is_payback_generated_mock_data: v.optional(v.boolean())
-  },
-  handler: async (ctx, args) => {
+    )
+  ),
+  is_payback_generated_mock_data: v.optional(v.boolean())
+};
+const expenseArgsValidator = v.object(expenseArgs);
+type ExpenseCreateArgs = Infer<typeof expenseArgsValidator>;
+function expenseIdentityShape(
+  value: Pick<
+    ExpenseCreateArgs,
+    | "paid_by_member_id"
+    | "involved_member_ids"
+    | "participant_member_ids"
+    | "participants"
+    | "splits"
+  >
+): string {
+  return JSON.stringify({
+    payer: normalizeMemberId(value.paid_by_member_id),
+    involved: canonicalizeMembers(value.involved_member_ids),
+    participantIds: canonicalizeMembers(value.participant_member_ids),
+    participants: canonicalizeMembers(value.participants.map((row) => row.member_id)),
+    splits: value.splits
+      .map((row) => ({ id: row.id, member_id: normalizeMemberId(row.member_id) }))
+      .sort((a, b) => a.id.localeCompare(b.id))
+  });
+}
+
+const expenseMutationDefinition = {
+  args: expenseArgsValidator,
+  handler: async (ctx: MutationCtx, args: Infer<typeof expenseArgsValidator>) => {
     const { identity, user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     assertExpenseArgumentBounds(args);
     await checkRateLimit(ctx, identity.subject, "expenses:create", 10);
     const notesWereProvided = args.notes !== undefined;
@@ -447,14 +538,71 @@ export const create = mutation({
       .withIndex("by_client_id", (q) => q.eq("id", args.id))
       .unique();
 
+    if (existing) await resolveAuthoritativeExpenseOwnerAccount(ctx, existing);
+    if (!existing) validateExpenseMoney(args, "authoring");
+    if (!existing && (args.financial_contract_version ?? 0) < 2)
+      throw new Error("FINANCIAL_CONTRACT_UPGRADE_REQUIRED");
+    // A borrowed group's local aliases belong to its owner. Resolve new authored rows
+    // before they become the caller's expense; never rewrite existing historical rows.
+    if (
+      args.context_kind !== "grouped_individual" &&
+      (!existing || expenseIdentityShape(args) !== expenseIdentityShape(existing))
+    ) {
+      const authoringGroup = await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
+        .unique();
+      if (authoringGroup) {
+        await requireGroupAccess(ctx, user, authoringGroup);
+        const map = await deriveOwnerScopedFinancialIdentityMap(ctx, authoringGroup, [
+          args.paid_by_member_id,
+          ...args.involved_member_ids,
+          ...args.participant_member_ids,
+          ...args.participants.map((row) => row.member_id),
+          ...args.splits.map((row) => row.member_id)
+        ]);
+        const member = (id: string) => map[normalizeMemberId(id)] ?? normalizeMemberId(id);
+        const mapped = {
+          ...args,
+          paid_by_member_id: member(args.paid_by_member_id),
+          involved_member_ids: args.involved_member_ids.map(member),
+          participant_member_ids: args.participant_member_ids.map(member),
+          participants: args.participants.map((row) => ({
+            ...row,
+            member_id: member(row.member_id)
+          })),
+          splits: args.splits.map((row) => ({ ...row, member_id: member(row.member_id) }))
+        };
+        // A retry may carry the original raw group IDs after its first write succeeded.
+        // Accept that projection only if it exactly matches the already persisted identities.
+        if (!existing || expenseIdentityShape(mapped) === expenseIdentityShape(existing))
+          args = mapped;
+      }
+    }
+    if (existing) validateExpenseMoney(args, "metadata", existing);
+    await assertMemberFinancialContract(
+      ctx,
+      [...args.involved_member_ids, args.paid_by_member_id],
+      args.financial_contract_version
+    );
+    if (!existing && (args.financial_contract_version ?? 0) < 2)
+      throw new Error("FINANCIAL_CONTRACT_UPGRADE_REQUIRED");
+    if (args.owner_account_id && args.owner_account_id !== user.id && !existing)
+      throw new Error("Owner identity mismatch");
+    if (
+      args.owner_email &&
+      args.owner_email.toLowerCase() !== user.email.toLowerCase() &&
+      !existing
+    )
+      throw new Error("Owner identity mismatch");
     const normalizedPaidBy = normalizeMemberId(args.paid_by_member_id);
     const normalizedInvolved = normalizeMemberIds(args.involved_member_ids);
-    const normalizedSplits = args.splits.map((split) => ({
+    const normalizedSplits = args.splits.map((split: any) => ({
       ...split,
       member_id: normalizeMemberId(split.member_id)
     }));
     const normalizedParticipantMemberIds = normalizeMemberIds(args.participant_member_ids);
-    const normalizedParticipantInput = args.participants.map((participant) => ({
+    const normalizedParticipantInput = args.participants.map((participant: any) => ({
       ...participant,
       member_id: normalizeMemberId(participant.member_id)
     }));
@@ -463,16 +611,28 @@ export const create = mutation({
     );
     const preparedParticipants = await prepareDeletionSafeExpenseParticipants(ctx, {
       existing,
-      participants: normalizedParticipantInput,
+      participants: await canonicalizeExpenseParticipantLinks(ctx, normalizedParticipantInput),
       referencedMemberIds: [
         normalizedPaidBy,
         ...normalizedInvolved,
         ...normalizedParticipantMemberIds,
-        ...normalizedSplits.map((split) => split.member_id)
+        ...normalizedSplits.map((split: any) => split.member_id)
       ],
       inactiveMemberIds: existingInactiveParticipantMemberIds
     });
-    const normalizedParticipants = preparedParticipants.participants;
+    const normalizedParticipants = await canonicalizeExpenseParticipantLinks(
+      ctx,
+      preparedParticipants.participants
+    );
+    if (!existing)
+      requireMatchingMemberSets({
+        involvedMemberIds: normalizedInvolved,
+        participantMemberIds: normalizedParticipantMemberIds,
+        splitMemberIds: normalizedSplits.map((split: any) => split.member_id),
+        participantRows: normalizedParticipants
+      });
+    if (!existing && !normalizedInvolved.includes(normalizedPaidBy))
+      throw new Error("Expense payer must be one of the involved member IDs");
     const inactiveParticipantMemberIds = preparedParticipants.inactiveMemberIds;
     const requestedContextKind = args.context_kind;
     const existingGroup = existing?.group_ref ? await ctx.db.get(existing.group_ref) : null;
@@ -518,20 +678,9 @@ export const create = mutation({
       }
 
       let linkedAccount: any = null;
-      if (emailKey) {
-        linkedAccount = await ctx.db
-          .query("accounts")
-          .withIndex("by_email", (q) => q.eq("email", emailKey))
-          .unique();
-      }
-      if (!linkedAccount && authKey) {
-        linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, authKey);
-      }
-      if (!linkedAccount) {
-        for (const seed of normalizedMemberSeeds) {
-          linkedAccount = await findAccountByMemberId(ctx.db, seed);
-          if (linkedAccount) break;
-        }
+      for (const seed of normalizedMemberSeeds) {
+        linkedAccount = await findAccountByMemberId(ctx.db, seed);
+        if (linkedAccount) break;
       }
 
       assertAccountCanAcceptChanges(linkedAccount);
@@ -585,18 +734,18 @@ export const create = mutation({
       const cached = equivalentIdCache.get(normalized);
       if (cached) return cached;
 
-      const ids = await getAllEquivalentMemberIds(ctx.db, normalized);
+      const ids = await getOwnerEquivalentMemberIds(
+        ctx,
+        existing?.owner_email ?? user.email,
+        normalized
+      );
       const set = new Set(ids.map((id) => normalizeMemberId(id)));
       set.add(normalized);
       equivalentIdCache.set(normalized, set);
       return set;
     };
     const getLinkedAccountForFriend = async (friend: any) => {
-      return resolveLinkedAccount({
-        linkedAccountEmail: friend.linked_account_email,
-        linkedAccountId: friend.linked_account_id,
-        memberSeeds: [friend.linked_member_id, friend.member_id]
-      });
+      return (await resolveProvenFriendLink(ctx, friend))?.account ?? null;
     };
     const buildCurrentUserEquivalentIds = async (callerEquivalentIds: Set<string>) => {
       const currentUserEquivalentIds = new Set<string>();
@@ -626,7 +775,6 @@ export const create = mutation({
         const identityIds = new Set<string>();
         const friendIdentitySeeds = [
           friend.member_id,
-          friend.linked_member_id,
           ...(friend.local_alias_member_ids || [])
         ].filter((value): value is string => typeof value === "string" && value.length > 0);
 
@@ -683,7 +831,13 @@ export const create = mutation({
             isEligibleDirectFriendRecord(friend) && intersects(identityIds, memberEquivalentIds)
         );
         if (matchingFriend) {
-          continue;
+          const registered = await findAccountByMemberId(ctx.db, participant.member_id);
+          if (
+            !registered ||
+            (await resolveProvenFriendLink(ctx, matchingFriend.friend))?.account._id ===
+              registered._id
+          )
+            continue;
         }
 
         throw new Error(
@@ -693,7 +847,6 @@ export const create = mutation({
     };
 
     let group: any = null;
-    let createdDirectGroupForExpense = false;
     let callerEquivalentIds = await buildUserEquivalentMemberIds(ctx.db, user);
     let contextKind: ExpenseContextKind;
 
@@ -713,17 +866,21 @@ export const create = mutation({
         }
       }
 
-      requireMatchingMemberSets({
-        involvedMemberIds: normalizedInvolved,
-        participantMemberIds: normalizedParticipantMemberIds,
-        splitMemberIds: normalizedSplits.map((split) => split.member_id),
-        participantRows: normalizedParticipants
-      });
+      if (!existing)
+        requireMatchingMemberSets({
+          involvedMemberIds: normalizedInvolved,
+          participantMemberIds: normalizedParticipantMemberIds,
+          splitMemberIds: normalizedSplits.map((split: any) => split.member_id),
+          participantRows: normalizedParticipants
+        });
 
-      if (!normalizedInvolved.some((memberId) => callerEquivalentIds.has(memberId))) {
+      if (
+        !existing &&
+        !normalizedInvolved.some((memberId: string) => callerEquivalentIds.has(memberId))
+      ) {
         throw new Error("Grouped individual expense must include the current user.");
       }
-      if (normalizedInvolved.length < 2) {
+      if (!existing && normalizedInvolved.length < 2) {
         throw new Error("Grouped individual expense must include at least two participants.");
       }
 
@@ -731,12 +888,12 @@ export const create = mutation({
       const nonSelfParticipants = normalizedParticipants.filter(
         (participant) => !intersects(currentUserEquivalentIds, new Set([participant.member_id]))
       );
-      if (nonSelfParticipants.length < 1) {
+      if (!existing && nonSelfParticipants.length < 1) {
         throw new Error(
           "Grouped individual expense must include at least one non-self participant."
         );
       }
-      if (!normalizedInvolved.includes(normalizedPaidBy)) {
+      if (!existing && !normalizedInvolved.includes(normalizedPaidBy)) {
         throw new Error("Expense payer must be one of the involved member IDs.");
       }
 
@@ -770,6 +927,33 @@ export const create = mutation({
         });
       }
     } else {
+      const suppliedGroup = await ctx.db
+        .query("groups")
+        .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
+        .unique();
+      if (requestedContextKind === "direct" && suppliedGroup && !suppliedGroup.is_direct)
+        throw new Error("Direct expenses require a direct group");
+      const isDirectWrite =
+        requestedContextKind === "direct" ||
+        (!requestedContextKind && suppliedGroup?.is_direct === true);
+      const directSelection =
+        !existing && isDirectWrite
+          ? await findCanonicalDirectLedger(ctx, user, normalizedInvolved)
+          : null;
+      if (directSelection?.group) args = { ...args, group_id: directSelection.group.id };
+      if (
+        existing &&
+        requestedContextKind === "direct" &&
+        existing.group_ref &&
+        args.group_id !== existing.group_id
+      ) {
+        const requestedGroup = await ctx.db
+          .query("groups")
+          .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
+          .unique();
+        if (requestedGroup) throw new Error("Expense group mismatch");
+        args = { ...args, group_id: existing.group_id };
+      }
       const existingGroupByClientId = await ctx.db
         .query("groups")
         .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
@@ -782,7 +966,7 @@ export const create = mutation({
         requireMatchingMemberSets({
           involvedMemberIds: normalizedInvolved,
           participantMemberIds: normalizedParticipantMemberIds,
-          splitMemberIds: normalizedSplits.map((split) => split.member_id),
+          splitMemberIds: normalizedSplits.map((split: any) => split.member_id),
           participantRows: normalizedParticipants
         });
         if (normalizedInvolved.length !== 2 || normalizedParticipants.length !== 2) {
@@ -824,7 +1008,12 @@ export const create = mutation({
           updated_at: now
         });
         group = await ctx.db.get(groupDocumentId);
-        createdDirectGroupForExpense = true;
+        if (directSelection)
+          await ctx.db.insert("direct_ledger_pairs", {
+            pair_key: directSelection.pairKey,
+            group_ref: groupDocumentId,
+            created_at: now
+          });
       } else {
         const groupAccess = await requireGroupByClientIdWithAccess(
           ctx,
@@ -857,34 +1046,47 @@ export const create = mutation({
         throw new Error("Group expenses cannot target a direct group.");
       }
 
-      if (group.is_direct) {
+      for (const memberId of normalizedInvolved) {
+        const ids = await getEquivalentIdSet(memberId);
+        let allowed = false;
+        for (const member of group.members)
+          if (
+            intersects(
+              ids,
+              new Set(await getOwnerEquivalentMemberIds(ctx, group.owner_email, member.id))
+            )
+          )
+            allowed = true;
+        if (!allowed && !existing)
+          throw new Error("Expense participant is not a member of this group");
+      }
+
+      if (group.is_direct && !existing) {
         const currentUserEquivalentIds = await buildCurrentUserEquivalentIds(callerEquivalentIds);
+        if (normalizedInvolved.length !== 2 || normalizedParticipants.length !== 2)
+          throw new Error("Direct expenses must include exactly two participants");
+        if (!normalizedInvolved.some((id) => currentUserEquivalentIds.has(id)))
+          throw new Error("Direct expenses must include the current user and one friend");
         const groupMemberIdentityRows = await Promise.all(
           group.members.map(async (member: any) => ({
             member,
-            identityIds: await getEquivalentIdSet(member.id)
+            identityIds: new Set(
+              await getOwnerEquivalentMemberIds(ctx, group.owner_email, member.id)
+            )
           }))
         );
 
-        const currentUserGroupRows = groupMemberIdentityRows.filter(
-          ({ member, identityIds }) =>
-            member.is_current_user === true || intersects(identityIds, currentUserEquivalentIds)
+        const currentUserGroupRows = groupMemberIdentityRows.filter(({ identityIds }) =>
+          intersects(identityIds, currentUserEquivalentIds)
         );
         if (currentUserGroupRows.length === 0) {
           throw new Error("Not authorized for direct group");
         }
 
-        const directCounterpartyRows = groupMemberIdentityRows.filter(
-          ({ member, identityIds }) =>
-            member.is_current_user !== true && !intersects(identityIds, currentUserEquivalentIds)
-        );
         const ownerFriendIdentityRows = await buildOwnerFriendIdentityRows();
 
         for (const memberId of normalizedInvolved) {
           const groupMember = group.members.find((m: any) => normalizeMemberId(m.id) === memberId);
-          if (groupMember?.is_current_user) {
-            continue;
-          }
 
           const memberEquivalentIds = await getEquivalentIdSet(memberId);
           if (intersects(memberEquivalentIds, currentUserEquivalentIds)) {
@@ -900,6 +1102,7 @@ export const create = mutation({
 
           if (registeredMemberAccount) {
             for (const candidate of candidateFriendRows) {
+              if (!isEligibleDirectFriendRecord(candidate.friend)) continue;
               const provenLink = await resolveProvenFriendLink(ctx, candidate.friend);
               if (provenLink?.account._id === registeredMemberAccount._id) {
                 matchingFriend = candidate;
@@ -913,27 +1116,6 @@ export const create = mutation({
           }
 
           if (!matchingFriend) {
-            if (
-              !createdDirectGroupForExpense &&
-              !registeredMemberAccount &&
-              directCounterpartyRows.length === 1 &&
-              intersects(directCounterpartyRows[0].identityIds, memberEquivalentIds)
-            ) {
-              continue;
-            }
-
-            const normalizedGroupMemberName = normalizePersonName(groupMember?.name);
-            if (!registeredMemberAccount && normalizedGroupMemberName) {
-              const byNameMatches = ownerFriendIdentityRows.filter(
-                ({ friend }: any) =>
-                  isEligibleDirectFriendRecord(friend) &&
-                  normalizePersonName(friend.name) === normalizedGroupMemberName
-              );
-              if (byNameMatches.length === 1) {
-                continue;
-              }
-            }
-
             throw new Error(
               `Cannot create direct expense: Member ${groupMember?.name ?? memberId} is not a confirmed friend.`
             );
@@ -955,6 +1137,25 @@ export const create = mutation({
         throw new Error("Expense group mismatch");
       }
 
+      if (
+        normalizedPaidBy !== normalizeMemberId(existing.paid_by_member_id) ||
+        JSON.stringify(canonicalizeUniqueMembers(normalizedInvolved)) !==
+          JSON.stringify(canonicalizeUniqueMembers(existing.involved_member_ids))
+      ) {
+        throw new Error("Historical financial participants and payer are immutable");
+      }
+      if (
+        JSON.stringify(canonicalizeUniqueMembers(normalizedParticipantMemberIds)) !==
+          JSON.stringify(canonicalizeUniqueMembers(existing.participant_member_ids)) ||
+        JSON.stringify(
+          canonicalizeUniqueMembers(normalizedParticipants.map((row) => row.member_id))
+        ) !==
+          JSON.stringify(
+            canonicalizeUniqueMembers(existing.participants.map((row) => row.member_id))
+          )
+      ) {
+        throw new Error("Forbidden: historical participant identities are immutable");
+      }
       const callerOwnsExpense = isExpenseOwner(existing, user);
       const isStructuralChange =
         args.description !== existing.description ||
@@ -966,7 +1167,9 @@ export const create = mutation({
         JSON.stringify(canonicalizeParticipantMembers(normalizedParticipantMemberIds)) !==
           JSON.stringify(canonicalizeParticipantMembers(existing.participant_member_ids)) ||
         canonicalizeParticipants(normalizedParticipants) !==
-          canonicalizeParticipants(existing.participants) ||
+          canonicalizeParticipants(
+            await canonicalizeExpenseParticipantLinks(ctx, existing.participants)
+          ) ||
         canonicalizeSubexpenses(args.subexpenses) !==
           canonicalizeSubexpenses(existing.subexpenses) ||
         (args.is_payback_generated_mock_data ?? false) !==
@@ -987,7 +1190,7 @@ export const create = mutation({
         throw new Error("Split structure mismatch");
       }
 
-      const validatedSplits = normalizedSplits.map((incomingSplit) => {
+      const validatedSplits = normalizedSplits.map((incomingSplit: any) => {
         const existingSplit = existingSplitById.get(incomingSplit.id);
         if (!existingSplit) {
           throw new Error("Split structure mismatch");
@@ -1039,7 +1242,7 @@ export const create = mutation({
         ? normalizedInvolved
         : existing.involved_member_ids;
       const nextSubexpenses = callerOwnsExpense
-        ? args.subexpenses && args.subexpenses.length >= 2
+        ? args.subexpenses && args.subexpenses.length >= 1
           ? args.subexpenses
           : undefined
         : existing.subexpenses;
@@ -1096,6 +1299,7 @@ export const create = mutation({
       notes: normalizedNotes,
       date: args.date,
       total_amount: args.total_amount,
+      currency_code: args.currency_code,
       paid_by_member_id: normalizedPaidBy,
       involved_member_ids: normalizedInvolved,
       splits: normalizedSplits,
@@ -1106,7 +1310,7 @@ export const create = mutation({
       participant_member_ids: normalizedParticipantMemberIds,
       participants: normalizedParticipants,
       participant_emails: participantEmails,
-      subexpenses: args.subexpenses && args.subexpenses.length >= 2 ? args.subexpenses : undefined,
+      subexpenses: args.subexpenses && args.subexpenses.length >= 1 ? args.subexpenses : undefined,
       is_payback_generated_mock_data: args.is_payback_generated_mock_data ?? false,
       created_at: Date.now(),
       updated_at: Date.now()
@@ -1117,25 +1321,67 @@ export const create = mutation({
     ]);
     return result.operations[0].expenseId;
   }
+};
+export const create = mutation(expenseMutationDefinition);
+export const createV2 = mutation({
+  args: expenseArgs,
+  handler: async (ctx, args) => {
+    const id = await expenseMutationDefinition.handler(ctx, args);
+    const expense = await ctx.db.get(id);
+    if (!expense) throw new Error("Saved expense missing");
+    const group = expense.group_ref ? await ctx.db.get(expense.group_ref) : null;
+    return {
+      expense: await expenseResponse(ctx, expense),
+      group: group
+        ? {
+            ...group,
+            member_identity_map: await deriveOwnerScopedFinancialIdentityMap(
+              ctx,
+              group,
+              group.members.map((member) => member.id)
+            )
+          }
+        : null
+    };
+  }
 });
 
 export const setSettlementState = mutation({
   args: {
+    ...financialArgs,
     expenseId: v.string(),
     memberIds: v.optional(v.array(v.string())),
+    splitIds: v.optional(v.array(v.string())),
     settled: v.boolean()
   },
   handler: async (ctx, args) => {
     const { identity, user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) throw new Error("User not found");
 
     await checkRateLimit(ctx, identity.subject, "expenses:setSettlementState", 20);
-    if ((args.memberIds?.length ?? 0) > MAX_EXPENSE_VIEWERS) {
+    if (args.splitIds !== undefined && args.memberIds !== undefined)
+      throw new Error("Choose splitIds or legacy memberIds, not both");
+    if ((args.financial_contract_version ?? 0) >= 2 && args.splitIds === undefined)
+      throw new Error(
+        "SETTLEMENT_SELECTION_REQUIRED: Select the exact expense split rows and retry"
+      );
+    if (
+      (args.splitIds?.length ?? 0) > MAX_EXPENSE_VIEWERS ||
+      (args.memberIds?.length ?? 0) > MAX_EXPENSE_VIEWERS
+    ) {
       throw new Error(`Settlement supports at most ${MAX_EXPENSE_VIEWERS} members`);
     }
 
     const expense = await loadExpenseByClientId(ctx, args.expenseId);
+    if (!(await canReadExpense(ctx, user, expense, args.financial_contract_version)))
+      throw new Error("Forbidden: expense access denied");
+    validateExpenseMoney(expense, "metadata", expense);
     const callerEquivalentIds = await buildUserEquivalentMemberIds(ctx.db, user);
+    for (const id of [...callerEquivalentIds])
+      for (const equivalent of await getOwnerEquivalentMemberIds(ctx, expense.owner_email, id))
+        callerEquivalentIds.add(equivalent);
     const callerOwnsExpense = isExpenseOwner(expense, user);
     const inactiveParticipantMemberIds = new Set(
       (expense.inactive_participant_member_ids ?? []).map(normalizeMemberId)
@@ -1156,47 +1402,79 @@ export const setSettlementState = mutation({
       }
     }
 
-    const splitMemberIds = expense.splits.map((split: any) => normalizeMemberId(split.member_id));
-    const splitMemberIdSet = new Set(splitMemberIds);
-    const requestedMemberIds = new Set(
-      (args.memberIds ?? []).map((memberId) => normalizeMemberId(memberId))
-    );
+    // Selection is a set of persisted financial rows. Identity equivalence authorizes
+    // the actor; it must never broaden the amount the client explicitly selected.
+    const normalizeSplitId = (id: string) => (UUID_PATTERN.test(id) ? id.toLowerCase() : id);
+    const requestedSplitIds = new Set<string>();
+    if (args.splitIds !== undefined) {
+      if (!args.splitIds.length) throw new Error("No matching splits to update");
+      for (const id of args.splitIds) requestedSplitIds.add(normalizeSplitId(id));
+      if (requestedSplitIds.size !== args.splitIds.length)
+        throw new Error("Duplicate split selection");
+      const persistedIds = expense.splits.map((split) => normalizeSplitId(split.id));
+      if (new Set(persistedIds).size !== persistedIds.length)
+        throw new Error("Ambiguous historical split IDs require maintenance");
+      for (const id of requestedSplitIds)
+        if (!persistedIds.includes(id)) throw new Error(`Split not found: ${id}`);
+    } else {
+      const splitMemberIds = expense.splits.map((split: any) => normalizeMemberId(split.member_id));
+      const requestedMemberIds = new Set(
+        (args.memberIds ?? []).map((memberId) => normalizeMemberId(memberId))
+      );
 
-    if (requestedMemberIds.size === 0) {
-      if (callerOwnsExpense) {
-        for (const memberId of splitMemberIds) {
-          requestedMemberIds.add(memberId);
+      if (requestedMemberIds.size > 0) {
+        const expanded = new Set<string>();
+        for (const id of requestedMemberIds) {
+          if (!callerOwnsExpense && inactiveParticipantMemberIds.has(id))
+            throw new Error("Forbidden: cannot settle an inactive participant split");
+          const equivalents = await getOwnerEquivalentMemberIds(ctx, expense.owner_email, id);
+          const matches = splitMemberIds.filter(
+            (member) =>
+              equivalents.includes(member) &&
+              (callerOwnsExpense || !inactiveParticipantMemberIds.has(member))
+          );
+          if (!matches.length) throw new Error(`Split not found for member ${id}`);
+          for (const match of matches) expanded.add(match);
         }
-      } else if (callerIsPayer) {
-        for (const memberId of splitMemberIds) {
-          if (!inactiveParticipantMemberIds.has(memberId)) {
+        requestedMemberIds.clear();
+        for (const id of expanded) requestedMemberIds.add(id);
+      }
+      if (requestedMemberIds.size === 0) {
+        if (callerOwnsExpense) {
+          for (const memberId of splitMemberIds) {
             requestedMemberIds.add(memberId);
           }
-        }
-      } else {
-        for (const memberId of splitMemberIds) {
-          if (!inactiveParticipantMemberIds.has(memberId) && callerEquivalentIds.has(memberId)) {
-            requestedMemberIds.add(memberId);
+        } else if (callerIsPayer) {
+          for (const memberId of splitMemberIds) {
+            if (!inactiveParticipantMemberIds.has(memberId)) {
+              requestedMemberIds.add(memberId);
+            }
+          }
+        } else {
+          for (const memberId of splitMemberIds) {
+            if (!inactiveParticipantMemberIds.has(memberId) && callerEquivalentIds.has(memberId)) {
+              requestedMemberIds.add(memberId);
+            }
           }
         }
       }
-    }
 
-    if (requestedMemberIds.size === 0) {
-      throw new Error("No matching splits to update");
-    }
-
-    for (const memberId of requestedMemberIds) {
-      if (!splitMemberIdSet.has(memberId)) {
-        throw new Error(`Split not found for member ${memberId}`);
+      if (requestedMemberIds.size === 0) {
+        throw new Error("No matching splits to update");
       }
+
+      for (const split of expense.splits)
+        if (requestedMemberIds.has(normalizeMemberId(split.member_id)))
+          requestedSplitIds.add(normalizeSplitId(split.id));
+    }
+    for (const split of expense.splits) {
+      if (!requestedSplitIds.has(normalizeSplitId(split.id))) continue;
+      const memberId = normalizeMemberId(split.member_id);
       if (!callerOwnsExpense) {
-        if (inactiveParticipantMemberIds.has(memberId)) {
+        if (inactiveParticipantMemberIds.has(memberId))
           throw new Error("Forbidden: cannot settle an inactive participant split");
-        }
-        if (!callerIsPayer && !callerEquivalentIds.has(memberId)) {
+        if (!callerIsPayer && !callerEquivalentIds.has(memberId))
           throw new Error("Forbidden: cannot settle another member's split");
-        }
       }
     }
 
@@ -1205,8 +1483,7 @@ export const setSettlementState = mutation({
     }
 
     const nextSplits = expense.splits.map((split: any) => {
-      const normalizedMemberId = normalizeMemberId(split.member_id);
-      if (!requestedMemberIds.has(normalizedMemberId)) {
+      if (!requestedSplitIds.has(normalizeSplitId(split.id))) {
         return split;
       }
 
@@ -1226,19 +1503,22 @@ export const setSettlementState = mutation({
     const viewerAccountIds = await resolveExpenseViewerAccountIds(ctx, expense);
     await applyExpenseWriteBatch(ctx, [{ kind: "patch", expense, patch, viewerAccountIds }]);
 
-    return {
+    return await expenseResponse(ctx, {
       ...expense,
       splits: nextSplits,
       is_settled: nextIsSettled,
       updated_at: updatedAt
-    };
+    });
   }
 });
 
 export const listByGroup = query({
-  args: { group_id: v.string() },
+  args: { ...financialArgs, group_id: v.string() },
   handler: async (ctx, args) => {
+    const visibilityCache = createExpenseIdentityResolutionCache();
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) return [];
 
     const { group } = await requireGroupByClientIdWithAccess(ctx, user, args.group_id);
@@ -1249,18 +1529,36 @@ export const listByGroup = query({
       .withIndex("by_group_ref", (q) => q.eq("group_ref", group._id))
       .collect();
 
-    return expenses;
+    return (
+      await Promise.all(
+        expenses.map(async (expense) =>
+          (await canReadExpense(
+            ctx,
+            user,
+            expense,
+            args.financial_contract_version,
+            visibilityCache
+          ))
+            ? await expenseResponse(ctx, expense, visibilityCache)
+            : null
+        )
+      )
+    ).filter((expense) => expense !== null);
   }
 });
 
 export const listByGroupPaginated = query({
   args: {
+    ...financialArgs,
     groupId: v.id("groups"),
     cursor: v.optional(v.string()),
     limit: v.optional(v.number())
   },
   handler: async (ctx, args) => {
+    const visibilityCache = createExpenseIdentityResolutionCache();
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) {
       return { items: [], nextCursor: null };
     }
@@ -1284,16 +1582,33 @@ export const listByGroupPaginated = query({
       });
 
     return {
-      items: result.page,
+      items: (
+        await Promise.all(
+          result.page.map(async (expense) =>
+            (await canReadExpense(
+              ctx,
+              user,
+              expense,
+              args.financial_contract_version,
+              visibilityCache
+            ))
+              ? await expenseResponse(ctx, expense, visibilityCache)
+              : null
+          )
+        )
+      ).filter((expense) => expense !== null),
       nextCursor: result.isDone ? null : result.continueCursor
     };
   }
 });
 
 export const list = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { ...financialArgs },
+  handler: async (ctx, args) => {
+    const visibilityCache = createExpenseIdentityResolutionCache();
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) return [];
 
     const userExpenses = await ctx.db
@@ -1313,8 +1628,18 @@ export const list = query({
 
     const visibleExpenses = await Promise.all(
       expenses.map(async (expense) => {
-        if (!expense || (await isExpenseAttachedToDeletingGroup(ctx, expense))) return null;
-        return expense;
+        if (
+          !expense ||
+          !(await canReadExpense(
+            ctx,
+            user,
+            expense,
+            args.financial_contract_version,
+            visibilityCache
+          ))
+        )
+          return null;
+        return await expenseResponse(ctx, expense, visibilityCache);
       })
     );
     return visibleExpenses.filter((expense) => expense !== null);
@@ -1322,11 +1647,12 @@ export const list = query({
 });
 
 export const listLegacyPage = query({
-  args: {
-    paginationOpts: paginationOptsValidator
-  },
+  args: { ...financialArgs, paginationOpts: paginationOptsValidator },
   handler: async (ctx, args) => {
+    const visibilityCache = createExpenseIdentityResolutionCache();
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) throw new Error("User not found");
     requireSafeSyncPageSize(args.paginationOpts.numItems);
 
@@ -1339,7 +1665,7 @@ export const listLegacyPage = query({
         maximumRowsRead: MAX_SYNC_PAGE_SIZE,
         maximumBytesRead: 1024 * 1024
       } as typeof args.paginationOpts);
-    const expenseByDocumentId = new Map<string, Doc<"expenses">>();
+    const expenseByDocumentId = new Map<string, ExpenseResponse>();
 
     for (const visibility of visibilityPage.page) {
       let expense = visibility.expense_ref ? await ctx.db.get(visibility.expense_ref) : null;
@@ -1353,8 +1679,21 @@ export const listLegacyPage = query({
         }
         expense = matches[0] ?? null;
       }
-      if (!expense || (await isExpenseAttachedToDeletingGroup(ctx, expense))) continue;
-      expenseByDocumentId.set(String(expense._id), expense);
+      if (
+        !expense ||
+        !(await canReadExpense(
+          ctx,
+          user,
+          expense,
+          args.financial_contract_version,
+          visibilityCache
+        ))
+      )
+        continue;
+      expenseByDocumentId.set(
+        String(expense._id),
+        await expenseResponse(ctx, expense, visibilityCache)
+      );
     }
 
     return {
@@ -1367,11 +1706,15 @@ export const listLegacyPage = query({
 
 export const listV2 = query({
   args: {
+    ...financialArgs,
     paginationOpts: paginationOptsValidator,
     expectedRevision: v.optional(v.number())
   },
   handler: async (ctx, args) => {
+    const visibilityCache = createExpenseIdentityResolutionCache();
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) throw new Error("User not found");
     requireSafeSyncPageSize(args.paginationOpts.numItems);
     requireRevisionForContinuation(args.paginationOpts.cursor, args.expectedRevision);
@@ -1388,7 +1731,7 @@ export const listV2 = query({
         maximumRowsRead: MAX_SYNC_PAGE_SIZE,
         maximumBytesRead: 1024 * 1024
       } as typeof args.paginationOpts);
-    const page: Doc<"expenses">[] = [];
+    const page: ExpenseResponse[] = [];
     for (const visibility of visibilityPage.page) {
       if (!visibility.expense_ref) {
         throw syncV2NotReadyError("expense visibility is missing its canonical reference");
@@ -1397,8 +1740,17 @@ export const listV2 = query({
       if (!expense || expense.id !== visibility.expense_id) {
         throw syncV2NotReadyError("expense visibility is inconsistent");
       }
-      if (await isExpenseAttachedToDeletingGroup(ctx, expense)) continue;
-      page.push(expense);
+      if (
+        !(await canReadExpense(
+          ctx,
+          user,
+          expense,
+          args.financial_contract_version,
+          visibilityCache
+        ))
+      )
+        continue;
+      page.push(await expenseResponse(ctx, expense, visibilityCache));
     }
     return {
       page,
@@ -1411,9 +1763,11 @@ export const listV2 = query({
 
 // Delete a single expense by client UUID
 export const deleteExpense = mutation({
-  args: { id: v.string() },
+  args: { ...financialArgs, id: v.string() },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) throw new Error("User not found");
 
     const expense = await ctx.db
@@ -1423,13 +1777,26 @@ export const deleteExpense = mutation({
 
     if (!expense) return;
 
-    const isCreator = expense.owner_id === user._id || expense.owner_email === user.email;
+    const isCreator =
+      (await resolveAuthoritativeExpenseOwnerAccount(ctx, expense))?._id === user._id;
+    await assertMemberFinancialContract(
+      ctx,
+      [expense.paid_by_member_id, ...expense.involved_member_ids],
+      args.financial_contract_version,
+      expense.owner_id
+    );
 
-    const userMemberIds = new Set([
-      ...(user.member_id ? [user.member_id] : []),
-      ...(user.alias_member_ids ?? [])
-    ]);
-    const isPayer = userMemberIds.has(expense.paid_by_member_id);
+    const userMemberIds = await buildUserEquivalentMemberIds(ctx.db, user);
+    const payerIds = await getOwnerEquivalentMemberIds(
+      ctx,
+      expense.owner_email,
+      expense.paid_by_member_id
+    );
+    const isPayer =
+      payerIds.some((id) => userMemberIds.has(id)) &&
+      !normalizeMemberIds(expense.inactive_participant_member_ids).includes(
+        normalizeMemberId(expense.paid_by_member_id)
+      );
 
     if (!isCreator && !isPayer) {
       throw new Error("Not authorized to delete this expense");
@@ -1441,18 +1808,17 @@ export const deleteExpense = mutation({
 
 // Delete multiple expenses by client UUIDs
 export const deleteExpenses = mutation({
-  args: { ids: v.array(v.string()) },
+  args: { ...financialArgs, ids: v.array(v.string()) },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) throw new Error("User not found");
     if (args.ids.length > MAX_EXPENSE_WRITE_OPERATIONS) {
       throw new Error(`Expense deletion supports at most ${MAX_EXPENSE_WRITE_OPERATIONS} IDs`);
     }
 
-    const userMemberIds = new Set([
-      ...(user.member_id ? [user.member_id] : []),
-      ...(user.alias_member_ids ?? [])
-    ]);
+    const userMemberIds = await buildUserEquivalentMemberIds(ctx.db, user);
 
     const operations: ExpenseWriteOperation[] = [];
     for (const id of new Set(args.ids)) {
@@ -1463,8 +1829,24 @@ export const deleteExpenses = mutation({
 
       if (!expense) continue;
 
-      const isCreator = expense.owner_id === user._id || expense.owner_email === user.email;
-      const isPayer = userMemberIds.has(expense.paid_by_member_id);
+      const isCreator =
+        (await resolveAuthoritativeExpenseOwnerAccount(ctx, expense))?._id === user._id;
+      await assertMemberFinancialContract(
+        ctx,
+        [expense.paid_by_member_id, ...expense.involved_member_ids],
+        args.financial_contract_version,
+        expense.owner_id
+      );
+      const payerIds = await getOwnerEquivalentMemberIds(
+        ctx,
+        expense.owner_email,
+        expense.paid_by_member_id
+      );
+      const isPayer =
+        payerIds.some((id) => userMemberIds.has(id)) &&
+        !normalizeMemberIds(expense.inactive_participant_member_ids).includes(
+          normalizeMemberId(expense.paid_by_member_id)
+        );
 
       if (!isCreator && !isPayer) {
         continue;
@@ -1537,6 +1919,18 @@ async function processClearAllExpenseStep(
   }
 
   if (expense.owner_id === user._id) assertConsistentExpenseOwner(expense, user);
+  const suppression = await ctx.db
+    .query("expense_visibility_suppressions")
+    .withIndex("by_account_expense", (q: any) =>
+      q.eq("account_ref", user._id).eq("expense_id", expense.id)
+    )
+    .first();
+  if (!suppression)
+    await ctx.db.insert("expense_visibility_suppressions", {
+      account_ref: user._id,
+      expense_id: expense.id,
+      created_at: Date.now()
+    });
   await applyExpenseWriteBatch(ctx, [
     {
       kind: "visibility",
@@ -1561,10 +1955,12 @@ async function scheduleExpenseClearContinuation(
 
 // Compatibility endpoint for deployed clients that decode a null mutation result.
 export const clearAllForUser = mutation({
-  args: {},
+  args: { ...financialArgs },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) throw new Error("User not found");
     const result = await processClearAllExpenseStep(ctx, user, Date.now());
     await scheduleExpenseClearContinuation(ctx, user, result);
@@ -1573,10 +1969,12 @@ export const clearAllForUser = mutation({
 });
 
 export const clearAllForUserV2 = mutation({
-  args: { cutoff: v.optional(v.number()) },
+  args: { ...financialArgs, cutoff: v.optional(v.number()) },
   returns: clearAllProgressValidator,
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) throw new Error("User not found");
     return await processClearAllExpenseStep(ctx, user, args.cutoff ?? Date.now());
   }
@@ -1594,9 +1992,11 @@ export const clearAllForUserBatch = internalMutation({
 });
 
 export const clearDebugDataForUser = mutation({
-  args: {},
-  handler: async (ctx) => {
+  args: { ...financialArgs },
+  handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) throw new Error("User not found");
 
     const debugExpenses = await ctx.db

@@ -111,9 +111,12 @@ describe("clearAllForUser", () => {
     });
 
     const ownerBCtx = t.withIdentity(identityFor("owner-b@example.com", "owner_b_auth"));
-    let result = await ownerBCtx.mutation(api.groups.clearAllForUserV2, {});
+    let result = await ownerBCtx.mutation(api.groups.clearAllForUserV2, {
+      financial_contract_version: 2
+    });
     for (let attempt = 0; result.inProgress && attempt < 10; attempt += 1) {
       result = await ownerBCtx.mutation(api.groups.clearAllForUserV2, {
+        financial_contract_version: 2,
         cutoff: result.cutoff
       });
     }
@@ -206,9 +209,14 @@ describe("clearAllForUser", () => {
     }
 
     const owner = t.withIdentity(identityFor("bounded-owner@example.com", "bounded_owner_auth"));
-    let result = await owner.mutation(api.groups.clearAllForUserV2, {});
+    let result = await owner.mutation(api.groups.clearAllForUserV2, {
+      financial_contract_version: 2
+    });
     for (let attempt = 0; result.inProgress && attempt < 10; attempt += 1) {
-      result = await owner.mutation(api.groups.clearAllForUserV2, { cutoff: result.cutoff });
+      result = await owner.mutation(api.groups.clearAllForUserV2, {
+        financial_contract_version: 2,
+        cutoff: result.cutoff
+      });
     }
     expect(result.inProgress).toBe(false);
 
@@ -367,9 +375,12 @@ describe("clearAllForUser", () => {
     });
 
     const viewerCtx = t.withIdentity(identityFor("viewer@example.com", "viewer_auth"));
-    let result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {});
+    let result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {
+      financial_contract_version: 2
+    });
     while (result.inProgress) {
       result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {
+        financial_contract_version: 2,
         cutoff: result.cutoff
       });
     }
@@ -509,9 +520,12 @@ describe("clearAllForUser", () => {
     const viewerCtx = t.withIdentity(
       identityFor("grouped-viewer@example.com", "grouped_viewer_auth")
     );
-    let result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {});
+    let result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {
+      financial_contract_version: 2
+    });
     while (result.inProgress) {
       result = await viewerCtx.mutation(api.expenses.clearAllForUserV2, {
+        financial_contract_version: 2,
         cutoff: result.cutoff
       });
     }

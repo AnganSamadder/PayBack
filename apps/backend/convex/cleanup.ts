@@ -1,3 +1,10 @@
+import { assertMemberReferencesReady } from "./memberReferences";
+import {
+  assertFinancialContract,
+  assertExpectedActor,
+  pendingIdentityOperation,
+  raiseFinancialContract
+} from "./financialContract";
 import {
   mutation,
   internalAction,
@@ -12,7 +19,11 @@ import {
   ensureCleanupEmailMaterializationScheduled,
   isCleanupEmailMaterializationReady
 } from "./cleanupEmailMaterialization";
-import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
+import {
+  getAllEquivalentMemberIds,
+  resolveCanonicalMemberIdInternal,
+  syncOwnerLocalAliasReferences
+} from "./aliases";
 import {
   assertIdentityMaterializationReady,
   findAccountByMemberId,
@@ -135,7 +146,9 @@ function createFriendCleanupAggregateBudget(): FriendCleanupAggregateBudget {
 }
 
 function friendCleanupLimitError() {
-  return new Error("Friend cleanup is too large to complete safely");
+  return new Error(
+    "Friend cleanup is too large to complete safely; upgrade required to resume deletion"
+  );
 }
 
 function accountFriendCleanupRows(budget: FriendCleanupAggregateBudget, rows: readonly unknown[]) {
@@ -324,88 +337,55 @@ function hasConsistentExpenseOwner(expense: Doc<"expenses">, account: Doc<"accou
   );
 }
 
-async function collectFriendCleanupGroups(
+async function collectTargetedFriendCleanupRecords<K extends "group" | "expense">(
   ctx: MutationCtx,
   account: Doc<"accounts">,
+  memberIds: ReadonlySet<string>,
+  kind: K,
   budget: FriendCleanupAggregateBudget
-) {
-  const pages = [
-    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
+): Promise<Map<string, K extends "group" ? Doc<"groups"> : Doc<"expenses">>> {
+  await assertMemberReferencesReady(ctx);
+  const result = new Map<string, Doc<"groups"> | Doc<"expenses">>();
+  for (const memberId of memberIds) {
+    const references = await collectSequentialFriendCleanupRows(budget, (cursor, limit) =>
       ctx.db
-        .query("groups")
-        .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
-        .order("asc")
+        .query("member_references")
+        .withIndex("by_owner_member_kind", (q) =>
+          q.eq("owner_id", account._id).eq("member_id", memberId).eq("entity_kind", kind)
+        )
         .paginate({ cursor, numItems: limit })
-    ),
-    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
-      ctx.db
-        .query("groups")
-        .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", account.id))
-        .order("asc")
-        .paginate({ cursor, numItems: limit })
-    ),
-    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
-      ctx.db
-        .query("groups")
-        .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
-        .order("asc")
-        .paginate({ cursor, numItems: limit })
-    )
-  ];
-  if (pages.some((page) => page.length > FRIEND_CLEANUP_LIMITS.groups)) {
-    throw friendCleanupLimitError();
-  }
-  const groups = new Map<string, Doc<"groups">>();
-  for (const group of pages.flat()) {
-    if (!hasConsistentGroupOwner(group, account)) {
-      throw new Error("Cannot clean records with a conflicting owner identity");
+    );
+    for (const reference of references) {
+      chargeFriendCleanupQueries(budget, 1);
+      const id = ctx.db.normalizeId(
+        kind === "group" ? "groups" : "expenses",
+        reference.entity_document_id
+      );
+      if (!id) throw new Error("Invalid member reference source");
+      const record = await ctx.db.get(id);
+      if (!record) continue;
+      accountFriendCleanupRows(budget, [record]);
+      if (kind === "group") {
+        const group = record as Doc<"groups">;
+        if (!hasConsistentGroupOwner(group, account))
+          throw new Error("Cannot clean records with a conflicting owner identity");
+        if (!group.members.some((member) => matchesEquivalentMemberId(member.id, memberIds)))
+          continue;
+      } else {
+        const expense = record as Doc<"expenses">;
+        if (!hasConsistentExpenseOwner(expense, account))
+          throw new Error("Expense owner identity is inconsistent");
+        if (!expenseReferencesEquivalentMember(expense, memberIds)) continue;
+      }
+      result.set(String(record._id), record);
+      if (
+        result.size >
+        (kind === "group" ? FRIEND_CLEANUP_LIMITS.groups : FRIEND_CLEANUP_LIMITS.expenses)
+      )
+        throw friendCleanupLimitError();
     }
-    groups.set(String(group._id), group);
   }
-  if (groups.size > FRIEND_CLEANUP_LIMITS.groups) throw friendCleanupLimitError();
-  return groups;
-}
-
-async function collectFriendCleanupExpenses(
-  ctx: MutationCtx,
-  account: Doc<"accounts">,
-  budget: FriendCleanupAggregateBudget
-) {
-  const pages = [
-    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
-      ctx.db
-        .query("expenses")
-        .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
-        .order("asc")
-        .paginate({ cursor, numItems: limit })
-    ),
-    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
-      ctx.db
-        .query("expenses")
-        .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", account.id))
-        .order("asc")
-        .paginate({ cursor, numItems: limit })
-    ),
-    await collectSequentialFriendCleanupRows(budget, async (cursor, limit) =>
-      ctx.db
-        .query("expenses")
-        .withIndex("by_owner_email", (q) => q.eq("owner_email", account.email))
-        .order("asc")
-        .paginate({ cursor, numItems: limit })
-    )
-  ];
-  if (pages.some((page) => page.length > FRIEND_CLEANUP_LIMITS.expenses)) {
-    throw friendCleanupLimitError();
-  }
-  const expenses = new Map<string, Doc<"expenses">>();
-  for (const expense of pages.flat()) {
-    if (!hasConsistentExpenseOwner(expense, account)) {
-      throw new Error("Expense owner identity is inconsistent");
-    }
-    expenses.set(String(expense._id), expense);
-  }
-  if (expenses.size > FRIEND_CLEANUP_LIMITS.expenses) throw friendCleanupLimitError();
-  return expenses;
+  return result as Map<string, K extends "group" ? Doc<"groups"> : Doc<"expenses">>;
 }
 
 async function collectAttachedFriendCleanupExpenses(
@@ -754,6 +734,7 @@ export const deleteSelfFriends = internalMutation({
 
         if (friend.name === user.display_name && !friend.has_linked_account) {
           console.log(`Deleting self-friend for ${user.email}: ${friend.name} (${friend._id})`);
+          await syncOwnerLocalAliasReferences(ctx, null, friend._id);
           await ctx.db.delete(friend._id);
           selfFriendsCount++;
         }
@@ -780,6 +761,7 @@ export const clearFriendsForEmail = internalMutation({
       .withIndex("by_account_email", (q: any) => q.eq("account_email", args.email))
       .collect();
     for (const friend of friends) {
+      await syncOwnerLocalAliasReferences(ctx, null, friend._id);
       await ctx.db.delete(friend._id);
     }
     return { deleted: friends.length, email: args.email };
@@ -846,8 +828,53 @@ export const removeLegacyFields = internalMutation({
   }
 });
 
+/** Recompute projections with a fresh post-unlink cache; money-bearing fields stay unchanged. */
+async function refreshFriendHistoryExpense(
+  ctx: MutationCtx,
+  expense: Doc<"expenses">
+): Promise<ExpenseWriteOperation> {
+  const viewers = await resolveActiveExpenseParticipantAccounts(ctx, expense);
+  return {
+    kind: "patch",
+    expense,
+    patch: { updated_at: Math.max(Date.now(), expense.updated_at + 1) },
+    viewerAccountIds: viewers.map((account) => account._id)
+  };
+}
+
+async function reconcileRemainingFriendHistory(
+  ctx: MutationCtx,
+  owner: Doc<"accounts">,
+  expenses: Iterable<Doc<"expenses">>,
+  groups: Iterable<Doc<"groups">>
+) {
+  const operations: ExpenseWriteOperation[] = [];
+  for (const candidate of expenses) {
+    const live = await ctx.db.get(candidate._id);
+    if (!live) continue;
+    if (!hasConsistentExpenseOwner(live, owner))
+      throw new Error("Expense owner identity changed during deletion");
+    operations.push(await refreshFriendHistoryExpense(ctx, live));
+  }
+  await applyExpenseWriteBatch(ctx, operations);
+  const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
+  for (const candidate of groups) {
+    const live = await ctx.db.get(candidate._id);
+    if (!live) continue;
+    if (!hasConsistentGroupOwner(live, owner))
+      throw new Error("Group owner identity changed during deletion");
+    await groupVisibilityBatch.patch(live._id, {
+      updated_at: Math.max(Date.now(), live.updated_at + 1)
+    });
+  }
+  await groupVisibilityBatch.flush();
+}
+
 export const deleteLinkedFriend = mutation({
   args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
     friendMemberId: v.optional(v.string()),
     // Backward-compatible alias for older clients.
     memberId: v.optional(v.string()),
@@ -857,6 +884,8 @@ export const deleteLinkedFriend = mutation({
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     const accountEmail = user.email.toLowerCase().trim();
     const rawMemberId = args.friendMemberId ?? args.memberId;
     if (!rawMemberId) {
@@ -872,14 +901,11 @@ export const deleteLinkedFriend = mutation({
       .unique();
 
     if (!friend) {
-      return { success: false, message: "Friend not found" };
+      throw new Error("Friend not found; refresh your friends before retrying");
     }
 
     if (!friend.has_linked_account) {
-      return {
-        success: false,
-        message: "Friend is not linked. Use deleteUnlinkedFriend instead."
-      };
+      throw new Error("Friend is no longer linked; refresh and retry deletion");
     }
 
     await assertIdentityMaterializationReady(ctx.db);
@@ -894,8 +920,20 @@ export const deleteLinkedFriend = mutation({
     let expensesDeleted = 0;
 
     const aggregateBudget = createFriendCleanupAggregateBudget();
-    const ownedGroups = await collectFriendCleanupGroups(ctx, userAccount, aggregateBudget);
-    const ownedExpenses = await collectFriendCleanupExpenses(ctx, userAccount, aggregateBudget);
+    const ownedGroups = await collectTargetedFriendCleanupRecords(
+      ctx,
+      userAccount,
+      normalizedEquivalentIds,
+      "group",
+      aggregateBudget
+    );
+    const ownedExpenses = await collectTargetedFriendCleanupRecords(
+      ctx,
+      userAccount,
+      normalizedEquivalentIds,
+      "expense",
+      aggregateBudget
+    );
     const handledExpenseIds = new Set<string>();
     const attachedExpensesByGroup = new Map<string, Doc<"expenses">[]>();
 
@@ -934,14 +972,15 @@ export const deleteLinkedFriend = mutation({
       }
     }
 
-    const knownGroupIds = new Set(Array.from(ownedGroups.values()).map((group) => group.id));
-    const knownGroupRefs = new Set(ownedGroups.keys());
     for (const expense of ownedExpenses.values()) {
       if (handledExpenseIds.has(String(expense._id))) continue;
-      const hasKnownGroup =
-        knownGroupIds.has(expense.group_id) ||
-        (expense.group_ref !== undefined && knownGroupRefs.has(String(expense.group_ref)));
-      if (!hasKnownGroup && expenseReferencesEquivalentMember(expense, normalizedEquivalentIds)) {
+      const group = expense.group_ref
+        ? await ctx.db.get(expense.group_ref)
+        : await ctx.db
+            .query("groups")
+            .withIndex("by_client_id", (q) => q.eq("id", expense.group_id))
+            .unique();
+      if (!group && expenseReferencesEquivalentMember(expense, normalizedEquivalentIds)) {
         expensesToDelete.set(String(expense._id), expense);
       }
     }
@@ -978,7 +1017,16 @@ export const deleteLinkedFriend = mutation({
 
     const aliasesDeleted = await applyPreparedAliasPrune(ctx, aliasPrunePlan);
 
+    await syncOwnerLocalAliasReferences(ctx, null, friend._id);
     await ctx.db.delete(friend._id);
+    if (friend.local_alias_member_ids?.length)
+      await reconcileRemainingFriendHistory(
+        ctx,
+        user,
+        ownedExpenses.values(),
+        ownedGroups.values()
+      );
+    await ctx.db.patch(user._id, { updated_at: Math.max(Date.now(), (user.updated_at ?? 0) + 1) });
 
     return {
       success: true,
@@ -993,6 +1041,9 @@ export const deleteLinkedFriend = mutation({
 
 export const deleteUnlinkedFriend = mutation({
   args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
     friendMemberId: v.optional(v.string()),
     // Backward-compatible alias for older clients.
     memberId: v.optional(v.string()),
@@ -1002,6 +1053,8 @@ export const deleteUnlinkedFriend = mutation({
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     const accountEmail = user.email.toLowerCase().trim();
     const rawMemberId = args.friendMemberId ?? args.memberId;
     if (!rawMemberId) {
@@ -1036,8 +1089,20 @@ export const deleteUnlinkedFriend = mutation({
     let aliasesDeleted = 0;
 
     const aggregateBudget = createFriendCleanupAggregateBudget();
-    const ownedGroups = await collectFriendCleanupGroups(ctx, user, aggregateBudget);
-    const ownedExpenses = await collectFriendCleanupExpenses(ctx, user, aggregateBudget);
+    const ownedGroups = await collectTargetedFriendCleanupRecords(
+      ctx,
+      user,
+      normalizedEquivalentIds,
+      "group",
+      aggregateBudget
+    );
+    const ownedExpenses = await collectTargetedFriendCleanupRecords(
+      ctx,
+      user,
+      normalizedEquivalentIds,
+      "expense",
+      aggregateBudget
+    );
     const handledExpenseIds = new Set<string>();
     const attachedExpensesByGroup = new Map<string, Doc<"expenses">[]>();
 
@@ -1207,7 +1272,16 @@ export const deleteUnlinkedFriend = mutation({
 
     aliasesDeleted = await applyPreparedAliasPrune(ctx, aliasPrunePlan);
 
+    await syncOwnerLocalAliasReferences(ctx, null, friend._id);
     await ctx.db.delete(friend._id);
+    if (friend.local_alias_member_ids?.length)
+      await reconcileRemainingFriendHistory(
+        ctx,
+        user,
+        ownedExpenses.values(),
+        ownedGroups.values()
+      );
+    await ctx.db.patch(user._id, { updated_at: Math.max(Date.now(), (user.updated_at ?? 0) + 1) });
 
     return {
       success: true,
@@ -1965,6 +2039,7 @@ async function advanceSelfDeletion(
           newlyUnlinked += 1;
         }
         if (progress.deletion_mode === "hard") {
+          await syncOwnerLocalAliasReferences(ctx, null, friend._id);
           await ctx.db.delete(friend._id);
         } else {
           await ctx.db.patch(friend._id, {
@@ -2458,7 +2533,10 @@ async function advanceSelfDeletion(
         .query("account_friends")
         .withIndex("by_account_email", (q) => q.eq("account_email", progress.account_email))
         .take(SELF_DELETE_BATCH_SIZE);
-      for (const friend of friends) await ctx.db.delete(friend._id);
+      for (const friend of friends) {
+        await syncOwnerLocalAliasReferences(ctx, null, friend._id);
+        await ctx.db.delete(friend._id);
+      }
       return await finishOrContinueSelfDeletionBatch(
         ctx,
         progress,
@@ -2475,6 +2553,43 @@ async function advanceSelfDeletion(
       return await finishOrContinueSelfDeletionBatch(ctx, progress, rows.length, "finalize");
     }
     case "finalize": {
+      // Account deletion already fences these workers. Drain private work items and explicit
+      // expense suppressions in bounded transactions before removing/tombstoning the account.
+      const friendJob = await ctx.db
+        .query("friend_deletion_jobs")
+        .withIndex("by_owner_phase", (q) => q.eq("owner_id", account._id))
+        .first();
+      if (friendJob) {
+        let removed = 0;
+        for (const kind of ["group", "expense"] as const) {
+          const items = await ctx.db
+            .query("friend_deletion_items")
+            .withIndex("by_job_kind", (q) => q.eq("job_id", friendJob._id).eq("entity_kind", kind))
+            .take(SELF_DELETE_BATCH_SIZE);
+          for (const item of items) await ctx.db.delete(item._id);
+          removed += items.length;
+          if (removed) break;
+        }
+        if (!removed) {
+          await ctx.db.delete(friendJob._id);
+          removed = 1;
+        }
+        return await updateSelfDeletionProgress(ctx, progress, { phase: "finalize" }, removed);
+      }
+      const suppressions = await ctx.db
+        .query("expense_visibility_suppressions")
+        .withIndex("by_account", (q) => q.eq("account_ref", account._id))
+        .take(SELF_DELETE_BATCH_SIZE);
+      if (suppressions.length) {
+        for (const row of suppressions) await ctx.db.delete(row._id);
+        return await updateSelfDeletionProgress(
+          ctx,
+          progress,
+          { phase: "finalize" },
+          suppressions.length
+        );
+      }
+
       const remainingGroups = [
         await ctx.db
           .query("groups")
@@ -2709,6 +2824,8 @@ async function advanceSelfDeletion(
 
 export const selfDeleteAccount = mutation({
   args: {
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
     accountEmail: v.optional(v.string()),
     clientCapability: v.optional(v.literal("bounded_progress_v1"))
   },
@@ -2716,6 +2833,12 @@ export const selfDeleteAccount = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Unauthenticated");
+    if (
+      (args.expected_account_id !== undefined && args.expected_account_id !== identity.subject) ||
+      (args.expected_account_email !== undefined &&
+        args.expected_account_email.trim().toLowerCase() !== identity.email?.trim().toLowerCase())
+    )
+      throw new Error("Authenticated account changed; retry from the current account");
     if (args.clientCapability !== "bounded_progress_v1") {
       throw new Error("Please update PayBack before deleting your account");
     }
@@ -3061,6 +3184,525 @@ export const advanceHardDeleteAccount = internalAction({
         progressId: args.progressId,
         error: String(error)
       });
+    }
+    return null;
+  }
+});
+
+const friendDeletionActorArgs = {
+  financial_contract_version: v.optional(v.number()),
+  expected_account_id: v.optional(v.string()),
+  expected_account_email: v.optional(v.string())
+};
+
+function friendDeletionResult(job: Doc<"friend_deletion_jobs">) {
+  return {
+    operationId: String(job._id),
+    phase: job.phase,
+    complete: job.phase === "complete",
+    ...(job.last_error ? { error: job.last_error } : {})
+  };
+}
+
+async function requireFriendDeletionActor(
+  ctx: MutationCtx,
+  args: {
+    financial_contract_version?: number;
+    expected_account_id?: string;
+    expected_account_email?: string;
+  }
+) {
+  const { user } = await getCurrentUserOrThrow(ctx);
+  assertExpectedActor(user, args);
+  if ((args.financial_contract_version ?? 0) < 2)
+    throw new Error("Upgrade required for resumable friend deletion");
+  await assertFinancialContract(ctx, user, args.financial_contract_version, { allowPending: true });
+  if (await pendingIdentityOperation(ctx, user._id))
+    throw new Error("Account linking must finish before deleting a friend");
+  return user;
+}
+
+/** Current clients retain the relationship until this operation reports complete. */
+export const deleteFriendV3 = mutation({
+  args: { friendMemberId: v.string(), ...friendDeletionActorArgs },
+  handler: async (ctx, args) => {
+    const user = await requireFriendDeletionActor(ctx, args);
+    await assertMemberReferencesReady(ctx);
+    const memberId = normalizeMemberId(args.friendMemberId);
+    const friend = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q.eq("account_email", user.email.trim().toLowerCase()).eq("member_id", memberId)
+      )
+      .unique();
+    if (!friend) {
+      const previous = await ctx.db
+        .query("friend_deletion_jobs")
+        .withIndex("by_owner_member", (q) => q.eq("owner_id", user._id).eq("member_id", memberId))
+        .order("desc")
+        .first();
+      if (previous) return friendDeletionResult(previous);
+      throw new Error("Friend not found; refresh before retrying");
+    }
+    const existing = await ctx.db
+      .query("friend_deletion_jobs")
+      .withIndex("by_owner_friend", (q) => q.eq("owner_id", user._id).eq("friend_id", friend._id))
+      .order("desc")
+      .first();
+    if (existing && existing.phase !== "cancelled") return friendDeletionResult(existing);
+    // Only one operation per account: its financial snapshot remains fenced until completion.
+    for (const phase of [
+      "preflight_groups",
+      "preflight_expenses",
+      "groups",
+      "expenses",
+      "failed"
+    ] as const) {
+      if (
+        await ctx.db
+          .query("friend_deletion_jobs")
+          .withIndex("by_owner_phase", (q) => q.eq("owner_id", user._id).eq("phase", phase))
+          .first()
+      )
+        throw new Error("Finish the existing friend deletion before starting another");
+    }
+    await assertIdentityMaterializationReady(ctx.db);
+    const equivalent = await getAllEquivalentMemberIds(ctx.db, memberId);
+    const memberIds = Array.from(
+      new Set(
+        [...equivalent, memberId, ...(friend.local_alias_member_ids ?? [])].map(normalizeMemberId)
+      )
+    ).sort();
+    if (memberIds.length > 256)
+      throw new Error("Friend identity requires maintenance before deletion");
+    await raiseFinancialContract(ctx, [user._id]);
+    const id = await ctx.db.insert("friend_deletion_jobs", {
+      identity_projection_version: 2,
+      owner_id: user._id,
+      friend_id: friend._id,
+      member_id: memberId,
+      member_ids: memberIds,
+      linked: friend.has_linked_account,
+      phase: "preflight_groups",
+      member_index: 0,
+      processed: 0,
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+    return friendDeletionResult((await ctx.db.get(id))!);
+  }
+});
+
+export const friendDeletionStatus = query({
+  args: { operationId: v.id("friend_deletion_jobs"), ...friendDeletionActorArgs },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(user, args);
+    const job = await ctx.db.get(args.operationId);
+    if (!job || job.owner_id !== user._id) throw new Error("Friend deletion not found");
+    return friendDeletionResult(job);
+  }
+});
+
+async function enqueueFriendDeletionItem(
+  ctx: MutationCtx,
+  jobId: Id<"friend_deletion_jobs">,
+  kind: "group" | "expense",
+  entityId: string,
+  groupId?: Id<"groups">
+) {
+  const existing = await ctx.db
+    .query("friend_deletion_items")
+    .withIndex("by_job_entity", (q) =>
+      q.eq("job_id", jobId).eq("entity_kind", kind).eq("entity_document_id", entityId)
+    )
+    .unique();
+  if (!existing)
+    await ctx.db.insert("friend_deletion_items", {
+      job_id: jobId,
+      entity_kind: kind,
+      entity_document_id: entityId,
+      group_id: groupId
+    });
+}
+
+/** Preflight snapshots candidates before any source mutation; draining immutable items never loses a cursor. */
+async function advanceFriendDeletion(ctx: MutationCtx, job: Doc<"friend_deletion_jobs">) {
+  const user = await ctx.db.get(job.owner_id);
+  if (!user || user.status === "deleting" || user.status === "deleted")
+    throw new Error("Account deletion takes precedence");
+  if (job.phase === "complete" || job.phase === "cancelled") return;
+  if (job.phase === "failed") throw new Error(job.last_error ?? "Friend deletion needs retry");
+  if ((job.identity_projection_version ?? 0) > 2)
+    throw new Error("Upgrade required to resume this friend deletion version");
+  // Earlier workers drained preserved history without refreshing its derived identity.
+  // Replay the indexed sources before detaching aliases, including already-drained items.
+  if ((job.identity_projection_version ?? 0) < 2) {
+    await ctx.db.patch(job._id, {
+      identity_projection_version: 2,
+      phase: "preflight_groups",
+      member_index: 0,
+      cursor: undefined,
+      active_group_id: undefined,
+      attachment_cursor: undefined,
+      attachment_index: undefined,
+      entered_destructive_phase:
+        job.entered_destructive_phase || job.phase === "groups" || job.phase === "expenses",
+      updated_at: Date.now()
+    });
+    return;
+  }
+
+  const friend = await ctx.db.get(job.friend_id);
+  if (
+    !friend ||
+    friend.account_email.trim().toLowerCase() !== user.email.trim().toLowerCase() ||
+    normalizeMemberId(friend.member_id) !== job.member_id ||
+    friend.has_linked_account !== job.linked
+  )
+    throw new Error("Friend changed during deletion; refresh required");
+  const memberIds = new Set(job.member_ids);
+  const patchProgress = async (patch: Partial<Doc<"friend_deletion_jobs">>) =>
+    ctx.db.patch(job._id, { ...patch, updated_at: Date.now() });
+
+  if (job.active_group_id) {
+    const group = await ctx.db.get(job.active_group_id);
+    if (!group) {
+      await patchProgress({
+        active_group_id: undefined,
+        attachment_cursor: undefined,
+        attachment_index: undefined
+      });
+      return;
+    }
+    if (!hasConsistentGroupOwner(group, user))
+      throw new Error("Cannot clean a group with conflicting ownership");
+    const remaining = group.members.filter(
+      (member) => !memberIds.has(normalizeMemberId(member.id))
+    );
+    const shouldDelete = job.linked ? group.is_direct === true : remaining.length <= 1;
+    const attachmentIndex = job.attachment_index ?? 0;
+    const query =
+      attachmentIndex === 0
+        ? ctx.db.query("expenses").withIndex("by_group_ref", (q) => q.eq("group_ref", group._id))
+        : ctx.db.query("expenses").withIndex("by_group_id", (q) => q.eq("group_id", group.id));
+    const options = {
+      cursor: job.attachment_cursor ?? null,
+      numItems: 8,
+      maximumBytesRead: 512 * 1024
+    };
+    const page = await query.paginate(options);
+    const expenses = page.page.filter((expense) => attachmentIndex === 0 || !expense.group_ref);
+    for (const expense of expenses) {
+      if (
+        !hasConsistentExpenseOwner(expense, user) &&
+        (shouldDelete || expenseReferencesEquivalentMember(expense, memberIds))
+      )
+        throw new Error("Cannot clean a group with foreign-owned expenses");
+    }
+    for (const expense of expenses)
+      if (hasConsistentExpenseOwner(expense, user))
+        await enqueueFriendDeletionItem(ctx, job._id, "expense", String(expense._id), group._id);
+    if (!page.isDone) {
+      await patchProgress({
+        attachment_cursor: page.continueCursor,
+        processed: job.processed + expenses.length
+      });
+      return;
+    }
+    if (attachmentIndex === 0) {
+      await patchProgress({ attachment_index: 1, attachment_cursor: undefined });
+      return;
+    }
+    await patchProgress({
+      active_group_id: undefined,
+      attachment_cursor: undefined,
+      attachment_index: undefined
+    });
+    return;
+  }
+
+  if (job.phase === "preflight_groups" || job.phase === "preflight_expenses") {
+    if (job.member_index >= job.member_ids.length) {
+      if (job.phase === "preflight_expenses" && friend.local_alias_member_ids?.length) {
+        await ctx.db.patch(friend._id, {
+          local_alias_member_ids: undefined,
+          updated_at: Math.max(Date.now(), friend.updated_at + 1)
+        });
+        await syncOwnerLocalAliasReferences(ctx, await ctx.db.get(friend._id), friend._id);
+      }
+      await patchProgress({
+        phase: job.phase === "preflight_groups" ? "preflight_expenses" : "expenses",
+        member_index: 0,
+        cursor: undefined,
+        entered_destructive_phase:
+          job.phase === "preflight_expenses" ? true : job.entered_destructive_phase
+      });
+      return;
+    }
+    const kind = job.phase === "preflight_expenses" ? "expense" : "group";
+    const options = {
+      cursor: job.cursor ?? null,
+      numItems: kind === "group" ? 1 : 8,
+      maximumBytesRead: 256 * 1024
+    };
+    const page = await ctx.db
+      .query("member_references")
+      .withIndex("by_owner_member_kind", (q) =>
+        q
+          .eq("owner_id", user._id)
+          .eq("member_id", job.member_ids[job.member_index])
+          .eq("entity_kind", kind)
+      )
+      .paginate(options);
+    const next = {
+      cursor: page.isDone ? undefined : page.continueCursor,
+      member_index: page.isDone ? job.member_index + 1 : job.member_index
+    };
+    for (const reference of page.page) {
+      if (kind === "group") {
+        const id = ctx.db.normalizeId("groups", reference.entity_document_id);
+        const group = id ? await ctx.db.get(id) : null;
+        if (!group || !group.members.some((member) => memberIds.has(normalizeMemberId(member.id))))
+          continue;
+        if (!hasConsistentGroupOwner(group, user))
+          throw new Error("Cannot clean records with conflicting ownership");
+        await enqueueFriendDeletionItem(ctx, job._id, "group", String(group._id));
+        // A linked person's ordinary groups are preserved, but their derived identity and
+        // visibility still change when an owner-local alias is detached.
+        if (job.linked && !group.is_direct) continue;
+        await patchProgress({
+          ...next,
+          active_group_id: group._id,
+          attachment_index: 0,
+          attachment_cursor: undefined
+        });
+        return;
+      }
+      const id = ctx.db.normalizeId("expenses", reference.entity_document_id);
+      const expense = id ? await ctx.db.get(id) : null;
+      if (!expense || !expenseReferencesEquivalentMember(expense, memberIds)) continue;
+      if (!hasConsistentExpenseOwner(expense, user))
+        throw new Error("Expense owner identity is inconsistent");
+      await enqueueFriendDeletionItem(ctx, job._id, "expense", String(expense._id));
+    }
+    await patchProgress({ ...next, processed: job.processed + page.page.length });
+    return;
+  }
+
+  if (job.phase === "expenses") {
+    const items = await ctx.db
+      .query("friend_deletion_items")
+      .withIndex("by_job_kind", (q) => q.eq("job_id", job._id).eq("entity_kind", "expense"))
+      .take(8);
+    if (!items.length) {
+      await patchProgress({ phase: "groups" });
+      return;
+    }
+    for (const item of items) {
+      const id = ctx.db.normalizeId("expenses", item.entity_document_id);
+      const expense = id ? await ctx.db.get(id) : null;
+      if (expense) {
+        if (!hasConsistentExpenseOwner(expense, user))
+          throw new Error("Expense owner identity changed during deletion");
+        const group = expense.group_ref
+          ? await ctx.db.get(expense.group_ref)
+          : await ctx.db
+              .query("groups")
+              .withIndex("by_client_id", (q) => q.eq("id", expense.group_id))
+              .unique();
+        const ownsGroup = group && hasConsistentGroupOwner(group, user);
+        const groupContainsFriend =
+          ownsGroup && group.members.some((member) => memberIds.has(normalizeMemberId(member.id)));
+        const shouldDeleteGroup =
+          groupContainsFriend &&
+          (job.linked
+            ? group.is_direct === true
+            : group.members.filter((member) => !memberIds.has(normalizeMemberId(member.id)))
+                .length <= 1);
+        if (
+          shouldDeleteGroup ||
+          (job.linked && !group && expenseReferencesEquivalentMember(expense, memberIds))
+        ) {
+          await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense }]);
+        } else if (!job.linked) {
+          const plan = await prepareEquivalentMemberRemovalFromExpense(
+            ctx,
+            expense,
+            memberIds,
+            createFriendCleanupAggregateBudget(),
+            createExpenseIdentityResolutionCache(),
+            user
+          );
+          if (plan.outcome !== "unchanged")
+            await applyExpenseWriteBatch(ctx, [removedFriendExpenseOperation(plan)]);
+          else await applyExpenseWriteBatch(ctx, [await refreshFriendHistoryExpense(ctx, expense)]);
+        } else {
+          await applyExpenseWriteBatch(ctx, [await refreshFriendHistoryExpense(ctx, expense)]);
+        }
+      }
+      await ctx.db.delete(item._id);
+    }
+    await patchProgress({ processed: job.processed + items.length });
+    return;
+  }
+
+  const item = await ctx.db
+    .query("friend_deletion_items")
+    .withIndex("by_job_kind", (q) => q.eq("job_id", job._id).eq("entity_kind", "group"))
+    .first();
+  if (item) {
+    const id = ctx.db.normalizeId("groups", item.entity_document_id);
+    const group = id ? await ctx.db.get(id) : null;
+    if (group) {
+      if (!hasConsistentGroupOwner(group, user))
+        throw new Error("Group owner identity changed during deletion");
+      const remaining = group.members.filter(
+        (member) => !memberIds.has(normalizeMemberId(member.id))
+      );
+      if (remaining.length !== group.members.length) {
+        const shouldDelete = job.linked ? group.is_direct === true : remaining.length <= 1;
+        if (shouldDelete) {
+          const byRef = await ctx.db
+            .query("expenses")
+            .withIndex("by_group_ref", (q) => q.eq("group_ref", group._id))
+            .first();
+          const byId = await ctx.db
+            .query("expenses")
+            .withIndex("by_group_id", (q) => q.eq("group_id", group.id))
+            .filter((q) => q.eq(q.field("group_ref"), undefined))
+            .first();
+          if (byRef || byId) throw new Error("Group changed during deletion; retry required");
+          await deleteGroupWithVisibility(ctx, group._id);
+        } else if (!job.linked)
+          await patchGroupWithVisibility(ctx, group._id, {
+            members: remaining,
+            updated_at: Math.max(Date.now(), group.updated_at + 1)
+          });
+        else
+          await patchGroupWithVisibility(ctx, group._id, {
+            updated_at: Math.max(Date.now(), group.updated_at + 1)
+          });
+      }
+    }
+    await ctx.db.delete(item._id);
+    await patchProgress({ processed: job.processed + 1 });
+    return;
+  }
+  const prune = await prepareAliasMemberIdPrune(
+    ctx,
+    user,
+    job.member_ids,
+    createFriendCleanupAggregateBudget()
+  );
+  await applyPreparedAliasPrune(ctx, prune);
+  await syncOwnerLocalAliasReferences(ctx, null, friend._id);
+  await ctx.db.delete(friend._id);
+  await ctx.db.patch(user._id, { updated_at: Math.max(Date.now(), (user.updated_at ?? 0) + 1) });
+  await patchProgress({ phase: "complete", last_error: undefined });
+}
+
+export const advanceFriendDeletionStep = internalMutation({
+  args: { operationId: v.id("friend_deletion_jobs") },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.operationId);
+    if (!job) throw new Error("Friend deletion not found");
+    await advanceFriendDeletion(ctx, job);
+  }
+});
+
+export const resumeFriendDeletion = mutation({
+  args: { operationId: v.id("friend_deletion_jobs"), ...friendDeletionActorArgs },
+  handler: async (ctx, args) => {
+    const user = await requireFriendDeletionActor(ctx, args);
+    const job = await ctx.db.get(args.operationId);
+    if (!job || job.owner_id !== user._id) throw new Error("Friend deletion not found");
+    if (job.phase === "complete" || job.phase === "cancelled") return friendDeletionResult(job);
+    if (job.phase === "failed")
+      await ctx.db.patch(job._id, {
+        phase: job.resume_phase ?? "preflight_groups",
+        last_error: undefined
+      });
+    try {
+      // Nested mutation rollback keeps a failed page atomic while retaining a recoverable error.
+      await ctx.runMutation(internal.cleanup.advanceFriendDeletionStep, { operationId: job._id });
+    } catch (error) {
+      await ctx.db.patch(job._id, {
+        phase: "failed",
+        resume_phase: job.phase === "failed" ? job.resume_phase : job.phase,
+        last_error: error instanceof Error ? error.message : String(error),
+        updated_at: Date.now()
+      });
+    }
+    return friendDeletionResult((await ctx.db.get(job._id))!);
+  }
+});
+
+export const cancelFriendDeletion = mutation({
+  args: { operationId: v.id("friend_deletion_jobs"), ...friendDeletionActorArgs },
+  handler: async (ctx, args) => {
+    const user = await requireFriendDeletionActor(ctx, args);
+    const job = await ctx.db.get(args.operationId);
+    if (!job || job.owner_id !== user._id) throw new Error("Friend deletion not found");
+    if (job.phase === "cancelled") return friendDeletionResult(job);
+    const effectivePhase = job.phase === "failed" ? job.resume_phase : job.phase;
+    if (
+      job.entered_destructive_phase ||
+      (effectivePhase !== "preflight_groups" && effectivePhase !== "preflight_expenses")
+    )
+      throw new Error("Deletion has changed records; resume it instead of cancelling");
+    await ctx.db.patch(job._id, {
+      phase: "cancelled",
+      last_error: undefined,
+      updated_at: Date.now()
+    });
+    await ctx.scheduler.runAfter(0, internal.cleanup.removeCancelledFriendDeletionItems, {
+      operationId: job._id
+    });
+    return friendDeletionResult((await ctx.db.get(job._id))!);
+  }
+});
+
+export const removeCancelledFriendDeletionItems = internalMutation({
+  args: { operationId: v.id("friend_deletion_jobs") },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.operationId);
+    if (!job || job.phase !== "cancelled") return;
+    for (const kind of ["group", "expense"] as const) {
+      const items = await ctx.db
+        .query("friend_deletion_items")
+        .withIndex("by_job_kind", (q) => q.eq("job_id", job._id).eq("entity_kind", kind))
+        .take(16);
+      for (const item of items) await ctx.db.delete(item._id);
+      if (items.length === 16) {
+        await ctx.scheduler.runAfter(0, internal.cleanup.removeCancelledFriendDeletionItems, args);
+        return;
+      }
+    }
+  }
+});
+
+/** Identity-neutral discovery recovers an operation even when the initial mutation response was lost. */
+export const pendingFriendDeletion = query({
+  args: friendDeletionActorArgs,
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version, {
+      allowPending: true
+    });
+    for (const phase of [
+      "preflight_groups",
+      "preflight_expenses",
+      "expenses",
+      "groups",
+      "failed"
+    ] as const) {
+      const job = await ctx.db
+        .query("friend_deletion_jobs")
+        .withIndex("by_owner_phase", (q) => q.eq("owner_id", user._id).eq("phase", phase))
+        .first();
+      if (job) return friendDeletionResult(job);
     }
     return null;
   }

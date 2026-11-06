@@ -1,3 +1,9 @@
+import { validateExpenseMoney } from "./moneyValidation";
+import {
+  assertExpectedActor,
+  assertFinancialContract,
+  assertMemberFinancialContract
+} from "./financialContract";
 import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx, mutation } from "./_generated/server";
 import { v } from "convex/values";
@@ -73,6 +79,11 @@ const expenseValidator = v.object({
   id: v.string(),
   group_id: v.string(),
   description: v.string(),
+  notes: v.optional(v.string()),
+  context_kind: v.optional(
+    v.union(v.literal("group"), v.literal("direct"), v.literal("grouped_individual"))
+  ),
+  currency_code: v.optional(v.string()),
   date: v.number(),
   total_amount: v.number(),
   paid_by_member_id: v.string(),
@@ -283,12 +294,19 @@ async function findExistingImportedFriend(
 
 export const bulkImport = mutation({
   args: {
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
+    financial_contract_version: v.optional(v.number()),
     friends: v.array(friendValidator),
     groups: v.array(groupValidator),
     expenses: v.array(expenseValidator)
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
+    if ((args.financial_contract_version ?? 0) < 2)
+      throw new Error("FINANCIAL_CONTRACT_UPGRADE_REQUIRED");
     const accountEmail = user.email.trim().toLowerCase();
     await assertIdentityMaterializationReady(ctx.db);
     const importBudget: ImportWorkBudget = {
@@ -462,33 +480,8 @@ export const bulkImport = mutation({
     }
     const importedFriends = Array.from(resolvedIncomingFriends.values());
 
-    for (const group of importedGroups) {
-      for (const member of group.members) {
-        member.id = await resolveImportIdentity(member.id);
-      }
-    }
-
-    for (const expense of importedExpenses) {
-      expense.paid_by_member_id = await resolveImportIdentity(expense.paid_by_member_id);
-      for (let i = 0; i < expense.involved_member_ids.length; i++) {
-        expense.involved_member_ids[i] = await resolveImportIdentity(
-          expense.involved_member_ids[i]
-        );
-      }
-      expense.involved_member_ids = normalizeMemberIds(expense.involved_member_ids);
-      for (const split of expense.splits) {
-        split.member_id = await resolveImportIdentity(split.member_id);
-      }
-      for (let i = 0; i < expense.participant_member_ids.length; i++) {
-        expense.participant_member_ids[i] = await resolveImportIdentity(
-          expense.participant_member_ids[i]
-        );
-      }
-      expense.participant_member_ids = normalizeMemberIds(expense.participant_member_ids);
-      for (const participant of expense.participants) {
-        participant.member_id = await resolveImportIdentity(participant.member_id);
-      }
-    }
+    // Restore retains original financial participant IDs. Alias equivalence is resolved
+    // when authorizing/reading, never by rewriting or coalescing historical rows.
 
     const errors: string[] = [];
     const created = { friends: 0, groups: 0, expenses: 0 };
@@ -759,7 +752,7 @@ export const bulkImport = mutation({
       // Remap members
       const remappedMembers = group.members.map((m) => ({
         ...m,
-        id: normalizeMemberId(memberIdMap.get(normalizeMemberId(m.id)) || m.id)
+        id: normalizeMemberId(m.id)
       }));
 
       const groupDocId = await groupVisibilityBatch.insert({
@@ -786,26 +779,38 @@ export const bulkImport = mutation({
         throw new Error("Group deletion is in progress");
       }
 
+      try {
+        validateExpenseMoney(expense, "restore");
+      } catch (error) {
+        errors.push(
+          `expenses[${expense.id}]: ${error instanceof Error ? error.message : "Invalid money"}`
+        );
+        continue;
+      }
+      await assertMemberFinancialContract(
+        ctx,
+        [expense.paid_by_member_id, ...expense.involved_member_ids],
+        args.financial_contract_version,
+        user._id
+      );
       const groupRef = groupRefMap.get(expense.group_id);
-      if (!groupRef) {
+      if (!groupRef && expense.context_kind !== "grouped_individual") {
         errors.push(`expenses[${expense.id}]: could not resolve group_ref`);
         continue;
       }
 
       // Remap IDs in Expense
-      const remappedPaidBy = normalizeMemberId(
-        memberIdMap.get(normalizeMemberId(expense.paid_by_member_id)) || expense.paid_by_member_id
-      );
-      const remappedInvolved = normalizeMemberIds(
-        expense.involved_member_ids.map((id) => memberIdMap.get(normalizeMemberId(id)) || id)
-      );
+      const remappedPaidBy = normalizeMemberId(expense.paid_by_member_id);
+      const remappedInvolved = normalizeMemberIds(expense.involved_member_ids);
       const remappedSplits = expense.splits.map((s) => ({
         ...s,
-        member_id: normalizeMemberId(memberIdMap.get(normalizeMemberId(s.member_id)) || s.member_id)
+        member_id: normalizeMemberId(s.member_id)
       }));
-      const remappedParticipantIds = normalizeMemberIds(
-        expense.participant_member_ids.map((id) => memberIdMap.get(normalizeMemberId(id)) || id)
-      );
+      const remappedParticipantIds = normalizeMemberIds(expense.participant_member_ids);
+      for (const [original, canonical] of memberIdMap) {
+        const account = trustedAccountsByMemberId.get(canonical);
+        if (account) trustedAccountsByMemberId.set(original, account);
+      }
       const participantEmails = new Set<string>([accountEmail]);
       const viewerAccountIds = new Map<string, Id<"accounts">>([[String(user._id), user._id]]);
       const addTrustedParticipant = (memberId: string) => {
@@ -821,23 +826,77 @@ export const bulkImport = mutation({
       for (const memberId of remappedParticipantIds) {
         addTrustedParticipant(memberId);
       }
-      const remappedParticipants = expense.participants.map((participant) => {
-        const memberId = normalizeMemberId(
-          memberIdMap.get(normalizeMemberId(participant.member_id)) || participant.member_id
-        );
-        const linkedAccount = addTrustedParticipant(memberId);
-        if (!linkedAccount) {
-          return { member_id: memberId, name: participant.name };
-        }
+      const remappedParticipants: Doc<"expenses">["participants"] = expense.participants.map(
+        (participant) => {
+          const memberId = normalizeMemberId(participant.member_id);
+          const linkedAccount = addTrustedParticipant(memberId);
+          if (!linkedAccount) {
+            return { member_id: memberId, name: participant.name };
+          }
 
-        const linkedEmail = linkedAccount.email.trim().toLowerCase();
-        return {
+          const linkedEmail = linkedAccount.email.trim().toLowerCase();
+          return {
+            member_id: memberId,
+            name: participant.name,
+            linked_account_id: linkedAccount.id,
+            linked_account_email: linkedEmail
+          };
+        }
+      );
+
+      // Legacy backups may omit display rows, but never financial rows. Fill names only
+      // from this authorized owner's existing context; preserve every split verbatim.
+      const restoredGroup = groupRef ? await ctx.db.get(groupRef) : null;
+      for (const memberId of remappedParticipantIds) {
+        if (remappedParticipants.some((participant) => participant.member_id === memberId))
+          continue;
+        const groupMember = restoredGroup?.members.find(
+          (member) => normalizeMemberId(member.id) === memberId
+        );
+        const friend = [...ownerFriends, ...friendInserts].find(
+          (friend) => normalizeMemberId(friend.member_id) === memberId
+        );
+        const linked = addTrustedParticipant(memberId);
+        remappedParticipants.push({
           member_id: memberId,
-          name: participant.name,
-          linked_account_id: linkedAccount.id,
-          linked_account_email: linkedEmail
-        };
-      });
+          name: groupMember?.name ?? friend?.name ?? linked?.display_name ?? "Unknown",
+          ...(linked
+            ? { linked_account_id: linked.id, linked_account_email: linked.email.toLowerCase() }
+            : {})
+        });
+      }
+      const memberSet = (values: string[]) =>
+        JSON.stringify([...new Set(values.map(normalizeMemberId))].sort());
+      const involvedSet = memberSet(remappedInvolved);
+      if (
+        !remappedInvolved.includes(remappedPaidBy) ||
+        involvedSet !== memberSet(remappedSplits.map((row) => row.member_id)) ||
+        involvedSet !== memberSet(remappedParticipantIds) ||
+        involvedSet !== memberSet(remappedParticipants.map((row) => row.member_id))
+      ) {
+        errors.push(`expenses[${expense.id}]: participant, payer and split identities must agree`);
+        continue;
+      }
+      if (groupRef) {
+        const allowed = new Set(
+          restoredGroup?.members.map((member) => normalizeMemberId(member.id))
+        );
+        if (remappedInvolved.some((member) => !allowed.has(member))) {
+          errors.push(`expenses[${expense.id}]: participant is not a group member`);
+          continue;
+        }
+      } else if (
+        remappedInvolved.some(
+          (member) =>
+            !currentUserMemberIds.has(member) &&
+            ![...ownerFriends, ...friendInserts].some(
+              (friend) => normalizeMemberId(friend.member_id) === member
+            )
+        )
+      ) {
+        errors.push(`expenses[${expense.id}]: participant is not a confirmed friend`);
+        continue;
+      }
 
       expenseOperations.push({
         kind: "insert",
@@ -846,6 +905,9 @@ export const bulkImport = mutation({
           group_id: expense.group_id,
           group_ref: groupRef,
           description: expense.description,
+          notes: expense.notes,
+          context_kind: expense.context_kind,
+          currency_code: expense.currency_code,
           date: expense.date,
           total_amount: expense.total_amount,
           paid_by_member_id: remappedPaidBy,
@@ -865,7 +927,13 @@ export const bulkImport = mutation({
         viewerAccountIds: Array.from(viewerAccountIds.values())
       });
     }
-    await applyExpenseWriteBatch(ctx, expenseOperations);
+    await applyExpenseWriteBatch(ctx, expenseOperations, {
+      budget: {
+        chargeQueries: (count) => chargeImportQueries(importBudget, count),
+        chargeRows: (rows) => accountImportRows(importBudget, rows),
+        chargeWrites: (count) => chargeImportWrites(importBudget, count)
+      }
+    });
     created.expenses += expenseOperations.length;
 
     return {

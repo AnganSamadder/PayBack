@@ -16,7 +16,7 @@ export function provenFriendLinkQueryWork(friend: Doc<"account_friends">): numbe
   );
   const historicalQueryWork =
     friend.link_state === "linked" ? 0 : 1 + 4 * (MAX_LEGACY_LINK_EVIDENCE_ROWS + 1);
-  return 2 + identityQueryWork + historicalQueryWork;
+  return 3 + identityQueryWork + historicalQueryWork;
 }
 
 export function isGhostFriendIdentity(
@@ -51,6 +51,7 @@ async function hasAccountAliasEvidence(
   if (identities.includes(canonicalMemberId)) return false;
 
   for (const memberId of identities) {
+    if (!normalizeMemberIds(linkedAccount.alias_member_ids).includes(memberId)) continue;
     const rows = await ctx.db
       .query("member_aliases")
       .withIndex("by_source_account_and_alias", (q) =>
@@ -170,6 +171,33 @@ export async function resolveProvenFriendLink(
   if (!linkedAccount || linkedAccount.status === "deleted" || !linkedAccount.member_id) return null;
 
   const canonicalMemberId = normalizeMemberId(linkedAccount.member_id);
+  const friendMemberId = normalizeMemberId(friend.member_id);
+  if (friendMemberId !== canonicalMemberId) {
+    if (
+      linkedAccount.alias_member_ids !== undefined &&
+      !normalizeMemberIds(linkedAccount.alias_member_ids).includes(friendMemberId)
+    )
+      return null;
+    const materialized = await ctx.db
+      .query("member_aliases")
+      .withIndex("by_source_account_and_alias", (q) =>
+        q.eq("source_account_id", linkedAccount.id).eq("alias_member_id", friendMemberId)
+      )
+      .take(2);
+    onRowsRead?.(materialized);
+    // Accepted legacy evidence may establish a link, but cannot override a later revoked
+    // account alias. linked_member_id is cached metadata, not proof that the raw friend ID
+    // still belongs to that account.
+    if (
+      materialized.some(
+        (alias) =>
+          alias.materialization_source === "account_alias" &&
+          (normalizeMemberId(alias.canonical_member_id) !== canonicalMemberId ||
+            !normalizeMemberIds(linkedAccount.alias_member_ids).includes(friendMemberId))
+      )
+    )
+      return null;
+  }
   const identities = friendIdentityIds(friend);
   const hasCanonicalIdentity = identities.includes(canonicalMemberId);
   const hasAliasEvidence = hasCanonicalIdentity

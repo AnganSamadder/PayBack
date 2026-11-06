@@ -1,3 +1,4 @@
+import { syncOwnerLocalAliasReferences } from "./aliases";
 import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx } from "./_generated/server";
 import { applyExpenseWriteBatch } from "./expenseWrites";
@@ -22,6 +23,9 @@ export type OrphanCleanupIdentity = {
   memberIds?: string[];
   member_ids?: string[];
   cleanup_member_index?: number;
+  incoming_request_cursor?: string;
+  incoming_request_source_done?: boolean;
+  incoming_requests_complete?: boolean;
 };
 
 export type OrphanCleanupProgress = {
@@ -31,6 +35,46 @@ export type OrphanCleanupProgress = {
 
 function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
+}
+
+/** Incoming invitations to a future account are not artifacts of a deleted account. */
+export async function isLiveIncomingLinkRequest(
+  ctx: MutationCtx,
+  request: Doc<"link_requests">,
+  recipientEmail: string
+): Promise<boolean> {
+  if (
+    request.status !== "pending" ||
+    request.expires_at <= Date.now() ||
+    normalizeEmail(request.recipient_email) !== normalizeEmail(recipientEmail)
+  )
+    return false;
+  const requester = await findAccountByAuthIdOrDocId(ctx.db, request.requester_id);
+  if (
+    !requester ||
+    requester.status === "deleted" ||
+    requester.status === "deleting" ||
+    normalizeEmail(requester.email) !== normalizeEmail(request.requester_email)
+  )
+    return false;
+  const friend = request.target_friend_id
+    ? await ctx.db.get(request.target_friend_id)
+    : await ctx.db
+        .query("account_friends")
+        .withIndex("by_account_email_and_member_id", (q) =>
+          q
+            .eq("account_email", normalizeEmail(requester.email))
+            .eq("member_id", normalizeMemberId(request.target_member_id))
+        )
+        .unique();
+  return (
+    !!friend &&
+    normalizeEmail(friend.account_email) === normalizeEmail(requester.email) &&
+    normalizeMemberId(friend.member_id) === normalizeMemberId(request.target_member_id) &&
+    !friend.has_linked_account &&
+    friend.status !== "ghost" &&
+    friend.link_state !== "ghost"
+  );
 }
 
 async function pauseForLateMemberFences(
@@ -312,7 +356,10 @@ export async function processOrphanCleanupStep(
         .withIndex("by_account_email", (query) => query.eq("account_email", identity.email))
         .take(CLEANUP_BATCH_SIZE);
   if (ownedFriends.length > 0) {
-    for (const friend of ownedFriends) await ctx.db.delete(friend._id);
+    for (const friend of ownedFriends) {
+      await syncOwnerLocalAliasReferences(ctx, null, friend._id);
+      await ctx.db.delete(friend._id);
+    }
     return { inProgress: true, processed: ownedFriends.length };
   }
 
@@ -582,6 +629,7 @@ export async function processOrphanCleanupStep(
       return { inProgress: true, processed: 1 };
     }
     if (rawIdentity.mode === "hard") {
+      await syncOwnerLocalAliasReferences(ctx, null, linkedFriend._id);
       await ctx.db.delete(linkedFriend._id);
     } else {
       await ctx.db.patch(linkedFriend._id, {
@@ -596,23 +644,39 @@ export async function processOrphanCleanupStep(
     return { inProgress: true, processed: 1 };
   }
 
-  const incomingRequestBySource = identity.source_email
-    ? await ctx.db
-        .query("link_requests")
-        .withIndex("by_recipient_email", (query) =>
-          query.eq("recipient_email", identity.source_email!)
-        )
-        .first()
-    : null;
-  const incomingRequest =
-    incomingRequestBySource ??
-    (await ctx.db
+  // A cursor advances over retained requests; repeatedly reading first() would never drain
+  // when the first request legitimately belongs to the new account.
+  if (!rawIdentity.incoming_requests_complete) {
+    const sourcePending = !!identity.source_email && !rawIdentity.incoming_request_source_done;
+    const recipientEmail = sourcePending ? identity.source_email! : identity.email;
+    const page = await ctx.db
       .query("link_requests")
-      .withIndex("by_recipient_email", (query) => query.eq("recipient_email", identity.email))
-      .first());
-  if (incomingRequest) {
-    await ctx.db.delete(incomingRequest._id);
-    return { inProgress: true, processed: 1 };
+      .withIndex("by_recipient_email", (q) => q.eq("recipient_email", recipientEmail))
+      .paginate({
+        cursor: rawIdentity.incoming_request_cursor ?? null,
+        numItems: CLEANUP_BATCH_SIZE
+      });
+    for (const request of page.page) {
+      if (
+        rawIdentity.mode !== "hard" &&
+        (await isLiveIncomingLinkRequest(ctx, request, identity.email))
+      )
+        continue;
+      await ctx.db.delete(request._id);
+    }
+    if (!rawIdentity._id) {
+      if (!page.isDone || sourcePending)
+        throw new Error("Resumable request cleanup requires a persisted job");
+    } else {
+      await ctx.db.patch(rawIdentity._id, {
+        incoming_request_cursor: page.isDone ? undefined : page.continueCursor,
+        incoming_request_source_done:
+          sourcePending && page.isDone ? true : rawIdentity.incoming_request_source_done,
+        incoming_requests_complete: page.isDone && !sourcePending,
+        updated_at: Date.now()
+      });
+      return { inProgress: true, processed: page.page.length };
+    }
   }
   const outgoingRequestBySource = identity.source_email
     ? await ctx.db

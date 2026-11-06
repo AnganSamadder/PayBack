@@ -29,23 +29,30 @@ async function insertAccount(
   });
 }
 
-function expenseValue(ownerId: Id<"accounts">, id: string, updatedAt = 10): ExpenseInsert {
+function expenseValue(
+  ownerId: Id<"accounts">,
+  id: string,
+  updatedAt = 10,
+  ownerSuffix = "owner"
+): ExpenseInsert {
   return {
     id,
     group_id: `group_${id}`,
     description: `Expense ${id}`,
     date: 1,
     total_amount: 10,
-    paid_by_member_id: "member_owner",
-    involved_member_ids: ["member_owner"],
-    splits: [{ id: `split_${id}`, member_id: "member_owner", amount: 10, is_settled: false }],
+    paid_by_member_id: `member_${ownerSuffix}`,
+    involved_member_ids: [`member_${ownerSuffix}`],
+    splits: [
+      { id: `split_${id}`, member_id: `member_${ownerSuffix}`, amount: 10, is_settled: false }
+    ],
     is_settled: false,
-    owner_email: "owner@test.com",
-    owner_account_id: "auth_owner",
+    owner_email: `${ownerSuffix}@test.com`,
+    owner_account_id: `auth_${ownerSuffix}`,
     owner_id: ownerId,
-    participant_member_ids: ["member_owner"],
-    participant_emails: ["owner@test.com"],
-    participants: [{ member_id: "member_owner", name: "Owner" }],
+    participant_member_ids: [`member_${ownerSuffix}`],
+    participant_emails: [`${ownerSuffix}@test.com`],
+    participants: [{ member_id: `member_${ownerSuffix}`, name: "Owner" }],
     created_at: 1,
     updated_at: updatedAt
   };
@@ -59,7 +66,7 @@ describe("central expense writes", () => {
       const ownerId = await insertAccount(ctx, "prepared_owner");
       const expenseId = await ctx.db.insert(
         "expenses",
-        expenseValue(ownerId, "prepared_apply", 10)
+        expenseValue(ownerId, "prepared_apply", 10, "prepared_owner")
       );
       const expense = await ctx.db.get(expenseId);
       if (!expense) throw new Error("Expected prepared expense");
@@ -98,12 +105,21 @@ describe("central expense writes", () => {
     const state = await t.run(async (ctx) => ({
       expense: await ctx.db.get(fixture.expenseId),
       visibility: await ctx.db.query("user_expenses").collect(),
-      revisions: await ctx.db.query("account_sync_state").collect()
+      revisions: await ctx.db.query("account_sync_state").collect(),
+      references: await ctx.db.query("member_references").collect()
     }));
     expect(state.expense).toMatchObject({ description: "Prepared", updated_at: 42 });
     expect(state.visibility).toMatchObject([{ expense_id: "prepared_apply", updated_at: 42 }]);
     expect(state.revisions).toEqual([]);
-    expect(charges.writes).toBe(2);
+    expect(state.references).toMatchObject([
+      {
+        entity_kind: "expense",
+        member_id: "member_prepared_owner",
+        entity_document_id: String(fixture.expenseId)
+      }
+    ]);
+    // Source patch, visibility row, and transactional member reference.
+    expect(charges.writes).toBe(3);
     expect(charges.writeBytes).toBeGreaterThan(0);
   });
 
@@ -142,15 +158,18 @@ describe("central expense writes", () => {
     const state = await t.run(async (ctx) => ({
       expense: await ctx.db.get(fixture.expenseId),
       visibility: await ctx.db.query("user_expenses").collect(),
-      revisions: await ctx.db.query("account_sync_state").collect()
+      revisions: await ctx.db.query("account_sync_state").collect(),
+      references: await ctx.db.query("member_references").collect()
     }));
-    expect(charges).toMatchObject({ writes: 3 });
+    // The dry run additionally budgets the account revision, without writing any row.
+    expect(charges).toMatchObject({ writes: 4 });
     expect(charges.queries).toBeGreaterThan(0);
     expect(charges.rows).toBeGreaterThan(0);
     expect(charges.writeBytes).toBeGreaterThan(0);
     expect(state.expense?.description).toBe("Expense preflight");
     expect(state.visibility).toEqual([]);
     expect(state.revisions).toEqual([]);
+    expect(state.references).toEqual([]);
   });
 
   test("creates fully referenced visibility only for active accounts", async () => {
@@ -269,7 +288,7 @@ describe("central expense writes", () => {
       applyExpenseWriteBatch(ctx, [
         {
           kind: "insert",
-          expense: expenseValue(ownerId, "noop_expense"),
+          expense: expenseValue(ownerId, "noop_expense", 10, "noop_owner"),
           viewerAccountIds: [ownerId]
         }
       ])
@@ -346,10 +365,11 @@ describe("central expense writes", () => {
         member_id: "duplicate_second",
         created_at: 1
       });
-      const expenseId = await ctx.db.insert(
-        "expenses",
-        expenseValue(firstId, "duplicate_auth_expense")
-      );
+      const expenseId = await ctx.db.insert("expenses", {
+        ...expenseValue(firstId, "duplicate_auth_expense"),
+        owner_account_id: "duplicate_auth",
+        owner_email: "duplicate-first@test.com"
+      });
       await ctx.db.insert("user_expenses", {
         user_id: "duplicate_auth",
         expense_id: "duplicate_auth_expense",
@@ -375,7 +395,7 @@ describe("central expense writes", () => {
       const ownerId = await insertAccount(ctx, "immutable_owner");
       const expenseId = await ctx.db.insert(
         "expenses",
-        expenseValue(ownerId, "immutable_client_id")
+        expenseValue(ownerId, "immutable_client_id", 10, "immutable_owner")
       );
       return { ownerId, expenseId };
     });
@@ -405,9 +425,12 @@ describe("central expense writes", () => {
       const ownerId = await insertAccount(ctx, "duplicate_expense_owner");
       const firstId = await ctx.db.insert(
         "expenses",
-        expenseValue(ownerId, "duplicate_expense_client")
+        expenseValue(ownerId, "duplicate_expense_client", 10, "duplicate_expense_owner")
       );
-      await ctx.db.insert("expenses", expenseValue(ownerId, "duplicate_expense_client"));
+      await ctx.db.insert(
+        "expenses",
+        expenseValue(ownerId, "duplicate_expense_client", 10, "duplicate_expense_owner")
+      );
       return { ownerId, firstId };
     });
 
@@ -443,7 +466,7 @@ describe("central expense writes", () => {
         ctx,
         accountIds.map((accountId, index) => ({
           kind: "insert" as const,
-          expense: expenseValue(accountId, `disjoint_expense_${index}`),
+          expense: expenseValue(accountId, `disjoint_expense_${index}`, 10, `disjoint_${index}`),
           viewerAccountIds: [accountId]
         }))
       )
@@ -473,7 +496,7 @@ describe("central expense writes", () => {
           Array.from({ length: 14 }, (_, index) => ({
             kind: "insert" as const,
             expense: {
-              ...expenseValue(ownerId, `large_expense_${index}`),
+              ...expenseValue(ownerId, `large_expense_${index}`, 10, "large_expense_owner"),
               notes: largeNotes
             },
             viewerAccountIds: [ownerId]
@@ -503,7 +526,7 @@ describe("central expense writes", () => {
       applyExpenseWriteBatch(ctx, [
         {
           kind: "insert",
-          expense: expenseValue(successFixture.accountIds[0], "expense_65"),
+          expense: expenseValue(successFixture.accountIds[0], "expense_65", 10, "success_0"),
           viewerAccountIds: successFixture.accountIds
         }
       ])
@@ -525,7 +548,7 @@ describe("central expense writes", () => {
         applyExpenseWriteBatch(ctx, [
           {
             kind: "insert",
-            expense: expenseValue(failureFixture.accountIds[0], "expense_66"),
+            expense: expenseValue(failureFixture.accountIds[0], "expense_66", 10, "failure_0"),
             viewerAccountIds: failureFixture.accountIds
           }
         ])
@@ -545,7 +568,10 @@ describe("central expense writes", () => {
       const fixture = await t.run(async (ctx) => {
         const ownerId = await insertAccount(ctx, `owner_${rowCount}`);
         const clientId = `expense_${rowCount}`;
-        const expenseId = await ctx.db.insert("expenses", expenseValue(ownerId, clientId));
+        const expenseId = await ctx.db.insert(
+          "expenses",
+          expenseValue(ownerId, clientId, 10, `owner_${rowCount}`)
+        );
         const legacyRowCount = Math.floor(rowCount / 2);
         for (let index = 0; index < rowCount; index += 1) {
           await ctx.db.insert("user_expenses", {

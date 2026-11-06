@@ -18,181 +18,198 @@ function identity(email: string, subject: string) {
 }
 
 describe("Security Authorization", () => {
-  test("expenses.setSettlementState lets a participant settle their alias split only", async () => {
-    const t = convexTest(schema, modules);
+  test.each(["legacy-member", "legacy-default", "current-split"] as const)(
+    "expenses.setSettlementState lets a participant settle their alias split only (%s)",
+    async (selection) => {
+      const t = convexTest(schema, modules);
 
-    await t.run(async (ctx) => {
-      const ownerDoc = await ctx.db.insert("accounts", {
-        id: "owner_id",
-        email: "owner@test.com",
-        display_name: "Owner",
-        created_at: Date.now(),
-        member_id: "owner_member"
-      });
-      await ctx.db.insert("accounts", {
-        id: "participant_id",
-        email: "participant@test.com",
-        display_name: "Participant",
-        created_at: Date.now(),
-        member_id: "participant_member",
-        alias_member_ids: ["participant_alias"]
-      });
+      await t.run(async (ctx) => {
+        const ownerDoc = await ctx.db.insert("accounts", {
+          id: "owner_id",
+          email: "owner@test.com",
+          display_name: "Owner",
+          created_at: Date.now(),
+          member_id: "owner_member"
+        });
+        await ctx.db.insert("accounts", {
+          id: "participant_id",
+          email: "participant@test.com",
+          display_name: "Participant",
+          created_at: Date.now(),
+          member_id: "participant_member",
+          alias_member_ids: ["participant_alias"]
+        });
 
-      await ctx.db.insert("member_aliases", {
-        account_email: "participant@test.com",
-        canonical_member_id: "participant_member",
-        alias_member_id: "participant_alias",
-        created_at: Date.now()
-      });
+        await ctx.db.insert("member_aliases", {
+          account_email: "participant@test.com",
+          canonical_member_id: "participant_member",
+          alias_member_id: "participant_alias",
+          created_at: Date.now()
+        });
 
-      const groupDoc = await ctx.db.insert("groups", {
-        id: "group_shared_id",
-        name: "Shared Group",
-        members: [
-          { id: "owner_member", name: "Owner", is_current_user: true },
-          { id: "participant_alias", name: "Participant" }
-        ],
-        owner_email: "owner@test.com",
-        owner_account_id: "owner_id",
-        owner_id: ownerDoc,
-        created_at: Date.now(),
-        updated_at: Date.now(),
-        is_direct: false
-      });
+        const groupDoc = await ctx.db.insert("groups", {
+          id: "group_shared_id",
+          name: "Shared Group",
+          members: [
+            { id: "owner_member", name: "Owner", is_current_user: true },
+            { id: "participant_alias", name: "Participant" }
+          ],
+          owner_email: "owner@test.com",
+          owner_account_id: "owner_id",
+          owner_id: ownerDoc,
+          created_at: Date.now(),
+          updated_at: Date.now(),
+          is_direct: false
+        });
 
-      await ctx.db.insert("expenses", {
-        id: "expense_settle_alias",
-        group_id: "group_shared_id",
-        group_ref: groupDoc,
-        description: "Dinner",
-        date: Date.now(),
-        total_amount: 40,
-        paid_by_member_id: "owner_member",
-        involved_member_ids: ["owner_member", "participant_alias"],
-        splits: [
-          { id: "owner_split", member_id: "owner_member", amount: 20, is_settled: false },
-          { id: "participant_split", member_id: "participant_alias", amount: 20, is_settled: false }
-        ],
-        is_settled: false,
-        owner_email: "owner@test.com",
-        owner_account_id: "owner_id",
-        owner_id: ownerDoc,
-        participant_member_ids: ["owner_member", "participant_alias"],
-        participant_emails: ["owner@test.com", "participant@test.com"],
-        participants: [
-          { member_id: "owner_member", name: "Owner" },
-          { member_id: "participant_alias", name: "Participant" }
-        ],
-        created_at: Date.now(),
-        updated_at: Date.now()
-      });
-    });
-
-    const participantCtx = t.withIdentity(identity("participant@test.com", "participant_id"));
-    const settledExpense = await participantCtx.mutation(api.expenses.setSettlementState, {
-      expenseId: "expense_settle_alias",
-      memberIds: ["participant_alias"],
-      settled: true
-    });
-
-    expect(
-      settledExpense.splits.find(
-        (split: { member_id: string }) => split.member_id === "participant_alias"
-      )?.is_settled
-    ).toBe(true);
-    expect(
-      settledExpense.splits.find(
-        (split: { member_id: string }) => split.member_id === "owner_member"
-      )?.is_settled
-    ).toBe(false);
-    expect(settledExpense.is_settled).toBe(false);
-  });
-
-  test("expenses.setSettlementState rejects settling another member split and preserves stored expense", async () => {
-    const t = convexTest(schema, modules);
-
-    await t.run(async (ctx) => {
-      const ownerDoc = await ctx.db.insert("accounts", {
-        id: "owner_id",
-        email: "owner@test.com",
-        display_name: "Owner",
-        created_at: Date.now(),
-        member_id: "owner_member"
-      });
-      await ctx.db.insert("accounts", {
-        id: "participant_id",
-        email: "participant@test.com",
-        display_name: "Participant",
-        created_at: Date.now(),
-        member_id: "participant_member"
+        await ctx.db.insert("expenses", {
+          id: "expense_settle_alias",
+          group_id: "group_shared_id",
+          group_ref: groupDoc,
+          description: "Dinner",
+          date: Date.now(),
+          total_amount: 40,
+          paid_by_member_id: "owner_member",
+          involved_member_ids: ["owner_member", "participant_alias"],
+          splits: [
+            { id: "owner_split", member_id: "owner_member", amount: 20, is_settled: false },
+            {
+              id: "participant_split",
+              member_id: "participant_alias",
+              amount: 20,
+              is_settled: false
+            }
+          ],
+          is_settled: false,
+          owner_email: "owner@test.com",
+          owner_account_id: "owner_id",
+          owner_id: ownerDoc,
+          participant_member_ids: ["owner_member", "participant_alias"],
+          participant_emails: ["owner@test.com", "participant@test.com"],
+          participants: [
+            { member_id: "owner_member", name: "Owner" },
+            { member_id: "participant_alias", name: "Participant" }
+          ],
+          created_at: Date.now(),
+          updated_at: Date.now()
+        });
       });
 
-      const groupDoc = await ctx.db.insert("groups", {
-        id: "group_shared_id",
-        name: "Shared Group",
-        members: [
-          { id: "owner_member", name: "Owner", is_current_user: true },
-          { id: "participant_member", name: "Participant" }
-        ],
-        owner_email: "owner@test.com",
-        owner_account_id: "owner_id",
-        owner_id: ownerDoc,
-        created_at: Date.now(),
-        updated_at: Date.now(),
-        is_direct: false
-      });
-
-      await ctx.db.insert("expenses", {
-        id: "expense_settle_forbidden",
-        group_id: "group_shared_id",
-        group_ref: groupDoc,
-        description: "Dinner",
-        date: Date.now(),
-        total_amount: 40,
-        paid_by_member_id: "owner_member",
-        involved_member_ids: ["owner_member", "participant_member"],
-        splits: [
-          { id: "owner_split", member_id: "owner_member", amount: 20, is_settled: false },
-          {
-            id: "participant_split",
-            member_id: "participant_member",
-            amount: 20,
-            is_settled: false
-          }
-        ],
-        is_settled: false,
-        owner_email: "owner@test.com",
-        owner_account_id: "owner_id",
-        owner_id: ownerDoc,
-        participant_member_ids: ["owner_member", "participant_member"],
-        participant_emails: ["owner@test.com", "participant@test.com"],
-        participants: [
-          { member_id: "owner_member", name: "Owner" },
-          { member_id: "participant_member", name: "Participant" }
-        ],
-        created_at: Date.now(),
-        updated_at: Date.now()
-      });
-    });
-
-    const participantCtx = t.withIdentity(identity("participant@test.com", "participant_id"));
-    await expect(
-      participantCtx.mutation(api.expenses.setSettlementState, {
-        expenseId: "expense_settle_forbidden",
-        memberIds: ["owner_member"],
+      const participantCtx = t.withIdentity(identity("participant@test.com", "participant_id"));
+      const settledExpense = await participantCtx.mutation(api.expenses.setSettlementState, {
+        expenseId: "expense_settle_alias",
+        ...(selection === "current-split"
+          ? { financial_contract_version: 2, splitIds: ["participant_split"] }
+          : selection === "legacy-member"
+            ? { memberIds: ["participant_alias"] }
+            : {}),
         settled: true
-      })
-    ).rejects.toThrow("Forbidden");
+      });
 
-    const expense = await t.run(async (ctx) =>
-      ctx.db
-        .query("expenses")
-        .withIndex("by_client_id", (q) => q.eq("id", "expense_settle_forbidden"))
-        .unique()
-    );
-    expect(expense?.splits.every((split) => split.is_settled === false)).toBe(true);
-    expect(expense?.is_settled).toBe(false);
-  });
+      expect(
+        settledExpense.splits.find(
+          (split: { member_id: string }) => split.member_id === "participant_alias"
+        )?.is_settled
+      ).toBe(true);
+      expect(
+        settledExpense.splits.find(
+          (split: { member_id: string }) => split.member_id === "owner_member"
+        )?.is_settled
+      ).toBe(false);
+      expect(settledExpense.is_settled).toBe(false);
+    }
+  );
+
+  test.each(["legacy-member", "current-split"] as const)(
+    "expenses.setSettlementState rejects settling another member split and preserves stored expense (%s)",
+    async (selection) => {
+      const t = convexTest(schema, modules);
+
+      await t.run(async (ctx) => {
+        const ownerDoc = await ctx.db.insert("accounts", {
+          id: "owner_id",
+          email: "owner@test.com",
+          display_name: "Owner",
+          created_at: Date.now(),
+          member_id: "owner_member"
+        });
+        await ctx.db.insert("accounts", {
+          id: "participant_id",
+          email: "participant@test.com",
+          display_name: "Participant",
+          created_at: Date.now(),
+          member_id: "participant_member"
+        });
+
+        const groupDoc = await ctx.db.insert("groups", {
+          id: "group_shared_id",
+          name: "Shared Group",
+          members: [
+            { id: "owner_member", name: "Owner", is_current_user: true },
+            { id: "participant_member", name: "Participant" }
+          ],
+          owner_email: "owner@test.com",
+          owner_account_id: "owner_id",
+          owner_id: ownerDoc,
+          created_at: Date.now(),
+          updated_at: Date.now(),
+          is_direct: false
+        });
+
+        await ctx.db.insert("expenses", {
+          id: "expense_settle_forbidden",
+          group_id: "group_shared_id",
+          group_ref: groupDoc,
+          description: "Dinner",
+          date: Date.now(),
+          total_amount: 40,
+          paid_by_member_id: "owner_member",
+          involved_member_ids: ["owner_member", "participant_member"],
+          splits: [
+            { id: "owner_split", member_id: "owner_member", amount: 20, is_settled: false },
+            {
+              id: "participant_split",
+              member_id: "participant_member",
+              amount: 20,
+              is_settled: false
+            }
+          ],
+          is_settled: false,
+          owner_email: "owner@test.com",
+          owner_account_id: "owner_id",
+          owner_id: ownerDoc,
+          participant_member_ids: ["owner_member", "participant_member"],
+          participant_emails: ["owner@test.com", "participant@test.com"],
+          participants: [
+            { member_id: "owner_member", name: "Owner" },
+            { member_id: "participant_member", name: "Participant" }
+          ],
+          created_at: Date.now(),
+          updated_at: Date.now()
+        });
+      });
+
+      const participantCtx = t.withIdentity(identity("participant@test.com", "participant_id"));
+      await expect(
+        participantCtx.mutation(api.expenses.setSettlementState, {
+          expenseId: "expense_settle_forbidden",
+          ...(selection === "current-split"
+            ? { financial_contract_version: 2, splitIds: ["owner_split"] }
+            : { memberIds: ["owner_member"] }),
+          settled: true
+        })
+      ).rejects.toThrow("Forbidden");
+
+      const expense = await t.run(async (ctx) =>
+        ctx.db
+          .query("expenses")
+          .withIndex("by_client_id", (q) => q.eq("id", "expense_settle_forbidden"))
+          .unique()
+      );
+      expect(expense?.splits.every((split) => split.is_settled === false)).toBe(true);
+      expect(expense?.is_settled).toBe(false);
+    }
+  );
 
   test("expenses.setSettlementState lets the payer settle selected participant splits", async () => {
     const t = convexTest(schema, modules);
@@ -268,8 +285,9 @@ describe("Security Authorization", () => {
 
     const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_id"));
     const settledExpense = await ownerCtx.mutation(api.expenses.setSettlementState, {
+      financial_contract_version: 2,
       expenseId: "expense_settle_payer",
-      memberIds: ["participant_a", "participant_b"],
+      splitIds: ["participant_a_split", "participant_b_split"],
       settled: true
     });
 
@@ -324,6 +342,7 @@ describe("Security Authorization", () => {
     const attackerCtx = t.withIdentity(identity("attacker@test.com", "attacker_id"));
     await expect(
       attackerCtx.mutation(api.groups.create, {
+        financial_contract_version: 2,
         id: "group_shared_id",
         name: "Hacked Group Name",
         members: [{ id: "attacker_member", name: "Attacker" }],
@@ -390,7 +409,10 @@ describe("Security Authorization", () => {
     });
 
     const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_id"));
-    await ownerCtx.mutation(api.groups.deleteGroup, { id: "group_delete_me" });
+    await ownerCtx.mutation(api.groups.deleteGroup, {
+      financial_contract_version: 2,
+      id: "group_delete_me"
+    });
 
     const [group, expense, userExpenses] = await t.run(async (ctx) => {
       const g = await ctx.db
@@ -428,8 +450,11 @@ describe("Security Authorization", () => {
 
     const userCtx = t.withIdentity(identity("user@test.com", "user_id"));
     await expect(
-      userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "member_hijack" })
-    ).rejects.toThrow("Forbidden");
+      userCtx.mutation(api.users.updateLinkedMemberId, {
+        financial_contract_version: 2,
+        member_id: "member_hijack"
+      })
+    ).rejects.toThrow("Refresh or upgrade required");
 
     const account = await t.run(async (ctx) =>
       ctx.db
@@ -453,8 +478,11 @@ describe("Security Authorization", () => {
 
     const userCtx = t.withIdentity(identity("empty-legacy@test.com", "empty_legacy_id"));
     await expect(
-      userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "  " })
-    ).rejects.toThrow("member_id is required");
+      userCtx.mutation(api.users.updateLinkedMemberId, {
+        financial_contract_version: 2,
+        member_id: "  "
+      })
+    ).rejects.toThrow("Refresh or upgrade required");
 
     const account = await t.run((ctx) =>
       ctx.db
@@ -492,8 +520,11 @@ describe("Security Authorization", () => {
 
     const userCtx = t.withIdentity(identity("alias-legacy@test.com", "alias_legacy_id"));
     await expect(
-      userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "claimed_member" })
-    ).rejects.toThrow("member_id already used as alias");
+      userCtx.mutation(api.users.updateLinkedMemberId, {
+        financial_contract_version: 2,
+        member_id: "claimed_member"
+      })
+    ).rejects.toThrow("Refresh or upgrade required");
 
     const account = await t.run((ctx) =>
       ctx.db
@@ -523,11 +554,14 @@ describe("Security Authorization", () => {
 
     const userCtx = t.withIdentity(identity("v1-legacy@test.com", "v1_legacy_id"));
     await expect(
-      userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "new_canonical" })
-    ).rejects.toThrow("Identity maintenance required");
+      userCtx.mutation(api.users.updateLinkedMemberId, {
+        financial_contract_version: 2,
+        member_id: "new_canonical"
+      })
+    ).rejects.toThrow("Refresh or upgrade required");
   });
 
-  test("users.updateLinkedMemberId materializes aliases during legacy bootstrap", async () => {
+  test("users.bootstrapMemberIdentityV2 assigns the canonical ID and materializes existing legacy aliases", async () => {
     const t = convexTest(schema, modules);
 
     await t.run(async (ctx) => {
@@ -547,7 +581,11 @@ describe("Security Authorization", () => {
     });
 
     const userCtx = t.withIdentity(identity("legacy-user@test.com", "legacy_user_id"));
-    await userCtx.mutation(api.users.updateLinkedMemberId, { member_id: "Canonical_Member" });
+    const bootstrap = await userCtx.mutation(api.users.bootstrapMemberIdentityV2, {
+      financial_contract_version: 2
+    });
+    expect(bootstrap.member_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(bootstrap.member_id).not.toBe("canonical_member");
 
     const state = await t.run(async (ctx) => ({
       account: await ctx.db
@@ -560,11 +598,11 @@ describe("Security Authorization", () => {
         .unique()
     }));
     expect(state.account).toMatchObject({
-      member_id: "canonical_member",
-      alias_member_ids: ["legacy_alias"]
+      member_id: bootstrap.member_id,
+      alias_member_ids: ["Legacy_Alias"]
     });
     expect(state.alias).toMatchObject({
-      canonical_member_id: "canonical_member",
+      canonical_member_id: bootstrap.member_id,
       account_email: "legacy-user@test.com"
     });
   });
@@ -624,6 +662,7 @@ describe("Security Authorization", () => {
 
     const callerCtx = t.withIdentity(identity("caller@test.com", "caller_id"));
     const results = await callerCtx.query(api.users.resolveLinkedAccountsForMemberIds, {
+      financial_contract_version: 2,
       memberIds: ["friend_member", "stranger_member"]
     });
 
@@ -693,10 +732,20 @@ describe("Security Authorization", () => {
 
     const attackerCtx = t.withIdentity(identity("attacker@test.com", "attacker_id"));
 
+    await expect(
+      attackerCtx.mutation(api.aliases.mergeMemberIds, {
+        financial_contract_version: 2,
+        sourceId: "source_member",
+        targetCanonicalId: "target_member",
+        accountEmail: "victim@test.com"
+      })
+    ).rejects.toThrow("Authenticated account changed");
+
     await attackerCtx.mutation(api.aliases.mergeMemberIds, {
+      financial_contract_version: 2,
       sourceId: "source_member",
       targetCanonicalId: "target_member",
-      accountEmail: "victim@test.com"
+      accountEmail: "attacker@test.com"
     });
 
     const state = await t.run(async (ctx) => ({
@@ -758,12 +807,14 @@ describe("Security Authorization", () => {
     const callerCtx = t.withIdentity(identity("caller@test.com", "caller_id"));
     await expect(
       callerCtx.mutation(api.aliases.mergeMemberIds, {
+        financial_contract_version: 2,
         sourceId: "group_only_source",
         targetCanonicalId: "owned_target"
       })
     ).rejects.toThrow("Friend with member_id group_only_source not found");
     await expect(
       callerCtx.mutation(api.aliases.mergeMemberIds, {
+        financial_contract_version: 2,
         sourceId: "arbitrary_source",
         targetCanonicalId: "arbitrary_target"
       })
@@ -822,6 +873,7 @@ describe("Security Authorization", () => {
 
     await expect(
       attackerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        financial_contract_version: 2,
         friendId1: "victim_friend_a",
         friendId2: "victim_friend_b",
         accountEmail: "victim@test.com"
@@ -860,12 +912,12 @@ describe("Security Authorization", () => {
     });
 
     const attackerCtx = t.withIdentity(identity("attacker@test.com", "attacker_id"));
-    const result = await attackerCtx.mutation(api.cleanup.deleteLinkedFriend, {
-      friendMemberId: "victim_friend_linked",
-      accountEmail: "victim@test.com"
-    });
-
-    expect(result.success).toBe(false);
+    await expect(
+      attackerCtx.mutation(api.cleanup.deleteLinkedFriend, {
+        friendMemberId: "victim_friend_linked",
+        accountEmail: "victim@test.com"
+      })
+    ).rejects.toThrow("Friend not found");
 
     const victimFriend = await t.run(async (ctx) =>
       ctx.db
@@ -977,7 +1029,10 @@ describe("Security Authorization", () => {
 
     const attackerCtx = t.withIdentity(identity("attacker@test.com", "attacker_id"));
     await expect(
-      attackerCtx.query(api.expenses.listByGroup, { group_id: "group_private" })
+      attackerCtx.query(api.expenses.listByGroup, {
+        financial_contract_version: 2,
+        group_id: "group_private"
+      })
     ).rejects.toThrow("Forbidden");
   });
 
@@ -1015,7 +1070,11 @@ describe("Security Authorization", () => {
 
     const attackerCtx = t.withIdentity(identity("attacker@test.com", "attacker_id"));
     await expect(
-      attackerCtx.query(api.expenses.listByGroupPaginated, { groupId: groupDocId, limit: 10 })
+      attackerCtx.query(api.expenses.listByGroupPaginated, {
+        financial_contract_version: 2,
+        groupId: groupDocId,
+        limit: 10
+      })
     ).rejects.toThrow("Forbidden");
   });
 
@@ -1085,6 +1144,7 @@ describe("Security Authorization", () => {
     // Non-owner cannot settle someone else's split.
     await expect(
       memberCtx.mutation(api.expenses.create, {
+        financial_contract_version: 2,
         id: "expense_shared",
         group_id: "group_shared",
         description: "Original",
@@ -1108,6 +1168,7 @@ describe("Security Authorization", () => {
     // Non-owner cannot change structural fields.
     await expect(
       memberCtx.mutation(api.expenses.create, {
+        financial_contract_version: 2,
         id: "expense_shared",
         group_id: "group_shared",
         description: "Tampered Description",
@@ -1190,6 +1251,7 @@ describe("Security Authorization", () => {
 
     const memberCtx = t.withIdentity(identity("member@test.com", "member_auth"));
     await memberCtx.mutation(api.expenses.create, {
+      financial_contract_version: 2,
       id: "expense_settle",
       group_id: "group_settle",
       description: "Dinner",
@@ -1249,6 +1311,8 @@ describe("Security Authorization", () => {
 
     const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await ownerCtx.mutation(api.expenses.create, {
+      financial_contract_version: 2,
+      currency_code: "USD",
       id: "expense_injection",
       group_id: "group_injection",
       description: "Test Injection",

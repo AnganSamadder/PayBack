@@ -71,6 +71,7 @@ test("friend merge rejects aggregate friend-row bytes before writing", async () 
   const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
   await expect(
     owner.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "source_friend"
     })
@@ -93,7 +94,8 @@ type ClaimChannel = "invite" | "request";
 async function setupAggregateClaimFixture(
   channel: ClaimChannel,
   largeFriendCount: number,
-  numericPayloadLength = 70_000
+  numericPayloadLength = 70_000,
+  largeFriendNameBytes = 700_000
 ) {
   const t = convexTest(schema, modules);
   const now = Date.now();
@@ -135,7 +137,7 @@ async function setupAggregateClaimFixture(
       updated_at: now
     });
 
-    const largeName = "x".repeat(700_000);
+    const largeName = "x".repeat(largeFriendNameBytes);
     for (let index = 0; index < largeFriendCount; index += 1) {
       await ctx.db.insert("account_friends", {
         account_email: creatorEmail,
@@ -241,10 +243,12 @@ async function runAggregateClaim(
 ) {
   if (channel === "invite") {
     return await fixture.claimant.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
       id: "aggregate_claim_invite"
     });
   }
   return await fixture.claimant.mutation(api.linkRequests.accept, {
+    financial_contract_version: 2,
     id: "aggregate_claim_request"
   });
 }
@@ -252,7 +256,9 @@ async function runAggregateClaim(
 test.each<ClaimChannel>(["invite", "request"])(
   "%s claim accepts work below the full transaction budget",
   async (channel) => {
-    const fixture = await setupAggregateClaimFixture(channel, 2, 20_000);
+    // Include complete visibility planning/reconciliation in the shared 8 MiB read budget.
+    // The former 700,000-byte names exceed that budget; overflow fixtures retain their original size.
+    const fixture = await setupAggregateClaimFixture(channel, 2, 20_000, 100_000);
 
     await expect(runAggregateClaim(fixture, channel)).resolves.toMatchObject({
       canonical_member_id: fixture.canonicalMemberId,
@@ -396,7 +402,7 @@ test("friends:list rejects aggregate legacy provenance work", async () => {
   });
 
   const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
-  await expect(owner.query(api.friends.list, {})).rejects.toThrow(
+  await expect(owner.query(api.friends.list, { financial_contract_version: 2 })).rejects.toThrow(
     "Friend list is too large to load safely"
   );
 });
@@ -444,6 +450,7 @@ test("link request duplicate detection reads only two large active candidates", 
   const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
   await expect(
     owner.mutation(api.linkRequests.createV2, {
+      financial_contract_version: 2,
       id: "new_request",
       recipient_email: "friend@example.com",
       target_member_id: "friend_member",
@@ -502,6 +509,7 @@ test("link request duplicate detection ignores extensive inactive history", asyn
 
   const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
   const created = await owner.mutation(api.linkRequests.createV2, {
+    financial_contract_version: 2,
     id: "new_request",
     recipient_email: "friend@example.com",
     target_member_id: "friend_member",
@@ -511,6 +519,7 @@ test("link request duplicate detection ignores extensive inactive history", asyn
 
   await expect(
     owner.mutation(api.linkRequests.createV2, {
+      financial_contract_version: 2,
       id: "duplicate_request",
       recipient_email: "friend@example.com",
       target_member_id: "friend_member",
@@ -690,7 +699,9 @@ test("link request compatibility list stops before large history exhausts its by
   });
 
   const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
-  const requests = await owner.query(api.linkRequests.listIncoming, {});
+  const requests = await owner.query(api.linkRequests.listIncoming, {
+    financial_contract_version: 2
+  });
 
   expect(requests.length).toBeGreaterThan(0);
   expect(requests.length).toBeLessThan(15);
@@ -727,6 +738,7 @@ test("link request page contract clamps page size and advances a stable newest-f
 
   const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
   const firstPage = await owner.query(api.linkRequests.listIncomingPage, {
+    financial_contract_version: 2,
     cursor: null,
     numItems: 500
   });
@@ -740,6 +752,7 @@ test("link request page contract clamps page size and advances a stable newest-f
   expect(firstPage.isDone).toBe(false);
 
   const secondPage = await owner.query(api.linkRequests.listIncomingPage, {
+    financial_contract_version: 2,
     cursor: firstPage.continueCursor,
     numItems: 500
   });
@@ -799,12 +812,16 @@ test.each(["create", "accept"] as const)(
     const mutation =
       operation === "create"
         ? deletingUser.mutation(api.linkRequests.createV2, {
+            financial_contract_version: 2,
             id: "new_request",
             recipient_email: "recipient@example.com",
             target_member_id: "target_member",
             target_member_name: "Target"
           })
-        : deletingUser.mutation(api.linkRequests.accept, { id: "pending_request" });
+        : deletingUser.mutation(api.linkRequests.accept, {
+            financial_contract_version: 2,
+            id: "pending_request"
+          });
 
     await expect(mutation).rejects.toThrow(
       "Account is being deleted and cannot accept new changes"
@@ -849,6 +866,7 @@ test("friends:upsert rejects an oversized legacy fallback scan without writing",
   const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
   await expect(
     owner.mutation(api.friends.upsert, {
+      financial_contract_version: 2,
       member_id: "legacy_target",
       name: "Updated Name",
       has_linked_account: false
@@ -893,6 +911,7 @@ test("friends:upsert can add a manual friend after the legacy lookup crosses one
 
   const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
   await owner.mutation(api.friends.upsert, {
+    financial_contract_version: 2,
     member_id: "new_manual_friend",
     name: "New Manual Friend",
     has_linked_account: false,
@@ -1065,6 +1084,7 @@ test.each(["group", "expense"] as const)(
     const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
     await expect(
       owner.mutation(api.aliases.mergeUnlinkedFriends, {
+        financial_contract_version: 2,
         friendId1: "canonical_friend",
         friendId2: "source_friend"
       })
@@ -1188,6 +1208,7 @@ test("friend merge accounts deep identity bytes before writing", async () => {
   const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
   await expect(
     owner.mutation(api.aliases.mergeMemberIds, {
+      financial_contract_version: 2,
       sourceId: "source_friend",
       targetCanonicalId: "linked_member"
     })
@@ -1273,6 +1294,7 @@ test("friend merge measures numeric v.any payloads with Convex encoded size", as
   const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
   await expect(
     owner.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "source_friend"
     })

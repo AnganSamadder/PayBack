@@ -17,23 +17,30 @@ async function account(ctx: any, suffix: string): Promise<Id<"accounts">> {
   });
 }
 
-function expense(ownerId: Id<"accounts">, id: string, updatedAt = 1): ExpenseInsert {
+function expense(
+  ownerId: Id<"accounts">,
+  id: string,
+  updatedAt = 1,
+  ownerSuffix = "a"
+): ExpenseInsert {
   return {
     id,
     group_id: `group_${id}`,
     description: id,
     date: 1,
     total_amount: 1,
-    paid_by_member_id: "member_a",
-    involved_member_ids: ["member_a"],
-    splits: [{ id: `split_${id}`, member_id: "member_a", amount: 1, is_settled: false }],
+    paid_by_member_id: `member_${ownerSuffix}`,
+    involved_member_ids: [`member_${ownerSuffix}`],
+    splits: [
+      { id: `split_${id}`, member_id: `member_${ownerSuffix}`, amount: 1, is_settled: false }
+    ],
     is_settled: false,
-    owner_email: "a@test.com",
-    owner_account_id: "auth_a",
+    owner_email: `${ownerSuffix}@test.com`,
+    owner_account_id: `auth_${ownerSuffix}`,
     owner_id: ownerId,
-    participant_member_ids: ["member_a"],
-    participant_emails: ["a@test.com"],
-    participants: [{ member_id: "member_a", name: "A" }],
+    participant_member_ids: [`member_${ownerSuffix}`],
+    participant_emails: [`${ownerSuffix}@test.com`],
+    participants: [{ member_id: `member_${ownerSuffix}`, name: "A" }],
     created_at: 1,
     updated_at: updatedAt
   };
@@ -148,12 +155,12 @@ describe("expense revision semantics", () => {
       applyExpenseWriteBatch(ctx, [
         {
           kind: "insert",
-          expense: expense(ownerId, "batch_one"),
+          expense: expense(ownerId, "batch_one", 1, "batch_owner"),
           viewerAccountIds: [ownerId]
         },
         {
           kind: "insert",
-          expense: expense(ownerId, "batch_two"),
+          expense: expense(ownerId, "batch_two", 1, "batch_owner"),
           viewerAccountIds: [ownerId]
         }
       ])

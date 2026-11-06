@@ -264,6 +264,7 @@ describe("revisioned V2 sync queries", () => {
     const user = t.withIdentity(identity("sync@test.com", "sync_auth"));
 
     const first = await user.query(api.groups.listV2, {
+      financial_contract_version: 2,
       paginationOpts: { cursor: null, numItems: 2 }
     });
     expect(first.revision).toBe(7);
@@ -271,6 +272,7 @@ describe("revisioned V2 sync queries", () => {
     expect(first.isDone).toBe(false);
 
     const second = await user.query(api.groups.listV2, {
+      financial_contract_version: 2,
       paginationOpts: { cursor: first.continueCursor, numItems: 2 },
       expectedRevision: first.revision
     });
@@ -285,6 +287,7 @@ describe("revisioned V2 sync queries", () => {
     const user = t.withIdentity(identity("sync@test.com", "sync_auth"));
 
     const first = await user.query(api.expenses.listV2, {
+      financial_contract_version: 2,
       paginationOpts: { cursor: null, numItems: 1 }
     });
     expect(first.revision).toBe(11);
@@ -301,6 +304,7 @@ describe("revisioned V2 sync queries", () => {
 
     await expect(
       user.query(api.expenses.listV2, {
+        financial_contract_version: 2,
         paginationOpts: { cursor: first.continueCursor, numItems: 1 },
         expectedRevision: first.revision
       })
@@ -322,11 +326,13 @@ describe("revisioned V2 sync queries", () => {
 
     await expect(
       user.query(api.groups.listV2, {
+        financial_contract_version: 2,
         paginationOpts: { cursor: null, numItems: 8 }
       })
     ).rejects.toThrow("SYNC_V2_NOT_READY");
     await expect(
       user.query(api.expenses.listV2, {
+        financial_contract_version: 2,
         paginationOpts: { cursor: null, numItems: 8 }
       })
     ).rejects.toThrow("SYNC_V2_NOT_READY");
@@ -339,15 +345,18 @@ describe("revisioned V2 sync queries", () => {
 
     await expect(
       user.query(api.groups.listV2, {
+        financial_contract_version: 2,
         paginationOpts: { cursor: null, numItems: 9 }
       })
     ).rejects.toThrow("at most 8");
 
     const first = await user.query(api.groups.listV2, {
+      financial_contract_version: 2,
       paginationOpts: { cursor: null, numItems: 1 }
     });
     await expect(
       user.query(api.groups.listV2, {
+        financial_contract_version: 2,
         paginationOpts: { cursor: first.continueCursor, numItems: 1 }
       })
     ).rejects.toThrow("requires expectedRevision");
@@ -366,6 +375,7 @@ describe("revisioned V2 sync queries", () => {
 
     await expect(
       user.query(api.expenses.listV2, {
+        financial_contract_version: 2,
         paginationOpts: { cursor: null, numItems: 8 }
       })
     ).rejects.toThrow("SYNC_V2_NOT_READY");

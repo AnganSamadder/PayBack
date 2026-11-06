@@ -24,6 +24,8 @@ function buildDirectExpenseArgs(args: {
   otherMemberId: string;
 }) {
   return {
+    financial_contract_version: 2,
+    currency_code: "USD",
     id: args.expenseId,
     group_id: args.groupId,
     context_kind: "direct" as const,
@@ -172,11 +174,14 @@ test("expenses:create allows direct expense when involved member is an alias of 
       email: "friend@example.com",
       display_name: "Friend",
       member_id: "friend_canonical",
+      alias_member_ids: ["friend_alias"],
       created_at: now
     });
     await ctx.db.insert("member_aliases", {
       canonical_member_id: "friend_canonical",
       alias_member_id: "friend_alias",
+      source_account_id: "friend_auth_id",
+      materialization_source: "account_alias",
       account_email: "owner@example.com",
       created_at: now
     });
@@ -612,7 +617,7 @@ test("expenses:create allows direct expense when linked_account_id stores accoun
   expect(expenses.length).toBe(1);
 });
 
-test("expenses:create allows name fallback only for an unregistered manual identity", async () => {
+test("expenses:create rejects name-only matching even for an unregistered manual identity", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
 
@@ -655,25 +660,24 @@ test("expenses:create allows name fallback only for an unregistered manual ident
 
   const ownerCtx = t.withIdentity(identityFor("owner@example.com", "owner_auth_id"));
 
-  const result = await ownerCtx.mutation(
-    api.expenses.create,
-    buildDirectExpenseArgs({
-      expenseId: "direct_expense_name_fallback",
-      groupId: "direct_group_name_fallback",
-      ownerMemberId: "owner_member",
-      otherMemberId: "friend_canonical"
-    })
-  );
-
-  expect(result).toBeDefined();
+  await expect(
+    ownerCtx.mutation(
+      api.expenses.create,
+      buildDirectExpenseArgs({
+        expenseId: "direct_expense_name_fallback",
+        groupId: "direct_group_name_fallback",
+        ownerMemberId: "owner_member",
+        otherMemberId: "friend_canonical"
+      })
+    )
+  ).rejects.toThrow("not a confirmed friend");
   const expense = await t.run(async (ctx) =>
     ctx.db
       .query("expenses")
       .withIndex("by_client_id", (q) => q.eq("id", "direct_expense_name_fallback"))
       .unique()
   );
-  expect(expense).toBeDefined();
-  expect(expense?.participant_emails).toEqual(["owner@example.com"]);
+  expect(expense).toBeNull();
 });
 
 test("expenses:create rejects a registered counterparty proven only by direct-group membership", async () => {
@@ -857,7 +861,7 @@ test("expenses:create allows a registered counterparty with a server-proven link
   ).resolves.toBeDefined();
 });
 
-test("expenses:create rejects direct expense when involved member is not a friend", async () => {
+test("expenses:create rejects a stranger outside the direct ledger membership", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
 
@@ -900,5 +904,5 @@ test("expenses:create rejects direct expense when involved member is not a frien
         otherMemberId: "stranger_member_not_in_group"
       })
     )
-  ).rejects.toThrow("not a confirmed friend");
+  ).rejects.toThrow("Expense participant is not a member of this group");
 });

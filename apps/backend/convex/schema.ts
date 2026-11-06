@@ -2,6 +2,145 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
+  friend_deletion_items: defineTable({
+    job_id: v.id("friend_deletion_jobs"),
+    entity_kind: v.union(v.literal("group"), v.literal("expense")),
+    entity_document_id: v.string(),
+    group_id: v.optional(v.id("groups"))
+  })
+    .index("by_job_kind", ["job_id", "entity_kind"])
+    .index("by_job_entity", ["job_id", "entity_kind", "entity_document_id"]),
+  friend_deletion_jobs: defineTable({
+    owner_id: v.id("accounts"),
+    friend_id: v.id("account_friends"),
+    member_id: v.string(),
+    member_ids: v.array(v.string()),
+    linked: v.boolean(),
+    phase: v.union(
+      v.literal("preflight_groups"),
+      v.literal("preflight_expenses"),
+      v.literal("groups"),
+      v.literal("expenses"),
+      v.literal("complete"),
+      v.literal("failed"),
+      v.literal("cancelled")
+    ),
+    entered_destructive_phase: v.optional(v.boolean()),
+    identity_projection_version: v.optional(v.number()),
+    resume_phase: v.optional(
+      v.union(
+        v.literal("preflight_groups"),
+        v.literal("preflight_expenses"),
+        v.literal("groups"),
+        v.literal("expenses"),
+        v.literal("complete")
+      )
+    ),
+    member_index: v.number(),
+    cursor: v.optional(v.string()),
+    active_group_id: v.optional(v.id("groups")),
+    attachment_cursor: v.optional(v.string()),
+    attachment_index: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    last_error: v.optional(v.string()),
+    processed: v.number()
+  })
+    .index("by_owner_phase", ["owner_id", "phase"])
+    .index("by_owner_friend", ["owner_id", "friend_id"])
+    .index("by_owner_member", ["owner_id", "member_id"]),
+  direct_ledger_pairs: defineTable({
+    pair_key: v.string(),
+    group_ref: v.id("groups"),
+    created_at: v.number()
+  }).index("by_pair_key", ["pair_key"]),
+  expense_visibility_suppressions: defineTable({
+    account_ref: v.id("accounts"),
+    expense_id: v.string(),
+    created_at: v.number()
+  })
+    .index("by_account_expense", ["account_ref", "expense_id"])
+    .index("by_account", ["account_ref"]),
+  owner_member_aliases: defineTable({
+    owner_email: v.string(),
+    member_id: v.string(),
+    target_member_id: v.string(),
+    friend_id: v.id("account_friends")
+  })
+    .index("by_owner_member", ["owner_email", "member_id"])
+    .index("by_friend", ["friend_id"])
+    .index("by_owner_target", ["owner_email", "target_member_id"]),
+  member_references: defineTable({
+    entity_kind: v.union(v.literal("group"), v.literal("expense")),
+    entity_document_id: v.string(),
+    member_id: v.string(),
+    owner_id: v.id("accounts"),
+    source_revision: v.number()
+  })
+    .index("by_member_kind", ["member_id", "entity_kind"])
+    .index("by_entity", ["entity_kind", "entity_document_id"])
+    .index("by_owner_member_kind", ["owner_id", "member_id", "entity_kind"]),
+  member_reference_state: defineTable({
+    key: v.string(),
+    phase: v.union(
+      v.literal("groups"),
+      v.literal("expenses"),
+      v.literal("friends"),
+      v.literal("ready")
+    ),
+    cursor: v.optional(v.string()),
+    updated_at: v.number()
+  }).index("by_key", ["key"]),
+  identity_operations: defineTable({
+    actor_id: v.id("accounts"),
+    creator_id: v.id("accounts"),
+    kind: v.union(v.literal("claim"), v.literal("local_merge")),
+    source_member_ids: v.array(v.string()),
+    target_member_id: v.string(),
+    local_owner_id: v.optional(v.id("accounts")),
+    selected_local_member_id: v.optional(v.string()),
+    dependency_operation_id: v.optional(v.id("identity_operations")),
+    bound_token_id: v.optional(v.id("invite_tokens")),
+    bound_request_id: v.optional(v.id("link_requests")),
+    bound_friend_id: v.optional(v.id("account_friends")),
+    generation: v.string(),
+    cutoff: v.number(),
+    phase: v.union(
+      v.literal("groups"),
+      v.literal("expenses"),
+      v.literal("complete"),
+      v.literal("failed")
+    ),
+    member_index: v.number(),
+    cursor: v.optional(v.string()),
+    terminal_reconciled: v.optional(v.literal(true)),
+    revoked: v.optional(v.boolean()),
+    attempts: v.number(),
+    error: v.optional(v.string()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    completed_at: v.optional(v.number())
+  })
+    .index("by_actor", ["actor_id"])
+    .index("by_creator", ["creator_id"])
+    .index("by_actor_kind_target_selection", [
+      "actor_id",
+      "kind",
+      "target_member_id",
+      "selected_local_member_id"
+    ])
+    .index("by_actor_phase", ["actor_id", "phase", "terminal_reconciled"])
+    .index("by_creator_phase", ["creator_id", "phase", "terminal_reconciled"]),
+  identity_operation_members: defineTable({
+    operation_id: v.id("identity_operations"),
+    member_id: v.string(),
+    required_financial_contract: v.number(),
+    local_owner_id: v.optional(v.id("accounts"))
+  })
+    .index("by_member", ["member_id"])
+    .index("by_member_owner", ["member_id", "local_owner_id"])
+    .index("by_operation", ["operation_id"]),
+
   accounts: defineTable({
     id: v.string(), // Keeping query-able ID, likely matching Auth provider ID
     email: v.string(),
@@ -20,6 +159,7 @@ export default defineSchema({
     // alias_member_ids: All member IDs that alias to this account's canonical member_id.
     // Maintained in sync with member_aliases table for denormalized lookup.
     alias_member_ids: v.optional(v.array(v.string())),
+    required_financial_contract: v.optional(v.number()),
 
     status: v.optional(v.union(v.literal("active"), v.literal("deleting"), v.literal("deleted"))),
     deleted_at: v.optional(v.number()),
@@ -110,6 +250,9 @@ export default defineSchema({
     .index("by_account_id", ["account_id"]),
 
   orphan_cleanup_jobs: defineTable({
+    incoming_request_cursor: v.optional(v.string()),
+    incoming_request_source_done: v.optional(v.boolean()),
+    incoming_requests_complete: v.optional(v.boolean()),
     email: v.string(),
     source_email: v.optional(v.string()),
     subject: v.string(),
@@ -328,6 +471,7 @@ export default defineSchema({
     notes: v.optional(v.string()),
     date: v.number(),
     total_amount: v.number(),
+    currency_code: v.optional(v.string()),
     paid_by_member_id: v.string(),
     involved_member_ids: v.array(v.string()),
     splits: v.array(
@@ -411,7 +555,11 @@ export default defineSchema({
     created_at: v.number(),
     status: v.string(),
     expires_at: v.number(),
-    rejected_at: v.optional(v.number())
+    rejected_at: v.optional(v.number()),
+    accepted_by: v.optional(v.string()),
+    accepted_result: v.optional(v.any()),
+    accept_merge_local_friend_member_id: v.optional(v.string()),
+    identity_operation_id: v.optional(v.id("identity_operations"))
   })
     .index("by_recipient_email", ["recipient_email"])
     .index("by_recipient_email_and_created_at", ["recipient_email", "created_at"])
@@ -446,7 +594,8 @@ export default defineSchema({
     expires_at: v.number(),
     claimed_by: v.optional(v.string()),
     claimed_at: v.optional(v.number()),
-    claim_merge_local_friend_member_id: v.optional(v.string())
+    claim_merge_local_friend_member_id: v.optional(v.string()),
+    identity_operation_id: v.optional(v.id("identity_operations"))
   })
     .index("by_creator_id", ["creator_id"])
     .index("by_creator_email", ["creator_email"])

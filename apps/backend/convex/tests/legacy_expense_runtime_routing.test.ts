@@ -105,6 +105,7 @@ describe("legacy expense runtime routing", () => {
     await t
       .withIdentity(identity("import-owner@test.com", "import_owner_auth"))
       .mutation(api.bulkImport.bulkImport, {
+        financial_contract_version: 2,
         friends: [],
         groups: [],
         expenses: [importExpense("import_expense_1"), importExpense("import_expense_2")]

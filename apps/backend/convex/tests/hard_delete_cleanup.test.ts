@@ -634,7 +634,7 @@ describe("Hard Delete Cleanup", () => {
       updatedAt: "2023-01-01"
     });
 
-    const friendsBefore = await ctxA.query(api.friends.list, {});
+    const friendsBefore = await ctxA.query(api.friends.list, { financial_contract_version: 2 });
     expect(friendsBefore.length).toBe(1);
     expect(friendsBefore[0].has_linked_account).toBe(true);
     expect(friendsBefore[0].linked_account_email).toBe("user_b@test.com");
@@ -643,7 +643,7 @@ describe("Hard Delete Cleanup", () => {
       await ctx.db.delete(userBId);
     });
 
-    const friendsAfter = await ctxA.query(api.friends.list, {});
+    const friendsAfter = await ctxA.query(api.friends.list, { financial_contract_version: 2 });
     expect(friendsAfter.length).toBe(1);
     expect(friendsAfter[0].has_linked_account).toBe(false);
     expect(friendsAfter[0].linked_account_email).toBeUndefined();
@@ -700,7 +700,7 @@ describe("Hard Delete Cleanup", () => {
       updatedAt: "2023-01-01"
     });
 
-    const friendsBefore = await ctxA.query(api.friends.list, {});
+    const friendsBefore = await ctxA.query(api.friends.list, { financial_contract_version: 2 });
     expect(friendsBefore.length).toBe(1);
     expect(friendsBefore[0].has_linked_account).toBe(true);
 
@@ -708,7 +708,7 @@ describe("Hard Delete Cleanup", () => {
       await ctx.db.delete(userBId);
     });
 
-    const friendsAfter = await ctxA.query(api.friends.list, {});
+    const friendsAfter = await ctxA.query(api.friends.list, { financial_contract_version: 2 });
     expect(friendsAfter.length).toBe(1);
     expect(friendsAfter[0].has_linked_account).toBe(false);
     expect(friendsAfter[0].linked_member_id).toBeUndefined();

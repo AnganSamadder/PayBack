@@ -659,6 +659,8 @@ test("counterparties cannot create expenses that reference a fenced account", as
   const counterparty = t.withIdentity(identity("counterparty@test.com", "counterparty_auth"));
   await expect(
     counterparty.mutation(api.expenses.create, {
+      financial_contract_version: 2,
+      currency_code: "USD",
       id: "blocked_counterparty_expense",
       context_kind: "group",
       group_id: "counterparty_group",
@@ -853,9 +855,12 @@ test("a fenced account cannot claim a new member alias", async () => {
   result = await owner.mutation(api.cleanup.selfDeleteAccount, progressCapableClient);
   expect(result.phase).toBe("preflight_groups_owner_id");
 
-  await expect(owner.mutation(api.inviteTokens.claim, { id: "late_alias_invite" })).rejects.toThrow(
-    "being deleted"
-  );
+  await expect(
+    owner.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
+      id: "late_alias_invite"
+    })
+  ).rejects.toThrow("being deleted");
 
   const unchanged = await t.run(async (ctx) => ({
     account: await ctx.db

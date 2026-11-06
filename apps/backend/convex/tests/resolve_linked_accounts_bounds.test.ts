@@ -51,6 +51,7 @@ test("resolveLinkedAccountsForMemberIds rejects more than 65 requested identitie
     t
       .withIdentity(identity("caller@example.com", "caller_auth"))
       .query(api.users.resolveLinkedAccountsForMemberIds, {
+        financial_contract_version: 2,
         memberIds: Array.from({ length: 66 }, (_, index) => `requested_${index}`)
       })
   ).rejects.toThrow("at most 65 member IDs");
@@ -83,7 +84,10 @@ test("resolveLinkedAccountsForMemberIds rejects an oversized caller-visible frie
   await expect(
     t
       .withIdentity(identity("caller@example.com", "caller_auth"))
-      .query(api.users.resolveLinkedAccountsForMemberIds, { memberIds: ["caller_member"] })
+      .query(api.users.resolveLinkedAccountsForMemberIds, {
+        financial_contract_version: 2,
+        memberIds: ["caller_member"]
+      })
   ).rejects.toThrow("caller-visible identity surface exceeds");
 });
 
@@ -114,7 +118,10 @@ test("resolveLinkedAccountsForMemberIds rejects a byte-heavy caller surface dete
   await expect(
     t
       .withIdentity(identity("caller@example.com", "caller_auth"))
-      .query(api.users.resolveLinkedAccountsForMemberIds, { memberIds: ["caller_member"] })
+      .query(api.users.resolveLinkedAccountsForMemberIds, {
+        financial_contract_version: 2,
+        memberIds: ["caller_member"]
+      })
   ).rejects.toThrow("caller-visible identity surface exceeds");
 });
 
@@ -176,7 +183,10 @@ test("resolveLinkedAccountsForMemberIds resolves an authorized shared-group alia
 
   const result = await t
     .withIdentity(identity("caller@example.com", "caller_auth"))
-    .query(api.users.resolveLinkedAccountsForMemberIds, { memberIds: ["target_alias"] });
+    .query(api.users.resolveLinkedAccountsForMemberIds, {
+      financial_contract_version: 2,
+      memberIds: ["target_alias"]
+    });
 
   expect(result).toEqual([
     {
@@ -243,7 +253,10 @@ test("unrelated tenant groups and accounts do not affect authorized resolution",
   await expect(
     t
       .withIdentity(identity("caller@example.com", "caller_auth"))
-      .query(api.users.resolveLinkedAccountsForMemberIds, { memberIds: ["friend_member"] })
+      .query(api.users.resolveLinkedAccountsForMemberIds, {
+        financial_contract_version: 2,
+        memberIds: ["friend_member"]
+      })
   ).resolves.toEqual([
     {
       member_id: "friend_member",
