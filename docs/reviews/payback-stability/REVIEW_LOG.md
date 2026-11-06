@@ -83,3 +83,34 @@ Round 3 result: **APPROVED by all four reviewers** for SHA256
 Approval authorizes implementation against the plan. It is not evidence that code
 or runtime behavior is correct; all regression, sanitizer and code-review gates
 remain required. Production implementation starts only after this recorded gate.
+
+## Historical restore addendum
+
+Post-PR review reproduced a separate boundary: adding a canonical representative
+to a valid 64-member exported roster produces 65 members and restore rejects it.
+The repair requires a contract addendum rather than a larger membership limit.
+
+Round 1 reviewed SHA256
+`7fed7cdb7b2f123619ef9d4b8aa861d92b47690231db0defaf1a8914ce73febc`,
+preserved in `RESTORE_HISTORY_ADDENDUM-v1.md`. All three Sol reviewers requested
+changes. Two identified private-history disclosure through automatic account
+deletion stewardship; the transport reviewer identified deterministic overflow
+in the actual fixed-100 expense import and large header requests. Gemini also
+requested changes, including source-verifiable inactive-header, atomicity and
+direct-sharing concerns. Its suggestions for mutual friendship, automatic
+fail-open recovery, and mandatory removal of context references were rejected
+with reasons in the v3 decision log. V2 was preserved but superseded before a
+review round.
+
+Round 2 reviews the frozen `RESTORE_HISTORY_ADDENDUM-v3.md`, SHA256
+`645d86e0f581dcb57c6179ddaa8a979f01260595e5d55cca233264bff927e7ad`:
+
+- GPT-6.1 Sol identity/privacy/lifecycle: APPROVE design.
+- GPT-6.1 Sol financial/history/cleanup: APPROVE design.
+- GPT-6.1 Sol transport/budgets/recovery: APPROVE design.
+- Gemini 3.8 Flash High challenger: APPROVE design.
+  Task: `node:delegated-task:command%3Amcp%3Add9e163e-799f-4796-b250-154c0a849fc2%3Adelegate-task%3Apayback-restore-plan-gemini-r2-20261105`.
+
+All four approvals authorize implementation of this exact addendum. They do not
+establish runtime correctness. Its 14 acceptance requirements and final
+current-source checks remain implementation gates.
