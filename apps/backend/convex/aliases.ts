@@ -1582,6 +1582,7 @@ function assertTrustedInviteTarget(
 
 export type PreparedInviteMergeSource = {
   referenceRewrite?: CanonicalReferenceRewritePlan;
+  legacyVisibility?: Awaited<ReturnType<typeof prepareLegacyIdentityVisibility>>;
   sourceMemberIds: string[];
   sourceFriend: Doc<"account_friends">;
   targetFriend: Doc<"account_friends"> | null;
@@ -1687,6 +1688,19 @@ export async function prepareInviteMergeSourceInternal(
     throw new Error("Cannot merge because this identity is already attached to another friend");
   }
 
+  const legacyVisibility = options.preserveFinancialReferences
+    ? undefined
+    : await prepareLegacyIdentityVisibility(
+        ctx,
+        [
+          {
+            memberIds: normalizeMemberIds([...sourceMemberIds, targetMemberId]),
+            ownerId: account._id,
+            targetMemberId
+          }
+        ],
+        readBudget
+      );
   const referenceRewrite = options.preserveFinancialReferences
     ? undefined
     : await prepareCanonicalReferenceRewrite(
@@ -1701,6 +1715,7 @@ export async function prepareInviteMergeSourceInternal(
       );
   return {
     referenceRewrite,
+    legacyVisibility,
     sourceMemberIds: [...sourceMemberIds],
     sourceFriend,
     targetFriend,
@@ -1874,6 +1889,19 @@ export async function mergeAccountFriendIntoCanonicalInternal(
     throw new Error("Cannot merge because this identity is already attached to another friend");
   }
 
+  const legacyVisibility = options.preserveFinancialReferences
+    ? undefined
+    : await prepareLegacyIdentityVisibility(
+        ctx,
+        [
+          {
+            memberIds: normalizeMemberIds([...sourceMemberIds, effectiveTargetMemberId]),
+            ownerId: account._id,
+            targetMemberId: effectiveTargetMemberId
+          }
+        ],
+        readBudget
+      );
   const referenceRewrite = options.preserveFinancialReferences
     ? undefined
     : (options.preparedCanonicalRewrite ??
@@ -1891,19 +1919,6 @@ export async function mergeAccountFriendIntoCanonicalInternal(
           targetFriend.linked_account_email,
         readBudget
       )));
-  const legacyVisibility = options.preserveFinancialReferences
-    ? undefined
-    : await prepareLegacyIdentityVisibility(
-        ctx,
-        [
-          {
-            memberIds: [...sourceMemberIds],
-            ownerId: account._id,
-            targetMemberId: effectiveTargetMemberId
-          }
-        ],
-        readBudget
-      );
   const targetFriendPatch = {
     member_id: effectiveTargetMemberId,
     has_linked_account: provenLinkedTarget ? true : targetFriend.has_linked_account,

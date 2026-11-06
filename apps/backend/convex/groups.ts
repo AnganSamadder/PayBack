@@ -1,3 +1,4 @@
+import { assertGroupHistoryReady } from "./groupHistory";
 import {
   assertFinancialContract,
   assertExpectedActor,
@@ -82,6 +83,12 @@ async function assertGroupMemberFinancialContract(
   if (!owner) return;
   const aliases = await getOwnerLocalAliasMap(ctx, owner.email, { memberIds });
   await assertMemberIdentityReady(ctx, [...aliases.values()], ownerId, ready);
+  const canonical = new Set<string>();
+  for (const raw of new Set([...memberIds, ...aliases.values()])) {
+    const account = await resolveLiveAccountForMember(ctx, raw);
+    if (account?.member_id) canonical.add(account.member_id);
+  }
+  await assertMemberIdentityReady(ctx, [...canonical], ownerId, ready);
 }
 
 export const GROUP_PROJECTION_PAGE_TOO_LARGE =
@@ -131,6 +138,7 @@ async function projectReadableGroupPage(
         candidate = !!priorVisibility || (await canReadGroup(budgeted, group, user));
       }
       if (!candidate) continue;
+      await assertGroupHistoryReady(budgeted, group, user);
       // Fence a previously visible row before changed identity would filter it from the snapshot.
       await assertMemberFinancialContract(
         budgeted,
@@ -481,6 +489,17 @@ export const create = mutation({
           throw new Error("Forbidden: cannot update a group you do not own");
         }
         assertGroupWritable(existing);
+        const oldMembership = [
+          ...new Set(existing.members.map((member) => normalizeMemberId(member.id)))
+        ].sort();
+        const newMembership = [
+          ...new Set(args.members.map((member) => normalizeMemberId(member.id)))
+        ].sort();
+        if (
+          JSON.stringify(oldMembership) !== JSON.stringify(newMembership) ||
+          (args.is_direct !== undefined && Boolean(args.is_direct) !== Boolean(existing.is_direct))
+        )
+          await assertGroupHistoryReady(ctx, existing, user);
         await assertGroupMemberFinancialContract(
           ctx,
           existing.members.map((member) => member.id),

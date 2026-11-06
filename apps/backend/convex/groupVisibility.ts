@@ -1,3 +1,10 @@
+import { MeasuredBudgetError } from "./restoreContracts";
+import {
+  prepareGroupHistoryChange,
+  applyPreparedGroupHistoryChange,
+  cancelGroupHistoryForGroup,
+  type PreparedGroupHistoryChange
+} from "./groupHistory";
 import { hasFinancialContractMembers } from "./financialContract";
 import { getOwnerLocalAliasMap } from "./aliases";
 import {
@@ -112,7 +119,10 @@ function scrubInactiveAccountMembers(
 function chargeIdentityQuery(budget: IdentityReadBudget): void {
   budget.queries += 1;
   if (budget.queries > IDENTITY_READ_LIMITS.queries) {
-    throw new Error("Group visibility identity lookup is too large to complete safely");
+    throw new MeasuredBudgetError(
+      "group",
+      "Group visibility identity lookup is too large to complete safely"
+    );
   }
 }
 
@@ -120,7 +130,10 @@ function chargeIdentityRows(budget: IdentityReadBudget, rows: readonly Value[]):
   budget.rows += rows.length;
   budget.bytes += rows.reduce<number>((total, row) => total + getConvexSize(row), 0);
   if (budget.rows > IDENTITY_READ_LIMITS.rows || budget.bytes > IDENTITY_READ_LIMITS.bytes) {
-    throw new Error("Group visibility identity lookup is too large to complete safely");
+    throw new MeasuredBudgetError(
+      "group",
+      "Group visibility identity lookup is too large to complete safely"
+    );
   }
 }
 
@@ -355,6 +368,7 @@ type PreparedGroupPatch = {
   visibilityUpdatedAt: number;
   references: PreparedMemberReferences;
   floorAccounts: Doc<"accounts">[];
+  historyChange: PreparedGroupHistoryChange;
 };
 
 const preparedGroupVisibilityPatchBatchBrand: unique symbol = Symbol(
@@ -397,6 +411,7 @@ async function applyPreparedGroupPatch(
     });
   }
   for (const row of plan.deletes) await ctx.db.delete(row._id);
+  await applyPreparedGroupHistoryChange(ctx, prepared.historyChange);
 }
 
 export class GroupVisibilityWriteBatch {
@@ -455,7 +470,7 @@ export class GroupVisibilityWriteBatch {
   private chargeQuery(count = 1): void {
     this.budget.queries += count;
     if (this.budget.queries > this.limits.queries) {
-      throw new Error("Group visibility batch exceeds the safe query limit");
+      throw new MeasuredBudgetError("group", "Group visibility batch exceeds the safe query limit");
     }
     this.hooks.chargeQueries?.(count);
   }
@@ -464,10 +479,10 @@ export class GroupVisibilityWriteBatch {
     this.budget.rows += rows.length;
     this.budget.bytes += rows.reduce<number>((total, row) => total + getConvexSize(row), 0);
     if (this.budget.rows > this.limits.rows) {
-      throw new Error("Group visibility batch exceeds the safe row limit");
+      throw new MeasuredBudgetError("group", "Group visibility batch exceeds the safe row limit");
     }
     if (this.budget.bytes > this.limits.bytes) {
-      throw new Error("Group visibility batch exceeds the safe byte limit");
+      throw new MeasuredBudgetError("group", "Group visibility batch exceeds the safe byte limit");
     }
     this.hooks.chargeRows?.(rows);
   }
@@ -488,10 +503,13 @@ export class GroupVisibilityWriteBatch {
     this.budget.writes += reservation;
     this.budget.writeBytes += writeBytes + revisionBytes;
     if (this.budget.writes > this.limits.writes) {
-      throw new Error("Group visibility batch exceeds the safe write limit");
+      throw new MeasuredBudgetError("group", "Group visibility batch exceeds the safe write limit");
     }
     if (this.budget.writeBytes > this.limits.writeBytes) {
-      throw new Error("Group visibility batch exceeds the safe write byte limit");
+      throw new MeasuredBudgetError(
+        "group",
+        "Group visibility batch exceeds the safe write byte limit"
+      );
     }
     this.hooks.chargeWrites?.(reservation, writeBytes + revisionBytes);
     for (const accountId of newRevisionAccountIds) {
@@ -629,7 +647,7 @@ export class GroupVisibilityWriteBatch {
     for (const row of plan.deletes) await this.ctx.db.delete(row._id);
   }
 
-  async insert(value: GroupInsert): Promise<Id<"groups">> {
+  async insert(value: GroupInsert, restoreInactiveParties = false): Promise<Id<"groups">> {
     this.assertOpen();
     if (this.dryRun) {
       throw new Error("Dry-run group visibility batches only support patches and deletes");
@@ -641,13 +659,26 @@ export class GroupVisibilityWriteBatch {
       value.members.map((member) => member.id),
       value.owner_id
     );
+    const inactive = new Set<string>();
+    if (restoreInactiveParties) {
+      const { resolveHistoricalMemberAccount } = await import("./restoredHistory");
+      for (const member of value.members) {
+        const account = await resolveHistoricalMemberAccount(this.ctx, member.id, {
+          chargeQueries: () => this.chargeQuery(),
+          chargeRows: (rows) => this.chargeRows(rows)
+        });
+        if (isAccountDeletionFenced(account)) inactive.add(normalizeMemberId(member.id));
+      }
+    }
     const effectiveValue = {
       ...value,
       owner_email: value.owner_email.trim().toLowerCase(),
-      members: scrubInactiveAccountMembers(value.members, [], {
-        byMemberId: this.memberAccountCache,
-        byAccountId: this.accountByIdCache
-      })
+      members: restoreInactiveParties
+        ? value.members.filter((member) => !inactive.has(normalizeMemberId(member.id)))
+        : scrubInactiveAccountMembers(value.members, [], {
+            byMemberId: this.memberAccountCache,
+            byAccountId: this.accountByIdCache
+          })
     };
     const estimatedVisibilityBytes = visibleAccountIds.reduce(
       (total, accountId) =>
@@ -740,7 +771,14 @@ export class GroupVisibilityWriteBatch {
       this.referenceHooks()
     );
     const floorAccounts = await this.prepareFinancialFloors(nextGroup, visibleAccountIds);
+    const historyChange = await prepareGroupHistoryChange(
+      this.ctx,
+      previousGroup,
+      nextGroup,
+      this.referenceHooks()
+    );
     const prepared = {
+      historyChange,
       floorAccounts,
       groupId,
       patch,
@@ -794,6 +832,7 @@ export class GroupVisibilityWriteBatch {
       this.referenceHooks()
     );
     if (!this.dryRun) {
+      await cancelGroupHistoryForGroup(this.ctx, group);
       await applyPreparedMemberReferences(this.ctx, references);
       for (const row of existingRows) await this.ctx.db.delete(row._id);
       await this.ctx.db.delete(groupId);
@@ -1015,6 +1054,27 @@ export async function insertGroupWithVisibility(
   return groupId;
 }
 
+/** Restore-only omission of authoritative inactive third parties; ordinary authoring still rejects them. */
+export async function insertRestoredGroupWithVisibility(
+  ctx: MutationCtx,
+  value: GroupInsert,
+  options: GroupVisibilityBatchOptions = {}
+) {
+  const batch = new GroupVisibilityWriteBatch(ctx, options);
+  const groupId = await batch.insert(value, true);
+  await batch.flush();
+  options.budget?.chargeQueries?.(1);
+  const group = (await ctx.db.get(groupId))!;
+  options.budget?.chargeRows?.([group]);
+  const kept = new Set(group.members.map((member) => normalizeMemberId(member.id)));
+  return {
+    groupId,
+    omittedInactiveMemberIds: value.members
+      .map((member) => member.id)
+      .filter((id) => !kept.has(normalizeMemberId(id)))
+  };
+}
+
 export async function patchGroupWithVisibility(
   ctx: MutationCtx,
   groupId: Id<"groups">,
@@ -1042,6 +1102,15 @@ export async function patchGroupOwnerEmailForMaintenance(
   if (group.owner_email === ownerEmail) return;
   await ctx.db.patch(group._id, { owner_email: ownerEmail });
   // Email normalization does not change member references or their authoritative owner ID.
+}
+
+/** The history worker validates and budgets its generation before changing this pointer. */
+export async function patchGroupHistoryPointer(
+  ctx: MutationCtx,
+  groupId: Id<"groups">,
+  historyJobId: Id<"group_history_reconciliations"> | undefined
+): Promise<void> {
+  await ctx.db.patch(groupId, { history_reconciliation_id: historyJobId });
 }
 
 export async function materializeGroupVisibilitySlice(

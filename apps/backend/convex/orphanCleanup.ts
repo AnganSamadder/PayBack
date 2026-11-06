@@ -1,3 +1,6 @@
+import { cleanupAccountGroupHistoryPage } from "./groupHistory";
+import { isAccountDeletionFenced } from "./helpers";
+import { scheduleChangedFriendHistory } from "./cleanup";
 import { syncOwnerLocalAliasReferences } from "./aliases";
 import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx } from "./_generated/server";
@@ -342,6 +345,8 @@ export async function processOrphanCleanupStep(
   };
   if (!identity.email || !identity.subject) throw new Error("Orphan cleanup identity is invalid");
   await assertIdentityHasNoAccount(ctx, identity);
+  if (identity.accountId && !(await cleanupAccountGroupHistoryPage(ctx, identity.accountId)))
+    return { inProgress: true, processed: 1 };
 
   const ownedFriendsBySource = identity.source_email
     ? await ctx.db
@@ -360,6 +365,7 @@ export async function processOrphanCleanupStep(
       await syncOwnerLocalAliasReferences(ctx, null, friend._id);
       await ctx.db.delete(friend._id);
     }
+    await scheduleChangedFriendHistory(ctx, ownedFriends);
     return { inProgress: true, processed: ownedFriends.length };
   }
 
@@ -607,7 +613,7 @@ export async function processOrphanCleanupStep(
     }
     const survivingAccount = Array.from(linkedCandidates.values())[0];
     if (survivingAccount) {
-      if (survivingAccount.status === "deleted") {
+      if (isAccountDeletionFenced(survivingAccount)) {
         await ctx.db.patch(linkedFriend._id, {
           has_linked_account: false,
           linked_account_id: undefined,
@@ -626,6 +632,10 @@ export async function processOrphanCleanupStep(
           updated_at: Date.now()
         });
       }
+      await scheduleChangedFriendHistory(ctx, [
+        linkedFriend,
+        (await ctx.db.get(linkedFriend._id))!
+      ]);
       return { inProgress: true, processed: 1 };
     }
     if (rawIdentity.mode === "hard") {
@@ -641,6 +651,7 @@ export async function processOrphanCleanupStep(
         updated_at: Date.now()
       });
     }
+    await scheduleChangedFriendHistory(ctx, [linkedFriend]);
     return { inProgress: true, processed: 1 };
   }
 

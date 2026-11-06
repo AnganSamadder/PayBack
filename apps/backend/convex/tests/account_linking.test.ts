@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { backfillMemberReferences } from "../../tests/helpers/memberReferenceTestUtils";
 
 function authIdentity(email: string, subject: string) {
   return {
@@ -1416,9 +1417,28 @@ test("invite claim fails atomically when the creator-owned rewrite exceeds its b
     target_member_id: "large_invite_target",
     target_member_name: "Claimer"
   });
+  await backfillMemberReferences(t);
+  const before = await t.run(async (ctx) => ({
+    token: await ctx.db.query("invite_tokens").collect(),
+    accounts: await ctx.db.query("accounts").collect(),
+    groups: await ctx.db.query("groups").collect(),
+    friends: await ctx.db.query("account_friends").collect(),
+    aliases: await ctx.db.query("member_aliases").collect(),
+    revisions: await ctx.db.query("account_sync_state").collect()
+  }));
   await expect(
     claimer.mutation(api.inviteTokens.claim, { financial_contract_version: 2, id: "large_invite" })
-  ).rejects.toThrow("Friend merge is too large to complete safely");
+  ).rejects.toThrow("FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Use resumable linking for this history");
+  expect(
+    await t.run(async (ctx) => ({
+      token: await ctx.db.query("invite_tokens").collect(),
+      accounts: await ctx.db.query("accounts").collect(),
+      groups: await ctx.db.query("groups").collect(),
+      friends: await ctx.db.query("account_friends").collect(),
+      aliases: await ctx.db.query("member_aliases").collect(),
+      revisions: await ctx.db.query("account_sync_state").collect()
+    }))
+  ).toEqual(before);
 
   const state = await t.run(async (ctx) => ({
     token: await ctx.db

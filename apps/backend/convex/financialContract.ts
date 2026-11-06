@@ -7,6 +7,18 @@ export const FINANCIAL_CONTRACT_UPGRADE_REQUIRED =
   "FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Update PayBack before reading or changing this financial history.";
 export const IDENTITY_OPERATION_PENDING =
   "IDENTITY_OPERATION_PENDING: Account linking is still processing. Keep the last complete snapshot and resume the operation.";
+/** Older clients select one split per identity and cannot safely interpret duplicate raw rows. */
+export function requiresCurrentFinancialContract(expense: {
+  splits: readonly { member_id: string }[];
+}): boolean {
+  const members = new Set<string>();
+  for (const split of expense.splits) {
+    const member = normalizeMemberId(split.member_id);
+    if (members.has(member)) return true;
+    members.add(member);
+  }
+  return false;
+}
 export function assertExpectedActor(
   user: Doc<"accounts">,
   args: { expected_account_id?: string; expected_account_email?: string }
@@ -344,4 +356,392 @@ export async function hasFinancialContractMembers(
     }
   }
   return false;
+}
+
+// Opaque server-only capabilities; validators never accept these values from clients.
+const historyScopeBrand: unique symbol = Symbol("HistoryWorkerScope");
+export type HistoryWorkerDescriptor =
+  | { kind: "identity"; operation_id: Id<"identity_operations">; generation: string }
+  | { kind: "group_history"; job_id: Id<"group_history_reconciliations">; generation: string }
+  | { kind: "account_deletion"; progress_id: Id<"account_deletion_progress">; request_id: string }
+  | { kind: "friend_deletion"; job_id: Id<"friend_deletion_jobs"> };
+export type HistoryWorkerScope = {
+  readonly [historyScopeBrand]: true;
+  readonly descriptors: HistoryWorkerDescriptor[];
+  readonly contextGroupId?: Id<"groups">;
+  readonly deletionExpenseId?: Id<"expenses">;
+};
+type ValidatedHistoryScope = {
+  operations: Map<string, Doc<"identity_operations">>;
+  jobs: Map<string, Doc<"group_history_reconciliations">>;
+  deletingAccounts: Set<string>;
+  preparatoryAccounts: Set<string>;
+  friendJobs: Set<string>;
+};
+async function validateHistoryScope(
+  ctx: Pick<QueryCtx, "db">,
+  scope: HistoryWorkerScope
+): Promise<ValidatedHistoryScope> {
+  if (scope?.[historyScopeBrand] !== true || scope.descriptors.length > 32)
+    throw new Error("Invalid internal history scope");
+  const result: ValidatedHistoryScope = {
+    operations: new Map(),
+    jobs: new Map(),
+    deletingAccounts: new Set(),
+    preparatoryAccounts: new Set(),
+    friendJobs: new Set()
+  };
+  for (const descriptor of scope.descriptors) {
+    if (descriptor.kind === "identity") {
+      const operation = await ctx.db.get(descriptor.operation_id);
+      if (
+        !operation ||
+        operation.generation !== descriptor.generation ||
+        operation.phase === "complete" ||
+        operation.terminal_reconciled
+      )
+        throw new Error("Stale identity reconciliation generation");
+      result.operations.set(String(operation._id), operation);
+    } else if (descriptor.kind === "group_history") {
+      const job = await ctx.db.get(descriptor.job_id);
+      const group = job ? await ctx.db.get(job.group_ref) : null;
+      if (
+        !job ||
+        job.generation !== descriptor.generation ||
+        job.phase === "complete" ||
+        !group ||
+        group.deletion_token ||
+        group.owner_id !== job.owner_id ||
+        group.history_reconciliation_id !== job._id
+      )
+        throw new Error("Stale group history generation");
+      result.jobs.set(String(job._id), job);
+    } else if (descriptor.kind === "account_deletion") {
+      const progress = await ctx.db.get(descriptor.progress_id);
+      const account = progress ? await ctx.db.get(progress.account_id) : null;
+      const preparatory =
+        !!progress &&
+        (progress.phase.startsWith("preflight_") || progress.phase === "activate_deletion_fence");
+      if (
+        !progress ||
+        progress.request_id !== descriptor.request_id ||
+        !account ||
+        account.id !== progress.account_auth_id ||
+        (account.status === "deleted" && progress.deletion_mode !== "hard") ||
+        (!preparatory &&
+          account.status !== "deleting" &&
+          !(account.status === "deleted" && progress.deletion_mode === "hard"))
+      )
+        throw new Error("Stale account deletion scope");
+      if (preparatory && account.status !== "deleting" && account.status !== "deleted")
+        result.preparatoryAccounts.add(String(account._id));
+      else result.deletingAccounts.add(String(account._id));
+    } else {
+      const job = await ctx.db.get(descriptor.job_id);
+      if (!job || job.phase === "complete" || job.phase === "cancelled")
+        throw new Error("Stale friend deletion scope");
+      result.friendJobs.add(String(job._id));
+    }
+  }
+  return result;
+}
+export async function createHistoryWorkerScope(
+  ctx: Pick<QueryCtx, "db">,
+  descriptor: HistoryWorkerDescriptor
+): Promise<HistoryWorkerScope> {
+  let scope: HistoryWorkerScope = { [historyScopeBrand]: true, descriptors: [descriptor] };
+  const initial = await validateHistoryScope(ctx, scope);
+  if (descriptor.kind === "group_history")
+    scope = { ...scope, contextGroupId: initial.jobs.get(String(descriptor.job_id))!.group_ref };
+  if (descriptor.kind === "identity") {
+    const root = initial.operations.get(String(descriptor.operation_id))!;
+    // This worker changes only derived visibility. Let it finish first while the
+    // already-authorized deletion continues to fence public reads and writes.
+    if (
+      root.kind === "friend_history" &&
+      root.actor_id === root.creator_id &&
+      root.local_owner_id === root.actor_id
+    ) {
+      for (const phase of [
+        "preflight_groups",
+        "preflight_expenses",
+        "groups",
+        "expenses",
+        "failed"
+      ] as const) {
+        const jobs = await ctx.db
+          .query("friend_deletion_jobs")
+          .withIndex("by_owner_phase", (q) => q.eq("owner_id", root.actor_id).eq("phase", phase))
+          .take(9);
+        if (jobs.length > 8 || scope.descriptors.length + jobs.length > 32)
+          throw new Error("Friend history overlap requires bounded maintenance");
+        for (const job of jobs)
+          scope.descriptors.push({ kind: "friend_deletion", job_id: job._id });
+      }
+    }
+    const queue = [descriptor.operation_id],
+      seen = new Set<string>();
+    while (queue.length) {
+      const id = queue.shift()!;
+      if (seen.has(String(id))) continue;
+      if (seen.size >= 8) throw new Error("Identity dependency scope requires bounded maintenance");
+      seen.add(String(id));
+      const operation = await ctx.db.get(id);
+      if (!operation) throw new Error("Missing identity dependency");
+      if (
+        operation.phase !== "complete" &&
+        !operation.terminal_reconciled &&
+        id !== descriptor.operation_id
+      )
+        scope.descriptors.push({
+          kind: "identity",
+          operation_id: id,
+          generation: operation.generation
+        });
+      if (operation.dependency_operation_id) queue.push(operation.dependency_operation_id);
+      const parents = await ctx.db
+        .query("identity_operations")
+        .withIndex("by_dependency", (q) => q.eq("dependency_operation_id", id))
+        .take(9);
+      if (parents.length > 8)
+        throw new Error("Identity dependency scope requires bounded maintenance");
+      queue.push(...parents.map((parent) => parent._id));
+    }
+  }
+  await validateHistoryScope(ctx, scope);
+  return scope;
+}
+export async function joinHistoryGroupContext(
+  ctx: Pick<QueryCtx, "db">,
+  scope: HistoryWorkerScope,
+  group: Doc<"groups">
+): Promise<HistoryWorkerScope> {
+  const state = await validateHistoryScope(ctx, scope);
+  const bound =
+    [...state.operations.values()].some(
+      (operation) => operation.history_progress?.group_ref === group._id
+    ) || [...state.jobs.values()].some((job) => job.group_ref === group._id);
+  if (!bound) throw new Error("History worker is not bound to this group");
+  const descriptors = [...scope.descriptors];
+  if (group.history_reconciliation_id && !state.jobs.has(String(group.history_reconciliation_id))) {
+    const job = await ctx.db.get(group.history_reconciliation_id);
+    if (!job || job.group_ref !== group._id || job.owner_id !== group.owner_id)
+      throw new Error("Invalid group history pointer");
+    descriptors.push({ kind: "group_history", job_id: job._id, generation: job.generation });
+  }
+  const joined: HistoryWorkerScope = {
+    [historyScopeBrand]: true,
+    descriptors,
+    contextGroupId: group._id
+  };
+  await validateHistoryScope(ctx, joined);
+  return joined;
+}
+export async function historyScopeAllowsGroup(
+  ctx: Pick<QueryCtx, "db">,
+  scope: HistoryWorkerScope | undefined,
+  group: Doc<"groups">
+): Promise<boolean> {
+  if (!scope) return false;
+  const state = await validateHistoryScope(ctx, scope);
+  if (scope.deletionExpenseId) {
+    const expense = await ctx.db.get(scope.deletionExpenseId);
+    if (
+      expense?.group_ref === group._id &&
+      expense.owner_id &&
+      state.deletingAccounts.has(String(expense.owner_id))
+    )
+      return true;
+  }
+  if (
+    state.deletingAccounts.has(String(group.owner_id)) ||
+    state.preparatoryAccounts.has(String(group.owner_id))
+  )
+    return true;
+  return (
+    !!group.history_reconciliation_id && state.jobs.has(String(group.history_reconciliation_id))
+  );
+}
+/** Bind deletion precedence to an existing source record, never caller-supplied ownership. */
+export async function bindHistoryExpenseScope(
+  ctx: Pick<QueryCtx, "db">,
+  scope: HistoryWorkerScope | undefined,
+  expense: { _id?: Id<"expenses">; owner_id?: Id<"accounts">; group_ref?: Id<"groups"> }
+): Promise<HistoryWorkerScope | undefined> {
+  if (scope?.deletionExpenseId && scope.deletionExpenseId !== expense._id)
+    throw new Error("Account deletion scope belongs to another expense");
+  if (!scope || !expense._id) return scope;
+  const state = await validateHistoryScope(ctx, scope);
+  if (!expense.owner_id || !state.deletingAccounts.has(String(expense.owner_id))) return scope;
+  const persisted = await ctx.db.get(expense._id);
+  if (
+    !persisted ||
+    persisted.owner_id !== expense.owner_id ||
+    persisted.group_ref !== expense.group_ref
+  )
+    throw new Error("Stale account deletion expense binding");
+  return { ...scope, deletionExpenseId: persisted._id };
+}
+async function historyOperationAllowed(
+  ctx: Pick<QueryCtx, "db">,
+  scope: HistoryWorkerScope,
+  state: ValidatedHistoryScope,
+  operation: Doc<"identity_operations">,
+  memberId?: string,
+  dependentReference = false
+): Promise<boolean> {
+  if (
+    state.operations.has(String(operation._id)) ||
+    state.deletingAccounts.has(String(operation.actor_id)) ||
+    state.deletingAccounts.has(String(operation.creator_id))
+  )
+    return true;
+  // A bound inline page may share the current record's overlapping identity generation.
+  // Only a marker actually encountered for that record can extend this internal scope.
+  if (
+    (scope.contextGroupId || state.deletingAccounts.size > 0) &&
+    memberId &&
+    (dependentReference ||
+      normalizeMemberIds([
+        ...operation.source_member_ids,
+        operation.target_member_id,
+        ...(operation.discovery_member_ids ?? [])
+      ]).includes(memberId))
+  ) {
+    if (scope.descriptors.length >= 32)
+      throw new Error("Overlapping history generations require maintenance");
+    scope.descriptors.push({
+      kind: "identity",
+      operation_id: operation._id,
+      generation: operation.generation
+    });
+    state.operations.set(String(operation._id), operation);
+    return true;
+  }
+  return false;
+}
+export async function assertHistoryProjectionReady(
+  ctx: Pick<QueryCtx, "db">,
+  args: {
+    ownerId?: Id<"accounts">;
+    memberIds: readonly string[];
+    groupId?: Id<"groups">;
+    scope?: HistoryWorkerScope;
+  },
+  hooks?: IdentityReadBudgetHooks
+): Promise<void> {
+  const reader = hooks ? withIdentityReadBudget(ctx, hooks) : ctx;
+  if (!args.scope) {
+    if (args.ownerId) {
+      const owner = await reader.db.get(args.ownerId);
+      if (owner) await assertFinancialContract(reader, owner, FINANCIAL_CONTRACT_VERSION);
+    }
+    await assertMemberFinancialContract(
+      reader,
+      args.memberIds,
+      FINANCIAL_CONTRACT_VERSION,
+      args.ownerId
+    );
+    if (args.groupId) {
+      const group = await reader.db.get(args.groupId);
+      if (group) await (await import("./groupHistory")).assertGroupHistoryReady(reader, group);
+    }
+    return;
+  }
+  const scope = args.scope,
+    state = await validateHistoryScope(reader, scope);
+  for (const member of normalizeMemberIds([...args.memberIds])) {
+    for (const owner of args.ownerId ? [undefined, args.ownerId] : [undefined]) {
+      for (const active of [true, undefined]) {
+        const markers = await reader.db
+          .query("identity_operation_members")
+          .withIndex("by_member_owner_active", (q) =>
+            q.eq("member_id", member).eq("local_owner_id", owner).eq("active", active)
+          )
+          .take(33);
+        if (markers.length > 32) throw new Error(IDENTITY_OPERATION_PENDING);
+        for (const marker of markers) {
+          const operation = await reader.db.get(marker.operation_id);
+          if (!operation) throw new Error(IDENTITY_OPERATION_PENDING);
+          if (
+            operation.phase !== "complete" &&
+            !operation.terminal_reconciled &&
+            !(await historyOperationAllowed(reader, scope, state, operation, member))
+          )
+            throw new Error(IDENTITY_OPERATION_PENDING);
+        }
+      }
+      if (owner) {
+        const items = await reader.db
+          .query("identity_operation_dependents")
+          .withIndex("by_owner_member", (q) => q.eq("owner_id", owner).eq("member_id", member))
+          .take(33);
+        if (items.length > 32) throw new Error(IDENTITY_OPERATION_PENDING);
+        for (const item of items) {
+          const operation = await reader.db.get(item.operation_id);
+          if (
+            !operation ||
+            (operation.phase !== "complete" &&
+              !operation.terminal_reconciled &&
+              !(await historyOperationAllowed(reader, scope, state, operation, member, true)))
+          )
+            throw new Error(IDENTITY_OPERATION_PENDING);
+        }
+      }
+    }
+  }
+  if (args.ownerId) {
+    const owner = await reader.db.get(args.ownerId);
+    if (
+      !owner ||
+      ((owner.status === "deleted" || owner.status === "deleting") &&
+        !state.deletingAccounts.has(String(owner._id)))
+    )
+      throw new Error("Account deletion takes precedence over history projection");
+    // Empty-member owner probes defer identity overlap checks until the actual financial/context IDs arrive.
+    if (args.memberIds.length)
+      for (const role of ["actor_id", "creator_id"] as const) {
+        for (const phase of [
+          "groups",
+          "expenses",
+          "owner_aliases",
+          "dependent_reset",
+          "dependent_references",
+          "failed"
+        ] as const) {
+          const pending = await reader.db
+            .query("identity_operations")
+            .withIndex(role === "actor_id" ? "by_actor_phase" : "by_creator_phase", (q) =>
+              q.eq(role, args.ownerId!).eq("phase", phase).eq("terminal_reconciled", undefined)
+            )
+            .take(9);
+          if (pending.length > 8) throw new Error(IDENTITY_OPERATION_PENDING);
+          for (const operation of pending)
+            if (!(await historyOperationAllowed(reader, scope, state, operation)))
+              throw new Error(IDENTITY_OPERATION_PENDING);
+        }
+      }
+    if (!state.deletingAccounts.has(String(owner._id)))
+      for (const phase of [
+        "preflight_groups",
+        "preflight_expenses",
+        "groups",
+        "expenses",
+        "failed"
+      ] as const) {
+        const pending = await reader.db
+          .query("friend_deletion_jobs")
+          .withIndex("by_owner_phase", (q) => q.eq("owner_id", owner._id).eq("phase", phase))
+          .take(9);
+        if (pending.length > 8 || pending.some((job) => !state.friendJobs.has(String(job._id))))
+          throw new Error("FRIEND_DELETION_PENDING: Friend removal is still processing.");
+      }
+  }
+  if (args.groupId) {
+    const group = await reader.db.get(args.groupId);
+    if (group)
+      await (
+        await import("./groupHistory")
+      ).assertGroupHistoryReady(reader, group, undefined, scope);
+  }
 }

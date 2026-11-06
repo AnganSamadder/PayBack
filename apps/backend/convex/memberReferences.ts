@@ -16,6 +16,13 @@ export function expenseReferenceMemberIds(expense: Doc<"expenses">): string[] {
     ...expense.participants.map((participant) => participant.member_id)
   ]);
 }
+/** Context IDs are discovery dependencies only; cleanup must keep using expenseReferenceMemberIds. */
+export function expenseDependencyMemberIds(expense: Doc<"expenses">): string[] {
+  return normalizeMemberIds([
+    ...expenseReferenceMemberIds(expense),
+    ...(expense.restored_history_context_member_ids ?? [])
+  ]);
+}
 export async function assertMemberReferencesReady(ctx: Pick<QueryCtx, "db">): Promise<void> {
   const state = await ctx.db
     .query("member_reference_state")
@@ -59,8 +66,10 @@ export async function prepareMemberReferences(
   const members = source
     ? kind === "group"
       ? normalizeMemberIds((source as Doc<"groups">).members.map((member) => member.id))
-      : expenseReferenceMemberIds(source as Doc<"expenses">)
+      : expenseDependencyMemberIds(source as Doc<"expenses">)
     : [];
+  const history =
+    kind === "expense" && source ? (source as Doc<"expenses">).has_restored_history : undefined;
   if (members.length > MAX_REFERENCES_PER_ENTITY)
     throw new Error("Member reference count exceeds the supported entity size");
   hooks.chargeQueries?.(1);
@@ -77,7 +86,9 @@ export async function prepareMemberReferences(
     if (!remaining.delete(row.member_id)) prepared.deletes.push(row);
     else if (
       source &&
-      (row.source_revision !== source.updated_at || row.owner_id !== source.owner_id)
+      (row.source_revision !== source.updated_at ||
+        row.owner_id !== source.owner_id ||
+        row.has_restored_history !== history)
     ) {
       prepared.updates.push({
         row,
@@ -86,7 +97,8 @@ export async function prepareMemberReferences(
           entity_document_id: entityId,
           member_id: row.member_id,
           owner_id: source.owner_id,
-          source_revision: source.updated_at
+          source_revision: source.updated_at,
+          has_restored_history: history
         }
       });
     }
@@ -98,7 +110,8 @@ export async function prepareMemberReferences(
         entity_document_id: entityId,
         member_id,
         owner_id: source.owner_id,
-        source_revision: source.updated_at
+        source_revision: source.updated_at,
+        has_restored_history: history
       });
   hooks.chargeWrites?.(
     prepared.deletes.length + prepared.updates.length + prepared.inserts.length,

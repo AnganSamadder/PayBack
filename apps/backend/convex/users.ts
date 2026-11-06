@@ -1,3 +1,5 @@
+import { isAccountDeletionFenced } from "./helpers";
+import { scheduleChangedFriendHistory } from "./cleanup";
 import {
   internalAction,
   internalMutation,
@@ -421,6 +423,7 @@ async function cleanupOrphanedDataForEmailLegacy(
     friendIds.push(friend._id);
   }
 
+  await scheduleChangedFriendHistory(ctx, friends);
   const groupsByEmail = await ctx.db
     .query("groups")
     .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
@@ -572,7 +575,7 @@ async function cleanupOrphanedDataForEmailLegacy(
       throw new Error("Cannot clean a friend with conflicting linked ownership");
     }
     const survivingAccount = Array.from(candidates.values())[0];
-    if (survivingAccount && survivingAccount.status !== "deleted") {
+    if (survivingAccount && !isAccountDeletionFenced(survivingAccount)) {
       await ctx.db.patch(friend._id, {
         has_linked_account: true,
         linked_account_id: survivingAccount.id,
@@ -581,6 +584,7 @@ async function cleanupOrphanedDataForEmailLegacy(
         link_state: "linked",
         updated_at: Date.now()
       });
+      await scheduleChangedFriendHistory(ctx, [friend, (await ctx.db.get(friend._id))!]);
       continue;
     }
     await ctx.db.patch(friend._id, {
@@ -590,6 +594,7 @@ async function cleanupOrphanedDataForEmailLegacy(
       linked_member_id: undefined,
       updated_at: Date.now()
     });
+    await scheduleChangedFriendHistory(ctx, [friend]);
     unlinkedIds.push(friend._id);
   }
 

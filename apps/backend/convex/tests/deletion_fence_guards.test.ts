@@ -108,7 +108,7 @@ test.each([
   }
 );
 
-test("bulk import rejects a group containing a deleting account before writes", async () => {
+test("bulk restore omits a deleting third party without granting group visibility", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
     await seedAccount(ctx, {
@@ -131,25 +131,43 @@ test("bulk import rejects a group containing a deleting account before writes", 
   });
 
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
-  await expect(
-    owner.mutation(api.bulkImport.bulkImport, {
-      financial_contract_version: 2,
-      friends: [],
-      groups: [
-        {
-          id: "late_group",
-          name: "Late group",
-          members: [
-            { id: "owner_member", name: "Owner", is_current_user: true },
-            { id: "deleting_member", name: "Deleting" }
-          ]
-        }
-      ],
-      expenses: []
-    })
-  ).rejects.toThrow("being deleted");
-
-  expect(await t.run(async (ctx) => ctx.db.query("groups").collect())).toEqual([]);
+  const result = await owner.mutation(api.bulkImport.bulkImport, {
+    financial_contract_version: 2,
+    friends: [],
+    groups: [
+      {
+        id: "late_group",
+        name: "Late group",
+        members: [
+          { id: "owner_member", name: "Owner", is_current_user: true },
+          { id: "deleting_member", name: "Deleting" }
+        ]
+      }
+    ],
+    expenses: []
+  });
+  expect(result.errors).toEqual([]);
+  expect(result.outcomes).toEqual([
+    { kind: "group", id: "late_group", status: "created", notice: "inactive_party_scrubbed" }
+  ]);
+  const stored = await t.run(async (ctx) => ({
+    groups: await ctx.db.query("groups").collect(),
+    visibility: await ctx.db.query("group_visibility").collect(),
+    accounts: await ctx.db.query("accounts").collect(),
+    friends: await ctx.db.query("account_friends").collect(),
+    expenses: await ctx.db.query("expenses").collect()
+  }));
+  expect(stored.groups).toHaveLength(1);
+  expect(stored.groups[0].members).toEqual([
+    { id: "owner_member", name: "Owner", is_current_user: true }
+  ]);
+  const ownerAccount = stored.accounts.find((account) => account.id === "owner_auth")!;
+  const deletingAccount = stored.accounts.find((account) => account.id === "deleting_auth")!;
+  expect(deletingAccount.status).toBe("deleting");
+  expect(stored.visibility.map((row) => row.account_id)).toEqual([ownerAccount._id]);
+  expect(stored.visibility.some((row) => row.account_id === deletingAccount._id)).toBe(false);
+  expect(stored.friends).toEqual([]);
+  expect(stored.expenses).toEqual([]);
 });
 
 test("bulk import rejects writes into a deletion-fenced group", async () => {

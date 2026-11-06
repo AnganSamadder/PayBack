@@ -888,6 +888,46 @@ export async function prepareClaimForUser(
     throw new Error("Cannot merge the claimant identity into the inviter");
   }
 
+  const claimVisibility = options.preserveFinancialReferences
+    ? undefined
+    : await prepareLegacyIdentityVisibility(
+        ctx,
+        [
+          {
+            memberIds: normalizeMemberIds([linkContext.targetMemberId, userCanonicalMemberId]),
+            targetMemberId: userCanonicalMemberId
+          },
+          ...(ownerLocalTargetAliases.length
+            ? [
+                {
+                  memberIds: normalizeMemberIds([
+                    ...ownerLocalTargetAliases,
+                    userCanonicalMemberId
+                  ]),
+                  ownerId: creatorAccount._id,
+                  targetMemberId: userCanonicalMemberId
+                }
+              ]
+            : [])
+        ],
+        budget
+      );
+  const legacyVisibility = claimVisibility
+    ? {
+        groups: [
+          ...new Set([
+            ...claimVisibility.groups,
+            ...(selectedFriendMerge?.legacyVisibility?.groups ?? [])
+          ])
+        ],
+        expenses: [
+          ...new Set([
+            ...claimVisibility.expenses,
+            ...(selectedFriendMerge?.legacyVisibility?.expenses ?? [])
+          ])
+        ]
+      }
+    : undefined;
   const referenceRewrite = options.preserveFinancialReferences
     ? undefined
     : await prepareClaimedFriendReferenceRewrite(
@@ -907,33 +947,6 @@ export async function prepareClaimForUser(
         budget
       )
     : undefined;
-  const legacyVisibility = options.preserveFinancialReferences
-    ? undefined
-    : await prepareLegacyIdentityVisibility(
-        ctx,
-        [
-          { memberIds: [linkContext.targetMemberId], targetMemberId: userCanonicalMemberId },
-          ...(ownerLocalTargetAliases.length
-            ? [
-                {
-                  memberIds: [...ownerLocalTargetAliases],
-                  ownerId: creatorAccount._id,
-                  targetMemberId: userCanonicalMemberId
-                }
-              ]
-            : []),
-          ...(selectedFriendMerge
-            ? [
-                {
-                  memberIds: selectedFriendMerge.sourceMemberIds,
-                  ownerId: user._id,
-                  targetMemberId: creatorMemberId
-                }
-              ]
-            : [])
-        ],
-        budget
-      );
   const { aliasInsert, staleFenceDeletes } = await prepareBudgetedAliasInsert(
     ctx,
     { id: user.id, email: user.email, member_id: userCanonicalMemberId },

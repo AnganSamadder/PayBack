@@ -1,9 +1,11 @@
+import { assertGroupHistoryReady } from "./groupHistory";
 import { validateExpenseMoney } from "./moneyValidation";
 import { findCanonicalDirectLedger } from "./directLedger";
 import {
   assertFinancialContract,
   assertExpectedActor,
   assertMemberFinancialContract,
+  requiresCurrentFinancialContract,
   resolveLiveAccountForMember
 } from "./financialContract";
 import {
@@ -62,6 +64,10 @@ const financialArgs = {
   expected_account_id: v.optional(v.string()),
   expected_account_email: v.optional(v.string())
 };
+function assertExpenseFinancialContract(expense: Doc<"expenses">, version?: number): void {
+  if ((version ?? 0) < 2 && requiresCurrentFinancialContract(expense))
+    throw new Error("FINANCIAL_CONTRACT_UPGRADE_REQUIRED");
+}
 async function canReadExpense(
   ctx: any,
   user: Doc<"accounts">,
@@ -69,6 +75,10 @@ async function canReadExpense(
   version?: number,
   cache: ExpenseIdentityResolutionCache = createExpenseIdentityResolutionCache()
 ): Promise<boolean> {
+  if (expense.has_restored_history && expense.group_ref) {
+    const group = await ctx.db.get(expense.group_ref);
+    if (group) await assertGroupHistoryReady(ctx, group, user, undefined, expense.id);
+  }
   await assertMemberFinancialContract(
     ctx,
     [
@@ -85,9 +95,11 @@ async function canReadExpense(
   // A pending global claim may otherwise hide a row before its projection is gated.
   await deriveExpenseFinancialIdentityMap(ctx, expense, cache);
   if (await isExpenseAttachedToDeletingGroup(ctx, expense)) return false;
-  return (
+  const authorized = (
     await resolveActiveExpenseParticipantAccounts(ctx, expense, new Set(), cache, user._id)
   ).some((account) => account._id === user._id);
+  if (authorized) assertExpenseFinancialContract(expense, version);
+  return authorized;
 }
 
 type ExpenseResponse = Doc<"expenses"> & { financial_identity_map: Record<string, string> };
@@ -204,6 +216,7 @@ async function requireGroupAccess(
   group: any,
   precomputedEquivalentIds?: Set<string>
 ): Promise<Set<string>> {
+  await assertGroupHistoryReady(ctx, group, user);
   await resolveAuthoritativeExpenseOwnerAccount(ctx, group);
   const callerEquivalentIds =
     precomputedEquivalentIds ?? (await buildUserEquivalentMemberIds(ctx.db, user));
@@ -539,7 +552,22 @@ const expenseMutationDefinition = {
       .withIndex("by_client_id", (q) => q.eq("id", args.id))
       .unique();
 
-    if (existing) await deriveExpenseFinancialIdentityMap(ctx, existing);
+    if (existing) {
+      if (
+        (args.financial_contract_version ?? 0) < 2 &&
+        requiresCurrentFinancialContract(existing) &&
+        !(await canReadExpense(ctx, user, existing, 2))
+      )
+        throw new Error("Forbidden: expense access denied");
+      assertExpenseFinancialContract(existing, args.financial_contract_version);
+      await deriveExpenseFinancialIdentityMap(ctx, existing);
+      if (
+        existing.has_restored_history &&
+        existing.owner_id !== user._id &&
+        !(await canReadExpense(ctx, user, existing, args.financial_contract_version))
+      )
+        throw new Error("Forbidden: expense access denied");
+    }
     if (!existing) validateExpenseMoney(args, "authoring");
     if (!existing && (args.financial_contract_version ?? 0) < 2)
       throw new Error("FINANCIAL_CONTRACT_UPGRADE_REQUIRED");
@@ -932,6 +960,7 @@ const expenseMutationDefinition = {
         .query("groups")
         .withIndex("by_client_id", (q) => q.eq("id", args.group_id))
         .unique();
+      if (suppliedGroup) await assertGroupHistoryReady(ctx, suppliedGroup, user);
       if (requestedContextKind === "direct" && suppliedGroup && !suppliedGroup.is_direct)
         throw new Error("Direct expenses require a direct group");
       const isDirectWrite =
@@ -941,6 +970,7 @@ const expenseMutationDefinition = {
         !existing && isDirectWrite
           ? await findCanonicalDirectLedger(ctx, user, normalizedInvolved)
           : null;
+      if (directSelection?.group) await assertGroupHistoryReady(ctx, directSelection.group, user);
       if (directSelection?.group) args = { ...args, group_id: directSelection.group.id };
       if (
         existing &&
@@ -1779,6 +1809,12 @@ export const deleteExpense = mutation({
     if (!expense) return;
 
     await deriveExpenseFinancialIdentityMap(ctx, expense);
+    if (
+      expense.has_restored_history &&
+      expense.owner_id !== user._id &&
+      !(await canReadExpense(ctx, user, expense, args.financial_contract_version))
+    )
+      throw new Error("Not authorized to delete this expense");
 
     const isCreator =
       (await resolveAuthoritativeExpenseOwnerAccount(ctx, expense))?._id === user._id;
@@ -1805,6 +1841,7 @@ export const deleteExpense = mutation({
       throw new Error("Not authorized to delete this expense");
     }
 
+    assertExpenseFinancialContract(expense, args.financial_contract_version);
     await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense }]);
   }
 });
@@ -1834,6 +1871,12 @@ export const deleteExpenses = mutation({
       if (!expense) continue;
 
       await deriveExpenseFinancialIdentityMap(ctx, expense, identityCache);
+      if (
+        expense.has_restored_history &&
+        expense.owner_id !== user._id &&
+        !(await canReadExpense(ctx, user, expense, args.financial_contract_version, identityCache))
+      )
+        continue;
 
       const isCreator =
         (await resolveAuthoritativeExpenseOwnerAccount(ctx, expense))?._id === user._id;
@@ -1858,6 +1901,7 @@ export const deleteExpenses = mutation({
         continue;
       }
 
+      assertExpenseFinancialContract(expense, args.financial_contract_version);
       operations.push({ kind: "delete" as const, expense });
     }
     await applyExpenseWriteBatch(ctx, operations);

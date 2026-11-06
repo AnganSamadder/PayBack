@@ -533,3 +533,36 @@ test("recoverable failures keep active barriers until a resumed operation comple
   await f.t.run((ctx) => assertMemberFinancialContract(ctx, ["placeholder"], 2, f.owner));
   await finishScheduledFunctions(f.t);
 });
+
+test("an obsolete inline page failure cannot shrink a newer operation checkpoint", async () => {
+  vi.useFakeTimers();
+  const f = await fixture();
+  await f.t.run((ctx) =>
+    ctx.db.patch(f.operation, {
+      progress_version: 3,
+      history_progress: {
+        group_ref: f.group,
+        cursor: "current",
+        page_size: 4,
+        reference_cursor: "return",
+        reference_done: false
+      }
+    })
+  );
+  expect(
+    await f.t.mutation(internal.identityOperations.step, {
+      operation_id: f.operation,
+      expected_version: 2
+    })
+  ).toEqual({ continue: false });
+  await f.t.mutation(internal.identityOperations.recordFailure, {
+    operation_id: f.operation,
+    error: "old page budget",
+    budget_scope: "history",
+    expected_version: 2
+  });
+  const operation = await f.t.run((ctx) => ctx.db.get(f.operation));
+  expect(operation?.history_progress?.page_size).toBe(4);
+  expect(operation?.history_progress?.cursor).toBe("current");
+  expect(operation?.progress_version).toBe(3);
+});

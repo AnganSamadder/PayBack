@@ -1,9 +1,10 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
+import { scheduleRestrictedDirectHistoryForMembers } from "./groupHistory";
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { resolveCanonicalMemberIdInternal } from "./aliases";
+import { resolveCanonicalMemberIdInternal, getAllEquivalentMemberIds } from "./aliases";
 import {
   assertAccountCanAcceptChanges,
   getCurrentUserOrThrow,
@@ -229,6 +230,17 @@ export const accept = mutation({
         updated_at: Date.now()
       });
     }
+
+    await scheduleRestrictedDirectHistoryForMembers(
+      ctx,
+      recipient._id,
+      await getAllEquivalentMemberIds(ctx.db, senderCanonicalId)
+    );
+    await scheduleRestrictedDirectHistoryForMembers(
+      ctx,
+      sender._id,
+      await getAllEquivalentMemberIds(ctx.db, recipientCanonicalId)
+    );
 
     return { success: true };
   }

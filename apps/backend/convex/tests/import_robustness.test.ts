@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { defineSchema, defineTable } from "convex/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
 import type { Doc } from "../_generated/dataModel";
@@ -8,6 +8,30 @@ import { isExpenseOwnedByAccount, isGroupOwnedByAccount } from "../bulkImport";
 import { resolveProvenFriendLink } from "../friendLinkProvenance";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { backfillMemberReferences } from "../../tests/helpers/memberReferenceTestUtils";
+
+async function expectImportError(request: Promise<unknown>, expected: Record<string, string>) {
+  const error = await request.catch((cause: unknown) => cause);
+  expect(error).toBeInstanceOf(ConvexError);
+  if (!(error instanceof ConvexError)) throw new Error("Expected a structured import failure");
+  const payload = typeof error.data === "string" ? JSON.parse(error.data) : error.data;
+  expect(payload).toEqual(expected);
+}
+
+async function importState(t: ReturnType<typeof convexTest>) {
+  return await t.run(async (ctx) => ({
+    accounts: await ctx.db.query("accounts").collect(),
+    friends: await ctx.db.query("account_friends").collect(),
+    groups: await ctx.db.query("groups").collect(),
+    expenses: await ctx.db.query("expenses").collect(),
+    references: await ctx.db.query("member_references").collect(),
+    ownerAliases: await ctx.db.query("owner_member_aliases").collect(),
+    globalAliases: await ctx.db.query("member_aliases").collect(),
+    expenseVisibility: await ctx.db.query("user_expenses").collect(),
+    groupVisibility: await ctx.db.query("group_visibility").collect(),
+    revisions: await ctx.db.query("account_sync_state").collect()
+  }));
+}
 
 const legacyGroupOwnershipSchema = defineSchema({
   ...schema.tables,
@@ -239,7 +263,7 @@ test("bulkImport rejects oversized group membership before writing any records",
   expect(await t.run(async (ctx) => ctx.db.query("groups").collect())).toHaveLength(0);
 });
 
-test("bulkImport deduplicates normalized incoming friend identities before writes", async () => {
+test("bulkImport rejects normalized duplicate friend IDs before any writes", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
   await t.run(async (ctx) => {
@@ -268,31 +292,28 @@ test("bulkImport deduplicates normalized incoming friend identities before write
     emailVerified: true,
     updatedAt: ""
   });
-  await owner.mutation(api.bulkImport.bulkImport, {
-    financial_contract_version: 2,
-    friends: [
-      {
-        member_id: " FRIEND_MEMBER ",
-        name: "First copy",
-        profile_avatar_color: "#111111"
-      },
-      {
-        member_id: "friend_member",
-        name: "Latest copy",
-        profile_avatar_color: "#222222"
-      }
-    ],
-    groups: [],
-    expenses: []
-  });
-
-  const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
-  expect(friends).toHaveLength(1);
-  expect(friends[0]).toMatchObject({
-    member_id: "friend_member",
-    name: "Latest copy",
-    profile_avatar_color: "#222222"
-  });
+  const before = await importState(t);
+  await expectImportError(
+    owner.mutation(api.bulkImport.bulkImport, {
+      financial_contract_version: 2,
+      friends: [
+        {
+          member_id: " FRIEND_MEMBER ",
+          name: "First copy",
+          profile_avatar_color: "#111111"
+        },
+        {
+          member_id: "friend_member",
+          name: "Latest copy",
+          profile_avatar_color: "#222222"
+        }
+      ],
+      groups: [],
+      expenses: []
+    }),
+    { code: "IMPORT_MANIFEST_INVALID", message: "Duplicate friend IDs" }
+  );
+  expect(await importState(t)).toEqual(before);
 });
 
 test("bulkImport caps distinct incoming friends before writes", async () => {
@@ -341,7 +362,7 @@ test("bulkImport caps distinct incoming friends before writes", async () => {
   expect(await t.run(async (ctx) => ctx.db.query("account_friends").collect())).toHaveLength(0);
 });
 
-test("bulkImport reserves aggregate proven-link work before friend writes", async () => {
+test("bulkImport ignores unrelated friend provenance but bounds the requested proven-link work", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
   await t.run(async (ctx) => {
@@ -385,6 +406,7 @@ test("bulkImport reserves aggregate proven-link work before friend writes", asyn
     emailVerified: true,
     updatedAt: ""
   });
+  const before = await importState(t);
   await expect(
     owner.mutation(api.bulkImport.bulkImport, {
       financial_contract_version: 2,
@@ -398,7 +420,7 @@ test("bulkImport reserves aggregate proven-link work before friend writes", asyn
       groups: [],
       expenses: []
     })
-  ).rejects.toThrow("Import identity work exceeds the safe limit");
+  ).resolves.toMatchObject({ created: { friends: 1 }, errors: [] });
 
   const newFriend = await t.run(async (ctx) =>
     ctx.db
@@ -408,10 +430,33 @@ test("bulkImport reserves aggregate proven-link work before friend writes", asyn
       )
       .unique()
   );
-  expect(newFriend).toBeNull();
+  expect(newFriend).toMatchObject({ member_id: "new_friend", name: "New friend" });
+  const after = await importState(t);
+  expect({
+    ...after,
+    friends: after.friends.filter((friend) => friend.member_id !== "new_friend")
+  }).toEqual(before);
+  const targetedFriends = Array.from({ length: 140 }, (_, index) => ({
+    member_id: `legacy_friend_${index}`,
+    name: `Updated ${index}`,
+    profile_avatar_color: "#333333"
+  }));
+  await expectImportError(
+    owner.mutation(api.bulkImport.bulkImport, {
+      financial_contract_version: 2,
+      friends: [
+        ...targetedFriends,
+        { member_id: "blocked_new_friend", name: "Must roll back", profile_avatar_color: "#444444" }
+      ],
+      groups: [],
+      expenses: []
+    }),
+    { code: "IMPORT_BUDGET_EXCEEDED", scope: "identity" }
+  );
+  expect(await importState(t)).toEqual(after);
 });
 
-test("bulkImport charges historical link evidence bytes before friend writes", async () => {
+test("bulkImport ignores unrelated link evidence but charges it when its friend is requested", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
   const largeEvidenceName = "x".repeat(500 * 1024);
@@ -470,6 +515,7 @@ test("bulkImport charges historical link evidence bytes before friend writes", a
     emailVerified: true,
     updatedAt: ""
   });
+  const before = await importState(t);
   await expect(
     owner.mutation(api.bulkImport.bulkImport, {
       financial_contract_version: 2,
@@ -483,7 +529,7 @@ test("bulkImport charges historical link evidence bytes before friend writes", a
       groups: [],
       expenses: []
     })
-  ).rejects.toThrow("Import work exceeds the safe limit");
+  ).resolves.toMatchObject({ created: { friends: 1 }, errors: [] });
 
   const newFriend = await t.run(async (ctx) =>
     ctx.db
@@ -493,7 +539,28 @@ test("bulkImport charges historical link evidence bytes before friend writes", a
       )
       .unique()
   );
-  expect(newFriend).toBeNull();
+  expect(newFriend).toMatchObject({ member_id: "new_friend", name: "New friend" });
+  const after = await importState(t);
+  expect({
+    ...after,
+    friends: after.friends.filter((friend) => friend.member_id !== "new_friend")
+  }).toEqual(before);
+  const targetedFriends = [
+    { member_id: "legacy_friend", name: "Updated legacy", profile_avatar_color: "#333333" }
+  ];
+  await expectImportError(
+    owner.mutation(api.bulkImport.bulkImport, {
+      financial_contract_version: 2,
+      friends: [
+        ...targetedFriends,
+        { member_id: "blocked_new_friend", name: "Must roll back", profile_avatar_color: "#444444" }
+      ],
+      groups: [],
+      expenses: []
+    }),
+    { code: "IMPORT_BUDGET_EXCEEDED", scope: "request" }
+  );
+  expect(await importState(t)).toEqual(after);
 }, 30_000);
 
 test("proven-link evidence is charged one bounded document at a time across surfaces", async () => {
@@ -644,7 +711,7 @@ test("bulkImport matches a normalized legacy friend at the compatibility boundar
   });
 });
 
-test("bulkImport fails atomically when legacy friend compatibility exceeds its bound", async () => {
+test("bulkImport requires alias-index readiness then imports without scanning 257 unrelated friends", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
   await t.run(async (ctx) => {
@@ -683,6 +750,18 @@ test("bulkImport fails atomically when legacy friend compatibility exceeds its b
     emailVerified: true,
     updatedAt: ""
   });
+  const beforeMigration = await importState(t);
+  await expect(
+    owner.mutation(api.bulkImport.bulkImport, {
+      financial_contract_version: 2,
+      friends: [{ member_id: "new_member", name: "New Friend", profile_avatar_color: "#222222" }],
+      groups: [],
+      expenses: []
+    })
+  ).rejects.toThrow("MEMBER_REFERENCES_NOT_READY");
+  expect(await importState(t)).toEqual(beforeMigration);
+  await backfillMemberReferences(t);
+  const before = await importState(t);
   await expect(
     owner.mutation(api.bulkImport.bulkImport, {
       financial_contract_version: 2,
@@ -696,11 +775,16 @@ test("bulkImport fails atomically when legacy friend compatibility exceeds its b
       groups: [],
       expenses: []
     })
-  ).rejects.toThrow("Identity maintenance required");
+  ).resolves.toMatchObject({ created: { friends: 1 }, errors: [] });
 
   const friends = await t.run(async (ctx) => ctx.db.query("account_friends").collect());
-  expect(friends).toHaveLength(257);
-  expect(friends.some((friend) => friend.member_id === "new_member")).toBe(false);
+  expect(friends).toHaveLength(258);
+  expect(friends.some((friend) => friend.member_id === "new_member")).toBe(true);
+  const after = await importState(t);
+  expect({
+    ...after,
+    friends: after.friends.filter((friend) => friend.member_id !== "new_member")
+  }).toEqual(before);
 });
 
 test("import_robustness: does not dedupe by name-only when id mismatches", async () => {
@@ -1005,39 +1089,36 @@ test("bulkImport ignores client link claims for new friends and expense particip
   expect(state.visibility.map((row) => row.user_id)).toEqual(["owner_auth"]);
 });
 
-test("bulkImport deduplicates incoming group and expense client IDs before work", async () => {
-  const { t, owner } = await createBoundedImportScenario();
-
-  await owner.mutation(api.bulkImport.bulkImport, {
-    financial_contract_version: 2,
-    friends: [],
-    groups: [
-      {
-        id: "duplicate_group",
-        name: "First group",
-        members: [{ id: "owner_member", name: "Owner" }]
-      },
-      {
-        id: "duplicate_group",
-        name: "Latest group",
-        members: [{ id: "owner_member", name: "Owner" }]
-      }
-    ],
-    expenses: [
-      importExpense("duplicate_expense", "duplicate_group", "First expense"),
-      importExpense("duplicate_expense", "duplicate_group", "Latest expense")
-    ]
-  });
-
-  const state = await t.run(async (ctx) => ({
-    groups: await ctx.db.query("groups").collect(),
-    expenses: await ctx.db.query("expenses").collect()
-  }));
-  expect(state.groups).toHaveLength(1);
-  expect(state.groups[0].name).toBe("Latest group");
-  expect(state.expenses).toHaveLength(1);
-  expect(state.expenses[0].description).toBe("Latest expense");
-});
+test.each(["group", "expense"] as const)(
+  "bulkImport rejects duplicate %s IDs before any writes",
+  async (kind) => {
+    const { t, owner } = await createBoundedImportScenario();
+    const before = await importState(t);
+    const group = {
+      id: "duplicate_group",
+      name: "First group",
+      members: [{ id: "owner_member", name: "Owner" }]
+    };
+    const expense = importExpense("duplicate_expense", group.id, "First expense");
+    await expectImportError(
+      owner.mutation(api.bulkImport.bulkImport, {
+        financial_contract_version: 2,
+        friends: [
+          {
+            member_id: "should_not_commit",
+            name: "Pending friend",
+            profile_avatar_color: "#111111"
+          }
+        ],
+        groups: kind === "group" ? [group, { ...group, name: "Second group" }] : [group],
+        expenses:
+          kind === "expense" ? [expense, { ...expense, description: "Second expense" }] : [expense]
+      }),
+      { code: "IMPORT_MANIFEST_INVALID", message: `Duplicate ${kind} IDs` }
+    );
+    expect(await importState(t)).toEqual(before);
+  }
+);
 
 test("bulkImport caps distinct incoming group IDs before writes", async () => {
   const { t, owner } = await createBoundedImportScenario();
@@ -1058,7 +1139,7 @@ test("bulkImport caps distinct incoming group IDs before writes", async () => {
   expect(await t.run(async (ctx) => ctx.db.query("groups").collect())).toHaveLength(0);
 });
 
-test("bulkImport materializes the maximum same-owner local-only group batch", async () => {
+test("bulkImport rolls back a dense group request and restores the same IDs in bounded header chunks", async () => {
   const { t, owner } = await createBoundedImportScenario();
   const groups = Array.from({ length: 256 }, (_, index) => ({
     id: `bounded_group_${index}`,
@@ -1069,14 +1150,31 @@ test("bulkImport materializes the maximum same-owner local-only group batch", as
     ]
   }));
 
-  await expect(
+  const before = await importState(t);
+  await expectImportError(
     owner.mutation(api.bulkImport.bulkImport, {
       financial_contract_version: 2,
       friends: [],
       groups,
       expenses: []
-    })
-  ).resolves.toMatchObject({ created: { groups: 256 } });
+    }),
+    { code: "IMPORT_BUDGET_EXCEEDED", scope: "request" }
+  );
+  expect(await importState(t)).toEqual(before);
+  for (let offset = 0; offset < groups.length; offset += 4) {
+    const chunk = groups.slice(offset, offset + 4);
+    const result = await owner.mutation(api.bulkImport.bulkImport, {
+      financial_contract_version: 2,
+      friends: [],
+      groups: chunk,
+      expenses: []
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.created.groups).toBe(chunk.length);
+    expect(result.outcomes).toEqual(
+      chunk.map((group) => ({ kind: "group", id: group.id, status: "created" }))
+    );
+  }
 
   const state = await t.run(async (ctx) => ({
     groups: await ctx.db.query("groups").collect(),
@@ -1087,7 +1185,11 @@ test("bulkImport materializes the maximum same-owner local-only group batch", as
   expect(state.visibility).toHaveLength(256);
   expect(new Set(state.visibility.map((row) => row.account_id))).toHaveLength(1);
   expect(state.syncStates).toHaveLength(1);
-  expect(state.syncStates[0]?.groups_revision).toBe(1);
+  // Each successfully inserted group advances the owning account revision once.
+  expect(state.syncStates[0]?.groups_revision).toBe(groups.length);
+  expect(state.groups.map((group) => group.id).sort()).toEqual(
+    groups.map((group) => group.id).sort()
+  );
 });
 
 test("bulkImport caps distinct incoming expense IDs before writes", async () => {
@@ -1126,20 +1228,50 @@ test("bulkImport caps distinct incoming expense IDs before writes", async () => 
 
 test("bulkImport caps aggregate potential write fanout before writes", async () => {
   const { t, owner } = await createBoundedImportScenario();
-  const participantIds = Array.from({ length: 8 }, (_, index) => `participant_${index}`);
+  const participantIds = [
+    "owner_member",
+    ...Array.from({ length: 7 }, (_, index) => `participant_${index}`)
+  ];
+  await t.run(async (ctx) => {
+    for (const memberId of participantIds.slice(1))
+      await ctx.db.insert("accounts", {
+        id: `auth_${memberId}`,
+        email: `${memberId}@test.com`,
+        display_name: memberId,
+        member_id: memberId,
+        created_at: 1
+      });
+  });
   const expenses = Array.from({ length: 512 }, (_, index) => ({
-    ...importExpense(`fanout_expense_${index}`, "missing_group"),
-    participant_member_ids: participantIds
+    ...importExpense(`fanout_expense_${index}`, "fanout_group"),
+    involved_member_ids: participantIds,
+    splits: participantIds.map((memberId, row) => ({
+      id: `split_${index}_${row}`,
+      member_id: memberId,
+      amount: 0.125,
+      is_settled: false
+    })),
+    participant_member_ids: participantIds,
+    participants: participantIds.map((memberId) => ({ member_id: memberId, name: memberId }))
   }));
 
-  await expect(
+  const before = await importState(t);
+  await expectImportError(
     owner.mutation(api.bulkImport.bulkImport, {
       financial_contract_version: 2,
       friends: [],
-      groups: [],
+      groups: [
+        {
+          id: "fanout_group",
+          name: "Fanout",
+          members: participantIds.map((id) => ({ id, name: id }))
+        }
+      ],
       expenses
-    })
-  ).rejects.toThrow("Import work exceeds the safe limit");
+    }),
+    { code: "IMPORT_BUDGET_EXCEEDED", scope: "request" }
+  );
+  expect(await importState(t)).toEqual(before);
   expect(await t.run(async (ctx) => ctx.db.query("expenses").collect())).toHaveLength(0);
 });
 
@@ -1156,7 +1288,7 @@ test("bulkImport reserves owner visibility when the owner is omitted at the writ
     await ctx.db.insert("groups", {
       id: "write_boundary_group",
       name: "Write boundary",
-      members: [],
+      members: participantIds.map((id) => ({ id, name: id })),
       owner_email: ownerAccount.email,
       owner_account_id: ownerAccount.id,
       owner_id: ownerAccount._id,
@@ -1190,8 +1322,17 @@ test("bulkImport reserves owner visibility when the owner is omitted at the writ
     }
   });
 
-  const expenses = Array.from({ length: 512 }, (_, index) => ({
+  // 384 * (one expense + three listed viewers) reaches 1536; the owner is an additional viewer.
+  const expenses = Array.from({ length: 384 }, (_, index) => ({
     ...importExpense(`owner_visibility_boundary_${index}`, "write_boundary_group"),
+    paid_by_member_id: participantIds[0],
+    involved_member_ids: participantIds,
+    splits: participantIds.map((memberId, row) => ({
+      id: `split_${index}_${row}`,
+      member_id: memberId,
+      amount: row === 2 ? 0.5 : 0.25,
+      is_settled: false
+    })),
     participant_member_ids: participantIds,
     participants: participantIds.map((memberId, participantIndex) => ({
       member_id: memberId,
@@ -1199,14 +1340,17 @@ test("bulkImport reserves owner visibility when the owner is omitted at the writ
     }))
   }));
 
-  await expect(
+  const before = await importState(t);
+  await expectImportError(
     owner.mutation(api.bulkImport.bulkImport, {
       financial_contract_version: 2,
       friends: [],
       groups: [],
       expenses
-    })
-  ).rejects.toThrow("Import work exceeds the safe limit");
+    }),
+    { code: "IMPORT_BUDGET_EXCEEDED", scope: "request" }
+  );
+  expect(await importState(t)).toEqual(before);
   expect(await t.run(async (ctx) => ctx.db.query("expenses").collect())).toHaveLength(0);
 });
 
@@ -1225,14 +1369,17 @@ test("bulkImport bounds stale expense visibility before any writes", async () =>
     }
   });
 
-  await expect(
+  const before = await importState(t);
+  await expectImportError(
     owner.mutation(api.bulkImport.bulkImport, {
       financial_contract_version: 2,
       friends: [],
       groups: [{ id: "new_visibility_group", name: "New group", members: [] }],
       expenses: [importExpense(expenseId, "new_visibility_group")]
-    })
-  ).rejects.toThrow("Import work exceeds the safe limit");
+    }),
+    { code: "IMPORT_BUDGET_EXCEEDED", scope: "request" }
+  );
+  expect(await importState(t)).toEqual(before);
 
   const state = await t.run(async (ctx) => ({
     group: await ctx.db
@@ -1255,7 +1402,7 @@ test("bulkImport bounds stale expense visibility before any writes", async () =>
   expect(state.visibilityCount).toBe(22);
 });
 
-test("bulkImport bounds existing owned-group bytes before the Convex read limit", async () => {
+test("bulkImport ignores unrelated large owned groups in an empty restore request", async () => {
   const { t, owner, now } = await createBoundedImportScenario();
   const largeText = "x".repeat(400 * 1024);
   await t.run(async (ctx) => {
@@ -1278,6 +1425,7 @@ test("bulkImport bounds existing owned-group bytes before the Convex read limit"
     }
   });
 
+  const before = await importState(t);
   await expect(
     owner.mutation(api.bulkImport.bulkImport, {
       financial_contract_version: 2,
@@ -1285,7 +1433,8 @@ test("bulkImport bounds existing owned-group bytes before the Convex read limit"
       groups: [],
       expenses: []
     })
-  ).rejects.toThrow("Import work exceeds the safe limit");
+  ).resolves.toMatchObject({ errors: [], outcomes: [] });
+  expect(await importState(t)).toEqual(before);
 });
 
 test.each(["owner_account_id", "owner_email"] as const)(
@@ -2345,6 +2494,18 @@ test.each([
     "active"
   ],
   [
+    "legacy row with live account-alias evidence",
+    {
+      has_linked_account: true,
+      linked_account_id: "friend_auth",
+      linked_account_email: "friend@test.com",
+      status: "friend"
+    },
+    { has_linked_account: false, status: "manual" },
+    true,
+    "active"
+  ],
+  [
     "server-linked row whose account is deleted",
     {
       has_linked_account: true,
@@ -2360,7 +2521,8 @@ test.each([
   ]
 ] as const)(
   "bulkImport preserves source identities and trusts linked metadata only for server-proven links during %s",
-  async (_, existingLinkFields, importedLinkFields, isServerProven, linkedAccountStatus) => {
+  async (scenario, existingLinkFields, importedLinkFields, isServerProven, linkedAccountStatus) => {
+    const hasLiveAlias = scenario === "legacy row with live account-alias evidence";
     const t = convexTest(schema, modules);
     const now = Date.now();
     await t.run(async (ctx) => {
@@ -2377,6 +2539,7 @@ test.each([
         display_name: "Friend",
         created_at: now,
         member_id: "friend_canonical",
+        alias_member_ids: hasLiveAlias ? ["friend_legacy"] : undefined,
         status: linkedAccountStatus
       });
       await ctx.db.insert("identity_materialization_state", {
@@ -2385,6 +2548,16 @@ test.each([
         phase: "complete",
         updated_at: now
       });
+      if (hasLiveAlias) {
+        await ctx.db.insert("member_aliases", {
+          account_email: "friend@test.com",
+          alias_member_id: "friend_legacy",
+          canonical_member_id: "friend_canonical",
+          source_account_id: "friend_auth",
+          materialization_source: "account_alias",
+          created_at: now
+        });
+      }
       await ctx.db.insert("account_friends", {
         account_email: "owner@test.com",
         member_id: "friend_legacy",
@@ -2509,7 +2682,14 @@ test.each([
       expect(storedFriend).not.toHaveProperty("linked_account_email");
       expect(storedFriend).not.toHaveProperty("linked_member_id");
     }
-    expect(state.alias).toBeNull();
+    if (hasLiveAlias) {
+      expect(state.alias).toMatchObject({
+        alias_member_id: "friend_legacy",
+        canonical_member_id: "friend_canonical",
+        source_account_id: "friend_auth",
+        materialization_source: "account_alias"
+      });
+    } else expect(state.alias).toBeNull();
 
     expect(state.group?.members.map((member) => member.id)).toEqual([
       "owner_member",
@@ -2544,9 +2724,18 @@ test.each([
       expect(state.expense?.participants[1]).not.toHaveProperty("linked_account_id");
       expect(state.expense?.participants[1]).not.toHaveProperty("linked_account_email");
     }
+    // Legacy linked metadata can remain valid without proving that this raw financial ID
+    // currently belongs to the registered account. Restored history needs live equivalence.
     expect(state.visibility.map((row) => row.user_id).sort()).toEqual(
-      isServerProven ? ["friend_auth", "owner_auth"] : ["owner_auth"]
+      hasLiveAlias ? ["friend_auth", "owner_auth"] : ["owner_auth"]
     );
+    if (linkedAccountStatus === "active") {
+      const friend = t.withIdentity({ subject: "friend_auth", email: "friend@test.com" });
+      const visible = await friend.query(api.expenses.list, { financial_contract_version: 2 });
+      expect(visible.map((expense) => expense.id)).toEqual(
+        hasLiveAlias ? ["expense_link_import"] : []
+      );
+    }
 
     const importedFinancialMemberIds = [
       ...(state.group?.members.map((member) => member.id) ?? []),

@@ -29,6 +29,7 @@ import type * as fix_alias from "../fix_alias.js";
 import type * as friendLinkProvenance from "../friendLinkProvenance.js";
 import type * as friend_requests from "../friend_requests.js";
 import type * as friends from "../friends.js";
+import type * as groupHistory from "../groupHistory.js";
 import type * as groupVisibility from "../groupVisibility.js";
 import type * as groups from "../groups.js";
 import type * as helpers from "../helpers.js";
@@ -46,6 +47,8 @@ import type * as migrations_userExpenseRefs from "../migrations/userExpenseRefs.
 import type * as moneyValidation from "../moneyValidation.js";
 import type * as orphanCleanup from "../orphanCleanup.js";
 import type * as rateLimit from "../rateLimit.js";
+import type * as restoreContracts from "../restoreContracts.js";
+import type * as restoredHistory from "../restoredHistory.js";
 import type * as syncState from "../syncState.js";
 import type * as tests from "../tests.js";
 import type * as users from "../users.js";
@@ -76,6 +79,7 @@ declare const fullApi: ApiFromModules<{
   friendLinkProvenance: typeof friendLinkProvenance;
   friend_requests: typeof friend_requests;
   friends: typeof friends;
+  groupHistory: typeof groupHistory;
   groupVisibility: typeof groupVisibility;
   groups: typeof groups;
   helpers: typeof helpers;
@@ -93,6 +97,8 @@ declare const fullApi: ApiFromModules<{
   moneyValidation: typeof moneyValidation;
   orphanCleanup: typeof orphanCleanup;
   rateLimit: typeof rateLimit;
+  restoreContracts: typeof restoreContracts;
+  restoredHistory: typeof restoredHistory;
   syncState: typeof syncState;
   tests: typeof tests;
   users: typeof users;

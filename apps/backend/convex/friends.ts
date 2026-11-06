@@ -1,8 +1,10 @@
+import { scheduleChangedFriendHistory } from "./cleanup";
 import { syncOwnerLocalAliasReferences } from "./aliases";
 import {
   assertFinancialContract,
   assertExpectedActor,
-  assertMemberFinancialContract
+  assertMemberFinancialContract,
+  pendingIdentityOperation
 } from "./financialContract";
 import { query, mutation, internalMutation, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -126,6 +128,15 @@ async function deleteFriendBatch(
     .withIndex("by_email", (q) => q.eq("email", accountEmail))
     .unique();
   if (owner) {
+    const pending = await pendingIdentityOperation(ctx, owner._id);
+    if (pending?.kind === "friend_history") {
+      if (scheduleContinuation && pending.phase !== "failed")
+        await ctx.scheduler.runAfter(1000, internal.friends.clearAllForUserBatch, {
+          accountEmail,
+          cutoff
+        });
+      return { inProgress: true, processed: 0, cutoff };
+    }
     await assertFinancialContract(ctx, owner, 2);
     if (friends.length)
       await ctx.db.patch(owner._id, {
@@ -136,6 +147,7 @@ async function deleteFriendBatch(
     await syncOwnerLocalAliasReferences(ctx, null, friend._id);
     await ctx.db.delete(friend._id);
   }
+  await scheduleChangedFriendHistory(ctx, friends);
   if (scheduleContinuation && friends.length === FRIEND_CLEAR_BATCH_SIZE) {
     await ctx.scheduler.runAfter(0, internal.friends.clearAllForUserBatch, {
       accountEmail,
@@ -521,6 +533,7 @@ export const upsert = mutation({
           await ctx.db.get(existingLegacy._id),
           existingLegacy._id
         );
+        await scheduleChangedFriendHistory(ctx, [existingLegacy]);
         return existingLegacy._id;
       }
       const provenLink = await resolveProvenFriendLink(ctx, existingLegacy);
@@ -553,6 +566,12 @@ export const upsert = mutation({
         await ctx.db.get(existingLegacy._id),
         existingLegacy._id
       );
+      if (
+        existingLegacy.has_linked_account !== (provenLink !== null) ||
+        existingLegacy.linked_account_id !== provenLink?.linkedAccountId ||
+        existingLegacy.linked_member_id !== provenLink?.linkedMemberId
+      )
+        await scheduleChangedFriendHistory(ctx, [existingLegacy]);
       return existingLegacy._id;
     } else {
       const isGhost =
@@ -586,7 +605,9 @@ export const clearAllForUser = mutation({
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
 
-    await assertFinancialContract(ctx, user, args.financial_contract_version);
+    await assertFinancialContract(ctx, user, args.financial_contract_version, {
+      allowPending: true
+    });
     await deleteFriendBatch(ctx, user.email.trim().toLowerCase(), Date.now(), true);
     return null;
   }
@@ -607,7 +628,9 @@ export const clearAllForUserV2 = mutation({
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
     assertExpectedActor(user, args);
-    await assertFinancialContract(ctx, user, args.financial_contract_version);
+    await assertFinancialContract(ctx, user, args.financial_contract_version, {
+      allowPending: true
+    });
     return await deleteFriendBatch(
       ctx,
       user.email.trim().toLowerCase(),

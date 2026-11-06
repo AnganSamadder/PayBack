@@ -1,10 +1,15 @@
-import { assertMemberReferencesReady } from "./memberReferences";
+import { resolveRestrictedHistoryStewardCandidates } from "./restoredHistory";
+import { assertMemberReferencesReady, expenseReferenceMemberIds } from "./memberReferences";
 import {
   assertFinancialContract,
   assertMemberIdentityReady,
   assertExpectedActor,
   pendingIdentityOperation,
-  raiseFinancialContract
+  raiseFinancialContract,
+  createHistoryWorkerScope,
+  bindHistoryExpenseScope,
+  withIdentityReadBudget,
+  type HistoryWorkerScope
 } from "./financialContract";
 import {
   mutation,
@@ -14,7 +19,7 @@ import {
   MutationCtx
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { v } from "convex/values";
+import { v, getConvexSize, type Value } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import {
   ensureCleanupEmailMaterializationScheduled,
@@ -39,6 +44,7 @@ import {
 import {
   collectActiveExpenseMemberIds,
   createExpenseIdentityResolutionCache,
+  deriveOwnerScopedFinancialIdentityMap,
   ExpenseIdentityResolutionCache,
   getCurrentUserOrThrow,
   isAccountDeletionFenced,
@@ -53,9 +59,14 @@ import {
 import {
   applyExpenseWriteBatch,
   type ExpenseWriteOperation,
+  type ExpenseWriteBatchBudgetHooks,
   MAX_EXPENSE_VIEWERS,
   MAX_EXPENSE_WRITE_OPERATIONS
 } from "./expenseWrites";
+import {
+  scheduleRestrictedDirectHistoryForMembers,
+  cleanupAccountGroupHistoryPage
+} from "./groupHistory";
 import { isSyncMaterializationReady } from "./syncState";
 import { GROUP_VISIBILITY_MATERIALIZATION_KEY } from "./migrations/groupVisibility";
 
@@ -504,7 +515,8 @@ async function prepareEquivalentMemberRemovalFromExpense(
   normalizedEquivalentIds: ReadonlySet<string>,
   budget: FriendCleanupAggregateBudget,
   cache: ExpenseIdentityResolutionCache,
-  ownerAccount: Doc<"accounts">
+  ownerAccount: Doc<"accounts">,
+  historyScope?: HistoryWorkerScope
 ): Promise<PreparedRemovedFriendExpense> {
   if (!expenseReferencesEquivalentMember(expense, normalizedEquivalentIds)) {
     return { outcome: "unchanged", expense };
@@ -541,7 +553,9 @@ async function prepareEquivalentMemberRemovalFromExpense(
     ctx,
     visibilityExpense,
     new Set(),
-    cache
+    cache,
+    undefined,
+    historyScope
   );
   const participantEmails = Array.from(
     new Set(activeParticipantAccounts.map((account) => account.email.trim().toLowerCase()))
@@ -708,6 +722,12 @@ function scrubDeletedAccountFromExpense(
       };
     }),
     linked_participants: undefined,
+    inactive_participant_member_ids: Array.from(
+      new Set([
+        ...(expense.inactive_participant_member_ids ?? []),
+        ...expenseReferenceMemberIds(expense).filter((id) => deletedMemberIds.has(id))
+      ])
+    ),
     updated_at: Date.now()
   };
 }
@@ -833,12 +853,165 @@ export const removeLegacyFields = internalMutation({
   }
 });
 
+/** Import callers account for all nested relationship-job reads, document writes and scheduling. */
+function friendHistoryBudgetContext(
+  ctx: MutationCtx,
+  budget?: ExpenseWriteBatchBudgetHooks
+): MutationCtx {
+  if (!budget) return ctx;
+  const reader = withIdentityReadBudget(ctx, budget).db;
+  const db = new Proxy(ctx.db, {
+    get(target, property) {
+      if (property === "query" || property === "get")
+        return Reflect.get(reader, property).bind(reader);
+      const method = Reflect.get(target, property);
+      if (["insert", "patch", "replace", "delete"].includes(String(property)))
+        return async (...args: unknown[]) => {
+          let bytes = 64;
+          if (property === "insert") bytes += getConvexSize(args[1] as Value) + 256;
+          else if (property === "patch" || property === "replace") {
+            const old = await reader.get(args[0] as Id<"accounts">);
+            bytes += getConvexSize(
+              (property === "patch" ? { ...old, ...(args[1] as object) } : args[1]) as Value
+            );
+          }
+          budget.chargeWrites?.(1, bytes);
+          return await Reflect.apply(method, target, args);
+        };
+      return typeof method === "function" ? method.bind(target) : method;
+    }
+  });
+  const scheduler = new Proxy(ctx.scheduler, {
+    get(target, property) {
+      const method = Reflect.get(target, property);
+      if (property === "runAfter")
+        return async (...args: unknown[]) => {
+          budget.chargeWrites?.(1, 256 + getConvexSize((args[2] ?? {}) as Value));
+          return await Reflect.apply(method, target, args);
+        };
+      return typeof method === "function" ? method.bind(target) : method;
+    }
+  });
+  return { ...ctx, db, scheduler };
+}
+
+/** Call after relationship writes, using the immutable rows captured before those writes. */
+export async function scheduleChangedFriendHistory(
+  ctx: MutationCtx,
+  friends: readonly Doc<"account_friends">[],
+  budget?: ExpenseWriteBatchBudgetHooks
+) {
+  ctx = friendHistoryBudgetContext(ctx, budget);
+  const owners = new Map<string, { account: Doc<"accounts">; members: Set<string> }>();
+  const skipped = new Set<string>();
+  for (const friend of friends) {
+    const email = friend.account_email.trim().toLowerCase();
+    if (skipped.has(email)) continue;
+    let entry = owners.get(email);
+    if (!entry) {
+      const account = await ctx.db
+        .query("accounts")
+        .withIndex("by_email", (q) => q.eq("email", email))
+        .unique();
+      // This owner's deletion already drains source expenses before deleting relationships.
+      if (!account || isAccountDeletionFenced(account)) {
+        skipped.add(email);
+        continue;
+      }
+      entry = { account, members: new Set() };
+      owners.set(email, entry);
+    }
+    for (const id of [
+      friend.member_id,
+      friend.linked_member_id,
+      ...(friend.local_alias_member_ids ?? [])
+    ])
+      if (id) entry.members.add(normalizeMemberId(id));
+    for (const id of new Set(
+      [friend.member_id, friend.linked_member_id].filter((id): id is string => !!id)
+    ))
+      for (const equivalent of await getAllEquivalentMemberIds(ctx.db, id))
+        entry.members.add(normalizeMemberId(equivalent));
+  }
+  for (const { account, members } of owners.values())
+    await scheduleRestrictedDirectHistoryForMembers(ctx, account._id, [...members]);
+}
+
+/** One indexed page for a verified relationship-history generation. Context IDs only discover rows. */
+export async function advanceFriendHistoryIdentityOperation(
+  ctx: MutationCtx,
+  operation: Doc<"identity_operations">,
+  scope: HistoryWorkerScope
+): Promise<{ isDone: boolean; continueCursor?: string }> {
+  if (operation.kind !== "friend_history" || operation.local_owner_id !== operation.actor_id)
+    throw new Error("Invalid friend history reconciliation scope");
+  const owner = await ctx.db.get(operation.actor_id);
+  if (!owner || isAccountDeletionFenced(owner))
+    throw new Error("Account deletion takes precedence over friend history reconciliation");
+  const memberId = operation.source_member_ids[operation.member_index];
+  if (!memberId) return { isDone: true };
+  const pageOptions = {
+    cursor: operation.cursor ?? null,
+    numItems: 1,
+    maximumBytesRead: 256 * 1024
+  };
+  const page = await ctx.db
+    .query("member_references")
+    .withIndex("by_owner_member_kind_history", (q) =>
+      q
+        .eq("owner_id", owner._id)
+        .eq("member_id", memberId)
+        .eq("entity_kind", "expense")
+        .eq("has_restored_history", true)
+    )
+    .paginate(pageOptions);
+  const sources = new Set(operation.source_member_ids.map(normalizeMemberId));
+  const operations: ExpenseWriteOperation[] = [];
+  for (const reference of page.page) {
+    const id = ctx.db.normalizeId("expenses", reference.entity_document_id);
+    const expense = id ? await ctx.db.get(id) : null;
+    if (!expense?.has_restored_history || !hasConsistentExpenseOwner(expense, owner)) continue;
+    if (!expenseReferenceMemberIds(expense).some((id) => sources.has(id))) continue;
+    const group = expense.group_ref
+      ? await ctx.db.get(expense.group_ref)
+      : await ctx.db
+          .query("groups")
+          .withIndex("by_client_id", (q) => q.eq("id", expense.group_id))
+          .unique();
+    if (!group || (!group.is_direct && expense.context_kind !== "direct")) continue;
+    const viewers = await resolveActiveExpenseParticipantAccounts(
+      ctx,
+      expense,
+      new Set(),
+      undefined,
+      undefined,
+      scope
+    );
+    operations.push({
+      kind: "visibility",
+      expense,
+      viewerAccountIds: viewers.map((account) => account._id),
+      forceRevision: true
+    });
+  }
+  await applyExpenseWriteBatch(ctx, operations, { historyScope: scope });
+  return { isDone: page.isDone, continueCursor: page.isDone ? undefined : page.continueCursor };
+}
+
 /** Recompute projections with a fresh post-unlink cache; money-bearing fields stay unchanged. */
 async function refreshFriendHistoryExpense(
   ctx: MutationCtx,
-  expense: Doc<"expenses">
+  expense: Doc<"expenses">,
+  historyScope?: HistoryWorkerScope
 ): Promise<ExpenseWriteOperation> {
-  const viewers = await resolveActiveExpenseParticipantAccounts(ctx, expense);
+  const viewers = await resolveActiveExpenseParticipantAccounts(
+    ctx,
+    expense,
+    new Set(),
+    undefined,
+    undefined,
+    historyScope
+  );
   return {
     kind: "patch",
     expense,
@@ -1058,6 +1231,7 @@ async function deleteLinkedFriendWithCurrentIdentity(
 
   await syncOwnerLocalAliasReferences(ctx, null, friend._id);
   await ctx.db.delete(friend._id);
+  await scheduleChangedFriendHistory(ctx, [friend]);
   if (friend.local_alias_member_ids?.length)
     await reconcileRemainingFriendHistory(ctx, user, ownedExpenses.values(), ownedGroups.values());
   await ctx.db.patch(user._id, { updated_at: Math.max(Date.now(), (user.updated_at ?? 0) + 1) });
@@ -1357,6 +1531,7 @@ export const deleteUnlinkedFriend = mutation({
 
     await syncOwnerLocalAliasReferences(ctx, null, friend._id);
     await ctx.db.delete(friend._id);
+    await scheduleChangedFriendHistory(ctx, [friend]);
     if (friend.local_alias_member_ids?.length)
       await reconcileRemainingFriendHistory(
         ctx,
@@ -1582,14 +1757,24 @@ async function prepareSelfDeletionExpenseReads(
   ctx: MutationCtx,
   expenses: readonly Doc<"expenses">[],
   budget: FriendCleanupAggregateBudget,
-  cache: ExpenseIdentityResolutionCache
+  cache: ExpenseIdentityResolutionCache,
+  historyScope?: HistoryWorkerScope,
+  preparedAccounts?: Map<Id<"expenses">, Doc<"accounts">[]>
 ) {
   accountFriendCleanupRows(budget, expenses);
   const expenseIds = new Set<string>();
   for (const expense of expenses) {
     expenseIds.add(expense.id);
     await prepareFriendCleanupIdentityReads(ctx, budget, expense, cache);
-    const accounts = await resolveActiveExpenseParticipantAccounts(ctx, expense, new Set(), cache);
+    const accounts = await resolveActiveExpenseParticipantAccounts(
+      ctx,
+      expense,
+      new Set(),
+      cache,
+      undefined,
+      historyScope
+    );
+    preparedAccounts?.set(expense._id, accounts);
     accountFriendCleanupRows(budget, accounts);
   }
   await accountPreparedIdentityReads(budget, cache);
@@ -1646,7 +1831,20 @@ async function prepareSelfDeletionExpenseMutations(
   budget: FriendCleanupAggregateBudget,
   cache: ExpenseIdentityResolutionCache
 ) {
-  const visibilityRows = await prepareSelfDeletionExpenseReads(ctx, expenses, budget, cache);
+  const historyScope = await createHistoryWorkerScope(ctx, {
+    kind: "account_deletion",
+    progress_id: progress._id,
+    request_id: progress.request_id
+  });
+  const preparedAccounts = new Map<Id<"expenses">, Doc<"accounts">[]>();
+  const visibilityRows = await prepareSelfDeletionExpenseReads(
+    ctx,
+    expenses,
+    budget,
+    cache,
+    historyScope,
+    preparedAccounts
+  );
   const plans: PreparedSelfDeletionExpense[] = [];
   for (const expense of expenses) {
     const ownerMatches =
@@ -1665,11 +1863,37 @@ async function prepareSelfDeletionExpenseMutations(
       });
       continue;
     }
+    const boundHistoryScope = await bindHistoryExpenseScope(
+      withIdentityReadBudget(ctx, {
+        chargeQueries: (count) => chargeFriendCleanupQueries(budget, count),
+        chargeRows: (rows) => accountFriendCleanupRows(budget, rows)
+      }),
+      historyScope,
+      expense
+    );
+    const preparedViewerAccounts = preparedAccounts.get(expense._id);
+    if (!preparedViewerAccounts) throw new Error("Account deletion viewer preflight is incomplete");
     const stewardMemberIds = expenseStewardMemberIds(expense, deletedMemberIds);
     await prepareSelfDeletionMemberAccounts(ctx, stewardMemberIds, budget, cache);
-    const steward = ownerMatches
-      ? await findPreparedSelfDeletionSteward(stewardMemberIds, account.id, cache)
-      : null;
+    // Select while both original owner tuples still exist. This is re-evaluated in the
+    // transfer transaction, so changes to suppression/identity between pages cannot grant access.
+    const steward = !ownerMatches
+      ? null
+      : expense.has_restored_history
+        ? ((
+            await resolveRestrictedHistoryStewardCandidates(ctx, expense, {
+              scope: boundHistoryScope,
+              budget: {
+                chargeQueries: (count) => chargeFriendCleanupQueries(budget, count),
+                chargeRows: (rows) => accountFriendCleanupRows(budget, rows)
+              }
+            })
+          ).sort((left, right) => left.id.localeCompare(right.id))[0] ?? null)
+        : (preparedViewerAccounts
+            .filter(
+              (candidate) => candidate._id !== account._id && !isAccountDeletionFenced(candidate)
+            )
+            .sort((left, right) => left.id.localeCompare(right.id))[0] ?? null);
     if (ownerMatches && !steward) {
       plans.push({
         expense,
@@ -1692,7 +1916,9 @@ async function prepareSelfDeletionExpenseMutations(
       ctx,
       patchedExpense,
       excludedAccountIds,
-      cache
+      cache,
+      undefined,
+      boundHistoryScope
     );
     accountFriendCleanupRows(budget, participantAccounts);
     const existingRows = visibilityRows.get(expense.id) ?? [];
@@ -1731,6 +1957,11 @@ async function advanceSelfDeletionPreflight(
 ) {
   const account = await ctx.db.get(progress.account_id);
   if (!account) throw new Error("Account deletion account no longer exists");
+  const historyScope = await createHistoryWorkerScope(ctx, {
+    kind: "account_deletion",
+    progress_id: progress._id,
+    request_id: progress.request_id
+  });
   chargeFriendCleanupQueries(budget, 1);
   const expenses: Doc<"expenses">[] = [];
   const groups: Doc<"groups">[] = [];
@@ -1754,7 +1985,7 @@ async function advanceSelfDeletionPreflight(
     }
   }
   if (expenses.length > 0) {
-    await prepareSelfDeletionExpenseReads(ctx, expenses, budget, cache);
+    await prepareSelfDeletionExpenseReads(ctx, expenses, budget, cache, historyScope);
   }
   if (groups.length > 0) {
     accountFriendCleanupRows(budget, groups);
@@ -1799,6 +2030,11 @@ async function advanceSelfDeletion(
   const cursor = progress.cursor ?? null;
   const budget = createFriendCleanupAggregateBudget();
   const identityCache = createExpenseIdentityResolutionCache();
+  const historyScope = await createHistoryWorkerScope(ctx, {
+    kind: "account_deletion",
+    progress_id: progress._id,
+    request_id: progress.request_id
+  });
 
   switch (progress.phase) {
     case "preflight_groups_owner_id": {
@@ -1925,7 +2161,8 @@ async function advanceSelfDeletion(
           ctx,
           Array.from(expenses.values()),
           budget,
-          identityCache
+          identityCache,
+          historyScope
         );
       }
       return await updateSelfDeletionProgress(
@@ -2006,7 +2243,13 @@ async function advanceSelfDeletion(
               .order("asc")
               .paginate({ cursor, numItems: SELF_DELETE_BATCH_SIZE });
       if (result.page.length > 0) {
-        await prepareSelfDeletionExpenseReads(ctx, result.page, budget, identityCache);
+        await prepareSelfDeletionExpenseReads(
+          ctx,
+          result.page,
+          budget,
+          identityCache,
+          historyScope
+        );
       }
       if (!result.isDone) {
         return await updateSelfDeletionProgress(
@@ -2136,6 +2379,7 @@ async function advanceSelfDeletion(
           });
         }
       }
+      await scheduleChangedFriendHistory(ctx, rows);
       if (rows.length > 0) {
         return await updateSelfDeletionProgress(
           ctx,
@@ -2191,7 +2435,7 @@ async function advanceSelfDeletion(
         budget,
         identityCache
       );
-      await applyExpenseWriteBatch(ctx, plans.map(selfDeletionExpenseOperation));
+      await applyExpenseWriteBatch(ctx, plans.map(selfDeletionExpenseOperation), { historyScope });
       return await finishOrContinueSelfDeletionBatch(
         ctx,
         progress,
@@ -2226,7 +2470,7 @@ async function advanceSelfDeletion(
         budget,
         identityCache
       );
-      await applyExpenseWriteBatch(ctx, plans.map(selfDeletionExpenseOperation));
+      await applyExpenseWriteBatch(ctx, plans.map(selfDeletionExpenseOperation), { historyScope });
       const plannedExpenseIds = new Set(plans.map((plan) => plan.expense.id));
       for (const visibilityRow of visibilityRows) {
         if (!plannedExpenseIds.has(visibilityRow.expense_id))
@@ -2240,6 +2484,12 @@ async function advanceSelfDeletion(
       );
     }
     case "owned_groups": {
+      const untransferredExpense = await ctx.db
+        .query("expenses")
+        .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
+        .first();
+      if (untransferredExpense)
+        return await updateSelfDeletionProgress(ctx, progress, { phase: "owned_expenses" }, 1);
       const groups = await ctx.db
         .query("groups")
         .withIndex("by_owner_id", (q) => q.eq("owner_id", account._id))
@@ -2276,8 +2526,24 @@ async function advanceSelfDeletion(
       assertSelfDeleteMemberBound(memberIds);
       chargeFriendCleanupQueries(budget, 1);
       accountFriendCleanupRows(budget, groups);
-      await prepareSelfDeletionMemberAccounts(ctx, memberIds, budget, identityCache);
-      const steward = await findPreparedSelfDeletionSteward(memberIds, account.id, identityCache);
+      const oldMemberMap = await deriveOwnerScopedFinancialIdentityMap(
+        withIdentityReadBudget(ctx, {
+          chargeQueries: (count) => chargeFriendCleanupQueries(budget, count),
+          chargeRows: (rows) => accountFriendCleanupRows(budget, rows)
+        }),
+        group,
+        memberIds,
+        deletedMemberIds,
+        identityCache,
+        historyScope
+      );
+      const currentMemberIds = Object.values(oldMemberMap);
+      await prepareSelfDeletionMemberAccounts(ctx, currentMemberIds, budget, identityCache);
+      const steward = await findPreparedSelfDeletionSteward(
+        currentMemberIds,
+        account.id,
+        identityCache
+      );
       if (!steward) {
         return await updateSelfDeletionProgress(
           ctx,
@@ -2414,7 +2680,7 @@ async function advanceSelfDeletion(
       for (const expense of expenses) {
         reserveFriendCleanupWrites(budget, (visibilityRows.get(expense.id)?.length ?? 0) + 1);
       }
-      await applyExpenseWriteBatch(ctx, expenseDeleteOperations(expenses));
+      await applyExpenseWriteBatch(ctx, expenseDeleteOperations(expenses), { historyScope });
       return await finishOrContinueSelfDeletionBatch(
         ctx,
         progress,
@@ -2636,6 +2902,8 @@ async function advanceSelfDeletion(
       return await finishOrContinueSelfDeletionBatch(ctx, progress, rows.length, "finalize");
     }
     case "finalize": {
+      if (!(await cleanupAccountGroupHistoryPage(ctx, account._id)))
+        return await updateSelfDeletionProgress(ctx, progress, { phase: "finalize" }, 1);
       // Account deletion already fences these workers. Drain private work items and explicit
       // expense suppressions in bounded transactions before removing/tombstoning the account.
       const friendJob = await ctx.db
@@ -3471,6 +3739,10 @@ async function advanceFriendDeletion(ctx: MutationCtx, job: Doc<"friend_deletion
     if (currentAccount && currentAccount._id !== targetAccount?._id) continue;
     memberIds.add(candidate);
   }
+  const historyScope = await createHistoryWorkerScope(ctx, {
+    kind: "friend_deletion",
+    job_id: job._id
+  });
   const readyMembers = new Set<string>();
   const patchProgress = async (patch: Partial<Doc<"friend_deletion_jobs">>) =>
     ctx.db.patch(job._id, { ...patch, updated_at: Date.now() });
@@ -3640,7 +3912,7 @@ async function advanceFriendDeletion(ctx: MutationCtx, job: Doc<"friend_deletion
           shouldDeleteGroup ||
           (preserveLinkedHistory && !group && expenseReferencesEquivalentMember(expense, memberIds))
         ) {
-          await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense }]);
+          await applyExpenseWriteBatch(ctx, [{ kind: "delete", expense }], { historyScope });
         } else if (!preserveLinkedHistory) {
           const plan = await prepareEquivalentMemberRemovalFromExpense(
             ctx,
@@ -3648,13 +3920,25 @@ async function advanceFriendDeletion(ctx: MutationCtx, job: Doc<"friend_deletion
             memberIds,
             createFriendCleanupAggregateBudget(),
             createExpenseIdentityResolutionCache(),
-            user
+            user,
+            historyScope
           );
           if (plan.outcome !== "unchanged")
-            await applyExpenseWriteBatch(ctx, [removedFriendExpenseOperation(plan)]);
-          else await applyExpenseWriteBatch(ctx, [await refreshFriendHistoryExpense(ctx, expense)]);
+            await applyExpenseWriteBatch(ctx, [removedFriendExpenseOperation(plan)], {
+              historyScope
+            });
+          else
+            await applyExpenseWriteBatch(
+              ctx,
+              [await refreshFriendHistoryExpense(ctx, expense, historyScope)],
+              { historyScope }
+            );
         } else {
-          await applyExpenseWriteBatch(ctx, [await refreshFriendHistoryExpense(ctx, expense)]);
+          await applyExpenseWriteBatch(
+            ctx,
+            [await refreshFriendHistoryExpense(ctx, expense, historyScope)],
+            { historyScope }
+          );
         }
       }
       await ctx.db.delete(item._id);
@@ -3721,7 +4005,10 @@ async function advanceFriendDeletion(ctx: MutationCtx, job: Doc<"friend_deletion
   );
   await applyPreparedAliasPrune(ctx, prune);
   await syncOwnerLocalAliasReferences(ctx, null, job.friend_id);
-  if (friend) await ctx.db.delete(friend._id);
+  if (friend) {
+    await ctx.db.delete(friend._id);
+    await scheduleChangedFriendHistory(ctx, [friend]);
+  }
   await ctx.db.patch(user._id, { updated_at: Math.max(Date.now(), (user.updated_at ?? 0) + 1) });
   await patchProgress({ phase: "complete", last_error: undefined });
 }

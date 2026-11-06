@@ -202,7 +202,7 @@ test("review: imported V3 historical split rows retain raw identity", async () =
 });
 
 test("review: notes edit remains possible after importing mixed alias history", async () => {
-  const { owner, expense } = await importedAliasedHistory();
+  const { t, owner, expense } = await importedAliasedHistory();
   const {
     _id: _documentId,
     _creationTime: _creation,
@@ -211,6 +211,10 @@ test("review: notes edit remains possible after importing mixed alias history", 
     created_at: _created,
     updated_at: _updated,
     participant_emails: _emails,
+    has_restored_history: _historyFlag,
+    restored_historical_member_ids: _historyMembers,
+    restored_history_context_member_ids: _historyContext,
+    inactive_participant_member_ids: _inactive,
     ...input
   } = expense;
   await expect(
@@ -220,6 +224,17 @@ test("review: notes edit remains possible after importing mixed alias history", 
       financial_contract_version: 2
     })
   ).resolves.toBeDefined();
+  const saved = await t.run((ctx) => ctx.db.get(expense._id));
+  expect(saved?.notes).toBe("Historical receipt");
+  expect(saved?.splits).toEqual(expense.splits);
+  for (const key of [
+    "has_restored_history",
+    "restored_historical_member_ids",
+    "restored_history_context_member_ids",
+    "inactive_participant_member_ids"
+  ] as const) {
+    expect(saved?.[key]).toEqual(expense[key]);
+  }
 });
 
 test("review: notes edit preserves a restored single subexpense row", async () => {
@@ -232,6 +247,10 @@ test("review: notes edit preserves a restored single subexpense row", async () =
     created_at: _created,
     updated_at: _updated,
     participant_emails: _emails,
+    has_restored_history: _historyFlag,
+    restored_historical_member_ids: _historyMembers,
+    restored_history_context_member_ids: _historyContext,
+    inactive_participant_member_ids: _inactive,
     ...input
   } = expense;
   await owner.mutation(api.expenses.create, {
@@ -241,4 +260,12 @@ test("review: notes edit preserves a restored single subexpense row", async () =
   });
   const saved = await t.run((ctx) => ctx.db.get(expense._id));
   expect(saved?.subexpenses).toEqual(expense.subexpenses);
+  for (const key of [
+    "has_restored_history",
+    "restored_historical_member_ids",
+    "restored_history_context_member_ids",
+    "inactive_participant_member_ids"
+  ] as const) {
+    expect(saved?.[key]).toEqual(expense[key]);
+  }
 });

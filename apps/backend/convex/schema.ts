@@ -78,10 +78,17 @@ export default defineSchema({
     entity_document_id: v.string(),
     member_id: v.string(),
     owner_id: v.id("accounts"),
-    source_revision: v.number()
+    source_revision: v.number(),
+    has_restored_history: v.optional(v.literal(true))
   })
     .index("by_member_kind", ["member_id", "entity_kind"])
     .index("by_entity", ["entity_kind", "entity_document_id"])
+    .index("by_owner_member_kind_history", [
+      "owner_id",
+      "member_id",
+      "entity_kind",
+      "has_restored_history"
+    ])
     .index("by_owner_member_kind", ["owner_id", "member_id", "entity_kind"]),
   member_reference_state: defineTable({
     key: v.string(),
@@ -108,8 +115,20 @@ export default defineSchema({
   identity_operations: defineTable({
     actor_id: v.id("accounts"),
     creator_id: v.id("accounts"),
-    kind: v.union(v.literal("claim"), v.literal("local_merge")),
+    kind: v.union(v.literal("claim"), v.literal("local_merge"), v.literal("friend_history")),
     source_member_ids: v.array(v.string()),
+    discovery_member_ids: v.optional(v.array(v.string())),
+    progress_version: v.optional(v.number()),
+    history_progress: v.optional(
+      v.object({
+        group_ref: v.id("groups"),
+        cursor: v.optional(v.string()),
+        page_size: v.number(),
+        reference_cursor: v.optional(v.string()),
+        reference_done: v.boolean(),
+        dependent_id: v.optional(v.id("identity_operation_dependents"))
+      })
+    ),
     target_member_id: v.string(),
     local_owner_id: v.optional(v.id("accounts")),
     selected_local_member_id: v.optional(v.string()),
@@ -140,6 +159,7 @@ export default defineSchema({
   })
     .index("by_actor", ["actor_id"])
     .index("by_creator", ["creator_id"])
+    .index("by_dependency", ["dependency_operation_id"])
     .index("by_actor_kind_target_selection", [
       "actor_id",
       "kind",
@@ -371,6 +391,7 @@ export default defineSchema({
     .index("by_account_email_and_updated_at", ["account_email", "updated_at"])
     .index("by_account_email_and_member_id", ["account_email", "member_id"])
     .index("by_account_email_and_linked_member_id", ["account_email", "linked_member_id"])
+    .index("by_account_email_and_linked_account_id", ["account_email", "linked_account_id"])
     .index("by_linked_account_id", ["linked_account_id"])
     .index("by_linked_account_email", ["linked_account_email"])
     .index("by_linked_member_id", ["linked_member_id"]),
@@ -429,6 +450,23 @@ export default defineSchema({
     updated_at: v.number()
   }).index("by_key", ["key"]),
 
+  group_history_reconciliations: defineTable({
+    group_ref: v.id("groups"),
+    owner_id: v.id("accounts"),
+    generation: v.string(),
+    cursor: v.optional(v.string()),
+    page_size: v.number(),
+    phase: v.union(v.literal("pending"), v.literal("failed"), v.literal("complete")),
+    attempts: v.number(),
+    error_code: v.optional(v.string()),
+    retryable: v.optional(v.boolean()),
+    scheduled: v.optional(v.boolean()),
+    last_resume_at: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number()
+  })
+    .index("by_group_phase", ["group_ref", "phase"])
+    .index("by_owner_phase", ["owner_id", "phase"]),
   groups: defineTable({
     id: v.string(), // UUID string from client
     name: v.string(),
@@ -447,6 +485,7 @@ export default defineSchema({
     owner_id: v.id("accounts"),
     is_direct: v.optional(v.boolean()),
     deletion_token: v.optional(v.string()),
+    history_reconciliation_id: v.optional(v.id("group_history_reconciliations")),
     created_at: v.number(),
     updated_at: v.number(),
     is_payback_generated_mock_data: v.optional(v.boolean())
@@ -491,6 +530,9 @@ export default defineSchema({
     date: v.number(),
     total_amount: v.number(),
     currency_code: v.optional(v.string()),
+    restored_historical_member_ids: v.optional(v.array(v.string())),
+    restored_history_context_member_ids: v.optional(v.array(v.string())),
+    has_restored_history: v.optional(v.literal(true)),
     paid_by_member_id: v.string(),
     involved_member_ids: v.array(v.string()),
     splits: v.array(
@@ -544,6 +586,7 @@ export default defineSchema({
     .index("by_owner_email_and_context_kind", ["owner_email", "context_kind"])
     .index("by_group_id", ["group_id"])
     .index("by_group_ref", ["group_ref"])
+    .index("by_group_ref_restore_history", ["group_ref", "has_restored_history"])
     .index("by_client_id", ["id"])
     .index("by_is_payback_generated_mock_data", ["is_payback_generated_mock_data"]),
 

@@ -1,7 +1,13 @@
+import {
+  isImportBudgetExceeded,
+  MeasuredBudgetError,
+  throwImportBudgetExceeded
+} from "./restoreContracts";
 import { getConvexSize, v } from "convex/values";
 import {
   internalAction,
   internalMutation,
+  internalQuery,
   mutation,
   query,
   type MutationCtx,
@@ -15,12 +21,16 @@ import {
   pendingIdentityOperation,
   raiseFinancialContract,
   resolveLiveAccountForMember,
-  withIdentityReadBudget
+  createHistoryWorkerScope,
+  joinHistoryGroupContext,
+  withIdentityReadBudget,
+  requiresCurrentFinancialContract
 } from "./financialContract";
 import {
   assertMemberReferencesReady,
   deleteMemberReferences,
-  expenseReferenceMemberIds
+  expenseReferenceMemberIds,
+  expenseDependencyMemberIds
 } from "./memberReferences";
 import { normalizeMemberIds, findAccountsByEmailIdentity } from "./identity";
 import { getOwnerLocalAliasMap } from "./aliases";
@@ -61,12 +71,22 @@ export async function getIdentityOperationResult(
     throw new Error("Identity operation not found");
   return identityOperationResult(operation);
 }
+async function patchIdentityProgress(
+  ctx: MutationCtx,
+  operation: Doc<"identity_operations">,
+  patch: Partial<Doc<"identity_operations">>
+) {
+  await ctx.db.patch(operation._id, {
+    ...patch,
+    progress_version: (operation.progress_version ?? 0) + 1
+  });
+}
 export async function createIdentityOperation(
   ctx: MutationCtx,
   args: {
     actor: Doc<"accounts">;
     creator: Doc<"accounts">;
-    kind: "claim" | "local_merge";
+    kind: "claim" | "local_merge" | "friend_history";
     sourceMemberIds: string[];
     targetMemberId: string;
     localOwnerId?: Id<"accounts">;
@@ -85,6 +105,18 @@ export async function createIdentityOperation(
     throw new Error("Invalid identity operation source closure");
   if (isAccountDeletionFenced(args.actor) || isAccountDeletionFenced(args.creator))
     throw new Error("Account deletion takes precedence over linking");
+  const discovery = new Set([...members, args.targetMemberId.trim().toLowerCase()]);
+  if (args.kind !== "friend_history")
+    for (const member of [...discovery]) {
+      const account = await resolveLiveAccountForMember(ctx, member);
+      if (account)
+        for (const id of normalizeMemberIds([
+          account.member_id ?? account.id,
+          ...(account.alias_member_ids ?? [])
+        ]))
+          discovery.add(id);
+      if (discovery.size > 512) throw new Error("Identity discovery closure requires maintenance");
+    }
   const now = Date.now();
   const lastReference = await ctx.db.query("member_references").order("desc").first();
   const lastLocalAlias = await ctx.db.query("owner_member_aliases").order("desc").first();
@@ -98,6 +130,7 @@ export async function createIdentityOperation(
     creator_id: args.creator._id,
     kind: args.kind,
     source_member_ids: members,
+    discovery_member_ids: args.kind === "friend_history" ? members : [...discovery],
     target_member_id: args.targetMemberId.toLowerCase().trim(),
     local_owner_id: args.localOwnerId,
     selected_local_member_id: args.selectedLocalMemberId,
@@ -128,6 +161,46 @@ export async function createIdentityOperation(
   await ctx.scheduler.runAfter(0, internal.identityOperations.run, { operation_id: operationId });
   return identityOperationResult((await ctx.db.get(operationId))!);
 }
+/** Relationship changes reconcile only indexed restricted history, never unrelated ordinary rows. */
+export async function scheduleFriendHistoryOperations(
+  ctx: MutationCtx,
+  ownerId: Id<"accounts">,
+  memberIds: readonly string[]
+): Promise<void> {
+  const members = normalizeMemberIds([...memberIds]);
+  if (members.length > 1280) throw new Error("Friend history batch requires bounded subdivision");
+  const relevant: string[] = [];
+  for (const member of members) {
+    const reference = await ctx.db
+      .query("member_references")
+      .withIndex("by_owner_member_kind_history", (q) =>
+        q
+          .eq("owner_id", ownerId)
+          .eq("member_id", member)
+          .eq("entity_kind", "expense")
+          .eq("has_restored_history", true)
+      )
+      .first();
+    if (reference) relevant.push(member);
+  }
+  if (!relevant.length) return;
+  const owner = await ctx.db.get(ownerId);
+  if (!owner || isAccountDeletionFenced(owner))
+    throw new Error("Account deletion takes precedence over relationship history");
+  let dependency: Id<"identity_operations"> | undefined;
+  for (let index = 0; index < relevant.length; index += 256) {
+    const result = await createIdentityOperation(ctx, {
+      actor: owner,
+      creator: owner,
+      kind: "friend_history",
+      sourceMemberIds: relevant.slice(index, index + 256),
+      targetMemberId: owner.member_id ?? owner.id,
+      localOwnerId: owner._id,
+      dependencyOperationId: dependency
+    });
+    dependency = result.operation_id;
+  }
+}
 /** One operation has at most 256 sources plus its target, so retirement is bounded and atomic. */
 async function retireOperationBarriers(ctx: MutationCtx, operationId: Id<"identity_operations">) {
   const markers = await ctx.db
@@ -145,6 +218,8 @@ async function provenanceIsLive(
   const creator = await ctx.db.get(operation.creator_id);
   if (!actor || !creator || isAccountDeletionFenced(actor) || isAccountDeletionFenced(creator))
     return false;
+  if (operation.kind === "friend_history")
+    return operation.local_owner_id === actor._id && actor._id === creator._id;
   if (operation.kind === "local_merge") {
     const friend = operation.bound_friend_id ? await ctx.db.get(operation.bound_friend_id) : null;
     return (
@@ -166,6 +241,105 @@ async function provenanceIsLive(
   return true;
 }
 /** One small transaction. An action catches failure outside this transaction, so no partial writes survive. */
+async function beginInlineGroupHistory(
+  ctx: MutationCtx,
+  operation: Doc<"identity_operations">,
+  group: Doc<"groups">,
+  referencePage: { continueCursor: string; isDone: boolean },
+  dependentId?: Id<"identity_operation_dependents">
+): Promise<boolean> {
+  const history = await ctx.db
+    .query("expenses")
+    .withIndex("by_group_ref_restore_history", (q) =>
+      q.eq("group_ref", group._id).eq("has_restored_history", true)
+    )
+    .first();
+  if (!history) return false;
+  await patchIdentityProgress(ctx, operation, {
+    history_progress: {
+      group_ref: group._id,
+      page_size: 8,
+      reference_cursor: referencePage.continueCursor,
+      reference_done: referencePage.isDone,
+      dependent_id: dependentId
+    }
+  });
+  return true;
+}
+async function advanceInlineReturn(ctx: MutationCtx, operation: Doc<"identity_operations">) {
+  const progress = operation.history_progress!;
+  if (progress.dependent_id) {
+    const item = await ctx.db.get(progress.dependent_id);
+    if (!item || item.operation_id !== operation._id)
+      throw new Error("Missing dependent history return position");
+    await ctx.db.patch(item._id, {
+      phase: progress.reference_done ? "expenses" : "groups",
+      cursor: progress.reference_done ? undefined : progress.reference_cursor
+    });
+    await patchIdentityProgress(ctx, operation, {
+      history_progress: undefined,
+      attempts: 0,
+      updated_at: Date.now()
+    });
+  } else {
+    const members =
+      operation.discovery_member_ids ??
+      normalizeMemberIds([...operation.source_member_ids, operation.target_member_id]);
+    const next = operation.member_index + (progress.reference_done ? 1 : 0);
+    await patchIdentityProgress(ctx, operation, {
+      history_progress: undefined,
+      phase: next >= members.length ? "expenses" : "groups",
+      member_index: next >= members.length ? 0 : next,
+      cursor: progress.reference_done ? undefined : progress.reference_cursor,
+      attempts: 0,
+      updated_at: Date.now()
+    });
+  }
+}
+async function drainInlineGroupHistory(
+  ctx: MutationCtx,
+  operation: Doc<"identity_operations">,
+  scheduleNext?: boolean
+) {
+  const progress = operation.history_progress!;
+  const group = await ctx.db.get(progress.group_ref);
+  if (!group || group.deletion_token) {
+    await advanceInlineReturn(ctx, operation);
+    return await scheduleContinuation(ctx, operation, scheduleNext);
+  }
+  const scope = await joinHistoryGroupContext(
+    ctx,
+    await createHistoryWorkerScope(ctx, {
+      kind: "identity",
+      operation_id: operation._id,
+      generation: operation.generation
+    }),
+    group
+  );
+  const { reconcileRestrictedHistoryPage, finishJoinedGroupHistory } =
+    await import("./groupHistory");
+  let page;
+  try {
+    page = await reconcileRestrictedHistoryPage(ctx, group, {
+      cursor: progress.cursor ?? null,
+      pageSize: progress.page_size,
+      scope
+    });
+  } catch (error) {
+    if (error instanceof MeasuredBudgetError) throwImportBudgetExceeded(error.scope);
+    throw error;
+  }
+  if (page.isDone) {
+    await finishJoinedGroupHistory(ctx, group, scope);
+    await advanceInlineReturn(ctx, operation);
+  } else
+    await patchIdentityProgress(ctx, operation, {
+      history_progress: { ...progress, cursor: page.continueCursor },
+      attempts: 0,
+      updated_at: Date.now()
+    });
+  return await scheduleContinuation(ctx, operation, scheduleNext);
+}
 async function scheduleContinuation(
   ctx: MutationCtx,
   operation: Doc<"identity_operations">,
@@ -195,7 +369,7 @@ async function finishOperation(
   }
   const revoked = operation.revoked || dependency?.terminal_reconciled;
   await retireOperationBarriers(ctx, operation._id);
-  await ctx.db.patch(operation._id, {
+  await patchIdentityProgress(ctx, operation, {
     phase: revoked ? "failed" : "complete",
     terminal_reconciled: revoked ? true : undefined,
     error: revoked ? "Identity consent was revoked; remaining history is reconciled" : undefined,
@@ -252,7 +426,10 @@ async function discoverOwnerDependents(
       check();
     }
   });
-  const target = operation.source_member_ids[operation.member_index];
+  const target = (operation.discovery_member_ids ??
+    normalizeMemberIds([...operation.source_member_ids, operation.target_member_id]))[
+    operation.member_index
+  ];
   const options = {
     cursor: operation.cursor ?? null,
     numItems: 1,
@@ -294,8 +471,15 @@ async function discoverOwnerDependents(
       });
   }
   const memberIndex = operation.member_index + (page.isDone ? 1 : 0);
-  await ctx.db.patch(operation._id, {
-    phase: memberIndex >= operation.source_member_ids.length ? "dependent_reset" : "owner_aliases",
+  await patchIdentityProgress(ctx, operation, {
+    phase:
+      memberIndex >=
+      (
+        operation.discovery_member_ids ??
+        normalizeMemberIds([...operation.source_member_ids, operation.target_member_id])
+      ).length
+        ? "dependent_reset"
+        : "owner_aliases",
     member_index: memberIndex,
     cursor: page.isDone ? undefined : page.continueCursor,
     attempts: 0,
@@ -321,7 +505,7 @@ async function resetOwnerDependents(
     .paginate(options);
   for (const item of page.page)
     await ctx.db.patch(item._id, { phase: "groups", cursor: undefined });
-  await ctx.db.patch(operation._id, {
+  await patchIdentityProgress(ctx, operation, {
     phase: page.isDone ? "dependent_references" : "dependent_reset",
     cursor: page.isDone ? undefined : page.continueCursor,
     attempts: 0,
@@ -378,6 +562,8 @@ async function reconcileOwnerDependents(
       ) {
         const result = await reconcileGroupVisibility(ctx, group, { forceRevision: true });
         await raiseFinancialContract(ctx, result.visibleAccountIds);
+        if (await beginInlineGroupHistory(ctx, operation, group, page, item._id))
+          return await scheduleContinuation(ctx, operation, scheduleNext);
       }
     } else {
       const id = ctx.db.normalizeId("expenses", reference.entity_document_id);
@@ -385,14 +571,32 @@ async function reconcileOwnerDependents(
       if (
         expense &&
         expense.owner_id === item.owner_id &&
-        expenseReferenceMemberIds(expense).includes(item.member_id)
+        expenseDependencyMemberIds(expense).includes(item.member_id)
       ) {
-        await reconcileExpenseVisibility(ctx, expense, new Set(), { forceRevision: true });
+        await reconcileExpenseVisibility(ctx, expense, new Set(), {
+          forceRevision: true,
+          historyScope: await createHistoryWorkerScope(ctx, {
+            kind: "identity",
+            operation_id: operation._id,
+            generation: operation.generation
+          })
+        });
         await raiseFinancialContract(
           ctx,
-          (await resolveActiveExpenseParticipantAccounts(ctx, expense)).map(
-            (account) => account._id
-          )
+          (
+            await resolveActiveExpenseParticipantAccounts(
+              ctx,
+              expense,
+              new Set(),
+              undefined,
+              undefined,
+              await createHistoryWorkerScope(ctx, {
+                kind: "identity",
+                operation_id: operation._id,
+                generation: operation.generation
+              })
+            )
+          ).map((account) => account._id)
         );
       }
     }
@@ -404,27 +608,65 @@ async function reconcileOwnerDependents(
       phase: page.isDone ? "expenses" : item.phase,
       cursor: page.isDone ? undefined : page.continueCursor
     });
-  await ctx.db.patch(operation._id, { attempts: 0, updated_at: Date.now() });
+  await patchIdentityProgress(ctx, operation, { attempts: 0, updated_at: Date.now() });
   return await scheduleContinuation(ctx, operation, scheduleNext);
 }
 export const step = internalMutation({
-  args: { operation_id: v.id("identity_operations"), scheduleNext: v.optional(v.boolean()) },
+  args: {
+    operation_id: v.id("identity_operations"),
+    scheduleNext: v.optional(v.boolean()),
+    expected_version: v.optional(v.number())
+  },
   handler: async (ctx, args) => {
     let operation = await ctx.db.get(args.operation_id);
+    if (
+      operation &&
+      args.expected_version !== undefined &&
+      (operation.progress_version ?? 0) !== args.expected_version
+    )
+      return { continue: false };
     if (!operation || operation.phase === "complete" || operation.phase === "failed")
       return { continue: false };
+    if (operation.kind === "friend_history") {
+      const owner = await ctx.db.get(operation.actor_id);
+      if (!owner || isAccountDeletionFenced(owner)) {
+        await patchIdentityProgress(ctx, operation, { revoked: true });
+        return await finishOperation(ctx, { ...operation, revoked: true }, args.scheduleNext);
+      }
+      const scope = await createHistoryWorkerScope(ctx, {
+        kind: "identity",
+        operation_id: operation._id,
+        generation: operation.generation
+      });
+      const result = await (
+        await import("./cleanup")
+      ).advanceFriendHistoryIdentityOperation(ctx, operation, scope);
+      const memberIndex = operation.member_index + (result.isDone ? 1 : 0);
+      if (memberIndex >= operation.source_member_ids.length)
+        return await finishOperation(ctx, operation, args.scheduleNext);
+      await patchIdentityProgress(ctx, operation, {
+        member_index: memberIndex,
+        cursor: result.isDone ? undefined : result.continueCursor,
+        attempts: 0,
+        updated_at: Date.now()
+      });
+      return await scheduleContinuation(ctx, operation, args.scheduleNext);
+    }
     const live = await provenanceIsLive(ctx, operation);
     if (!live && !operation.revoked) {
-      await ctx.db.patch(operation._id, {
+      await patchIdentityProgress(ctx, operation, {
         revoked: true,
         phase: "groups",
         member_index: 0,
         cursor: undefined,
+        history_progress: undefined,
         error: "Identity consent was revoked; access is being reconciled",
         updated_at: Date.now()
       });
       operation = (await ctx.db.get(operation._id))!;
     }
+    if (operation.history_progress)
+      return await drainInlineGroupHistory(ctx, operation, args.scheduleNext);
     if (operation.phase === "owner_aliases")
       return await discoverOwnerDependents(ctx, operation, args.scheduleNext);
     if (operation.phase === "dependent_reset")
@@ -432,7 +674,10 @@ export const step = internalMutation({
     if (operation.phase === "dependent_references")
       return await reconcileOwnerDependents(ctx, operation, args.scheduleNext);
     const kind = operation.phase === "groups" ? "group" : "expense";
-    const memberId = operation.source_member_ids[operation.member_index];
+    const memberId = (operation.discovery_member_ids ??
+      normalizeMemberIds([...operation.source_member_ids, operation.target_member_id]))[
+      operation.member_index
+    ];
     const candidates = operation.local_owner_id
       ? ctx.db
           .query("member_references")
@@ -474,6 +719,8 @@ export const step = internalMutation({
           continue;
         const result = await reconcileGroupVisibility(ctx, group, { forceRevision: true });
         await raiseFinancialContract(ctx, result.visibleAccountIds);
+        if (await beginInlineGroupHistory(ctx, operation, group, page))
+          return await scheduleContinuation(ctx, operation, args.scheduleNext);
       } else {
         const id = ctx.db.normalizeId("expenses", reference.entity_document_id);
         const expense = id ? await ctx.db.get(id) : null;
@@ -483,22 +730,46 @@ export const step = internalMutation({
         }
         if (
           expense.owner_id !== reference.owner_id ||
-          !expenseReferenceMemberIds(expense).includes(memberId)
+          !expenseDependencyMemberIds(expense).includes(memberId)
         )
           continue;
-        await reconcileExpenseVisibility(ctx, expense, new Set(), { forceRevision: true });
+        await reconcileExpenseVisibility(ctx, expense, new Set(), {
+          forceRevision: true,
+          historyScope: await createHistoryWorkerScope(ctx, {
+            kind: "identity",
+            operation_id: operation._id,
+            generation: operation.generation
+          })
+        });
         await raiseFinancialContract(
           ctx,
-          (await resolveActiveExpenseParticipantAccounts(ctx, expense)).map(
-            (account) => account._id
-          )
+          (
+            await resolveActiveExpenseParticipantAccounts(
+              ctx,
+              expense,
+              new Set(),
+              undefined,
+              undefined,
+              await createHistoryWorkerScope(ctx, {
+                kind: "identity",
+                operation_id: operation._id,
+                generation: operation.generation
+              })
+            )
+          ).map((account) => account._id)
         );
       }
     }
     let phase: Doc<"identity_operations">["phase"] = operation.phase;
     let memberIndex = operation.member_index;
     if (page.isDone) memberIndex += 1;
-    if (memberIndex >= operation.source_member_ids.length) {
+    if (
+      memberIndex >=
+      (
+        operation.discovery_member_ids ??
+        normalizeMemberIds([...operation.source_member_ids, operation.target_member_id])
+      ).length
+    ) {
       if (phase === "groups") {
         phase = "expenses";
         memberIndex = 0;
@@ -509,7 +780,7 @@ export const step = internalMutation({
         memberIndex = 0;
       }
     }
-    await ctx.db.patch(operation._id, {
+    await patchIdentityProgress(ctx, operation, {
       phase,
       member_index: memberIndex,
       cursor: page.isDone ? undefined : page.continueCursor,
@@ -521,13 +792,48 @@ export const step = internalMutation({
   }
 });
 export const recordFailure = internalMutation({
-  args: { operation_id: v.id("identity_operations"), error: v.string() },
+  args: {
+    operation_id: v.id("identity_operations"),
+    error: v.string(),
+    budget_scope: v.optional(v.string()),
+    expected_version: v.optional(v.number())
+  },
   handler: async (ctx, args) => {
     const operation = await ctx.db.get(args.operation_id);
+    if (
+      operation &&
+      args.expected_version !== undefined &&
+      (operation.progress_version ?? 0) !== args.expected_version
+    )
+      return { retry: false, delay: 0 };
     if (!operation || operation.phase === "complete" || operation.phase === "failed")
       return { retry: false, delay: 0 };
+    if (args.budget_scope) {
+      const progress = operation.history_progress;
+      if (progress && progress.page_size > 1) {
+        await patchIdentityProgress(ctx, operation, {
+          history_progress: {
+            ...progress,
+            page_size: Math.max(1, Math.floor(progress.page_size / 2))
+          },
+          attempts: 0,
+          updated_at: Date.now()
+        });
+        await ctx.scheduler.runAfter(0, internal.identityOperations.run, {
+          operation_id: operation._id
+        });
+        return { retry: true, delay: 0 };
+      }
+      await patchIdentityProgress(ctx, operation, {
+        phase: "failed",
+        error: "History reconciliation requires single-record budget maintenance",
+        attempts: 5,
+        updated_at: Date.now()
+      });
+      return { retry: false, delay: 0 };
+    }
     const attempts = operation.attempts + 1;
-    await ctx.db.patch(operation._id, {
+    await patchIdentityProgress(ctx, operation, {
       attempts,
       error: args.error.slice(0, 500),
       updated_at: Date.now(),
@@ -541,15 +847,30 @@ export const recordFailure = internalMutation({
     return { retry: attempts < 5, delay };
   }
 });
+export const workerCheckpoint = internalQuery({
+  args: { operation_id: v.id("identity_operations") },
+  handler: async (ctx, args) => {
+    const operation = await ctx.db.get(args.operation_id);
+    return operation ? (operation.progress_version ?? 0) : null;
+  }
+});
 export const run = internalAction({
   args: { operation_id: v.id("identity_operations") },
   handler: async (ctx, args) => {
+    const expected_version = await ctx.runQuery(internal.identityOperations.workerCheckpoint, args);
+    if (expected_version === null) return;
     try {
-      await ctx.runMutation(internal.identityOperations.step, { ...args, scheduleNext: true });
+      await ctx.runMutation(internal.identityOperations.step, {
+        ...args,
+        scheduleNext: true,
+        expected_version
+      });
     } catch (error) {
       await ctx.runMutation(internal.identityOperations.recordFailure, {
         ...args,
-        error: String(error)
+        error: String(error),
+        budget_scope: isImportBudgetExceeded(error) ? "history" : undefined,
+        expected_version
       });
     }
   }
@@ -619,10 +940,11 @@ export const resume = mutation({
     for (const item of chain.reverse()) {
       if (item.phase === "complete" || item.terminal_reconciled) continue;
       if (item.phase === "failed")
-        await ctx.db.patch(item._id, {
+        await patchIdentityProgress(ctx, item, {
           phase: "groups",
           member_index: 0,
           cursor: undefined,
+          history_progress: undefined,
           attempts: 0,
           error: undefined
         });
@@ -746,7 +1068,7 @@ export async function prepareLegacyIdentityVisibility(
         const members =
           kind === "group"
             ? (document as Doc<"groups">).members.map((m) => m.id.trim().toLowerCase())
-            : expenseReferenceMemberIds(document as Doc<"expenses">);
+            : expenseDependencyMemberIds(document as Doc<"expenses">);
         if (globalMembers.size) {
           const owner = await budgeted.db.get(document.owner_id);
           if (!owner) throw unsupportedDependent();
@@ -790,10 +1112,36 @@ export async function prepareLegacyIdentityVisibility(
       const document = await ctx.db.get(id);
       rows(document ? [document, document] : []);
       if (!document) continue;
+      if (kind === "expense" && requiresCurrentFinancialContract(document as Doc<"expenses">))
+        throw new Error(
+          "FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Duplicate financial rows require resumable identity reconciliation"
+        );
+      if (
+        kind === "expense" &&
+        ((document as Doc<"expenses">).has_restored_history ||
+          (document as Doc<"expenses">).restored_historical_member_ids)
+      )
+        throw new Error(
+          "FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Restored history requires resumable identity reconciliation"
+        );
+      if (kind === "group") {
+        query();
+        const history = await ctx.db
+          .query("expenses")
+          .withIndex("by_group_ref_restore_history", (q) =>
+            q.eq("group_ref", document._id as Id<"groups">).eq("has_restored_history", true)
+          )
+          .first();
+        rows(history ? [history] : []);
+        if (history)
+          throw new Error(
+            "FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Restored group history requires resumable identity reconciliation"
+          );
+      }
       const members =
         kind === "group"
           ? normalizeMemberIds((document as Doc<"groups">).members.map((m) => m.id))
-          : expenseReferenceMemberIds(document as Doc<"expenses">);
+          : expenseDependencyMemberIds(document as Doc<"expenses">);
       if (members.length > 64)
         throw new Error(
           "FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Use resumable linking for this participant set"

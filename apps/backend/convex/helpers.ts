@@ -1,6 +1,11 @@
+import { resolveRestoredHistoryAccess } from "./restoredHistory";
+import { MeasuredBudgetError } from "./restoreContracts";
 import {
   assertFinancialContract,
   assertMemberIdentityReady,
+  assertHistoryProjectionReady,
+  bindHistoryExpenseScope,
+  type HistoryWorkerScope,
   FINANCIAL_CONTRACT_VERSION,
   resolveLiveAccountForMember,
   withIdentityReadBudget,
@@ -109,7 +114,12 @@ export type ExpenseVisibilitySource = Pick<
   | "involved_member_ids"
   | "participants"
   | "splits"
->;
+  | "group_ref"
+  | "context_kind"
+  | "has_restored_history"
+  | "restored_historical_member_ids"
+  | "restored_history_context_member_ids"
+> & { _id?: Id<"expenses"> };
 
 type ExpenseParticipant = Doc<"expenses">["participants"][number];
 
@@ -122,6 +132,7 @@ export type ExpenseIdentityResolutionCache = {
   ownerLocalAliasSeeds: Map<string, Set<string>>;
   ownerFinancialProjectionReady: Map<string, Promise<void>>;
   readyIdentityMembers: Set<string>;
+  historyFriendLinks: Map<string, Promise<boolean>>;
   localAliasQueries: number;
   localAliasRows: number;
   localAliasBytes: number;
@@ -137,6 +148,7 @@ export function createExpenseIdentityResolutionCache(): ExpenseIdentityResolutio
     ownerLocalAliasSeeds: new Map(),
     ownerFinancialProjectionReady: new Map(),
     readyIdentityMembers: new Set(),
+    historyFriendLinks: new Map(),
     localAliasQueries: 0,
     localAliasRows: 0,
     localAliasBytes: 0
@@ -150,13 +162,14 @@ function expenseIdentityBudget(
   return {
     chargeQueries: (count) => {
       cache.localAliasQueries += count;
-      if (cache.localAliasQueries > 2048) throw new Error("Expense identity query budget exceeded");
+      if (cache.localAliasQueries > 2048)
+        throw new MeasuredBudgetError("identity", "Expense identity query budget exceeded");
     },
     chargeRows: (rows) => {
       cache.localAliasRows += rows.length;
       cache.localAliasBytes += rows.reduce<number>((sum, row) => sum + getConvexSize(row), 0);
       if (cache.localAliasRows > 2048 || cache.localAliasBytes > 8 * 1024 * 1024)
-        throw new Error("Expense identity read budget exceeded");
+        throw new MeasuredBudgetError("identity", "Expense identity read budget exceeded");
     }
   };
 }
@@ -289,7 +302,7 @@ export function collectActiveExpenseMemberIds(
 }
 
 export async function resolveConsistentExpenseParticipantAccount(
-  ctx: MutationCtx | QueryCtx,
+  ctx: Pick<QueryCtx, "db">,
   participant: ExpenseParticipant,
   cache?: ExpenseIdentityResolutionCache
 ): Promise<Doc<"accounts"> | null> {
@@ -366,7 +379,8 @@ async function resolveOwnerLocalExpenseAliases(
 export async function resolveExpenseFinancialProjectionOwner(
   ctx: Pick<QueryCtx, "db">,
   expense: ExpenseOwnerSource,
-  cache: ExpenseIdentityResolutionCache = createExpenseIdentityResolutionCache()
+  cache: ExpenseIdentityResolutionCache = createExpenseIdentityResolutionCache(),
+  scope?: HistoryWorkerScope
 ): Promise<Doc<"accounts"> | null> {
   const owner = await resolveAuthoritativeExpenseOwnerAccount(ctx, expense, cache);
   if (owner) {
@@ -375,6 +389,13 @@ export async function resolveExpenseFinancialProjectionOwner(
       cache.ownerFinancialProjectionReady.set(
         ownerKey,
         (async () => {
+          if (scope) {
+            await assertHistoryProjectionReady(
+              withIdentityReadBudget(ctx, expenseIdentityBudget(cache)!),
+              { ownerId: owner._id, memberIds: [], scope }
+            );
+            return;
+          }
           if (owner.status === "deleting")
             throw new Error(
               "IDENTITY_OPERATION_PENDING: Expense owner identity is changing; retry after reconciliation"
@@ -395,7 +416,8 @@ export async function resolveExpenseFinancialProjectionOwner(
 export async function deriveExpenseFinancialIdentityMap(
   ctx: Pick<QueryCtx, "db">,
   expense: ExpenseVisibilitySource,
-  cache: ExpenseIdentityResolutionCache = createExpenseIdentityResolutionCache()
+  cache: ExpenseIdentityResolutionCache = createExpenseIdentityResolutionCache(),
+  scope?: HistoryWorkerScope
 ): Promise<Record<string, string>> {
   assertExpenseVisibilitySourceBounded(expense);
   const rawIds = [
@@ -410,7 +432,7 @@ export async function deriveExpenseFinancialIdentityMap(
     )
   ];
   const inactive = new Set((expense.inactive_participant_member_ids ?? []).map(normalizeMemberId));
-  return deriveOwnerScopedFinancialIdentityMap(ctx, expense, rawIds, inactive, cache);
+  return deriveOwnerScopedFinancialIdentityMap(ctx, expense, rawIds, inactive, cache, scope);
 }
 
 export async function deriveOwnerScopedFinancialIdentityMap(
@@ -418,18 +440,36 @@ export async function deriveOwnerScopedFinancialIdentityMap(
   ownerSource: ExpenseOwnerSource,
   memberIds: readonly string[],
   inactive: ReadonlySet<string> = new Set(),
-  cache: ExpenseIdentityResolutionCache = createExpenseIdentityResolutionCache()
+  cache: ExpenseIdentityResolutionCache = createExpenseIdentityResolutionCache(),
+  scope?: HistoryWorkerScope
 ): Promise<Record<string, string>> {
   const rawIds = [...new Set(memberIds.map(normalizeMemberId))];
   if (rawIds.length > MAX_EXPENSE_VIEWERS)
     throw new Error("Financial identity projection exceeds supported participant bound");
-  const owner = await resolveExpenseFinancialProjectionOwner(ctx, ownerSource, cache);
-  await assertMemberIdentityReady(
-    withIdentityReadBudget(ctx, expenseIdentityBudget(cache)!),
-    rawIds,
-    owner?._id,
-    cache.readyIdentityMembers
-  );
+  const owner = await resolveExpenseFinancialProjectionOwner(ctx, ownerSource, cache, scope);
+  // A raw ID often is already its final canonical target. Check each distinct
+  // identity once within this projection, while retaining the same owner and scope.
+  const scopedReadyMembers = new Set<string>();
+  const assertScopedMembersReady = async (ids: readonly string[]) => {
+    const unchecked = [...new Set(ids.map(normalizeMemberId))].filter(
+      (id) => !scopedReadyMembers.has(id)
+    );
+    if (!unchecked.length) return;
+    await assertHistoryProjectionReady(withIdentityReadBudget(ctx, expenseIdentityBudget(cache)!), {
+      ownerId: owner?._id,
+      memberIds: unchecked,
+      scope
+    });
+    for (const id of unchecked) scopedReadyMembers.add(id);
+  };
+  if (scope) await assertScopedMembersReady(rawIds);
+  else
+    await assertMemberIdentityReady(
+      withIdentityReadBudget(ctx, expenseIdentityBudget(cache)!),
+      rawIds,
+      owner?._id,
+      cache.readyIdentityMembers
+    );
   const localAliases = owner
     ? await resolveOwnerLocalExpenseAliases(
         ctx,
@@ -438,12 +478,14 @@ export async function deriveOwnerScopedFinancialIdentityMap(
         cache
       )
     : new Map<string, string>();
-  await assertMemberIdentityReady(
-    withIdentityReadBudget(ctx, expenseIdentityBudget(cache)!),
-    [...localAliases.values()],
-    owner?._id,
-    cache.readyIdentityMembers
-  );
+  if (scope) await assertScopedMembersReady([...localAliases.values()]);
+  else
+    await assertMemberIdentityReady(
+      withIdentityReadBudget(ctx, expenseIdentityBudget(cache)!),
+      [...localAliases.values()],
+      owner?._id,
+      cache.readyIdentityMembers
+    );
   const result = new Map<string, string>();
   for (const raw of rawIds) {
     if (inactive.has(raw)) {
@@ -473,15 +515,24 @@ export async function deriveOwnerScopedFinancialIdentityMap(
           );
     result.set(raw, linked?.member_id ? normalizeMemberId(linked.member_id) : target);
   }
+  if (scope) await assertScopedMembersReady([...result.values()]);
+  else
+    await assertMemberIdentityReady(
+      withIdentityReadBudget(ctx, expenseIdentityBudget(cache)!),
+      [...result.values()],
+      owner?._id,
+      cache.readyIdentityMembers
+    );
   return Object.fromEntries(result);
 }
 
 export async function resolveActiveExpenseParticipantAccounts(
-  ctx: MutationCtx | QueryCtx,
+  ctx: Pick<QueryCtx, "db">,
   expense: ExpenseVisibilitySource,
   excludedAccountIds: ReadonlySet<string> = new Set(),
   cache: ExpenseIdentityResolutionCache = createExpenseIdentityResolutionCache(),
-  visibilityAccountId?: Id<"accounts">
+  visibilityAccountId?: Id<"accounts">,
+  historyScope?: HistoryWorkerScope
 ): Promise<Doc<"accounts">[]> {
   assertExpenseVisibilitySourceBounded(expense);
   const accounts = new Map<string, Doc<"accounts">>();
@@ -529,9 +580,8 @@ export async function resolveActiveExpenseParticipantAccounts(
   };
 
   const ownerAccountIds = new Set<string>();
-  const ownerAccount = addAccount(
-    await resolveAuthoritativeExpenseOwnerAccount(ctx, expense, cache)
-  );
+  const ownerScopeAccount = await resolveAuthoritativeExpenseOwnerAccount(ctx, expense, cache);
+  const ownerAccount = addAccount(ownerScopeAccount);
   if (ownerAccount) ownerAccountIds.add(ownerAccount.id);
 
   const activeMemberAccountIds = new Set<string>();
@@ -554,8 +604,20 @@ export async function resolveActiveExpenseParticipantAccounts(
   }
 
   // Build one graph per owner for the complete query/batch, not once per expense.
-  if (ownerAccount) {
-    const localAliases = await resolveOwnerLocalExpenseAliases(ctx, ownerAccount, memberIds, cache);
+  if (ownerScopeAccount && (isActiveAccount(ownerScopeAccount) || historyScope)) {
+    const scopedDeletion = !isActiveAccount(ownerScopeAccount);
+    if (scopedDeletion && !expense._id)
+      throw new Error("Deleting owner identity requires a persisted expense binding");
+    const boundScope = scopedDeletion
+      ? await bindHistoryExpenseScope(ctx, historyScope, expense)
+      : historyScope;
+    // Deleting owners remain identity provenance only for their verified current
+    // cleanup record. They never re-enter the active viewer set.
+    const localAliases = scopedDeletion
+      ? new Map(
+          Object.entries(await deriveExpenseFinancialIdentityMap(ctx, expense, cache, boundScope))
+        )
+      : await resolveOwnerLocalExpenseAliases(ctx, ownerScopeAccount, memberIds, cache);
     for (const memberId of memberIds) {
       const target = localAliases.get(memberId);
       if (!target || target === memberId) continue;
@@ -565,6 +627,18 @@ export async function resolveActiveExpenseParticipantAccounts(
       if (account && !inactiveAccountIds.has(account.id)) addAccount(account);
     }
   }
+  const historyAccess = await resolveRestoredHistoryAccess(ctx, expense, {
+    cache,
+    scope: historyScope
+  });
+  if (historyAccess)
+    for (const [id, account] of accounts) {
+      if (
+        account._id !== expense.owner_id &&
+        !historyAccess.eligibleFinancialAccountIds.has(account._id)
+      )
+        accounts.delete(id);
+    }
   for (const account of accounts.values()) {
     if (visibilityAccountId && account._id !== visibilityAccountId) {
       accounts.delete(account.id);
@@ -594,24 +668,45 @@ export async function reconcileExpenseVisibility(
   ctx: MutationCtx,
   expense: ExpenseVisibilitySource,
   excludedAccountIds: ReadonlySet<string> = new Set(),
-  options: { forceRevision?: boolean } = {}
+  options: {
+    forceRevision?: boolean;
+    historyScope?: HistoryWorkerScope;
+    budget?: import("./expenseWrites").ExpenseWriteBatchBudgetHooks;
+  } = {}
 ) {
-  const accounts = await resolveActiveExpenseParticipantAccounts(ctx, expense, excludedAccountIds);
-  const matches = await ctx.db
+  const readContext = options.budget
+    ? withIdentityReadBudget(ctx, {
+        chargeQueries: (count) => options.budget?.chargeQueries?.(count),
+        chargeRows: (rows) => options.budget?.chargeRows?.(rows)
+      })
+    : ctx;
+  const accounts = await resolveActiveExpenseParticipantAccounts(
+    readContext,
+    expense,
+    excludedAccountIds,
+    undefined,
+    undefined,
+    options.historyScope
+  );
+  const matches = await readContext.db
     .query("expenses")
     .withIndex("by_client_id", (query) => query.eq("id", expense.id))
     .take(2);
   if (matches.length > 1) throw new Error(`Expense ${expense.id} is not unique`);
   const storedExpense = matches[0];
   if (!storedExpense) throw new Error(`Expense ${expense.id} not found`);
-  await applyExpenseWriteBatch(ctx, [
-    {
-      kind: "visibility",
-      expense: storedExpense,
-      viewerAccountIds: accounts.map((account) => account._id),
-      forceRevision: options.forceRevision
-    }
-  ]);
+  await applyExpenseWriteBatch(
+    ctx,
+    [
+      {
+        kind: "visibility",
+        expense: storedExpense,
+        viewerAccountIds: accounts.map((account) => account._id),
+        forceRevision: options.forceRevision
+      }
+    ],
+    { historyScope: options.historyScope, budget: options.budget }
+  );
 }
 
 /**
