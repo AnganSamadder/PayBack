@@ -1,5 +1,33 @@
 /** Pure deployment validation. Changing issuers requires an account-continuity rollout. */
 export function authConfiguration(environment: Record<string, string | undefined>) {
+  const profile = environment.PAYBACK_AUTH_PROFILE;
+  if (profile && profile !== "legacy-production-tacit-marmot-746") {
+    throw new Error(
+      "Unknown authentication profile in PAYBACK_AUTH_PROFILE; leave unset for modern production"
+    );
+  }
+  if (profile === "legacy-production-tacit-marmot-746") {
+    // Preserve the verified existing provider only; never infer this profile from the URL.
+    if (
+      environment.PAYBACK_AUTH_ENV !== "production" ||
+      environment.CONVEX_CLOUD_URL !== "https://tacit-marmot-746.convex.cloud" ||
+      environment.CLERK_JWT_ISSUER_DOMAIN !== "https://accurate-eagle-80.clerk.accounts.dev"
+    ) {
+      throw new Error(
+        "Legacy production profile requires the exact verified deployment and issuer"
+      );
+    }
+    if (environment.PAYBACK_AUTH_CONTINUITY_VERIFIED !== "YES") {
+      throw new Error(
+        "Legacy production profile requires explicit account continuity verification"
+      );
+    }
+    return {
+      providers: [
+        { domain: "https://accurate-eagle-80.clerk.accounts.dev", applicationID: "convex" }
+      ]
+    };
+  }
   const developmentIssuer = "https://accurate-eagle-80.clerk.accounts.dev";
   const developmentURL = "https://flippant-bobcat-304.convex.cloud";
   const mode = environment.PAYBACK_AUTH_ENV;
