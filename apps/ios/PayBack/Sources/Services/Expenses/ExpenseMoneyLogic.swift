@@ -84,10 +84,11 @@ enum ExpenseMoneyText {
     static func format(_ amount: Double, currencyCode: String?) -> String {
         let style = FloatingPointFormatStyle<Double>.Currency(code: currencyCode ?? legacyCurrencyCode)
         let standard = amount.formatted(style)
-        // Ordinary amounts keep the existing symbol and minor-unit formatting.
-        // Preserve fractions that would otherwise round away in historical data.
+        // Keep the established minor-unit display for ordinary balances. Expand
+        // only a nonzero historical amount that would otherwise look like zero.
+        // Formatting never changes the saved amount or balance arithmetic.
         if let renderedAmount = try? style.parseStrategy.parse(standard),
-           abs(renderedAmount - amount) <= max(renderedAmount.ulp, amount.ulp) * 4 {
+           renderedAmount != 0 || amount == 0 {
             return standard
         }
         return amount.formatted(style.precision(.significantDigits(1...15)))
