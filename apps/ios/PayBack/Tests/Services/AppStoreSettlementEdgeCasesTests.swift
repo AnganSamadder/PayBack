@@ -43,6 +43,81 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         try await super.tearDown()
     }
 
+    func testExpenseScopedIdentityDoesNotApplyCallerLocalMergeToForeignLedger() {
+        let selfId = sut.currentUser.id
+        let source = UUID()
+        let target = UUID()
+        sut.session = UserSession(account: UserAccount(id: "viewer", email: "viewer@example.test", displayName: "Viewer", linkedMemberId: selfId))
+        sut.processFriendsUpdate([AccountFriend(memberId: target, name: "Merged locally", aliasMemberIds: [source])])
+        let expense = Expense(groupId: UUID(), description: "Foreign owner", totalAmount: 25,
+            paidByMemberId: selfId, involvedMemberIds: [selfId, source, target],
+            splits: [ExpenseSplit(memberId: source, amount: 10), ExpenseSplit(memberId: target, amount: 15)],
+            ownerAccountId: "other-owner", financialIdentityMap: [selfId: selfId, source: source, target: target])
+        sut.expenses = [expense]
+        XCTAssertTrue(sut.areSamePerson(source, target), "The viewer relationship merge exists")
+        XCTAssertFalse(sut.areSamePerson(source, target, in: expense), "Foreign ledger preserves distinct owner identities")
+        XCTAssertEqual(sut.balanceByCurrency(forFriend: GroupMember(id: target, name: "Target"))["USD"], 15)
+        XCTAssertEqual(sut.overallNetBalanceByCurrency()["USD"], 25)
+    }
+
+    func testExpenseOwnerAliasToCurrentUserCountsAndSettlesAllExactOwnRows() async throws {
+        let selfId = sut.currentUser.id
+        let ownerLocalSelf = UUID()
+        let payer = UUID()
+        sut.session = UserSession(account: UserAccount(id: "viewer", email: "viewer@example.test", displayName: "Viewer", linkedMemberId: selfId))
+        let rows = [ExpenseSplit(memberId: ownerLocalSelf, amount: 10, isSettled: true),
+                    ExpenseSplit(memberId: ownerLocalSelf, amount: 15), ExpenseSplit(memberId: payer, amount: 5)]
+        let expense = Expense(groupId: UUID(), description: "Owner aliases viewer", totalAmount: 30,
+            paidByMemberId: payer, involvedMemberIds: [payer, ownerLocalSelf], splits: rows,
+            ownerAccountId: "other-owner", financialIdentityMap: [payer: payer, ownerLocalSelf: selfId])
+        sut.expenses = [expense]
+        await mockExpenseCloudService.addExpense(expense)
+        XCTAssertTrue(sut.isMe(ownerLocalSelf, in: expense))
+        XCTAssertEqual(sut.overallNetBalanceByCurrency()["USD"], -15)
+        try await sut.settleExpenseForCurrentUser(expense)
+        let saved = try XCTUnwrap(sut.expenses.first)
+        XCTAssertEqual(saved.splits.map(\.isSettled), [true, true, false])
+        XCTAssertEqual(saved.splits.map(\.amount), [10, 15, 5])
+    }
+
+    func testCachedExpenseOwnerIdentityPreservesBalanceWithoutNetworkRefresh() throws {
+        let viewer = UUID()
+        let ownerLocalViewer = UUID()
+        let payer = UUID()
+        let account = UserAccount(id: "viewer", email: "viewer@example.test", displayName: "Viewer", linkedMemberId: viewer)
+        let expense = Expense(groupId: UUID(), description: "Cached debt", totalAmount: 10,
+            paidByMemberId: payer, involvedMemberIds: [payer, ownerLocalViewer],
+            splits: [ExpenseSplit(memberId: ownerLocalViewer, amount: 10)], ownerAccountId: "other-owner",
+            financialIdentityMap: [payer: payer, ownerLocalViewer: viewer])
+        let encoded = try JSONEncoder().encode(AppData(groups: [], expenses: [expense]))
+        let restored = try JSONDecoder().decode(AppData.self, from: encoded)
+        let persistence = MockPersistenceService()
+        persistence.save(restored)
+        let reopened = AppStore(persistence: persistence, accountService: mockAccountService,
+            expenseCloudService: mockExpenseCloudService, groupCloudService: mockGroupCloudService,
+            linkRequestService: mockLinkRequestService, inviteLinkService: mockInviteLinkService, skipClerkInit: true)
+        reopened.session = UserSession(account: account)
+        reopened.currentUser = GroupMember(id: viewer, name: "Viewer", isCurrentUser: true)
+        XCTAssertEqual(reopened.expenses.first?.financialIdentityMap?[ownerLocalViewer], viewer)
+        XCTAssertEqual(reopened.overallNetBalanceByCurrency()["USD"], -10)
+        XCTAssertEqual(reopened.unsettledExpensesInvolvingCurrentUser().map(\.id), [expense.id])
+    }
+
+    func testExactSplitSelectionDoesNotSettleSiblingRowForSameMember() async throws {
+        let member = UUID()
+        sut.session = UserSession(account: UserAccount(id: "viewer", email: "viewer@example.test", displayName: "Viewer"))
+        let first = ExpenseSplit(memberId: member, amount: 10)
+        let second = ExpenseSplit(memberId: member, amount: 15)
+        let expense = Expense(groupId: UUID(), description: "Separate shares", totalAmount: 25,
+            paidByMemberId: sut.currentUser.id, involvedMemberIds: [sut.currentUser.id, member], splits: [first, second])
+        sut.expenses = [expense]
+        await mockExpenseCloudService.addExpense(expense)
+        try await sut.settleExpenseForSplits(expense, splitIds: [first.id])
+        XCTAssertEqual(sut.expenses.first?.splits.map(\.isSettled), [true, false])
+        try await sut.unsettleExpenseForSplits(expense, splitIds: [first.id])
+        XCTAssertEqual(sut.expenses.first?.splits.map(\.isSettled), [false, false])
+    }
+
     // MARK: - Settlement Tests for All Splits Settled
 
     func testSettleExpenseForMember_AllSplitsSettled_MarksExpenseSettled() async throws {
@@ -1097,7 +1172,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         try await groupDeletion.value
     }
 
-    func testStaleFriendSnapshotCannotRestorePendingLinkedDeletion() async throws {
+    func testDeletionKeepsFriendUntilAcknowledgedThenRejectsStaleSnapshot() async throws {
         sut.session = UserSession(
             account: UserAccount(id: "account-a", email: "a@example.com", displayName: "Account A")
         )
@@ -1119,7 +1194,7 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         XCTAssertTrue(deleteStarted)
 
         sut.processFriendsUpdate([friend])
-        XCTAssertTrue(sut.friends.isEmpty)
+        XCTAssertEqual(sut.friends, [friend], "Pending deletion is not acknowledged yet")
 
         await mockAccountService.resumeLinkedFriendDelete()
         try await deletion.value
@@ -1156,7 +1231,10 @@ final class AppStoreSettlementEdgeCasesTests: XCTestCase {
         )
         sut.friends = [AccountFriend(memberId: UUID(), name: "New Friend")]
         await mockAccountService.resumeLinkedFriendDelete()
-        try await deletion.value
+        do {
+            try await deletion.value
+            XCTFail("Old-session deletion must report cancellation")
+        } catch is CancellationError { }
 
         let syncedFriends = await mockAccountService.latestSyncedFriends(accountEmail: "b@example.com")
         XCTAssertNil(syncedFriends)

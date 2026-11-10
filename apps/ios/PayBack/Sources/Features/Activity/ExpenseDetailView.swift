@@ -20,11 +20,11 @@ struct ExpenseDetailView: View {
     @State private var showSettlementError = false
 
     // True when the current user paid for this expense
-    private var iAmPayer: Bool { store.isMe(expense.paidByMemberId) }
+    private var iAmPayer: Bool { store.isMe(expense.paidByMemberId, in: expense) }
 
     // Non-payer splits only (these are the people who owe)
     private var debtSplits: [ExpenseSplit] {
-        expense.splits.filter { !store.areSamePerson($0.memberId, expense.paidByMemberId) }
+        expense.splits.filter { !store.areSamePerson($0.memberId, expense.paidByMemberId, in: expense) }
     }
 
     private var isDirect: Bool {
@@ -41,9 +41,8 @@ struct ExpenseDetailView: View {
     }
 
     // Non-payer: the current user's own split (nil if user is payer)
-    private var myDebtSplit: ExpenseSplit? {
-        guard !iAmPayer else { return nil }
-        return debtSplits.first { store.isMe($0.memberId) }
+    private var myDebtSummary: IdentitySplitSummary {
+        SettlementAmountLogic.identitySummary(for: expense, matchesIdentity: { store.isMe($0, in: expense) })
     }
 
     var body: some View {
@@ -139,7 +138,7 @@ struct ExpenseDetailView: View {
                 .font(.system(.title2, design: .rounded, weight: .bold))
                 .multilineTextAlignment(.center)
 
-            Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+            Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
                 .font(.system(.title, design: .rounded, weight: .bold))
                 .foregroundStyle(AppTheme.brand)
 
@@ -190,9 +189,9 @@ struct ExpenseDetailView: View {
                 ForEach(debtSplits) { split in
                     HStack {
                         PaymentDetailRow(
-                            title: store.isMe(split.memberId) ? "You owe" : "\(memberName(for: split.memberId)) owes",
+                            title: store.isMe(split.memberId, in: expense) ? "You owe" : "\(memberName(for: split.memberId)) owes",
                             value: currency(split.amount),
-                            isHighlighted: store.isMe(split.memberId)
+                            isHighlighted: store.isMe(split.memberId, in: expense)
                         )
                         if split.isSettled {
                             Image(systemName: "checkmark.circle.fill")
@@ -231,7 +230,7 @@ struct ExpenseDetailView: View {
                             .font(.system(.body, design: .rounded))
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text(sub.amount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                        Text(ExpenseMoneyText.format(sub.amount, currencyCode: expense.currencyCode))
                             .font(.system(.body, design: .rounded, weight: .medium))
                     }
                     .padding(.horizontal, 16)
@@ -341,9 +340,9 @@ struct ExpenseDetailView: View {
     // Non-payer: one-tap settle, or settled badge + unsettle option
     @ViewBuilder
     private var nonPayerActionButtons: some View {
-        if let split = myDebtSplit {
+        if !iAmPayer && myDebtSummary.hasMatchingSplits {
             VStack(spacing: 10) {
-                if split.isSettled {
+                if myDebtSummary.isFullySettled {
                     // Settled badge
                     HStack {
                         Image(systemName: "checkmark.circle.fill")
@@ -393,6 +392,16 @@ struct ExpenseDetailView: View {
                         .background(AppTheme.brand)
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                     }
+                    if debtSplits.contains(where: { store.isMe($0.memberId, in: expense) && $0.isSettled }) {
+                        Button("Mark my paid shares unpaid") {
+                            runSettlementAction {
+                                try await store.unsettleExpenseForCurrentUser(expense)
+                            }
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 8)
+                    }
                 }
             }
             .padding(.horizontal, 16)
@@ -406,7 +415,7 @@ struct ExpenseDetailView: View {
     }
 
     private func currency(_ amount: Double) -> String {
-        amount.formatted(.currency(code: Locale.current.currency?.identifier ?? "USD"))
+        ExpenseMoneyText.format(amount, currencyCode: expense.currencyCode)
     }
 
     private func runSettlementAction(_ action: @escaping () async throws -> Void) {
@@ -470,37 +479,39 @@ struct SettleExpenseSheet: View {
     /// When true, only shows the current user's own split (non-payer unsettling their own share).
     var selfOnly: Bool = false
 
-    @State private var selectedMemberIds: Set<UUID> = []
+    @State private var selectedRowIds: Set<UUID> = []
     @State private var showDeleteConfirm = false
     @State private var settlementError: PayBackError?
     @State private var showSettlementError = false
 
-    // All non-payer splits shown in the list (filtered to self when selfOnly)
-    private var debtSplits: [ExpenseSplit] {
-        let all = expense.splits.filter { !store.areSamePerson($0.memberId, expense.paidByMemberId) }
-        if selfOnly {
-            return all.filter { store.isMe($0.memberId) }
+    // Summary rows are for selection only. Persisted splits keep their IDs,
+    // individual amounts and settlement flags.
+    private var debtSplits: [ExpenseSettlementSelection.Row] {
+        let raw = expense.splits.filter {
+            !store.areSamePerson($0.memberId, expense.paidByMemberId, in: expense) && (!selfOnly || store.isMe($0.memberId, in: expense))
         }
-        return all
+        return ExpenseSettlementSelection.summaries(
+            rows: raw, selectingSettled: mode == .unsettle,
+            equivalent: { store.areSamePerson($0, $1, in: expense) }
+        )
     }
 
-    // A split is selectable (not grayed) only if it matches the action
-    private func isSelectable(_ split: ExpenseSplit) -> Bool {
-        switch mode {
-        case .settle:   return !split.isSettled   // can only settle unsettled ones
-        case .unsettle: return split.isSettled    // can only unsettle settled ones
-        case .delete:   return false
-        }
+    private func isSelectable(_ split: ExpenseSettlementSelection.Row) -> Bool {
+        mode != .delete && split.isSelectable
     }
 
-    private var selectableSplits: [ExpenseSplit] { debtSplits.filter { isSelectable($0) } }
+    private var selectableSplits: [ExpenseSettlementSelection.Row] { debtSplits.filter { isSelectable($0) } }
+
+    private var selectedSplitIds: Set<UUID> {
+        Set(selectableSplits.filter { selectedRowIds.contains($0.id) }.flatMap(\.splitIds))
+    }
 
     private var allSelected: Bool {
-        !selectableSplits.isEmpty && selectableSplits.allSatisfy { selectedMemberIds.contains($0.memberId) }
+        !selectableSplits.isEmpty && selectableSplits.allSatisfy { selectedRowIds.contains($0.id) }
     }
 
     private var isConfirmEnabled: Bool {
-        !selectedMemberIds.isEmpty && !store.isSettlementPending(for: expense.id)
+        !selectedSplitIds.isEmpty && !store.isSettlementPending(for: expense.id)
     }
 
     private var accentColor: Color {
@@ -628,17 +639,18 @@ struct SettleExpenseSheet: View {
                         SplitSelectionRow(
                             name: memberName(for: split.memberId),
                             amount: split.amount,
-                            isSelected: selectedMemberIds.contains(split.memberId),
+                            currencyCode: expense.currencyCode,
+                            isSelected: selectedRowIds.contains(split.id),
                             isDisabled: !selectable,
                             accentColor: accentColor,
                             revealDelay: Double(index) * 0.045
                         ) {
                             guard selectable else { return }
                             withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
-                                if selectedMemberIds.contains(split.memberId) {
-                                    selectedMemberIds.remove(split.memberId)
+                                if selectedRowIds.contains(split.id) {
+                                    selectedRowIds.remove(split.id)
                                 } else {
-                                    selectedMemberIds.insert(split.memberId)
+                                    selectedRowIds.insert(split.id)
                                 }
                             }
                         }
@@ -718,7 +730,7 @@ struct SettleExpenseSheet: View {
     // MARK: - Helpers
 
     private var confirmLabel: String {
-        let n = selectedMemberIds.count
+        let n = selectedRowIds.count
         guard n > 0 else {
             return mode == .unsettle ? "Unsettle" : "Mark as Paid"
         }
@@ -727,15 +739,15 @@ struct SettleExpenseSheet: View {
     }
 
     private func seedSelection() {
-        selectedMemberIds = Set(selectableSplits.map { $0.memberId })
+        selectedRowIds = Set(selectableSplits.map(\.id))
     }
 
     private func toggleSelectAll() {
         withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
             if allSelected {
-                selectedMemberIds.removeAll()
+                selectedRowIds.removeAll()
             } else {
-                selectedMemberIds = Set(selectableSplits.map { $0.memberId })
+                selectedRowIds = Set(selectableSplits.map(\.id))
             }
         }
     }
@@ -746,12 +758,12 @@ struct SettleExpenseSheet: View {
         case .settle:
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             runSettlementAction {
-                try await store.settleExpenseForMembers(expense, memberIds: selectedMemberIds)
+                try await store.settleExpenseForSplits(expense, splitIds: selectedSplitIds)
             }
         case .unsettle:
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             runSettlementAction {
-                try await store.unsettleExpenseForMembers(expense, memberIds: selectedMemberIds)
+                try await store.unsettleExpenseForSplits(expense, splitIds: selectedSplitIds)
             }
         case .delete:
             showDeleteConfirm = true
@@ -783,6 +795,7 @@ struct SettleExpenseSheet: View {
 struct SplitSelectionRow: View {
     let name: String
     let amount: Double
+    var currencyCode: String? = nil
     let isSelected: Bool
     let isDisabled: Bool
     let accentColor: Color
@@ -792,7 +805,7 @@ struct SplitSelectionRow: View {
     @State private var appeared = false
 
     private var currencyString: String {
-        amount.formatted(.currency(code: Locale.current.currency?.identifier ?? "USD"))
+        ExpenseMoneyText.format(amount, currencyCode: currencyCode)
     }
 
     // Disabled rows show a muted, locked appearance

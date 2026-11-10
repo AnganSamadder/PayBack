@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
-import { api } from "../_generated/api";
+import { describe, expect, test, vi } from "vitest";
+import { api, internal } from "../_generated/api";
 import {
   accountMergeQueriesForLimit,
   assertMergeIdentityMaterializationReady,
@@ -9,6 +9,41 @@ import {
 } from "../aliases";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { backfillMemberReferences } from "../../tests/helpers/memberReferenceTestUtils";
+import { finishScheduledFunctions } from "../../tests/helpers/schedulerTestUtils";
+
+async function mergeState(t: ReturnType<typeof convexTest>) {
+  return t.run(async (ctx) => ({
+    accounts: await ctx.db.query("accounts").collect(),
+    friends: await ctx.db.query("account_friends").collect(),
+    groups: await ctx.db.query("groups").collect(),
+    expenses: await ctx.db.query("expenses").collect(),
+    aliases: await ctx.db.query("member_aliases").collect(),
+    localAliases: await ctx.db.query("owner_member_aliases").collect(),
+    expenseVisibility: await ctx.db.query("user_expenses").collect(),
+    groupVisibility: await ctx.db.query("group_visibility").collect(),
+    revisions: await ctx.db.query("account_sync_state").collect(),
+    operations: await ctx.db.query("identity_operations").collect()
+  }));
+}
+
+async function prepareSyncMigrations(t: ReturnType<typeof convexTest>) {
+  for (const migration of [
+    internal["migrations/groupVisibility"].run,
+    internal["migrations/userExpenseRefs"].run
+  ]) {
+    let complete = false;
+    for (let page = 0; page < 200; page += 1) {
+      const result = await t.mutation(migration, { scheduleNext: false });
+      if (result.status === "ready") {
+        complete = true;
+        break;
+      }
+      if (result.status === "failed") throw new Error(result.lastError);
+    }
+    if (!complete) throw new Error("Fixture sync migration did not finish");
+  }
+}
 
 function identity(email: string, subject: string) {
   return {
@@ -185,6 +220,7 @@ async function mergeEligibilityScenario(
 ) {
   const { ownerCtx } = await createEligibilityScenario(source, target, targetIdentity, options);
   return ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+    financial_contract_version: 2,
     friendId1: "canonical_friend",
     friendId2: "local_alias"
   });
@@ -246,6 +282,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
     const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await expect(
       ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        financial_contract_version: 2,
         friendId1: "legacy_target",
         friendId2: "local_source"
       })
@@ -324,6 +361,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
     const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await expect(
       ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        financial_contract_version: 2,
         friendId1: "canonical_friend",
         friendId2: "local_source"
       })
@@ -457,6 +495,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
     const { ownerCtx } = await createEligibilityScenario({}, { status: "pending" });
     await expect(
       ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        financial_contract_version: 2,
         friendId1: "canonical_friend",
         friendId2: "canonical_friend"
       })
@@ -467,6 +506,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
     const { ownerCtx } = await createEligibilityScenario({}, { linked: true });
     await expect(
       ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        financial_contract_version: 2,
         friendId1: "canonical_friend",
         friendId2: "canonical_friend"
       })
@@ -479,6 +519,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
       const { ownerCtx } = await createEligibilityScenario({}, {}, targetIdentity);
       await expect(
         ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+          financial_contract_version: 2,
           friendId1: "canonical_friend",
           friendId2: "canonical_friend"
         })
@@ -541,6 +582,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
 
     await expect(
       ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        financial_contract_version: 2,
         friendId1: "canonical_friend",
         friendId2: "local_alias"
       })
@@ -553,6 +595,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
 
     await expect(
       ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        financial_contract_version: 2,
         friendId1: "canonical_friend",
         friendId2: "local_alias"
       })
@@ -575,6 +618,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
 
     await expect(
       ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        financial_contract_version: 2,
         friendId1: "canonical_friend",
         friendId2: "local_alias"
       })
@@ -592,6 +636,7 @@ describe("mergeUnlinkedFriends eligibility", () => {
 
     await expect(
       ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+        financial_contract_version: 2,
         friendId1: "canonical_friend",
         friendId2: "local_alias"
       })
@@ -678,6 +723,7 @@ test("mergeUnlinkedFriends stores an owner-scoped alias and rewrites only owned 
   await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+    financial_contract_version: 2,
     friendId1: "canonical_friend",
     friendId2: "local_alias"
   });
@@ -712,6 +758,7 @@ test("mergeUnlinkedFriends stores an owner-scoped alias and rewrites only owned 
     });
   });
   const retryResult = await ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+    financial_contract_version: 2,
     friendId1: "canonical_friend",
     friendId2: "local_alias"
   });
@@ -831,6 +878,7 @@ test("mergeUnlinkedFriends preserves a group when a foreign expense still refere
   await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+    financial_contract_version: 2,
     friendId1: "canonical_friend",
     friendId2: "local_alias"
   });
@@ -957,6 +1005,7 @@ test("mergeUnlinkedFriends preserves an owned expense in a foreign-owned shared 
   await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+    financial_contract_version: 2,
     friendId1: "canonical_friend",
     friendId2: "local_alias"
   });
@@ -1060,32 +1109,42 @@ async function createBoundedMergeScenario(expenseCount: number) {
   };
 }
 
-test("mergeUnlinkedFriends accepts canonicalization at the expense work boundary", async () => {
+test("legacy merge requires resumable linking for 64 expenses and leaves history unchanged", async () => {
   const { t, ownerCtx } = await createBoundedMergeScenario(64);
+  const before = await t.run(async (ctx) => ({
+    groups: await ctx.db.query("groups").collect(),
+    expenses: await ctx.db.query("expenses").collect(),
+    friends: await ctx.db.query("account_friends").collect()
+  }));
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
-  ).resolves.toMatchObject({ success: true });
-
-  const rewrittenExpenses = await t.run(async (ctx) => ctx.db.query("expenses").collect());
-  expect(rewrittenExpenses).toHaveLength(64);
+  ).rejects.toThrow("FINANCIAL_CONTRACT_UPGRADE_REQUIRED");
   expect(
-    rewrittenExpenses.every((expense) =>
-      expense.participant_member_ids.includes("canonical_friend")
-    )
-  ).toBe(true);
+    await t.run(async (ctx) => ({
+      groups: await ctx.db.query("groups").collect(),
+      expenses: await ctx.db.query("expenses").collect(),
+      friends: await ctx.db.query("account_friends").collect()
+    }))
+  ).toEqual(before);
 });
 
-test("mergeUnlinkedFriends rejects over-cap work before any writes", async () => {
+test("ready legacy merge rejects 65 expenses atomically while V3 completes without rewriting money", async () => {
   const { t, ownerCtx } = await createBoundedMergeScenario(65);
+  await backfillMemberReferences(t);
+  await prepareSyncMigrations(t);
+  const before = await mergeState(t);
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
-  ).rejects.toThrow("too large");
+  ).rejects.toThrow("FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Use resumable linking for this history");
+  expect(await mergeState(t)).toEqual(before);
 
   const state = await t.run(async (ctx) => ({
     group: await ctx.db
@@ -1104,6 +1163,27 @@ test("mergeUnlinkedFriends rejects over-cap work before any writes", async () =>
   ).toBe(true);
   expect(canonical?.local_alias_member_ids).toBeUndefined();
   expect(state.friends.some((friend) => friend.member_id === "local_alias")).toBe(true);
+
+  vi.useFakeTimers();
+  try {
+    const operation = await ownerCtx.mutation(api.aliases.mergeUnlinkedFriendsV3, {
+      financial_contract_version: 2,
+      friendId1: "canonical_friend",
+      friendId2: "local_alias"
+    });
+    expect(operation.status).toBe("pending");
+    await finishScheduledFunctions(t, 500);
+    expect(
+      await ownerCtx.query(api.identityOperations.status, { operation_id: operation.operation_id })
+    ).toMatchObject({ status: "complete" });
+    const completed = await mergeState(t);
+    expect(completed.expenses).toEqual(before.expenses);
+    expect(completed.friends).toHaveLength(1);
+    expect(completed.friends[0].local_alias_member_ids).toContain("local_alias");
+    expect(completed.aliases).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("mergeUnlinkedFriends rejects a conflicting owner email without rewriting the expense", async () => {
@@ -1175,6 +1255,7 @@ test("mergeUnlinkedFriends rejects a conflicting owner email without rewriting t
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
@@ -1287,6 +1368,7 @@ test("mergeMemberIds canonicalizes retained participant links to one proven acco
 
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await ownerCtx.mutation(api.aliases.mergeMemberIds, {
+    financial_contract_version: 2,
     sourceId: "local_alias",
     targetCanonicalId: "canonical_friend"
   });
@@ -1330,6 +1412,7 @@ test("mergeUnlinkedFriends rejects a source closure matching another friend's pr
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
@@ -1438,6 +1521,7 @@ test("mergeMemberIds does not replace a deleted canonical participant with unrel
   await t
     .withIdentity(identity("owner@test.com", "owner_auth"))
     .mutation(api.aliases.mergeMemberIds, {
+      financial_contract_version: 2,
       sourceId: "local_alias",
       targetCanonicalId: "canonical_friend"
     });
@@ -1511,6 +1595,7 @@ test("mergeUnlinkedFriends removes stale expense visibility for an unlinked targ
   });
 
   await ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+    financial_contract_version: 2,
     friendId1: "canonical_friend",
     friendId2: "local_alias"
   });
@@ -1565,6 +1650,7 @@ test("mergeUnlinkedFriends rejects a conflicting group owner email without rewri
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
@@ -1626,6 +1712,7 @@ test("mergeUnlinkedFriends rejects rewriting an active source into an inactive t
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
@@ -1686,12 +1773,18 @@ test("mergeUnlinkedFriends rejects an unlinked rewrite above the participant wor
     });
   });
 
+  await backfillMemberReferences(t);
+  const before = await mergeState(t);
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
-  ).rejects.toThrow("Friend merge is too large to complete safely");
+  ).rejects.toThrow(
+    "FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Use resumable linking for this participant set"
+  );
+  expect(await mergeState(t)).toEqual(before);
 
   const state = await t.run(async (ctx) => ({
     source: await ctx.db
@@ -1781,6 +1874,7 @@ test("friend merge rejects conflicting strong owner identifiers without rewritin
   const staleCtx = t.withIdentity(identity("stale@test.com", "stale_auth"));
   await expect(
     staleCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "stale_target",
       friendId2: "local_alias"
     })
@@ -1788,6 +1882,7 @@ test("friend merge rejects conflicting strong owner identifiers without rewritin
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
@@ -1815,9 +1910,10 @@ test("friend merge rejects conflicting strong owner identifiers without rewritin
 
 test.each([
   { participantCount: 9, shouldSucceed: true },
-  { participantCount: 10, shouldSucceed: false }
+  { participantCount: 10, shouldSucceed: true },
+  { participantCount: 65, shouldSucceed: false }
 ])(
-  "friend merge bounds cached linked participant resolution at $participantCount identities",
+  "friend merge charges actual linked participant work at $participantCount identities",
   async ({ participantCount, shouldSucceed }) => {
     const { t, ownerCtx } = await createEligibilityScenario();
     const now = Date.now();
@@ -1855,14 +1951,20 @@ test.each([
       });
     });
 
+    await backfillMemberReferences(t);
+    const before = await mergeState(t);
     const merge = ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     });
     if (shouldSucceed) {
       await expect(merge).resolves.toMatchObject({ success: true });
     } else {
-      await expect(merge).rejects.toThrow("Friend merge is too large to complete safely");
+      await expect(merge).rejects.toThrow(
+        "FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Use resumable linking for this participant set"
+      );
+      expect(await mergeState(t)).toEqual(before);
     }
 
     const source = await t.run(async (ctx) =>
@@ -1895,6 +1997,7 @@ test("mergeMemberIds rejects a linked-looking target without proven account prov
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      financial_contract_version: 2,
       sourceId: "local_alias",
       targetCanonicalId: "canonical_friend"
     })
@@ -1935,6 +2038,7 @@ test("mergeMemberIds rewrites a proven linked target from live account identity"
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      financial_contract_version: 2,
       sourceId: "local_alias",
       targetCanonicalId: "legacy_target_member"
     })
@@ -1959,6 +2063,7 @@ test("mergeMemberIds rewrites a proven linked target from live account identity"
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      financial_contract_version: 2,
       sourceId: "local_alias",
       targetCanonicalId: "legacy_target_member"
     })
@@ -1987,6 +2092,7 @@ test("mergeMemberIds does not resolve local aliases from an unlinked target", as
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      financial_contract_version: 2,
       sourceId: "local_alias",
       targetCanonicalId: "legacy_target_member"
     })
@@ -2033,6 +2139,7 @@ test("mergeMemberIds charges historical provenance rows to the merge byte budget
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      financial_contract_version: 2,
       sourceId: "local_alias",
       targetCanonicalId: "canonical_friend"
     })
@@ -2070,6 +2177,7 @@ test("mergeMemberIds rejects an effective canonical target attached to a third f
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      financial_contract_version: 2,
       sourceId: "local_alias",
       targetCanonicalId: "canonical_friend"
     })
@@ -2100,6 +2208,7 @@ test("mergeMemberIds treats a proven linked same-ID request as an effective cano
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeMemberIds, {
+      financial_contract_version: 2,
       sourceId: "canonical_friend",
       targetCanonicalId: "canonical_friend"
     })
@@ -2229,6 +2338,7 @@ test("friend merge shares its byte budget with the normalized friend fallback", 
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "legacy_target",
       friendId2: "local_alias"
     })
@@ -2253,6 +2363,7 @@ test("friend merge shares its byte budget with the owner conflict scan", async (
 
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
@@ -2289,12 +2400,16 @@ test("friend merge bounds owner-group bytes before the Convex read limit", async
     }
   });
 
+  await backfillMemberReferences(t);
+  const before = await mergeState(t);
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
   ).rejects.toThrow("Friend merge is too large to complete safely");
+  expect(await mergeState(t)).toEqual(before);
 });
 
 test("friend merge bounds attached-expense bytes before the Convex read limit", async () => {
@@ -2356,12 +2471,16 @@ test("friend merge bounds attached-expense bytes before the Convex read limit", 
     }
   });
 
+  await backfillMemberReferences(t);
+  const before = await mergeState(t);
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
   ).rejects.toThrow("Friend merge is too large to complete safely");
+  expect(await mergeState(t)).toEqual(before);
 });
 
 test("friend merge bounds owner-expense bytes before the Convex read limit", async () => {
@@ -2380,7 +2499,7 @@ test("friend merge bounds owner-expense bytes before the Convex read limit", asy
         date: Date.now(),
         total_amount: 1,
         paid_by_member_id: "owner_member",
-        involved_member_ids: ["owner_member", "local_alias"],
+        involved_member_ids: ["owner_member", index === 0 ? "local_alias" : `unrelated_${index}`],
         splits: [
           {
             id: `owner_split_${index}`,
@@ -2393,11 +2512,14 @@ test("friend merge bounds owner-expense bytes before the Convex read limit", asy
         owner_email: "owner@test.com",
         owner_account_id: "owner_auth",
         owner_id: owner._id,
-        participant_member_ids: ["owner_member", "local_alias"],
+        participant_member_ids: [
+          "owner_member",
+          index === 0 ? "local_alias" : `unrelated_${index}`
+        ],
         participant_emails: ["owner@test.com"],
         participants: [
           { member_id: "owner_member", name: "Owner" },
-          { member_id: "local_alias", name: "Duplicate" }
+          { member_id: index === 0 ? "local_alias" : `unrelated_${index}`, name: "Historical" }
         ],
         created_at: Date.now(),
         updated_at: Date.now()
@@ -2405,10 +2527,14 @@ test("friend merge bounds owner-expense bytes before the Convex read limit", asy
     }
   });
 
+  await backfillMemberReferences(t);
+  const before = await mergeState(t);
   await expect(
     ownerCtx.mutation(api.aliases.mergeUnlinkedFriends, {
+      financial_contract_version: 2,
       friendId1: "canonical_friend",
       friendId2: "local_alias"
     })
   ).rejects.toThrow("Friend merge is too large to complete safely");
+  expect(await mergeState(t)).toEqual(before);
 });

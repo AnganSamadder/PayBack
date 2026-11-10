@@ -14,6 +14,8 @@ protocol InviteLinkService: Sendable {
         targetMemberName: String
     ) async throws -> InviteLink
 
+    func generateInviteLink(targetMemberId: UUID, targetMemberName: String, expectedAccountId: String) async throws -> InviteLink
+
     /// Validates an invite token and returns validation result with expense preview
     func validateInviteToken(_ tokenId: UUID) async throws -> InviteTokenValidation
 
@@ -28,6 +30,8 @@ protocol InviteLinkService: Sendable {
         mergeLocalFriendMemberId: UUID?
     ) async throws -> LinkAcceptResult
 
+    func beginInviteClaim(_ tokenId: UUID, mergeLocalFriendMemberId: UUID?, expectedAccountId: String) async throws -> IdentityOperationResult
+
     /// Fetches all active invite tokens created by the current user
     func fetchActiveInvites() async throws -> [InviteToken]
 
@@ -36,6 +40,15 @@ protocol InviteLinkService: Sendable {
 }
 
 extension InviteLinkService {
+    func generateInviteLink(targetMemberId: UUID, targetMemberName: String, expectedAccountId: String) async throws -> InviteLink {
+        try await generateInviteLink(targetMemberId: targetMemberId, targetMemberName: targetMemberName)
+    }
+
+    func beginInviteClaim(_ tokenId: UUID, mergeLocalFriendMemberId: UUID?, expectedAccountId: String) async throws -> IdentityOperationResult {
+        let result = try await claimInviteToken(tokenId, mergeLocalFriendMemberId: mergeLocalFriendMemberId)
+        return IdentityOperationResult(operationId: "", status: "complete", legacyResult: result)
+    }
+
     func claimInviteToken(_ tokenId: UUID) async throws -> LinkAcceptResult {
         try await claimInviteToken(tokenId, mergeLocalFriendMemberId: nil)
     }

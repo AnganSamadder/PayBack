@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import { api } from "../_generated/api";
 import schema from "../schema";
 import { modules } from "../test.setup";
+import { backfillMemberReferences } from "../../tests/helpers/memberReferenceTestUtils";
 
 function authIdentity(email: string, subject: string) {
   return {
@@ -198,7 +199,10 @@ test("bulk import cannot link accounts or grant historical expense visibility", 
     updatedAt: "2023-01-01"
   });
 
-  await ctxA.mutation(api.bulkImport.bulkImport, importPayload);
+  await ctxA.mutation(api.bulkImport.bulkImport, {
+    financial_contract_version: 2,
+    ...importPayload
+  });
 
   // 9. Verify the import remains local and cannot grant cross-account visibility.
 
@@ -311,7 +315,7 @@ test("friends:list dedupes linked identity rows and preserves enriched aliases",
     updatedAt: "2023-01-01"
   });
 
-  const friends = await ownerCtx.query(api.friends.list, {});
+  const friends = await ownerCtx.query(api.friends.list, { financial_contract_version: 2 });
   expect(friends.length).toBe(1);
 
   const linkedFriend = friends[0];
@@ -368,6 +372,7 @@ test("friends:upsert downgrades an unmarked legacy link without server evidence"
   });
 
   await ownerCtx.mutation(api.friends.upsert, {
+    financial_contract_version: 2,
     member_id: "friend_member",
     name: "Friend",
     has_linked_account: false
@@ -454,6 +459,7 @@ test.each(["claimed invite", "accepted link request"] as const)(
 
     const owner = t.withIdentity(authIdentity("legacy-owner@example.com", "legacy_owner"));
     await owner.mutation(api.friends.upsert, {
+      financial_contract_version: 2,
       member_id: "linked_legacy",
       name: "Linked after stale sync",
       has_linked_account: false
@@ -519,28 +525,38 @@ test.each(["invite", "link request"] as const)(
     const claimer = t.withIdentity(authIdentity("claimer@example.com", "claimer_auth"));
     if (claimKind === "invite") {
       await creator.mutation(api.inviteTokens.create, {
+        financial_contract_version: 2,
         id: "trusted_invite",
         target_member_id: "claimer_legacy",
         target_member_name: "Claimer"
       });
-      await claimer.mutation(api.inviteTokens.claim, { id: "trusted_invite" });
+      await claimer.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
+        id: "trusted_invite"
+      });
     } else {
       await creator.mutation(api.linkRequests.create, {
+        financial_contract_version: 2,
         id: "trusted_request",
         recipient_email: "claimer@example.com",
         target_member_id: "claimer_legacy",
         target_member_name: "Claimer"
       });
-      await claimer.mutation(api.linkRequests.accept, { id: "trusted_request" });
+      await claimer.mutation(api.linkRequests.accept, {
+        financial_contract_version: 2,
+        id: "trusted_request"
+      });
     }
 
     await creator.mutation(api.friends.upsert, {
+      financial_contract_version: 2,
       member_id: "claimer_legacy",
       name: "Claimer from stale sync",
       has_linked_account: false,
       status: "manual"
     });
     await creator.mutation(api.bulkImport.bulkImport, {
+      financial_contract_version: 2,
       friends: [
         {
           member_id: "claimer_legacy",
@@ -614,12 +630,14 @@ test.each(["invite", "link request"] as const)(
     const claimer = t.withIdentity(authIdentity("claimer@example.com", "claimer_auth"));
     if (claimKind === "invite") {
       await creator.mutation(api.inviteTokens.create, {
+        financial_contract_version: 2,
         id: "fenced_invite",
         target_member_id: "claimer_legacy",
         target_member_name: "Claimer"
       });
     } else {
       await creator.mutation(api.linkRequests.create, {
+        financial_contract_version: 2,
         id: "fenced_request",
         recipient_email: "claimer@example.com",
         target_member_id: "claimer_legacy",
@@ -649,8 +667,14 @@ test.each(["invite", "link request"] as const)(
 
     const claim =
       claimKind === "invite"
-        ? claimer.mutation(api.inviteTokens.claim, { id: "fenced_invite" })
-        : claimer.mutation(api.linkRequests.accept, { id: "fenced_request" });
+        ? claimer.mutation(api.inviteTokens.claim, {
+            financial_contract_version: 2,
+            id: "fenced_invite"
+          })
+        : claimer.mutation(api.linkRequests.accept, {
+            financial_contract_version: 2,
+            id: "fenced_request"
+          });
     await expect(claim).rejects.toThrow("temporarily locked for account cleanup");
     expect(await t.run((ctx) => ctx.db.query("member_aliases").collect())).toEqual([]);
   }
@@ -724,7 +748,10 @@ test("invite claim defers stale cleanup fence deletion until preflight succeeds"
     authIdentity("stale-fence-claimer@example.com", "stale_fence_claimer_auth")
   );
   await expect(
-    claimer.mutation(api.inviteTokens.claim, { id: "stale_fence_invite" })
+    claimer.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
+      id: "stale_fence_invite"
+    })
   ).resolves.toMatchObject({ canonical_member_id: "stale_fence_claimer_member" });
 
   const state = await t.run(async (ctx) => ({
@@ -788,6 +815,7 @@ test("friends:upsert cannot create linked metadata from a client payload", async
   });
 
   await ownerCtx.mutation(api.friends.upsert, {
+    financial_contract_version: 2,
     member_id: "forged_friend",
     name: "Forged Friend",
     has_linked_account: true,
@@ -846,6 +874,7 @@ test("friends:upsert repairs an explicit legacy friend missing confirmation stat
   });
 
   await ownerCtx.mutation(api.friends.upsert, {
+    financial_contract_version: 2,
     member_id: "legacy_manual_friend",
     name: "Legacy Manual Friend",
     has_linked_account: false,
@@ -904,6 +933,7 @@ test("friends:upsert cannot promote an existing unlinked row", async () => {
   });
 
   await ownerCtx.mutation(api.friends.upsert, {
+    financial_contract_version: 2,
     member_id: "unlinked_friend",
     name: "Renamed Unlinked Friend",
     has_linked_account: true,
@@ -977,6 +1007,7 @@ test("friends:upsert preserves the complete server-owned link tuple", async () =
   });
 
   await ownerCtx.mutation(api.friends.upsert, {
+    financial_contract_version: 2,
     member_id: "friend_member",
     name: "Renamed Friend",
     has_linked_account: true,
@@ -1063,6 +1094,7 @@ test("linkRequests:create returns canonical requests and enforces exact idempote
 
   await expect(
     ownerCtx.mutation(api.linkRequests.create, {
+      financial_contract_version: 2,
       id: "self_request",
       recipient_email: " OWNER@example.com ",
       target_member_id: "friend_member",
@@ -1071,6 +1103,7 @@ test("linkRequests:create returns canonical requests and enforces exact idempote
   ).rejects.toThrow("yourself");
 
   const legacyRequestId = await ownerCtx.mutation(api.linkRequests.create, {
+    financial_contract_version: 2,
     id: "request_one",
     recipient_email: " Friend@Example.com ",
     target_member_id: "friend_member",
@@ -1079,6 +1112,7 @@ test("linkRequests:create returns canonical requests and enforces exact idempote
   expect(legacyRequestId).toBe("request_one");
 
   const first = await ownerCtx.mutation(api.linkRequests.createV2, {
+    financial_contract_version: 2,
     id: "request_one",
     recipient_email: " Friend@Example.com ",
     target_member_id: "friend_member",
@@ -1099,6 +1133,7 @@ test("linkRequests:create returns canonical requests and enforces exact idempote
   expect(first.expires_at).toBeGreaterThan(first.created_at);
 
   const sameTargetDuplicate = await ownerCtx.mutation(api.linkRequests.createV2, {
+    financial_contract_version: 2,
     id: "request_two",
     recipient_email: "friend@example.com",
     target_member_id: "friend_member",
@@ -1108,6 +1143,7 @@ test("linkRequests:create returns canonical requests and enforces exact idempote
 
   await expect(
     ownerCtx.mutation(api.linkRequests.createV2, {
+      financial_contract_version: 2,
       id: "request_three",
       recipient_email: "friend@example.com",
       target_member_id: "friend_member_two",
@@ -1117,6 +1153,7 @@ test("linkRequests:create returns canonical requests and enforces exact idempote
 
   await expect(
     ownerCtx.mutation(api.linkRequests.createV2, {
+      financial_contract_version: 2,
       id: "request_one",
       recipient_email: "other@example.com",
       target_member_id: "friend_member",
@@ -1126,6 +1163,7 @@ test("linkRequests:create returns canonical requests and enforces exact idempote
 
   await expect(
     otherCtx.mutation(api.linkRequests.createV2, {
+      financial_contract_version: 2,
       id: "request_one",
       recipient_email: "friend@example.com",
       target_member_id: "friend_member",
@@ -1155,6 +1193,7 @@ test("linkRequests:create returns canonical requests and enforces exact idempote
   });
 
   const acceptedReplay = await ownerCtx.mutation(api.linkRequests.createV2, {
+    financial_contract_version: 2,
     id: "request_one",
     recipient_email: " FRIEND@example.com ",
     target_member_id: "friend_member",
@@ -1198,6 +1237,7 @@ test("linkRequests:create rejects a target identity not owned by the requester",
 
   await expect(
     ownerCtx.mutation(api.linkRequests.create, {
+      financial_contract_version: 2,
       id: "forged_request",
       recipient_email: "friend@example.com",
       target_member_id: "foreign_member",
@@ -1228,6 +1268,7 @@ test("inviteTokens:create rejects a target identity outside the creator's owned 
   const attacker = t.withIdentity(authIdentity("attacker@example.com", "attacker_auth"));
   await expect(
     attacker.mutation(api.inviteTokens.create, {
+      financial_contract_version: 2,
       id: "forged_invite",
       target_member_id: "foreign_group_member",
       target_member_name: "Foreign Member"
@@ -1295,11 +1336,15 @@ test("invite claim never rewrites a foreign-owned group containing the same memb
   const creator = t.withIdentity(authIdentity("creator@example.com", "creator_auth"));
   const claimer = t.withIdentity(authIdentity("claimer@example.com", "claimer_auth"));
   await creator.mutation(api.inviteTokens.create, {
+    financial_contract_version: 2,
     id: "scoped_invite",
     target_member_id: "invite_target",
     target_member_name: "Claimer"
   });
-  await claimer.mutation(api.inviteTokens.claim, { id: "scoped_invite" });
+  await claimer.mutation(api.inviteTokens.claim, {
+    financial_contract_version: 2,
+    id: "scoped_invite"
+  });
 
   const foreignGroup = await t.run((ctx) =>
     ctx.db
@@ -1367,13 +1412,33 @@ test("invite claim fails atomically when the creator-owned rewrite exceeds its b
   const creator = t.withIdentity(authIdentity("creator@example.com", "creator_auth"));
   const claimer = t.withIdentity(authIdentity("claimer@example.com", "claimer_auth"));
   await creator.mutation(api.inviteTokens.create, {
+    financial_contract_version: 2,
     id: "large_invite",
     target_member_id: "large_invite_target",
     target_member_name: "Claimer"
   });
-  await expect(claimer.mutation(api.inviteTokens.claim, { id: "large_invite" })).rejects.toThrow(
-    "Friend merge is too large to complete safely"
-  );
+  await backfillMemberReferences(t);
+  const before = await t.run(async (ctx) => ({
+    token: await ctx.db.query("invite_tokens").collect(),
+    accounts: await ctx.db.query("accounts").collect(),
+    groups: await ctx.db.query("groups").collect(),
+    friends: await ctx.db.query("account_friends").collect(),
+    aliases: await ctx.db.query("member_aliases").collect(),
+    revisions: await ctx.db.query("account_sync_state").collect()
+  }));
+  await expect(
+    claimer.mutation(api.inviteTokens.claim, { financial_contract_version: 2, id: "large_invite" })
+  ).rejects.toThrow("FINANCIAL_CONTRACT_UPGRADE_REQUIRED: Use resumable linking for this history");
+  expect(
+    await t.run(async (ctx) => ({
+      token: await ctx.db.query("invite_tokens").collect(),
+      accounts: await ctx.db.query("accounts").collect(),
+      groups: await ctx.db.query("groups").collect(),
+      friends: await ctx.db.query("account_friends").collect(),
+      aliases: await ctx.db.query("member_aliases").collect(),
+      revisions: await ctx.db.query("account_sync_state").collect()
+    }))
+  ).toEqual(before);
 
   const state = await t.run(async (ctx) => ({
     token: await ctx.db
@@ -1435,7 +1500,10 @@ test("invite claim rejects an unverifiable legacy token with remediation", async
 
   const claimer = t.withIdentity(authIdentity("claimer@example.com", "claimer_auth"));
   await expect(
-    claimer.mutation(api.inviteTokens.claim, { id: "legacy_unbound_invite" })
+    claimer.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
+      id: "legacy_unbound_invite"
+    })
   ).rejects.toThrow("Invite must be recreated before it can be claimed");
 });
 
@@ -1583,11 +1651,15 @@ test("unauthenticated invite validation preserves claimed status after a success
   const creator = t.withIdentity(authIdentity("creator@example.com", "creator_auth"));
   const claimer = t.withIdentity(authIdentity("claimer@example.com", "claimer_auth"));
   await creator.mutation(api.inviteTokens.create, {
+    financial_contract_version: 2,
     id: "claimed_validation_invite",
     target_member_id: "claimer_legacy",
     target_member_name: "Claimer"
   });
-  await claimer.mutation(api.inviteTokens.claim, { id: "claimed_validation_invite" });
+  await claimer.mutation(api.inviteTokens.claim, {
+    financial_contract_version: 2,
+    id: "claimed_validation_invite"
+  });
 
   const result = await t.query(api.inviteTokens.validate, { id: "claimed_validation_invite" });
   expect(result).toMatchObject({
@@ -1723,7 +1795,7 @@ test("unauthenticated invite validation omits foreign expense and group previews
   const result = await t.query(api.inviteTokens.validate, { id: "private_preview_invite" });
   expect(result).toMatchObject({
     is_valid: true,
-    expense_preview: { expense_count: 1, group_names: [], total_balance: 10 }
+    expense_preview: null
   });
   expect(JSON.stringify(result)).not.toContain("Foreign Secret Group");
   expect(JSON.stringify(result)).not.toContain("Foreign secret");
@@ -1733,7 +1805,7 @@ test("unauthenticated invite validation omits foreign expense and group previews
   expect(result.token).not.toHaveProperty("claimed_by");
 }, 30_000);
 
-test("invite validation includes alias-only history across legacy owner indexes", async () => {
+test("invite validation keeps alias-only legacy history private before linking", async () => {
   const t = convexTest(schema, modules);
   const { creatorId, now } = await setupInvitePreviewFixture(t, "alias_only_preview", [
     "preview_target_alias"
@@ -1789,15 +1861,11 @@ test("invite validation includes alias-only history across legacy owner indexes"
   const result = await t.query(api.inviteTokens.validate, { id: "alias_only_preview" });
   expect(result).toMatchObject({
     is_valid: true,
-    expense_preview: {
-      expense_count: 1,
-      group_names: ["Alias Group"],
-      total_balance: -15
-    }
+    expense_preview: null
   });
 });
 
-test("invite validation aggregates every unsettled canonical and alias split", async () => {
+test("invite validation withholds canonical and alias split balances before linking", async () => {
   const t = convexTest(schema, modules);
   const { creatorId, now } = await setupInvitePreviewFixture(t, "mixed_split_preview", [
     "preview_target_alias"
@@ -1845,10 +1913,11 @@ test("invite validation aggregates every unsettled canonical and alias split", a
   });
 
   const result = await t.query(api.inviteTokens.validate, { id: "mixed_split_preview" });
-  expect(result.expense_preview).toMatchObject({ expense_count: 1, total_balance: -30 });
+  expect(result.is_valid).toBe(true);
+  expect(result.expense_preview).toBeNull();
 });
 
-test("invite validation dedupes expenses returned by multiple creator owner indexes", async () => {
+test("invite validation withholds history even when creator owner indexes overlap", async () => {
   const t = convexTest(schema, modules);
   const { creatorId, now } = await setupInvitePreviewFixture(t, "deduped_owner_preview");
 
@@ -1891,10 +1960,11 @@ test("invite validation dedupes expenses returned by multiple creator owner inde
   });
 
   const result = await t.query(api.inviteTokens.validate, { id: "deduped_owner_preview" });
-  expect(result.expense_preview).toMatchObject({ expense_count: 2, total_balance: 10 });
+  expect(result.is_valid).toBe(true);
+  expect(result.expense_preview).toBeNull();
 });
 
-test("invite validation excludes expenses and groups with conflicting owner tuples", async () => {
+test("invite validation withholds all financial history when owner tuples conflict", async () => {
   const t = convexTest(schema, modules);
   const { creatorId, now } = await setupInvitePreviewFixture(t, "conflicting_owner_preview");
 
@@ -1978,11 +2048,8 @@ test("invite validation excludes expenses and groups with conflicting owner tupl
   });
 
   const result = await t.query(api.inviteTokens.validate, { id: "conflicting_owner_preview" });
-  expect(result.expense_preview).toEqual({
-    expense_count: 1,
-    group_names: ["Visible Group"],
-    total_balance: 5
-  });
+  expect(result.is_valid).toBe(true);
+  expect(result.expense_preview).toBeNull();
   expect(JSON.stringify(result)).not.toContain("Foreign Secret Group");
 });
 
@@ -2156,12 +2223,16 @@ test("invite claim fails atomically when legacy friend lookup exceeds its bound"
   const creator = t.withIdentity(authIdentity("creator@example.com", "creator_auth"));
   const claimer = t.withIdentity(authIdentity("claimer@example.com", "claimer_auth"));
   await creator.mutation(api.inviteTokens.create, {
+    financial_contract_version: 2,
     id: "bounded_lookup_invite",
     target_member_id: "bounded_target",
     target_member_name: "Claimer"
   });
   await expect(
-    claimer.mutation(api.inviteTokens.claim, { id: "bounded_lookup_invite" })
+    claimer.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
+      id: "bounded_lookup_invite"
+    })
   ).rejects.toThrow("Friend merge is too large to complete safely");
 
   const state = await t.run(async (ctx) => ({

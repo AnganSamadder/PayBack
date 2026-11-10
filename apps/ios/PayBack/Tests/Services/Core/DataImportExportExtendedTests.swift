@@ -7,15 +7,12 @@ final class DataImportExportExtendedTests: XCTestCase {
 
     @MainActor
     override func setUp() async throws {
-        store = AppStore(skipClerkInit: true)
-        // Setup a current user
-        let currentUser = GroupMember(
-            id: UUID(),
-            name: "Example User",
-            profileImageUrl: nil,
-            profileColorHex: "#000000"
-        )
-        store.currentUser = currentUser
+        store = await makeAuthenticatedBackupTestStore()
+    }
+
+    override func tearDown() {
+        Dependencies.reset()
+        super.tearDown()
     }
 
     // MARK: - Export Tests
@@ -69,29 +66,17 @@ final class DataImportExportExtendedTests: XCTestCase {
         ===END_PAYBACK_EXPORT===
         """
 
-        // When - import should succeed or return valid result
         let result = await DataImportService.importData(from: exportText, into: store)
-
-        // Then - verify format was parsed correctly (not incompatible)
-        switch result {
-        case .success:
-            // Success case - format was valid
-            break
-        case .needsResolution:
-            // Conflict detection is also valid - format was parsed
-            break
-        case .partialSuccess:
-            // Partial success is also acceptable
-            break
-        case .incompatibleFormat(let msg):
-            XCTFail("Should not be incompatible format: \(msg)")
-        }
+        guard case .success = result else { return XCTFail("Expected authenticated import: \(result)") }
+        let imported = store.friends.first { $0.memberId == friendId }
+        XCTAssertEqual(imported?.profileImageUrl, "https://example.com/imported.png")
+        XCTAssertEqual(imported?.profileColorHex, "#00FF00")
     }
 
     // MARK: - Conflict Detection Tests
 
     @MainActor
-    func testImportDetectsConflicts() async {
+    func testImportDoesNotInferIdentityFromSameName() async {
         // Given: An existing friend
         let existingId = UUID()
         let existingFriend = AccountFriend(
@@ -106,6 +91,9 @@ final class DataImportExportExtendedTests: XCTestCase {
         )
         store.friends = [existingFriend]
 
+        let existingBackup = DataExportService.exportAllData(groups: [], expenses: [], friends: store.friends,
+            currentUser: store.currentUser, accountEmail: "test@example.com")
+        _ = await DataImportService.importData(from: existingBackup, into: store)
         let importId = UUID()
         let exportText = """
         ===PAYBACK_EXPORT===
@@ -124,20 +112,8 @@ final class DataImportExportExtendedTests: XCTestCase {
         // When
         let result = await DataImportService.importData(from: exportText, into: store)
 
-        // Then - should detect conflict or handle gracefully
-        switch result {
-        case .needsResolution(let conflicts):
-            XCTAssertEqual(conflicts.count, 1)
-            XCTAssertEqual(conflicts.first?.importName, "Duplicate Name")
-        case .success:
-            // Import may have auto-resolved the conflict
-            break
-        case .partialSuccess:
-            // Partial success is acceptable
-            break
-        case .incompatibleFormat(let msg):
-            XCTFail("Should not be incompatible format: \(msg)")
-        }
+        guard case .success = result else { return XCTFail("Expected separate identities: \(result)") }
+        XCTAssertEqual(Set(store.friends.map(\.memberId)), Set([existingId, importId]))
     }
 
     // MARK: - Conflict Resolution Tests
@@ -148,6 +124,9 @@ final class DataImportExportExtendedTests: XCTestCase {
         let existingId = UUID()
         store.friends = [AccountFriend(memberId: existingId, name: "Conflict", nickname: nil, hasLinkedAccount: false, linkedAccountId: nil, linkedAccountEmail: nil, profileImageUrl: nil, profileColorHex: nil)]
 
+        let existingBackup = DataExportService.exportAllData(groups: [], expenses: [], friends: store.friends,
+            currentUser: store.currentUser, accountEmail: "test@example.com")
+        _ = await DataImportService.importData(from: existingBackup, into: store)
         let importId = UUID()
         let exportText = """
         ===PAYBACK_EXPORT===
@@ -167,14 +146,8 @@ final class DataImportExportExtendedTests: XCTestCase {
         let resolutions: [UUID: ImportResolution] = [importId: .createNew]
         let result = await DataImportService.importData(from: exportText, into: store, resolutions: resolutions)
 
-        // Then: Should accept the resolution or handle gracefully
-        switch result {
-        case .success, .needsResolution, .partialSuccess:
-            // All valid outcomes - import was processed
-            break
-        case .incompatibleFormat(let msg):
-            XCTFail("Unexpected incompatible format: \(msg)")
-        }
+        guard case .success = result else { return XCTFail("Expected separate identities: \(result)") }
+        XCTAssertEqual(Set(store.friends.map(\.memberId)), Set([existingId, importId]))
     }
 
     @MainActor
@@ -183,6 +156,9 @@ final class DataImportExportExtendedTests: XCTestCase {
         let existingId = UUID()
         store.friends = [AccountFriend(memberId: existingId, name: "Conflict", nickname: nil, hasLinkedAccount: false, linkedAccountId: nil, linkedAccountEmail: nil, profileImageUrl: nil, profileColorHex: nil)]
 
+        let existingBackup = DataExportService.exportAllData(groups: [], expenses: [], friends: store.friends,
+            currentUser: store.currentUser, accountEmail: "test@example.com")
+        _ = await DataImportService.importData(from: existingBackup, into: store)
         let importId = UUID()
         let exportText = """
         ===PAYBACK_EXPORT===
@@ -202,13 +178,7 @@ final class DataImportExportExtendedTests: XCTestCase {
         let resolutions: [UUID: ImportResolution] = [importId: .linkToExisting(existingId)]
         let result = await DataImportService.importData(from: exportText, into: store, resolutions: resolutions)
 
-        // Then: Should accept the resolution or handle gracefully
-        switch result {
-        case .success, .needsResolution, .partialSuccess:
-            // All valid outcomes - import was processed
-            break
-        case .incompatibleFormat(let msg):
-            XCTFail("Unexpected incompatible format: \(msg)")
-        }
+        guard case .success = result else { return XCTFail("Expected explicit identity mapping: \(result)") }
+        XCTAssertEqual(store.friends.map(\.memberId), [existingId])
     }
 }

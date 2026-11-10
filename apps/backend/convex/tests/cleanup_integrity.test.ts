@@ -1,3 +1,4 @@
+import { backfillMemberReferences } from "../../tests/helpers/memberReferenceTestUtils";
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
@@ -139,6 +140,7 @@ test("cleanup.deleteLinkedFriend removes all matching direct groups", async () =
   await expect(t.query(api.cleanup.selfDeletionStatus, {})).rejects.toThrow("Unauthenticated");
   await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await backfillMemberReferences(t);
   const result = await ownerCtx.mutation(api.cleanup.deleteLinkedFriend, {
     friendMemberId: "friend_member"
   });
@@ -258,6 +260,7 @@ test("cleanup.deleteLinkedFriend normalizes equivalent Swift UUIDs before deleti
 
   await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await backfillMemberReferences(t);
   const result = await ownerCtx.mutation(api.cleanup.deleteLinkedFriend, {
     friendMemberId: friendAlias
   });
@@ -308,7 +311,7 @@ test("cleanup.deleteUnlinkedFriend reconciles user_expenses after patching share
       email: "removed@test.com",
       display_name: "Removed",
       created_at: Date.now(),
-      member_id: "friend_member"
+      member_id: "unrelated_removed_member"
     });
 
     await ctx.db.insert("account_friends", {
@@ -384,6 +387,7 @@ test("cleanup.deleteUnlinkedFriend reconciles user_expenses after patching share
 
   await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await backfillMemberReferences(t);
   const result = await ownerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
     friendMemberId: "friend_member"
   });
@@ -437,24 +441,16 @@ test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across ever
       email: "removed@test.com",
       display_name: "Removed",
       created_at: Date.now(),
-      member_id: canonicalFriendId,
-      alias_member_ids: [friendAlias]
+      member_id: "unrelated_removed_member"
     });
     await ctx.db.insert("account_friends", {
       account_email: "owner@test.com",
       member_id: friendAlias,
+      local_alias_member_ids: [canonicalFriendId],
       name: "Friend",
       profile_avatar_color: "#654321",
       has_linked_account: false,
       updated_at: Date.now()
-    });
-    await ctx.db.insert("member_aliases", {
-      account_email: "owner@test.com",
-      canonical_member_id: canonicalFriendId,
-      alias_member_id: friendAlias,
-      materialization_source: "account_alias",
-      source_account_id: "removed_auth",
-      created_at: Date.now()
     });
 
     const sharedGroup = await ctx.db.insert("groups", {
@@ -561,6 +557,7 @@ test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across ever
 
   await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await backfillMemberReferences(t);
   const result = await ownerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
     friendMemberId: friendAlias
   });
@@ -573,8 +570,9 @@ test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across ever
   const removedCtx = t.withIdentity(identity("removed@test.com", "removed_auth"));
   await expect(
     removedCtx.mutation(api.expenses.setSettlementState, {
+      financial_contract_version: 2,
       expenseId: "split_participant_only_expense",
-      memberIds: [storedCanonicalFriendId],
+      splitIds: ["s2"],
       settled: true
     })
   ).rejects.toThrow("Forbidden");
@@ -587,6 +585,7 @@ test("cleanup.deleteUnlinkedFriend normalizes equivalent Swift UUIDs across ever
   );
   if (!retainedBeforeUpdate) throw new Error("Expected retained historical expense");
   await ownerCtx.mutation(api.expenses.create, {
+    financial_contract_version: 2,
     id: retainedBeforeUpdate.id,
     context_kind: "group",
     group_id: retainedBeforeUpdate.group_id,
@@ -802,14 +801,17 @@ test("expense visibility preserves owners and separate active surfaces for partl
   const participantCtx = t.withIdentity(identity("participant@test.com", "participant_auth"));
   await expect(
     participantCtx.mutation(api.expenses.setSettlementState, {
+      financial_contract_version: 2,
       expenseId: "partly_inactive_expense",
-      memberIds: ["participant_inactive_alias"],
+      splitIds: ["historical_split"],
       settled: true
     })
   ).rejects.toThrow("Forbidden");
 
   const settledExpense = await participantCtx.mutation(api.expenses.setSettlementState, {
+    financial_contract_version: 2,
     expenseId: "partly_inactive_expense",
+    splitIds: ["active_split"],
     settled: true
   });
   expect(
@@ -824,8 +826,9 @@ test("expense visibility preserves owners and separate active surfaces for partl
   ).toBe(true);
 
   const explicitlySettledExpense = await participantCtx.mutation(api.expenses.setSettlementState, {
+    financial_contract_version: 2,
     expenseId: "partly_inactive_expense",
-    memberIds: ["participant_active_alias"],
+    splitIds: ["active_split"],
     settled: true
   });
   expect(
@@ -841,6 +844,7 @@ test("expense visibility preserves owners and separate active surfaces for partl
 
   await expect(
     participantCtx.mutation(api.expenses.create, {
+      financial_contract_version: 2,
       id: "partly_inactive_expense",
       context_kind: "group",
       group_id: "historical_group",
@@ -1119,6 +1123,7 @@ test("cleanup.deleteUnlinkedFriend preserves standalone aliases while pruning ac
 
   await markIdentityReady(t);
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await backfillMemberReferences(t);
   const result = await ownerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
     friendMemberId: "friend_member"
   });
@@ -1191,6 +1196,7 @@ test("cleanup.deleteUnlinkedFriend preflights alias materialization bounds befor
   });
   await markIdentityReady(t);
 
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("alias-bound-owner@test.com", "alias_bound_owner_auth"))
@@ -1278,6 +1284,7 @@ test("cleanup.deleteUnlinkedFriend throws for a group-derived non-friend and lea
   });
 
   const ownerCtx = t.withIdentity(identity("owner@test.com", "owner_auth"));
+  await backfillMemberReferences(t);
   await expect(
     ownerCtx.mutation(api.cleanup.deleteUnlinkedFriend, {
       friendMemberId: "group_only_member"
@@ -1424,6 +1431,7 @@ test("cleanup.deleteUnlinkedFriend revokes group-less grouped-individual history
   const owner = t.withIdentity(
     identity("grouped-cleanup-owner@test.com", "grouped_cleanup_owner_auth")
   );
+  await backfillMemberReferences(t);
   const cleanupResult = await owner.mutation(api.cleanup.deleteUnlinkedFriend, {
     friendMemberId: "grouped_cleanup_removed"
   });
@@ -1576,6 +1584,7 @@ test("cleanup.deleteUnlinkedFriend preserves group-less survivors across drifted
   const owner = t.withIdentity(
     identity("drift-cleanup-owner@test.com", "drift_cleanup_owner_auth")
   );
+  await backfillMemberReferences(t);
   const cleanupResult = await owner.mutation(api.cleanup.deleteUnlinkedFriend, {
     friendMemberId: "drift_cleanup_removed"
   });
@@ -1723,6 +1732,7 @@ test("cleanup.deleteUnlinkedFriend preserves a distinct participant with conflic
   const owner = t.withIdentity(
     identity("conflicting-link-owner@test.com", "conflicting_link_owner_auth")
   );
+  await backfillMemberReferences(t);
   await expect(
     owner.mutation(api.cleanup.deleteUnlinkedFriend, {
       friendMemberId: "conflicting_link_removed"
@@ -1852,6 +1862,7 @@ test("cleanup.deleteUnlinkedFriend counts an authoritative owner with only inact
   const owner = t.withIdentity(
     identity("inactive-owner-cleanup@test.com", "inactive_owner_cleanup_auth")
   );
+  await backfillMemberReferences(t);
   const cleanupResult = await owner.mutation(api.cleanup.deleteUnlinkedFriend, {
     friendMemberId: "inactive_owner_removed"
   });
@@ -1950,11 +1961,14 @@ test("cleanup.deleteUnlinkedFriend rejects conflicting legacy expense ownership"
   const owner = t.withIdentity(
     identity("legacy-cleanup-owner@test.com", "legacy_cleanup_owner_auth")
   );
+  await expect(backfillMemberReferences(t)).rejects.toThrow(
+    "Member reference maintenance required: conflicting source ownership"
+  );
   await expect(
     owner.mutation(api.cleanup.deleteUnlinkedFriend, {
       friendMemberId: "legacy_cleanup_removed"
     })
-  ).rejects.toThrow("Expense owner identity is inconsistent");
+  ).rejects.toThrow("MEMBER_REFERENCES_NOT_READY");
 
   const result = await t.run(async (ctx) => {
     const expense = await ctx.db
@@ -2011,13 +2025,16 @@ test("cleanup.deleteUnlinkedFriend rejects a caller-owned group with a conflicti
     });
   });
 
+  await expect(backfillMemberReferences(t)).rejects.toThrow(
+    "Member reference maintenance required: conflicting source ownership"
+  );
   await expect(
     t
       .withIdentity(identity("group-tuple-owner@test.com", "group_tuple_owner_auth"))
       .mutation(api.cleanup.deleteUnlinkedFriend, {
         friendMemberId: "group_tuple_removed"
       })
-  ).rejects.toThrow("Cannot clean records with a conflicting owner identity");
+  ).rejects.toThrow("MEMBER_REFERENCES_NOT_READY");
 
   const state = await t.run(async (ctx) => ({
     friend: await ctx.db
@@ -2047,6 +2064,13 @@ test("cleanup.deleteLinkedFriend removes history referenced only by an owner-loc
       created_at: now,
       member_id: "owner_member"
     });
+    await ctx.db.insert("accounts", {
+      id: "friend_auth",
+      email: "friend@test.com",
+      display_name: "Friend",
+      member_id: "friend_member",
+      created_at: now
+    });
     await ctx.db.insert("account_friends", {
       account_email: "owner@test.com",
       member_id: "friend_member",
@@ -2054,6 +2078,7 @@ test("cleanup.deleteLinkedFriend removes history referenced only by an owner-loc
       name: "Friend",
       profile_avatar_color: "#123456",
       has_linked_account: true,
+      link_state: "linked",
       linked_account_id: "friend_auth",
       linked_account_email: "friend@test.com",
       updated_at: now
@@ -2114,6 +2139,7 @@ test("cleanup.deleteLinkedFriend removes history referenced only by an owner-loc
   });
 
   await markIdentityReady(t);
+  await backfillMemberReferences(t);
   const result = await t
     .withIdentity(identity("owner@test.com", "owner_auth"))
     .mutation(api.cleanup.deleteLinkedFriend, { friendMemberId: "friend_member" });
@@ -2199,6 +2225,7 @@ test("cleanup.deleteUnlinkedFriend removes history referenced only by an owner-l
   });
 
   await markIdentityReady(t);
+  await backfillMemberReferences(t);
   const result = await t
     .withIdentity(identity("owner@test.com", "owner_auth"))
     .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" });
@@ -2300,6 +2327,7 @@ test("cleanup.deleteUnlinkedFriend cleans owner-scoped group-ref and missing-gro
   });
 
   await markIdentityReady(t);
+  await backfillMemberReferences(t);
   const result = await t
     .withIdentity(identity("owner@test.com", "owner_auth"))
     .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" });
@@ -2406,8 +2434,10 @@ test.each([["Linked", true] as const, ["Unlinked", false] as const])(
     await markIdentityReady(t);
     const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
     if (isLinked) {
+      await backfillMemberReferences(t);
       await owner.mutation(api.cleanup.deleteLinkedFriend, { friendMemberId: "friend_member" });
     } else {
+      await backfillMemberReferences(t);
       await owner.mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" });
     }
 
@@ -2498,6 +2528,7 @@ test("cleanup.deleteUnlinkedFriend fails closed on a foreign group-ref expense",
   });
 
   await markIdentityReady(t);
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("owner@test.com", "owner_auth"))
@@ -2597,6 +2628,7 @@ test("cleanup.deleteUnlinkedFriend caps aggregate attached expenses before write
   });
 
   await markIdentityReady(t);
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("owner@test.com", "owner_auth"))
@@ -2622,7 +2654,7 @@ test("cleanup.deleteUnlinkedFriend caps aggregate attached expenses before write
   ).toBe(true);
 }, 30_000);
 
-test("cleanup.deleteUnlinkedFriend bounds owned-group bytes before writes", async () => {
+test("cleanup.deleteUnlinkedFriend ignores unrelated large owned-group history during targeted cleanup", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
   const largeText = "x".repeat(400 * 1024);
@@ -2657,15 +2689,18 @@ test("cleanup.deleteUnlinkedFriend bounds owned-group bytes before writes", asyn
   });
   await markIdentityReady(t);
 
+  const before = await t.run(async (ctx) => ctx.db.query("groups").collect());
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("owner@test.com", "owner_auth"))
       .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
-  ).rejects.toThrow("Friend cleanup is too large to complete safely");
-  expect(await t.run(async (ctx) => ctx.db.query("account_friends").collect())).toHaveLength(1);
+  ).resolves.toMatchObject({ success: true });
+  expect(await t.run(async (ctx) => ctx.db.query("account_friends").collect())).toHaveLength(0);
+  expect(await t.run(async (ctx) => ctx.db.query("groups").collect())).toEqual(before);
 });
 
-test("cleanup.deleteUnlinkedFriend bounds owned-expense bytes before writes", async () => {
+test("cleanup.deleteUnlinkedFriend ignores unrelated large owned-expense history during targeted cleanup", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
   const largeText = "x".repeat(400 * 1024);
@@ -2709,12 +2744,15 @@ test("cleanup.deleteUnlinkedFriend bounds owned-expense bytes before writes", as
   });
   await markIdentityReady(t);
 
+  const before = await t.run(async (ctx) => ctx.db.query("expenses").collect());
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("owner@test.com", "owner_auth"))
       .mutation(api.cleanup.deleteUnlinkedFriend, { friendMemberId: "friend_member" })
-  ).rejects.toThrow("Friend cleanup is too large to complete safely");
-  expect(await t.run(async (ctx) => ctx.db.query("account_friends").collect())).toHaveLength(1);
+  ).resolves.toMatchObject({ success: true });
+  expect(await t.run(async (ctx) => ctx.db.query("account_friends").collect())).toHaveLength(0);
+  expect(await t.run(async (ctx) => ctx.db.query("expenses").collect())).toEqual(before);
 });
 
 test("cleanup.deleteUnlinkedFriend bounds attached-expense bytes before writes", async () => {
@@ -2785,6 +2823,7 @@ test("cleanup.deleteUnlinkedFriend bounds attached-expense bytes before writes",
   });
   await markIdentityReady(t);
 
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("owner@test.com", "owner_auth"))
@@ -2862,6 +2901,7 @@ test("cleanup.deleteUnlinkedFriend bounds visibility rows before writes", async 
   });
   await markIdentityReady(t);
 
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("owner@test.com", "owner_auth"))
@@ -2965,6 +3005,7 @@ test("cleanup.deleteUnlinkedFriend bounds participant identity work before write
   });
   await markIdentityReady(t);
 
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("owner@test.com", "owner_auth"))
@@ -3081,6 +3122,7 @@ async function createTransitiveAliasCleanupScenario(chainCount: number) {
 test("cleanup.deleteUnlinkedFriend avoids repeated readiness reads across alias hops", async () => {
   const t = await createTransitiveAliasCleanupScenario(10);
 
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("owner@test.com", "owner_auth"))
@@ -3091,6 +3133,7 @@ test("cleanup.deleteUnlinkedFriend avoids repeated readiness reads across alias 
 test("cleanup.deleteUnlinkedFriend bounds aggregate transitive alias resolution before writes", async () => {
   const t = await createTransitiveAliasCleanupScenario(14);
 
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("owner@test.com", "owner_auth"))
@@ -3189,6 +3232,7 @@ test("cleanup.deleteUnlinkedFriend accounts repeated owner-document rows before 
   });
   await markIdentityReady(t);
 
+  await backfillMemberReferences(t);
   await expect(
     t
       .withIdentity(identity("owner@test.com", "owner_auth"))
@@ -3559,7 +3603,7 @@ test("cleanup.selfDeleteAccount removes account PII, preserves shared history, a
 
   const friendGhosts = await t
     .withIdentity(identity("friend@test.com", "friend_auth"))
-    .query(api.friends.list, {});
+    .query(api.friends.list, { financial_contract_version: 2 });
   expect(friendGhosts).toHaveLength(1);
   expect(friendGhosts[0]).toMatchObject({
     member_id: "owner_member",

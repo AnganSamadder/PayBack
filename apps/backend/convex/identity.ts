@@ -269,15 +269,16 @@ export async function findAccountByMemberId(
     if (account) return account;
 
     const pendingAliasAccount = await findPendingAccountByAliasMemberId(db, currentMemberId);
-    const alias = await findAliasByAliasMemberId(db, currentMemberId);
+    const rawAlias = await findRawAliasByAliasMemberId(db, currentMemberId);
+    const alias = rawAlias && (await isCurrentAccountAlias(db, rawAlias)) ? rawAlias : null;
     if (pendingAliasAccount) {
       const accountCanonical = pendingAliasAccount.member_id
         ? normalizeMemberId(pendingAliasAccount.member_id)
         : undefined;
       if (
-        alias &&
+        rawAlias &&
         accountCanonical &&
-        normalizeMemberId(alias.canonical_member_id) !== accountCanonical
+        normalizeMemberId(rawAlias.canonical_member_id) !== accountCanonical
       ) {
         throw new Error(`Identity maintenance required: conflicting account alias ${normalized}`);
       }
@@ -313,7 +314,7 @@ export async function findAccountByAuthIdOrDocId(
 /**
  * Indexed alias lookup. The account-alias backfill normalizes legacy rows.
  */
-export async function findAliasByAliasMemberId(
+async function findRawAliasByAliasMemberId(
   db: DatabaseReader,
   memberId: string
 ): Promise<any | null> {
@@ -336,6 +337,37 @@ export async function findAliasByAliasMemberId(
   }
 
   return exact ?? legacyExact;
+}
+
+/** A materialized row is a candidate; the current account array remains the authority. */
+async function isCurrentAccountAlias(
+  db: DatabaseReader,
+  alias: Doc<"member_aliases">,
+  accounts?: Map<string, Promise<Doc<"accounts"> | null>>
+): Promise<boolean> {
+  if (alias.materialization_source !== "account_alias" || !alias.source_account_id) return false;
+  let pending = accounts?.get(alias.source_account_id);
+  if (!pending) {
+    pending = db
+      .query("accounts")
+      .withIndex("by_auth_id", (q) => q.eq("id", alias.source_account_id!))
+      .unique();
+    accounts?.set(alias.source_account_id, pending);
+  }
+  const account = await pending;
+  return (
+    !!account?.member_id &&
+    normalizeMemberId(account.member_id) === normalizeMemberId(alias.canonical_member_id) &&
+    normalizeMemberIds(account.alias_member_ids).includes(normalizeMemberId(alias.alias_member_id))
+  );
+}
+
+export async function findAliasByAliasMemberId(
+  db: DatabaseReader,
+  memberId: string
+): Promise<Doc<"member_aliases"> | null> {
+  const alias = await findRawAliasByAliasMemberId(db, memberId);
+  return alias && (await isCurrentAccountAlias(db, alias)) ? alias : null;
 }
 
 export async function getEquivalentAliasMemberIds(
@@ -364,13 +396,19 @@ export async function getEquivalentAliasMemberIds(
     indexedRows.push(...rawRows);
   }
 
-  const aliases = new Set(indexedRows.map((row) => normalizeMemberId(row.alias_member_id)));
+  const aliases = new Set<string>();
+  const sourceAccounts = new Map<string, Promise<Doc<"accounts"> | null>>();
+  for (const row of indexedRows) {
+    if (await isCurrentAccountAlias(db, row, sourceAccounts))
+      aliases.add(normalizeMemberId(row.alias_member_id));
+  }
+  const indexedAliases = new Set(indexedRows.map((row) => normalizeMemberId(row.alias_member_id)));
   if (!(await isIdentityMaterializationReady(db))) {
     const accounts = await db.query("accounts").take(MAX_PENDING_IDENTITY_ROWS + 1);
     if (accounts.length > MAX_PENDING_IDENTITY_ROWS) {
       throw pendingIdentityMaintenanceError("accounts");
     }
-    for (const alias of aliases) {
+    for (const alias of indexedAliases) {
       const canonicalShadow = accounts.find(
         (account) =>
           account.member_id &&
@@ -412,7 +450,7 @@ export async function getEquivalentAliasMemberIds(
             `Identity maintenance required: conflicting account alias ${accountAlias}`
           );
         }
-        const materializedAlias = await findAliasByAliasMemberId(db, accountAlias);
+        const materializedAlias = await findRawAliasByAliasMemberId(db, accountAlias);
         if (
           materializedAlias &&
           normalizeMemberId(materializedAlias.canonical_member_id) !== normalized

@@ -1,10 +1,11 @@
 import { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, internalMutation, MutationCtx, QueryCtx } from "./_generated/server";
 import type { WithoutSystemFields } from "convex/server";
-import { getConvexSize, type Value, v } from "convex/values";
+import { type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import {
   accountLinkingRows,
+  syncOwnerLocalAliasReferences,
   applyCanonicalReferenceRewrite,
   prepareCanonicalReferenceSyncRevisions,
   assertMergeWorstCaseReadWithinLimit,
@@ -41,6 +42,30 @@ import {
   isAccountDeletionFenced
 } from "./helpers";
 import { checkRateLimit } from "./rateLimit";
+import {
+  assertExpectedActor,
+  assertFinancialContract,
+  assertMemberFinancialContract,
+  resolveLiveAccountForMember,
+  FINANCIAL_CONTRACT_UPGRADE_REQUIRED
+} from "./financialContract";
+import { assertMemberReferencesReady } from "./memberReferences";
+import {
+  createIdentityOperation,
+  getIdentityOperationResult,
+  prepareLegacyIdentityVisibility,
+  applyLegacyIdentityVisibility
+} from "./identityOperations";
+export const linkingCapabilityArgs = {
+  financial_contract_version: v.optional(v.number()),
+  expected_account_id: v.optional(v.string()),
+  expected_account_email: v.optional(v.string())
+};
+export type LinkingCapability = {
+  financial_contract_version?: number;
+  expected_account_id?: string;
+  expected_account_email?: string;
+};
 
 // Helper to get current authenticated user
 async function getCurrentUser(ctx: any, budget?: LinkingReadBudget) {
@@ -400,277 +425,99 @@ async function prepareBudgetedAliasInsert(
  * Creates a new invite token for a target member.
  * The current user becomes the creator of the token.
  */
+const inviteCreateArgs = {
+  ...linkingCapabilityArgs,
+  id: v.string(),
+  target_member_id: v.string(),
+  target_member_name: v.string()
+};
+async function createCanonicalInvite(
+  ctx: MutationCtx,
+  args: LinkingCapability & { id: string; target_member_id: string; target_member_name: string },
+  allowActiveRecovery: boolean
+) {
+  const { user } = await getCurrentUser(ctx);
+  if (!user || user.status === "deleted") throw new Error("User not found");
+  assertExpectedActor(user, args);
+  await assertFinancialContract(ctx, user, args.financial_contract_version);
+  const normalizedTargetMemberId = normalizeMemberId(args.target_member_id);
+  await assertMemberFinancialContract(
+    ctx,
+    [normalizedTargetMemberId],
+    args.financial_contract_version,
+    user._id
+  );
+
+  const targetFriend = await findOwnedInviteTarget(ctx, user.email, normalizedTargetMemberId);
+  if (!targetFriend || !isUnlinkedInviteTarget(targetFriend)) {
+    throw new Error("Target member must be an unlinked friend owned by the creator");
+  }
+
+  // Deduplication check
+  const existing = await ctx.db
+    .query("invite_tokens")
+    .withIndex("by_client_id", (q) => q.eq("id", args.id))
+    .unique();
+
+  if (existing) {
+    const isExactReplay =
+      existing.creator_id === user.id &&
+      normalizeMemberId(existing.target_member_id) === normalizedTargetMemberId &&
+      existing.target_friend_id === targetFriend._id;
+    if (!isExactReplay) {
+      throw new Error("Invite id is already used for a different target");
+    }
+    return existing;
+  }
+
+  // Create token with 30-day expiry
+  const now = Date.now();
+  const activeTargetTokens = await ctx.db
+    .query("invite_tokens")
+    .withIndex("by_creator_target_claimed_and_expiry", (q) =>
+      q
+        .eq("creator_id", user.id)
+        .eq("target_member_id", normalizedTargetMemberId)
+        .eq("claimed_by", undefined)
+        .gt("expires_at", now)
+    )
+    .take(2);
+  if (activeTargetTokens.length > 1) throw new Error("Multiple active invites require maintenance");
+  if (activeTargetTokens.length === 1) {
+    const active = activeTargetTokens[0];
+    if (active.target_friend_id !== targetFriend._id)
+      throw new Error("Active invite is bound to a different friend");
+    if (!allowActiveRecovery)
+      throw new Error(
+        "An active invite already exists for this friend; update PayBack to recover its link"
+      );
+    return active;
+  }
+
+  await checkRateLimit(ctx, user.id, "inviteTokens:create", 10);
+  const expiresAt = now + 30 * 24 * 60 * 60 * 1000; // 30 days
+
+  const tokenId = await ctx.db.insert("invite_tokens", {
+    id: args.id,
+    creator_id: user.id,
+    creator_email: user.email.trim().toLowerCase(),
+    target_member_id: normalizedTargetMemberId,
+    target_friend_id: targetFriend._id,
+    target_member_name: targetFriend.name,
+    created_at: now,
+    expires_at: expiresAt
+  });
+
+  return (await ctx.db.get(tokenId))!;
+}
 export const create = mutation({
-  args: {
-    id: v.string(), // Client-generated UUID for deduplication
-    target_member_id: v.string(),
-    target_member_name: v.string()
-  },
-  handler: async (ctx, args) => {
-    const { user } = await getCurrentUser(ctx);
-    if (!user || user.status === "deleted") throw new Error("User not found");
-    const normalizedTargetMemberId = normalizeMemberId(args.target_member_id);
-
-    const targetFriend = await findOwnedInviteTarget(ctx, user.email, normalizedTargetMemberId);
-    if (!targetFriend || !isUnlinkedInviteTarget(targetFriend)) {
-      throw new Error("Target member must be an unlinked friend owned by the creator");
-    }
-
-    // Deduplication check
-    const existing = await ctx.db
-      .query("invite_tokens")
-      .withIndex("by_client_id", (q) => q.eq("id", args.id))
-      .unique();
-
-    if (existing) {
-      const isExactReplay =
-        existing.creator_id === user.id &&
-        normalizeMemberId(existing.target_member_id) === normalizedTargetMemberId &&
-        existing.target_friend_id === targetFriend._id;
-      if (!isExactReplay) {
-        throw new Error("Invite id is already used for a different target");
-      }
-      return existing._id;
-    }
-
-    // Create token with 30-day expiry
-    const now = Date.now();
-    await checkRateLimit(ctx, user.id, "inviteTokens:create", 10);
-    const activeTargetTokens = await ctx.db
-      .query("invite_tokens")
-      .withIndex("by_creator_target_claimed_and_expiry", (q) =>
-        q
-          .eq("creator_id", user.id)
-          .eq("target_member_id", normalizedTargetMemberId)
-          .eq("claimed_by", undefined)
-          .gt("expires_at", now)
-      )
-      .take(2);
-    if (activeTargetTokens.length > 0) {
-      throw new Error("An active invite already exists for this friend");
-    }
-
-    const expiresAt = now + 30 * 24 * 60 * 60 * 1000; // 30 days
-
-    const tokenId = await ctx.db.insert("invite_tokens", {
-      id: args.id,
-      creator_id: user.id,
-      creator_email: user.email.trim().toLowerCase(),
-      target_member_id: normalizedTargetMemberId,
-      target_friend_id: targetFriend._id,
-      target_member_name: args.target_member_name,
-      created_at: now,
-      expires_at: expiresAt
-    });
-
-    return tokenId;
-  }
+  args: inviteCreateArgs,
+  handler: async (ctx, args) => (await createCanonicalInvite(ctx, args, false))._id
 });
-
-const MAX_PUBLIC_INVITE_PREVIEW_EXPENSES = 128;
-
-const publicInvitePreviewLimits = {
-  aliases: MAX_LIVE_ACCOUNT_ALIASES,
-  queryWork: 512,
-  readRows: 768,
-  encodedReadBytes: 8 * 1024 * 1024,
-  // Convex documents are capped at 1 MiB. Reserving twice that amount before every
-  // sequential read leaves six MiB below the platform's 16 MiB transaction limit.
-  maximumDocumentReservationBytes: 2 * 1024 * 1024,
-  hardReadSafetyBytes: 10 * 1024 * 1024,
-  maximumPageRows: 5
-} as const;
-
-type PublicInvitePreviewBudget = {
-  queryWork: number;
-  readRows: number;
-  encodedReadBytes: number;
-};
-
-function createPublicInvitePreviewBudget(): PublicInvitePreviewBudget {
-  return { queryWork: 0, readRows: 0, encodedReadBytes: 0 };
-}
-
-function reservePublicInvitePreviewRead(budget: PublicInvitePreviewBudget, maximumRows: number) {
-  const remainingRows = publicInvitePreviewLimits.readRows - budget.readRows;
-  const remainingHardReadBytes =
-    publicInvitePreviewLimits.hardReadSafetyBytes - budget.encodedReadBytes;
-  const byteReservedRows = Math.floor(
-    remainingHardReadBytes / publicInvitePreviewLimits.maximumDocumentReservationBytes
-  );
-  const reservedRows = Math.min(
-    publicInvitePreviewLimits.maximumPageRows,
-    maximumRows,
-    remainingRows,
-    byteReservedRows
-  );
-  if (reservedRows <= 0 || budget.queryWork + 1 > publicInvitePreviewLimits.queryWork) {
-    return 0;
-  }
-  budget.queryWork += 1;
-  return reservedRows;
-}
-
-function accountPublicInvitePreviewRows(
-  budget: PublicInvitePreviewBudget,
-  rows: readonly unknown[]
-) {
-  budget.readRows += rows.length;
-  budget.encodedReadBytes += rows.reduce<number>(
-    (total, row) => total + getConvexSize(row as Value),
-    0
-  );
-  return (
-    budget.readRows <= publicInvitePreviewLimits.readRows &&
-    budget.encodedReadBytes <= publicInvitePreviewLimits.encodedReadBytes
-  );
-}
-
-async function collectSequentialPublicInvitePreviewRows<T>(
-  budget: PublicInvitePreviewBudget,
-  readPage: (
-    cursor: string | null,
-    limit: number
-  ) => Promise<{ page: T[]; continueCursor: string; isDone: boolean }>,
-  stopAfterRows: number
-): Promise<T[] | null> {
-  const rows: T[] = [];
-  let cursor: string | null = null;
-
-  while (true) {
-    const pageSize = reservePublicInvitePreviewRead(budget, stopAfterRows - rows.length);
-    if (pageSize === 0) return null;
-
-    const result = await readPage(cursor, pageSize);
-    if (!accountPublicInvitePreviewRows(budget, result.page)) return null;
-    rows.push(...result.page);
-    if (rows.length >= stopAfterRows) return rows.slice(0, stopAfterRows);
-    if (result.isDone) return rows;
-    if (result.continueCursor === cursor) return null;
-    cursor = result.continueCursor;
-  }
-}
-
-async function readPublicInvitePreviewDocument<T>(
-  budget: PublicInvitePreviewBudget,
-  read: () => Promise<T | null>
-): Promise<{ completed: boolean; document: T | null }> {
-  if (reservePublicInvitePreviewRead(budget, 1) === 0) {
-    return { completed: false, document: null };
-  }
-  const document = await read();
-  if (!accountPublicInvitePreviewRows(budget, document ? [document] : [])) {
-    return { completed: false, document: null };
-  }
-  return { completed: true, document };
-}
-
-type PreviewOwnerIdentity = {
-  owner_id?: Doc<"accounts">["_id"];
-  owner_account_id?: string;
-  owner_email?: string;
-};
-
-function isPreviewRowOwnedByAccount(
-  row: PreviewOwnerIdentity,
-  account: Pick<Doc<"accounts">, "_id" | "id" | "email">
-) {
-  const ownerAccountId = row.owner_account_id?.trim();
-  const ownerEmail = row.owner_email?.trim().toLowerCase();
-  const hasOwnerDocumentId = Boolean(row.owner_id);
-  const hasOwnerAccountId = Boolean(ownerAccountId);
-  const hasOwnerEmail = Boolean(ownerEmail);
-
-  return (
-    (!hasOwnerDocumentId || row.owner_id === account._id) &&
-    (!hasOwnerAccountId || ownerAccountId === account.id) &&
-    (!hasOwnerEmail || ownerEmail === account.email.trim().toLowerCase()) &&
-    (hasOwnerDocumentId || hasOwnerAccountId || hasOwnerEmail)
-  );
-}
-
-async function collectCreatorExpensesForPreview(
-  ctx: Pick<QueryCtx, "db">,
-  creator: Doc<"accounts">,
-  budget: PublicInvitePreviewBudget
-) {
-  const creatorExpenses = new Map<string, Doc<"expenses">>();
-  const indexedReads = [
-    (cursor: string | null, limit: number) =>
-      ctx.db
-        .query("expenses")
-        .withIndex("by_owner_id", (q) => q.eq("owner_id", creator._id))
-        .order("asc")
-        .paginate({ cursor, numItems: limit }),
-    (cursor: string | null, limit: number) =>
-      ctx.db
-        .query("expenses")
-        .withIndex("by_owner_account_id", (q) => q.eq("owner_account_id", creator.id))
-        .order("asc")
-        .paginate({ cursor, numItems: limit }),
-    (cursor: string | null, limit: number) =>
-      ctx.db
-        .query("expenses")
-        .withIndex("by_owner_email", (q) => q.eq("owner_email", creator.email))
-        .order("asc")
-        .paginate({ cursor, numItems: limit })
-  ];
-
-  for (const readPage of indexedReads) {
-    const indexedRows = await collectSequentialPublicInvitePreviewRows(
-      budget,
-      readPage,
-      MAX_PUBLIC_INVITE_PREVIEW_EXPENSES + 1
-    );
-    if (!indexedRows || indexedRows.length > MAX_PUBLIC_INVITE_PREVIEW_EXPENSES) {
-      return null;
-    }
-    for (const expense of indexedRows) {
-      if (isPreviewRowOwnedByAccount(expense, creator)) {
-        creatorExpenses.set(String(expense._id), expense);
-      }
-    }
-  }
-
-  if (creatorExpenses.size > MAX_PUBLIC_INVITE_PREVIEW_EXPENSES) return null;
-  return Array.from(creatorExpenses.values());
-}
-
-async function resolveCreatorGroupNameForPreview(
-  ctx: Pick<QueryCtx, "db">,
-  expense: Doc<"expenses">,
-  creator: Doc<"accounts">,
-  budget: PublicInvitePreviewBudget
-): Promise<{ completed: boolean; groupName: string | null }> {
-  if (expense.group_ref) {
-    const result = await readPublicInvitePreviewDocument(budget, () =>
-      ctx.db.get(expense.group_ref!)
-    );
-    if (!result.completed) return { completed: false, groupName: null };
-    const group = result.document;
-    if (group && group.id === expense.group_id && isPreviewRowOwnedByAccount(group, creator)) {
-      return { completed: true, groupName: group.name };
-    }
-    return { completed: true, groupName: null };
-  }
-
-  const candidates = await collectSequentialPublicInvitePreviewRows(
-    budget,
-    (cursor, limit) =>
-      ctx.db
-        .query("groups")
-        .withIndex("by_client_id", (q) => q.eq("id", expense.group_id))
-        .order("asc")
-        .paginate({ cursor, numItems: limit }),
-    2
-  );
-  if (!candidates) return { completed: false, groupName: null };
-  const ownedGroups = candidates.filter((group) => isPreviewRowOwnedByAccount(group, creator));
-  return {
-    completed: true,
-    groupName: ownedGroups.length === 1 ? ownedGroups[0].name : null
-  };
-}
+export const createV2 = mutation({
+  args: inviteCreateArgs,
+  handler: async (ctx, args) => createCanonicalInvite(ctx, args, true)
+});
 
 const publicInviteTokenValidator = v.object({
   id: v.string(),
@@ -717,7 +564,7 @@ function publicInviteToken(token: Doc<"invite_tokens">, creator?: Doc<"accounts"
  * Does NOT require authentication - used for preview before login.
  */
 export const validate = query({
-  args: { id: v.string() },
+  args: { financial_contract_version: v.optional(v.number()), id: v.string() },
   returns: publicInviteValidationValidator,
   handler: async (ctx, args) => {
     const token = await ctx.db
@@ -753,6 +600,13 @@ export const validate = query({
       };
     }
 
+    await assertFinancialContract(ctx, creatorAccount, args.financial_contract_version);
+    await assertMemberFinancialContract(
+      ctx,
+      [token.target_member_id],
+      args.financial_contract_version,
+      creatorAccount._id
+    );
     const publicToken = publicInviteToken(token, creatorAccount);
     const now = Date.now();
     if (token.expires_at < now) {
@@ -802,76 +656,8 @@ export const validate = query({
       };
     }
 
-    let expensePreview: {
-      expense_count: number;
-      group_names: string[];
-      total_balance: number;
-    } | null = null;
-    const targetAliases = normalizeMemberIds(targetFriend.local_alias_member_ids);
-    if (targetAliases.length <= publicInvitePreviewLimits.aliases) {
-      const previewBudget = createPublicInvitePreviewBudget();
-      const creatorExpenses = await collectCreatorExpensesForPreview(
-        ctx,
-        creatorAccount,
-        previewBudget
-      );
-      if (!creatorExpenses) {
-        return {
-          is_valid: true,
-          error: null,
-          token: { ...publicToken },
-          expense_preview: null
-        };
-      }
-      const targetIdentityMemberIds = new Set(
-        normalizeMemberIds([token.target_member_id, ...targetAliases])
-      );
-      const matchesTargetIdentity = (memberId: string) =>
-        targetIdentityMemberIds.has(normalizeMemberId(memberId));
-      const memberExpenses = creatorExpenses.filter(
-        (expense) =>
-          matchesTargetIdentity(expense.paid_by_member_id) ||
-          expense.involved_member_ids.some(matchesTargetIdentity) ||
-          expense.splits.some((split) => matchesTargetIdentity(split.member_id)) ||
-          expense.participant_member_ids.some(matchesTargetIdentity) ||
-          expense.participants.some((participant) => matchesTargetIdentity(participant.member_id))
-      );
-      const groupNames = new Set<string>();
-      let totalBalance = 0;
-      for (const expense of memberExpenses) {
-        const groupResult = await resolveCreatorGroupNameForPreview(
-          ctx,
-          expense,
-          creatorAccount,
-          previewBudget
-        );
-        if (!groupResult.completed) {
-          return {
-            is_valid: true,
-            error: null,
-            token: { ...publicToken },
-            expense_preview: null
-          };
-        }
-        if (groupResult.groupName) {
-          groupNames.add(groupResult.groupName);
-        }
-        if (matchesTargetIdentity(expense.paid_by_member_id)) {
-          totalBalance += expense.splits
-            .filter((split) => !matchesTargetIdentity(split.member_id) && !split.is_settled)
-            .reduce((sum, split) => sum + split.amount, 0);
-        } else {
-          totalBalance -= expense.splits
-            .filter((split) => matchesTargetIdentity(split.member_id) && !split.is_settled)
-            .reduce((sum, split) => sum + split.amount, 0);
-        }
-      }
-      expensePreview = {
-        expense_count: memberExpenses.length,
-        group_names: Array.from(groupNames),
-        total_balance: totalBalance
-      };
-    }
+    // A bearer preview cannot prove complete history or a denomination for legacy amounts.
+    // Keep the explicit unavailable value until the authenticated currency-aware ledger loads.
 
     return {
       is_valid: true,
@@ -879,7 +665,7 @@ export const validate = query({
       token: {
         ...publicToken
       },
-      expense_preview: expensePreview
+      expense_preview: null
     };
   }
 });
@@ -911,8 +697,11 @@ function definedConvexValue(value: Record<string, unknown>): Value {
 
 export type LinkClaimPlan = {
   selectedFriendMerge?: PreparedInviteMergeSource;
-  referenceRewrite: CanonicalReferenceRewritePlan;
-  syncRevisions: PreparedAccountSyncRevisionBatch;
+  referenceRewrite?: CanonicalReferenceRewritePlan;
+  syncRevisions?: PreparedAccountSyncRevisionBatch;
+  creatorAccount: Doc<"accounts">;
+  legacyVisibility?: Awaited<ReturnType<typeof prepareLegacyIdentityVisibility>>;
+  ownerLocalTargetAliases: string[];
   aliasInsert: AliasInsertPlan | null;
   staleFenceDeletes: Doc<"orphan_cleanup_member_fences">[];
   claimantAccountId: Id<"accounts">;
@@ -935,8 +724,10 @@ export async function prepareClaimForUser(
   user: Doc<"accounts">,
   input: LinkClaimContext,
   budget: LinkingReadBudget,
-  mergeLocalFriendMemberId?: string
+  mergeLocalFriendMemberId?: string,
+  options: { preserveFinancialReferences?: boolean; financialContractVersion?: number } = {}
 ): Promise<LinkClaimPlan> {
+  await assertFinancialContract(ctx, user, options.financialContractVersion);
   await assertBudgetedIdentityMaterializationReady(ctx, budget);
   const linkContext = normalizeLinkClaimContext(input);
   const now = Date.now();
@@ -1058,6 +849,7 @@ export async function prepareClaimForUser(
     }
   }
 
+  await assertFinancialContract(ctx, creatorAccount, options.financialContractVersion);
   const creatorMemberId = creatorAccount.member_id
     ? normalizeMemberId(creatorAccount.member_id)
     : undefined;
@@ -1088,25 +880,73 @@ export async function prepareClaimForUser(
           targetName: creatorAccount.display_name ?? creatorAccount.email ?? "Unknown",
           targetLinkedAccountId: creatorAccount.id,
           targetLinkedAccountEmail: creatorAccount.email.trim().toLowerCase(),
-          readBudget: budget
+          readBudget: budget,
+          preserveFinancialReferences: options.preserveFinancialReferences
         })
       : undefined;
   if (selectedFriendMerge?.localAliases.some((memberId) => claimantIdentityClosure.has(memberId))) {
     throw new Error("Cannot merge the claimant identity into the inviter");
   }
 
-  const referenceRewrite = await prepareClaimedFriendReferenceRewrite(
-    ctx,
-    creatorAccount,
-    normalizeMemberIds([linkContext.targetMemberId, ...ownerLocalTargetAliases]),
-    user,
-    budget
-  );
-  const syncRevisions = await prepareCanonicalReferenceSyncRevisions(
-    ctx,
-    [...(selectedFriendMerge ? [selectedFriendMerge.referenceRewrite] : []), referenceRewrite],
-    budget
-  );
+  const claimVisibility = options.preserveFinancialReferences
+    ? undefined
+    : await prepareLegacyIdentityVisibility(
+        ctx,
+        [
+          {
+            memberIds: normalizeMemberIds([linkContext.targetMemberId, userCanonicalMemberId]),
+            targetMemberId: userCanonicalMemberId
+          },
+          ...(ownerLocalTargetAliases.length
+            ? [
+                {
+                  memberIds: normalizeMemberIds([
+                    ...ownerLocalTargetAliases,
+                    userCanonicalMemberId
+                  ]),
+                  ownerId: creatorAccount._id,
+                  targetMemberId: userCanonicalMemberId
+                }
+              ]
+            : [])
+        ],
+        budget
+      );
+  const legacyVisibility = claimVisibility
+    ? {
+        groups: [
+          ...new Set([
+            ...claimVisibility.groups,
+            ...(selectedFriendMerge?.legacyVisibility?.groups ?? [])
+          ])
+        ],
+        expenses: [
+          ...new Set([
+            ...claimVisibility.expenses,
+            ...(selectedFriendMerge?.legacyVisibility?.expenses ?? [])
+          ])
+        ]
+      }
+    : undefined;
+  const referenceRewrite = options.preserveFinancialReferences
+    ? undefined
+    : await prepareClaimedFriendReferenceRewrite(
+        ctx,
+        creatorAccount,
+        normalizeMemberIds([linkContext.targetMemberId, ...ownerLocalTargetAliases]),
+        user,
+        budget
+      );
+  const syncRevisions = referenceRewrite
+    ? await prepareCanonicalReferenceSyncRevisions(
+        ctx,
+        [
+          ...(selectedFriendMerge?.referenceRewrite ? [selectedFriendMerge.referenceRewrite] : []),
+          referenceRewrite
+        ],
+        budget
+      )
+    : undefined;
   const { aliasInsert, staleFenceDeletes } = await prepareBudgetedAliasInsert(
     ctx,
     { id: user.id, email: user.email, member_id: userCanonicalMemberId },
@@ -1162,7 +1002,10 @@ export async function prepareClaimForUser(
       id: targetFriend._id,
       value: {
         ...rest,
-        member_id: normalizeMemberId(targetFriend.member_id),
+        member_id: options.preserveFinancialReferences
+          ? userCanonicalMemberId
+          : normalizeMemberId(targetFriend.member_id),
+        local_alias_member_ids: retainedLocalAliases,
         has_linked_account: true,
         link_state: "linked",
         status: "friend",
@@ -1181,7 +1024,10 @@ export async function prepareClaimForUser(
       kind: "patch",
       id: targetFriend._id,
       value: {
-        member_id: normalizeMemberId(targetFriend.member_id),
+        member_id: options.preserveFinancialReferences
+          ? userCanonicalMemberId
+          : normalizeMemberId(targetFriend.member_id),
+        local_alias_member_ids: retainedLocalAliases,
         has_linked_account: true,
         link_state: "linked",
         status: "friend",
@@ -1328,6 +1174,9 @@ export async function prepareClaimForUser(
 
   return {
     selectedFriendMerge,
+    creatorAccount,
+    legacyVisibility,
+    ownerLocalTargetAliases: [...ownerLocalTargetAliases],
     referenceRewrite,
     syncRevisions,
     aliasInsert,
@@ -1349,11 +1198,11 @@ export async function prepareClaimForUser(
 }
 
 export async function applyClaimForUser(ctx: MutationCtx, plan: LinkClaimPlan) {
-  if (plan.selectedFriendMerge) {
+  if (plan.selectedFriendMerge?.referenceRewrite) {
     await applyCanonicalReferenceRewrite(ctx, plan.selectedFriendMerge.referenceRewrite);
   }
-  await applyCanonicalReferenceRewrite(ctx, plan.referenceRewrite);
-  await applyPreparedAccountSyncRevisionBatch(ctx, plan.syncRevisions);
+  if (plan.referenceRewrite) await applyCanonicalReferenceRewrite(ctx, plan.referenceRewrite);
+  if (plan.syncRevisions) await applyPreparedAccountSyncRevisionBatch(ctx, plan.syncRevisions);
   for (const fence of plan.staleFenceDeletes) await ctx.db.delete(fence._id);
   if (plan.aliasInsert) {
     await ctx.db.insert("member_aliases", plan.aliasInsert);
@@ -1365,14 +1214,19 @@ export async function applyClaimForUser(ctx: MutationCtx, plan: LinkClaimPlan) {
   for (const write of plan.friendWrites) {
     if (write.kind === "patch") {
       await ctx.db.patch(write.id, write.value);
+      await syncOwnerLocalAliasReferences(ctx, (await ctx.db.get(write.id))!);
     } else if (write.kind === "replace") {
       await ctx.db.replace(write.id, write.value);
+      await syncOwnerLocalAliasReferences(ctx, (await ctx.db.get(write.id))!);
     } else if (write.kind === "delete") {
+      await syncOwnerLocalAliasReferences(ctx, null, write.id);
       await ctx.db.delete(write.id);
     } else {
-      await ctx.db.insert("account_friends", write.value);
+      const id = await ctx.db.insert("account_friends", write.value);
+      await syncOwnerLocalAliasReferences(ctx, (await ctx.db.get(id))!);
     }
   }
+  if (plan.legacyVisibility) await applyLegacyIdentityVisibility(ctx, plan.legacyVisibility);
   return plan.result;
 }
 
@@ -1382,108 +1236,246 @@ export async function applyClaimForUser(ctx: MutationCtx, plan: LinkClaimPlan) {
  * Also performs transitive linking - if other users share a group with the target member,
  * their friend records are also updated.
  */
-export const claim = mutation({
-  args: {
-    id: v.string(),
-    mergeLocalFriendMemberId: v.optional(v.string())
-  },
-  handler: async (ctx, args) => {
-    const budget = createLinkingReadBudget();
-    const { user } = await getCurrentUser(ctx, budget);
-    if (!user) throw new Error("User not found");
-
-    chargeLinkingQueries(budget, 1);
-    const token = await ctx.db
-      .query("invite_tokens")
-      .withIndex("by_client_id", (q) => q.eq("id", args.id))
-      .unique();
-    accountLinkingRows(budget, token ? [token] : []);
-
-    if (!token) {
-      throw new Error("Token not found");
-    }
-
-    const now = Date.now();
-    const requestedMergeMemberId = args.mergeLocalFriendMemberId
-      ? normalizeMemberId(args.mergeLocalFriendMemberId)
-      : undefined;
-
-    if (token.claimed_by) {
-      if (token.claimed_by !== user.id) {
-        throw new Error("Token has already been claimed");
-      }
-      if (token.claim_merge_local_friend_member_id !== requestedMergeMemberId) {
-        throw new Error("Token was already claimed with a different merge selection");
-      }
-
-      await assertBudgetedIdentityMaterializationReady(ctx, budget);
-      const canonicalMemberId = user.member_id ? normalizeMemberId(user.member_id) : undefined;
-      if (!canonicalMemberId) {
-        throw new Error("User account does not have a member_id assigned");
-      }
-      return {
-        contract_version: LINKING_CONTRACT_VERSION,
-        target_member_id: normalizeMemberId(token.target_member_id),
-        canonical_member_id: canonicalMemberId,
-        alias_member_ids: normalizeMemberIds(user.alias_member_ids || []).filter(
-          (memberId) => memberId !== canonicalMemberId
-        ),
-        linked_member_id: canonicalMemberId,
-        linked_account_id: user.id,
-        linked_account_email: user.email.trim().toLowerCase()
-      };
-    }
-
-    if (token.expires_at < now) {
-      throw new Error("Token has expired");
-    }
-
-    if (!token.target_friend_id) {
-      throw new Error("Invite must be recreated before it can be claimed");
-    }
-
-    const claimPlan = await prepareClaimForUser(
-      ctx,
-      user,
-      {
-        targetMemberId: token.target_member_id,
-        targetFriendId: token.target_friend_id,
-        creatorEmail: token.creator_email,
-        creatorId: token.creator_id
-      },
-      budget,
-      requestedMergeMemberId
-    );
-
-    const tokenPatch = {
-      claimed_by: user.id,
-      claimed_at: now,
-      claim_merge_local_friend_member_id: requestedMergeMemberId
-    };
-    reserveMergeWriteValuesForLimit(budget, [definedConvexValue({ ...token, ...tokenPatch })]);
-    await ctx.db.patch(token._id, tokenPatch);
-    return await applyClaimForUser(ctx, claimPlan);
+/** The caller has atomically applied consent; each local closure retains its own owner. */
+export async function startClaimIdentityOperation(
+  ctx: MutationCtx,
+  user: Doc<"accounts">,
+  plan: LinkClaimPlan,
+  binding: {
+    boundTokenId?: Id<"invite_tokens">;
+    boundRequestId?: Id<"link_requests">;
+    selectedLocalMemberId?: string;
   }
+) {
+  let dependencyOperationId: Id<"identity_operations"> | undefined;
+  const creator = plan.creatorAccount;
+  if (plan.selectedFriendMerge) {
+    const friend = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q
+          .eq("account_email", user.email.trim().toLowerCase())
+          .eq("member_id", normalizeMemberId(creator.member_id!))
+      )
+      .unique();
+    if (!friend) throw new Error("Merged reciprocal friend missing");
+    const operation = await createIdentityOperation(ctx, {
+      actor: user,
+      creator,
+      kind: "local_merge",
+      sourceMemberIds: plan.selectedFriendMerge.sourceMemberIds,
+      targetMemberId: friend.member_id,
+      localOwnerId: user._id,
+      boundFriendId: friend._id,
+      selectedLocalMemberId: binding.selectedLocalMemberId
+    });
+    dependencyOperationId = operation.operation_id;
+  }
+  if (plan.ownerLocalTargetAliases.length) {
+    const friend = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q
+          .eq("account_email", creator.email.trim().toLowerCase())
+          .eq("member_id", plan.result.canonical_member_id)
+      )
+      .unique();
+    if (!friend) throw new Error("Claimed friend missing");
+    const operation = await createIdentityOperation(ctx, {
+      actor: creator,
+      creator: user,
+      kind: "local_merge",
+      sourceMemberIds: plan.ownerLocalTargetAliases,
+      targetMemberId: plan.result.canonical_member_id,
+      localOwnerId: creator._id,
+      boundFriendId: friend._id,
+      dependencyOperationId
+    });
+    dependencyOperationId = operation.operation_id;
+  }
+  return await createIdentityOperation(ctx, {
+    actor: user,
+    creator,
+    kind: "claim",
+    sourceMemberIds: [plan.result.target_member_id],
+    targetMemberId: plan.result.canonical_member_id,
+    ...binding,
+    dependencyOperationId
+  });
+}
+
+const claimArgs = {
+  ...linkingCapabilityArgs,
+  id: v.string(),
+  mergeLocalFriendMemberId: v.optional(v.string())
+};
+type ClaimArgs = LinkingCapability & { id: string; mergeLocalFriendMemberId?: string };
+async function claimInvite(
+  ctx: MutationCtx,
+  args: ClaimArgs,
+  v3: false
+): Promise<LinkClaimPlan["result"]>;
+async function claimInvite(
+  ctx: MutationCtx,
+  args: ClaimArgs,
+  v3: true
+): Promise<Awaited<ReturnType<typeof getIdentityOperationResult>>>;
+async function claimInvite(
+  ctx: MutationCtx,
+  args: LinkingCapability & { id: string; mergeLocalFriendMemberId?: string },
+  v3: boolean
+) {
+  const budget = createLinkingReadBudget();
+  const { user } = await getCurrentUser(ctx, budget);
+  if (!user) throw new Error("User not found");
+  assertExpectedActor(user, args);
+  if (v3 && (args.financial_contract_version ?? 0) < 2)
+    throw new Error(FINANCIAL_CONTRACT_UPGRADE_REQUIRED);
+  await assertFinancialContract(ctx, user, args.financial_contract_version, { allowPending: v3 });
+
+  chargeLinkingQueries(budget, 1);
+  const token = await ctx.db
+    .query("invite_tokens")
+    .withIndex("by_client_id", (q) => q.eq("id", args.id))
+    .unique();
+  accountLinkingRows(budget, token ? [token] : []);
+
+  if (!token) {
+    throw new Error("Token not found");
+  }
+
+  const now = Date.now();
+  const requestedMergeMemberId = args.mergeLocalFriendMemberId
+    ? normalizeMemberId(args.mergeLocalFriendMemberId)
+    : undefined;
+
+  if (token.claimed_by) {
+    if (token.claimed_by !== user.id) {
+      throw new Error("Token has already been claimed");
+    }
+    if (token.claim_merge_local_friend_member_id !== requestedMergeMemberId) {
+      throw new Error("Token was already claimed with a different merge selection");
+    }
+    if ((await resolveLiveAccountForMember(ctx, token.target_member_id))?._id !== user._id)
+      throw new Error("Invite claim identity is no longer current");
+
+    if (token.identity_operation_id) {
+      if (!v3) throw new Error(FINANCIAL_CONTRACT_UPGRADE_REQUIRED);
+      return await getIdentityOperationResult(ctx, token.identity_operation_id, user);
+    }
+    await assertBudgetedIdentityMaterializationReady(ctx, budget);
+    const canonicalMemberId = user.member_id ? normalizeMemberId(user.member_id) : undefined;
+    if (!canonicalMemberId) {
+      throw new Error("User account does not have a member_id assigned");
+    }
+    if (v3) {
+      await assertFinancialContract(ctx, user, args.financial_contract_version);
+      const creator = await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", token.creator_id))
+        .unique();
+      if (!creator) throw new Error("Creator account not found");
+      const result = await createIdentityOperation(ctx, {
+        actor: user,
+        creator,
+        kind: "claim",
+        sourceMemberIds: [token.target_member_id],
+        targetMemberId: canonicalMemberId,
+        boundTokenId: token._id
+      });
+      await ctx.db.patch(token._id, { identity_operation_id: result.operation_id });
+      return result;
+    }
+    return {
+      contract_version: LINKING_CONTRACT_VERSION,
+      target_member_id: normalizeMemberId(token.target_member_id),
+      canonical_member_id: canonicalMemberId,
+      alias_member_ids: normalizeMemberIds(user.alias_member_ids || []).filter(
+        (memberId) => memberId !== canonicalMemberId
+      ),
+      linked_member_id: canonicalMemberId,
+      linked_account_id: user.id,
+      linked_account_email: user.email.trim().toLowerCase()
+    };
+  }
+
+  if (token.expires_at < now) {
+    throw new Error("Token has expired");
+  }
+
+  if (!token.target_friend_id) {
+    throw new Error("Invite must be recreated before it can be claimed");
+  }
+
+  await assertFinancialContract(ctx, user, args.financial_contract_version);
+  if (v3) await assertMemberReferencesReady(ctx);
+  const claimPlan = await prepareClaimForUser(
+    ctx,
+    user,
+    {
+      targetMemberId: token.target_member_id,
+      targetFriendId: token.target_friend_id,
+      creatorEmail: token.creator_email,
+      creatorId: token.creator_id
+    },
+    budget,
+    requestedMergeMemberId,
+    { preserveFinancialReferences: v3, financialContractVersion: args.financial_contract_version }
+  );
+
+  const tokenPatch = {
+    claimed_by: user.id,
+    claimed_at: now,
+    claim_merge_local_friend_member_id: requestedMergeMemberId
+  };
+  reserveMergeWriteValuesForLimit(budget, [definedConvexValue({ ...token, ...tokenPatch })]);
+  await ctx.db.patch(token._id, tokenPatch);
+  await applyClaimForUser(ctx, claimPlan);
+  if (!v3) return claimPlan.result;
+  const result = await startClaimIdentityOperation(ctx, user, claimPlan, {
+    boundTokenId: token._id,
+    selectedLocalMemberId: requestedMergeMemberId
+  });
+  await ctx.db.patch(token._id, { identity_operation_id: result.operation_id });
+  return result;
+}
+export const claim = mutation({
+  args: claimArgs,
+  handler: async (ctx, args) => claimInvite(ctx, args, false)
+});
+export const claimV3 = mutation({
+  args: claimArgs,
+  handler: async (ctx, args) => claimInvite(ctx, args, true)
 });
 
 /**
  * Lists all active (unclaimed, unexpired) invite tokens created by the current user.
  */
 export const listByCreator = query({
-  args: {},
-  handler: async (ctx) => {
+  args: linkingCapabilityArgs,
+  handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
     if (!user) return [];
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
 
     const now = Date.now();
 
     const tokens = await ctx.db
       .query("invite_tokens")
       .withIndex("by_creator_id", (q) => q.eq("creator_id", user.id))
-      .collect();
+      .take(257);
+    if (tokens.length > 256) throw new Error("Invite history requires pagination");
 
     // Filter to active tokens only
-    return tokens.filter((t) => !t.claimed_by && t.expires_at > now);
+    const active = tokens.filter((t) => !t.claimed_by && t.expires_at > now);
+    await assertMemberFinancialContract(
+      ctx,
+      active.map((token) => token.target_member_id),
+      args.financial_contract_version,
+      user._id
+    );
+    return active;
   }
 });
 
@@ -1491,9 +1483,11 @@ export const listByCreator = query({
  * Revokes an invite token, preventing it from being claimed.
  */
 export const revoke = mutation({
-  args: { id: v.string() },
+  args: { ...linkingCapabilityArgs, id: v.string() },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUser(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     if (!user) throw new Error("User not found");
 
     const token = await ctx.db
@@ -1510,7 +1504,8 @@ export const revoke = mutation({
       throw new Error("Not authorized to revoke this token");
     }
 
-    // Delete the token
+    if (token.claimed_by) throw new Error("Claimed invite history cannot be revoked");
+    // Unclaimed bearer links can be withdrawn by their creator.
     await ctx.db.delete(token._id);
   }
 });

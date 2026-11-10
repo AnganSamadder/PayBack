@@ -69,10 +69,9 @@ struct AddExpenseView: View {
     let onClose: (() -> Void)?
     @State private var descriptionText: String = ""
     @State private var amountText: String = ""
-    @State private var currency: String = Locale.current.currency?.identifier ?? "USD"
-    @State private var rates: [String: Double] = [:]
+    @State private var currency: String = "USD"
     @State private var date: Date = Date()
-    @State private var payerId: UUID
+    @State private var payerId: UUID?
     @State private var involvedIds: Set<UUID>
     @State private var mode: SplitMode = .equal
     @State private var percents: [UUID: Double] = [:]
@@ -102,15 +101,11 @@ struct AddExpenseView: View {
     @State private var hasResolvedInitialPayer = false
 
     init(group: SpendingGroup, onClose: (() -> Void)? = nil) {
-        self.group = group
+        let authoringGroup = ExpenseAuthoringGroupProjection.draft(from: group)
+        self.group = authoringGroup
         self.onClose = onClose
-        _payerId = State(
-            initialValue: AddExpensePayerLogic.defaultPayerId(
-                for: group.members,
-                currentUserMemberId: group.members.first(where: { $0.isCurrentUser == true })?.id
-            ) ?? UUID()
-        )
-        _involvedIds = State(initialValue: Set(group.members.map(\.id)))
+        _payerId = State(initialValue: nil)
+        _involvedIds = State(initialValue: Set(authoringGroup.members.map(\.id)))
     }
 
     var totalAmount: Double { Double(amountText) ?? 0 }
@@ -177,7 +172,7 @@ struct AddExpenseView: View {
         guard expenseContextKind == .groupedIndividual else { return group.name }
 
         let names = participants
-            .filter { !($0.isCurrentUser ?? false) }
+            .filter { !store.isMe($0.id) }
             .map(\.name)
 
         switch names.count {
@@ -191,98 +186,51 @@ struct AddExpenseView: View {
     }
 
     private var resolvedCurrentUserMemberId: UUID? {
-        if let markedCurrent = group.members.first(where: { $0.isCurrentUser == true }) {
-            return markedCurrent.id
-        }
-        return group.members.first(where: { store.isCurrentUser($0) })?.id
+        AddExpensePayerLogic.currentUserMemberId(
+            in: group.members, preferredMemberId: store.currentUser.id,
+            matchesCurrentUser: store.isMe
+        )
     }
 
     private func resolveInitialPayerIfNeeded() {
         guard !hasResolvedInitialPayer else { return }
         hasResolvedInitialPayer = true
 
-        guard let currentUserMemberId = resolvedCurrentUserMemberId else { return }
-        if group.members.contains(where: { $0.id == currentUserMemberId }) {
-            payerId = currentUserMemberId
+        payerId = AddExpensePayerLogic.defaultPayerId(
+            for: group.members, currentUserMemberId: resolvedCurrentUserMemberId
+        )
+    }
+
+    private var splitAllocation: Result<[UUID: Double], Error> {
+        Result {
+            guard Set(participants.map(\.id)).count == participants.count else { throw ExpenseMoneyLogic.AllocationError.invalidWeights }
+            let weights = Dictionary(uniqueKeysWithValues: participants.map { member in
+                let value: Double
+                switch mode {
+                case .equal: value = 1
+                case .percent: value = percents[member.id] ?? 0
+                case .shares: value = Double(shares[member.id] ?? 1)
+                case .manual: value = manualAmounts[member.id] ?? 0
+                case .itemized: value = itemizedAmounts[member.id] ?? 0
+                }
+                return (member.id, value)
+            })
+            return try ExpenseMoneyLogic.allocate(
+                total: totalAmount, weights: weights,
+                adjustments: mode == .itemized ? [:] : adjustments.filter { weights[$0.key] != nil }
+            )
         }
     }
 
     private func computedSplits() -> [ExpenseSplit] {
-        let ids = participants.map(\.id)
-        guard !ids.isEmpty, totalAmount > 0 else { return [] }
-
-        var baseSplits: [ExpenseSplit]
-
-        switch mode {
-        case .equal:
-            let each = totalAmount / Double(ids.count)
-            baseSplits = ids.map { ExpenseSplit(memberId: $0, amount: each) }
-
-        case .percent:
-            let totalPercent = ids.reduce(0) { $0 + (percents[$1] ?? 0) }
-            guard totalPercent > 0 else { return [] }
-            baseSplits = ids.map { id in
-                let pct = (percents[id] ?? 0) / totalPercent
-                return ExpenseSplit(memberId: id, amount: totalAmount * pct)
-            }
-
-        case .shares:
-            let totalShares = ids.reduce(0) { $0 + (shares[$1] ?? 1) }
-            guard totalShares > 0 else { return [] }
-            baseSplits = ids.map { id in
-                let memberShares = Double(shares[id] ?? 1)
-                let portion = memberShares / Double(totalShares)
-                return ExpenseSplit(memberId: id, amount: totalAmount * portion)
-            }
-
-        case .itemized:
-            // Always distribute fees proportionally (taxTipsFees = total - itemsSubtotal)
-            let userItemsTotal = ids.reduce(0.0) { $0 + (itemizedAmounts[$1] ?? 0) }
-            guard userItemsTotal > 0 else { return [] }
-
-            // Derived fees = total - sum of item inputs
-            let derivedFees = totalAmount - userItemsTotal
-
-            baseSplits = ids.map { id in
-                let userItems = itemizedAmounts[id] ?? 0
-                // Always distribute fees proportionally based on user's items
-                let proportion = userItems / userItemsTotal
-                let finalAmount = userItems + (proportion * derivedFees)
-
-                return ExpenseSplit(memberId: id, amount: finalAmount)
-            }
-
-        case .manual:
-            let amounts = ids.map { manualAmounts[$0] ?? 0 }
-            let sum = amounts.reduce(0, +)
-            guard sum > 0 else { return [] }
-            // Normalize to total amount to avoid rounding drift
-            baseSplits = ids.enumerated().map { _, id in
-                let portion = (manualAmounts[id] ?? 0) / sum
-                return ExpenseSplit(memberId: id, amount: totalAmount * portion)
-            }
-        }
-
-        // Apply adjustments on top of base splits (available for all modes except itemized)
-        if mode != .itemized {
-            baseSplits = baseSplits.map { split in
-                let adjustment = adjustments[split.memberId] ?? 0
-                return ExpenseSplit(
-                    id: split.id,
-                    memberId: split.memberId,
-                    amount: split.amount + adjustment,
-                    isSettled: split.isSettled
-                )
-            }
-        }
-
-        return baseSplits
+        guard case .success(let amounts) = splitAllocation else { return [] }
+        return participants.map { ExpenseSplit(memberId: $0.id, amount: amounts[$0.id, default: 0]) }
     }
 
     @State private var skipDupeCheck: Bool = false
 
     private var canSaveExpense: Bool {
-        AddExpenseFlowLogic.canSaveExpense(
+        saveValidationMessage == nil && AddExpenseFlowLogic.canSaveExpense(
             description: descriptionText,
             totalAmount: totalAmount,
             participantCount: participants.count,
@@ -291,7 +239,13 @@ struct AddExpenseView: View {
     }
 
     private var saveValidationMessage: String? {
-        AddExpenseFlowLogic.saveValidationMessage(
+        guard let payerId else { return "Choose who paid for this expense." }
+        guard participants.contains(where: { $0.id == payerId }) else { return "Include the person who paid in the split." }
+        if case .failure(let error) = splitAllocation { return error.localizedDescription }
+        if subexpenses.contains(where: { !$0.amount.isFinite || $0.amount < 0 || ExpenseMoneyLogic.cents($0.amount) == nil }) {
+            return "Subexpenses must use finite, nonnegative USD amounts in whole cents."
+        }
+        return AddExpenseFlowLogic.saveValidationMessage(
             description: descriptionText,
             totalAmount: totalAmount,
             participantCount: participants.count,
@@ -319,6 +273,7 @@ struct AddExpenseView: View {
         if !skipDupeCheck {
             let existing = store.expenses.first { e in
                 e.groupId == group.id &&
+                e.currencyCode == "USD" &&
                 e.description.localizedCaseInsensitiveCompare(descriptionText) == .orderedSame &&
                 abs(e.totalAmount - totalAmount) < 0.01 &&
                 abs(e.date.timeIntervalSince(date)) < 3600 // within 1 hour
@@ -330,11 +285,12 @@ struct AddExpenseView: View {
             }
         }
 
+        guard let payerId else { return }
         let expense = Expense(
             groupId: group.id,
             description: descriptionText,
             date: date,
-            totalAmount: totalAmount,
+            totalAmount: Double(ExpenseMoneyLogic.cents(totalAmount) ?? 0) / 100,
             paidByMemberId: payerId,
             involvedMemberIds: participants.map(\.id),
             splits: splits,
@@ -342,7 +298,8 @@ struct AddExpenseView: View {
             participantNames: Dictionary(uniqueKeysWithValues: participants.map { ($0.id, $0.name) }),
             // Filter out zero-amount subexpenses; a single item is semantically a plain expense
             subexpenses: { let f = subexpenses.filter { $0.amount > 0.001 }; return f.count >= 2 ? f : nil }(),
-            notes: notesText
+            notes: notesText,
+            currencyCode: "USD"
         )
 
         isSaving = true
@@ -422,7 +379,6 @@ struct AddExpenseView: View {
                 descriptionText: $descriptionText,
                 amountText: $amountText,
                 currency: $currency,
-                rates: $rates,
                 subexpenses: $subexpenses,
                 showSubexpenses: $showSubexpenses
             )
@@ -666,11 +622,9 @@ private struct CenterEntryBubble: View {
     @Binding var descriptionText: String
     @Binding var amountText: String
     @Binding var currency: String
-    @Binding var rates: [String: Double]
     @Binding var subexpenses: [Subexpense]
     @Binding var showSubexpenses: Bool
 
-    private let supported = ["USD","EUR","GBP","JPY","INR","CAD","AUD","BTC","ETH"]
     @State private var focusedSubexpenseId: UUID?
     @FocusState private var isDescriptionFocused: Bool
 
@@ -706,15 +660,11 @@ private struct CenterEntryBubble: View {
 
             // Amount row with plus button for subexpenses
             HStack(spacing: 8) {
-                Menu {
-                    ForEach(supported, id: \.self) { code in
-                        Button(code) { Task { await select(code) } }
-                    }
-                } label: {
+                Group {
                     RoundedRectangle(cornerRadius: AppMetrics.AddExpense.iconCornerRadius, style: .continuous)
                         .fill(AppTheme.brand)
                         .overlay(
-                            CurrencySymbolIcon(code: currency, size: leftColumnWidth * AppMetrics.AddExpense.currencyGlyphScale, foreground: .white)
+                            Text("USD").font(.caption.bold()).foregroundStyle(.white)
                         )
                         .frame(width: leftColumnWidth, height: leftColumnWidth)
                 }
@@ -791,7 +741,6 @@ private struct CenterEntryBubble: View {
         .clipShape(RoundedRectangle(cornerRadius: AppMetrics.AddExpense.centerCornerRadius, style: .continuous))
         .shadow(color: AppTheme.brand.opacity(0.15), radius: AppMetrics.AddExpense.centerShadowRadius, y: 4)
         .padding(AppMetrics.AddExpense.centerOuterPadding)
-        .task { await select(currency) }
         .onChange(of: subexpenses) { _, _ in
             // Keep amountText in sync with subexpenses total
             if showSubexpenses {
@@ -804,14 +753,7 @@ private struct CenterEntryBubble: View {
         subexpenses.reduce(0) { $0 + $1.amount }
     }
 
-    private func select(_ code: String) async {
-        currency = code
-        if ["BTC","ETH"].contains(code) {
-            rates = ["USD": (code == "BTC" ? 1.0/60000.0 : 1.0/3000.0)]
-        } else {
-            do { rates = try await CurrencyService.shared.fetchRates(base: code) } catch { rates = [:] }
-        }
-    }
+
 }
 
 // MARK: - Subexpenses Editor
@@ -1040,7 +982,7 @@ private struct CurrencySymbolIcon: View {
 // MARK: - Paid / Split Bubble
 private struct PaidSplitBubble: View {
     let group: SpendingGroup
-    @Binding var payerId: UUID
+    @Binding var payerId: UUID?
     let currentUserMemberId: UUID?
     @Binding var involvedIds: Set<UUID>
     @Binding var mode: SplitMode
@@ -1066,7 +1008,7 @@ private struct PaidSplitBubble: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button(payerLabel) {
-                    if group.isDirect == true || group.members.count == 2 {
+                    if payerId != nil && (group.isDirect == true || group.members.count == 2) {
                         if let other = group.members.first(where: { $0.id != payerId }) {
                             payerId = other.id
                         }
@@ -1168,27 +1110,24 @@ private struct PaidSplitBubble: View {
 }
 
 enum AddExpensePayerLogic {
-    static func defaultPayerId(for members: [GroupMember], currentUserMemberId: UUID?) -> UUID? {
-        if let currentUserMemberId, members.contains(where: { $0.id == currentUserMemberId }) {
-            return currentUserMemberId
-        }
-        if let markedCurrentUser = members.first(where: { $0.isCurrentUser == true }) {
-            return markedCurrentUser.id
-        }
-        return members.first?.id
+    static func currentUserMemberId(
+        in members: [GroupMember], preferredMemberId: UUID,
+        matchesCurrentUser: (UUID) -> Bool
+    ) -> UUID? {
+        let matching = members.filter { matchesCurrentUser($0.id) }
+        if matching.contains(where: { $0.id == preferredMemberId }) { return preferredMemberId }
+        return matching.map(\.id).sorted { $0.uuidString < $1.uuidString }.first
     }
 
-    static func payerLabel(for payerId: UUID, in members: [GroupMember], currentUserMemberId: UUID?) -> String {
-        if let currentUserMemberId, payerId == currentUserMemberId {
-            return "Me"
-        }
-        if let payer = members.first(where: { $0.id == payerId }) {
-            if payer.isCurrentUser == true {
-                return "Me"
-            }
-            return payer.name
-        }
-        return "Unknown"
+    static func defaultPayerId(for members: [GroupMember], currentUserMemberId: UUID?) -> UUID? {
+        guard let currentUserMemberId, members.contains(where: { $0.id == currentUserMemberId }) else { return nil }
+        return currentUserMemberId
+    }
+
+    static func payerLabel(for payerId: UUID?, in members: [GroupMember], currentUserMemberId: UUID?) -> String {
+        guard let payerId else { return "Choose payer" }
+        if let currentUserMemberId, payerId == currentUserMemberId { return "Me" }
+        return members.first(where: { $0.id == payerId })?.name ?? "Choose payer"
     }
 }
 
@@ -1215,7 +1154,7 @@ enum AddExpenseFlowLogic {
         if trimmedDescription.isEmpty {
             missingItems.append("Add a description.")
         }
-        if totalAmount <= 0 {
+        if !totalAmount.isFinite || totalAmount <= 0 || totalAmount > 1_000_000_000 {
             missingItems.append("Enter an amount greater than 0.")
         }
         if participantCount == 0 {
@@ -1280,7 +1219,7 @@ enum AddExpenseFlowLogic {
         guard !selectedMembers.isEmpty else { return "No participants" }
 
         if selectedMembers.count == 1, let onlyMember = selectedMembers.first {
-            if onlyMember.id == currentUserMemberId || onlyMember.isCurrentUser == true {
+            if onlyMember.id == currentUserMemberId {
                 return "Only me"
             }
             return "Only \(onlyMember.name)"
@@ -1720,7 +1659,7 @@ private struct ItemizedBillHelper: View {
                     HStack {
                         Text(p.name)
                         Spacer()
-                        Text(withFees, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                        Text(withFees, format: .currency(code: "USD"))
                     }
                 }
                 Button("Apply to Manual Split") {
@@ -1754,11 +1693,11 @@ private struct EqualSplitView: View {
     @Binding var showAdjustments: Bool
 
     var body: some View {
-        let each = participants.isEmpty ? 0 : total / Double(participants.count)
+        let amounts = try? ExpenseMoneyLogic.allocate(total: total, weights: Dictionary(uniqueKeysWithValues: participants.map { ($0.id, 1.0) }), adjustments: adjustments.filter { id, _ in participants.contains { $0.id == id } })
         VStack(alignment: .leading, spacing: 8) {
             ForEach(participants) { p in
                 let adjustment = adjustments[p.id] ?? 0
-                let finalAmount = each + adjustment
+                let finalAmount = amounts?[p.id] ?? 0
                 HStack {
                     Text(p.name)
                     Spacer()
@@ -1767,7 +1706,7 @@ private struct EqualSplitView: View {
                             .font(.caption)
                             .foregroundStyle(adjustment > 0 ? .green : .red)
                     }
-                    Text(finalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    Text(finalAmount, format: .currency(code: "USD"))
                         .fontWeight(.medium)
                 }
             }
@@ -1813,9 +1752,8 @@ private struct PercentSplitView: View {
             }
 
             let totalPercent = participants.reduce(0) { $0 + (percents[$1.id] ?? 0) }
-            let computed = participants.map { id in
-                (percents[id.id] ?? 0) / max(totalPercent, 1) * total + (adjustments[id.id] ?? 0)
-            }.reduce(0, +)
+            let amounts = try? ExpenseMoneyLogic.allocate(total: total, weights: Dictionary(uniqueKeysWithValues: participants.map { ($0.id, percents[$0.id] ?? 0) }), adjustments: adjustments.filter { id, _ in participants.contains { $0.id == id } })
+            let computed = amounts?.values.reduce(0, +) ?? 0
 
             HStack {
                 Text("Total Percent")
@@ -1827,7 +1765,7 @@ private struct PercentSplitView: View {
             HStack {
                 Text("Allocated")
                 Spacer()
-                Text(computed, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                Text(computed, format: .currency(code: "USD"))
             }
 
             AdjustmentsSection(
@@ -1847,18 +1785,26 @@ private struct ManualSplitView: View {
     @Binding var showAdjustments: Bool
 
     var body: some View {
+        let amounts = try? ExpenseMoneyLogic.allocate(total: total, weights: Dictionary(uniqueKeysWithValues: participants.map { ($0.id, manualAmounts[$0.id] ?? 0) }), adjustments: adjustments.filter { id, _ in participants.contains { $0.id == id } })
         VStack(alignment: .leading, spacing: 8) {
             ForEach(participants) { p in
                 let adjustment = adjustments[p.id] ?? 0
                 HStack {
-                    Text(p.name)
+                    VStack(alignment: .leading) {
+                        Text(p.name)
+                        if let amount = amounts?[p.id] {
+                            Text("Final share: \(ExpenseMoneyText.format(amount, currencyCode: "USD"))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer()
                     SmartCurrencyField(
                         amount: Binding(
                             get: { manualAmounts[p.id] ?? 0 },
                             set: { manualAmounts[p.id] = $0 }
                         ),
-                        currency: Locale.current.currency?.identifier ?? "USD",
+                        currency: "USD",
                         font: .system(size: 18, weight: .medium, design: .rounded),
                         alignment: .trailing
                     )
@@ -1870,16 +1816,16 @@ private struct ManualSplitView: View {
                     }
                 }
             }
-            let sum = participants.map { (manualAmounts[$0.id] ?? 0) + (adjustments[$0.id] ?? 0) }.reduce(0, +)
+            let sum = amounts?.values.reduce(0, +) ?? 0
             HStack {
                 Text("Allocated")
                 Spacer()
-                Text(sum, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                Text(sum, format: .currency(code: "USD"))
             }
             HStack {
                 Text("Remaining")
                 Spacer()
-                Text(total - sum, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                Text(total - sum, format: .currency(code: "USD"))
                     .foregroundStyle((total - sum).magnitude < AppMetrics.AddExpense.balanceTolerance ? .green : .orange)
             }
 
@@ -1908,10 +1854,10 @@ private struct SharesSplitView: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(participants) { p in
                 let memberShares = shares[p.id] ?? 1
-                let portion = totalShares > 0 ? Double(memberShares) / Double(totalShares) : 0
-                let baseAmount = total * portion
                 let adjustment = adjustments[p.id] ?? 0
-                let finalAmount = baseAmount + adjustment
+                let amounts = try? ExpenseMoneyLogic.allocate(total: total, weights: Dictionary(uniqueKeysWithValues: participants.map { ($0.id, Double(shares[$0.id] ?? 1)) }), adjustments: adjustments.filter { id, _ in participants.contains { $0.id == id } })
+                let finalAmount = amounts?[p.id] ?? 0
+                let portion = total.isFinite && total > 0 ? finalAmount / total : 0
 
                 VStack(spacing: 6) {
                     HStack {
@@ -1973,7 +1919,7 @@ private struct SharesSplitView: View {
                                 .font(.caption)
                                 .foregroundStyle(adjustment > 0 ? .green : .red)
                         }
-                        Text(finalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                        Text(finalAmount, format: .currency(code: "USD"))
                             .fontWeight(.medium)
                     }
                 }
@@ -2034,7 +1980,7 @@ private struct ItemizedSplitView: View {
                             get: { itemizedAmounts[p.id] ?? 0 },
                             set: { itemizedAmounts[p.id] = $0 }
                         ),
-                        currency: Locale.current.currency?.identifier ?? "USD",
+                        currency: "USD",
                         font: .system(size: 18, weight: .medium, design: .rounded),
                         alignment: .trailing
                     )
@@ -2055,7 +2001,7 @@ private struct ItemizedSplitView: View {
                 Text("Subtotal")
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(itemsSubtotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                Text(itemsSubtotal, format: .currency(code: "USD"))
                     .fontWeight(.medium)
             }
 
@@ -2064,7 +2010,7 @@ private struct ItemizedSplitView: View {
                 Text("Tax, Tips, & Fees")
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(taxTipsFees, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                Text(taxTipsFees, format: .currency(code: "USD"))
                     .fontWeight(.medium)
                     .foregroundStyle(taxTipsFees < 0 ? .red : .primary)
             }
@@ -2077,7 +2023,7 @@ private struct ItemizedSplitView: View {
                     Text("Items exceed total by ")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                    + Text(abs(taxTipsFees), format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    + Text(abs(taxTipsFees), format: .currency(code: "USD"))
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
@@ -2092,9 +2038,9 @@ private struct ItemizedSplitView: View {
 
             ForEach(participants) { p in
                 let userItems = itemizedAmounts[p.id] ?? 0
-                let proportion = itemsSubtotal > 0 ? userItems / itemsSubtotal : 0
-                let feesShare = proportion * taxTipsFees
-                let finalAmount = userItems + feesShare
+                let amounts = try? ExpenseMoneyLogic.allocate(total: total, weights: Dictionary(uniqueKeysWithValues: participants.map { ($0.id, itemizedAmounts[$0.id] ?? 0) }))
+                let finalAmount = amounts?[p.id] ?? 0
+                let feesShare = finalAmount - userItems
 
                 ItemizedPreviewRow(
                     name: p.name,
@@ -2113,7 +2059,7 @@ private struct ItemizedSplitView: View {
                 Text("Grand Total")
                     .fontWeight(.semibold)
                 Spacer()
-                Text(total, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                Text(total, format: .currency(code: "USD"))
                     .fontWeight(.semibold)
             }
         }
@@ -2141,7 +2087,7 @@ private struct ItemizedPreviewRow: View {
     let isNegativeFees: Bool
 
     private var currencyCode: String {
-        Locale.current.currency?.identifier ?? "USD"
+        "USD"
     }
 
     var body: some View {
@@ -2207,7 +2153,7 @@ private struct AdjustmentsSection: View {
 
             if showAdjustments {
                 VStack(spacing: 8) {
-                    Text("Add/subtract amounts for specific people")
+                    Text("Move whole cents between people. Adjustments must total zero.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 

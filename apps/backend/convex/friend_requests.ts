@@ -1,25 +1,38 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
+import { scheduleRestrictedDirectHistoryForMembers } from "./groupHistory";
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { resolveCanonicalMemberIdInternal } from "./aliases";
+import { resolveCanonicalMemberIdInternal, getAllEquivalentMemberIds } from "./aliases";
 import {
   assertAccountCanAcceptChanges,
   getCurrentUserOrThrow,
   resolveAuthenticatedAccount
 } from "./helpers";
 import { findAccountsByEmailIdentity } from "./identity";
+import {
+  assertFinancialContract,
+  assertMemberFinancialContract,
+  assertExpectedActor
+} from "./financialContract";
 import { checkRateLimit } from "./rateLimit";
 
 /**
  * Sends a friend request to a user by email.
  */
 export const send = mutation({
-  args: { email: v.string() },
+  args: {
+    email: v.string(),
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string())
+  },
   handler: async (ctx, args) => {
     const recipientEmail = args.email.trim().toLowerCase();
     const { user: sender } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(sender, args);
+    await assertFinancialContract(ctx, sender, args.financial_contract_version);
     const senderEmail = sender.email.trim().toLowerCase();
     await checkRateLimit(ctx, sender.id, "friend_requests:send", 10);
 
@@ -31,25 +44,6 @@ export const send = mutation({
     assertAccountCanAcceptChanges(recipient);
 
     if (sender._id === recipient._id) throw new Error("Cannot add yourself");
-
-    // Check existing request
-    const existing = await ctx.db
-      .query("friend_requests")
-      .withIndex("by_recipient_email_and_status", (q) =>
-        q.eq("recipient_email", recipientEmail).eq("status", "pending")
-      )
-      .filter((q) => q.eq(q.field("sender_id"), sender._id))
-      .first();
-
-    if (existing) throw new Error("Request already pending");
-
-    // Create request
-    await ctx.db.insert("friend_requests", {
-      sender_id: sender._id,
-      recipient_email: recipientEmail,
-      status: "pending",
-      created_at: Date.now()
-    });
 
     // Update Sender's friend list (Optimistic: "Request Sent")
     const recipientCanonicalId = await resolveCanonicalMemberIdInternal(
@@ -63,6 +57,35 @@ export const send = mutation({
         q.eq("account_email", senderEmail).eq("member_id", recipientCanonicalId)
       )
       .unique();
+
+    if (
+      existingFriend?.status === "friend" &&
+      existingFriend.has_linked_account &&
+      existingFriend.linked_account_id === recipient.id
+    )
+      return { success: true };
+
+    // Check existing request
+    const existing = await ctx.db
+      .query("friend_requests")
+      .withIndex("by_recipient_email_and_status", (q) =>
+        q.eq("recipient_email", recipientEmail).eq("status", "pending")
+      )
+      .filter((q) => q.eq(q.field("sender_id"), sender._id))
+      .first();
+
+    if (existing) return { success: true };
+
+    await ctx.db.patch(sender._id, {
+      updated_at: Math.max(Date.now(), (sender.updated_at ?? 0) + 1)
+    });
+    // Create request
+    await ctx.db.insert("friend_requests", {
+      sender_id: sender._id,
+      recipient_email: recipientEmail,
+      status: "pending",
+      created_at: Date.now()
+    });
 
     if (existingFriend) {
       await ctx.db.patch(existingFriend._id, {
@@ -91,9 +114,16 @@ export const send = mutation({
  * Accepts a friend request.
  */
 export const accept = mutation({
-  args: { requestId: v.id("friend_requests") },
+  args: {
+    requestId: v.id("friend_requests"),
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string())
+  },
   handler: async (ctx, args) => {
     const { user: recipient } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(recipient, args);
+    await assertFinancialContract(ctx, recipient, args.financial_contract_version);
     const recipientEmail = recipient.email.trim().toLowerCase();
 
     const request = await ctx.db.get(args.requestId);
@@ -105,7 +135,12 @@ export const accept = mutation({
     const sender = await ctx.db.get(request.sender_id);
     if (!sender) throw new Error("Sender account not found");
     assertAccountCanAcceptChanges(sender);
+    await assertFinancialContract(ctx, sender, args.financial_contract_version);
 
+    for (const account of [sender, recipient])
+      await ctx.db.patch(account._id, {
+        updated_at: Math.max(Date.now(), (account.updated_at ?? 0) + 1)
+      });
     // 1. Update Request
     await ctx.db.patch(request._id, {
       status: "accepted",
@@ -196,6 +231,17 @@ export const accept = mutation({
       });
     }
 
+    await scheduleRestrictedDirectHistoryForMembers(
+      ctx,
+      recipient._id,
+      await getAllEquivalentMemberIds(ctx.db, senderCanonicalId)
+    );
+    await scheduleRestrictedDirectHistoryForMembers(
+      ctx,
+      sender._id,
+      await getAllEquivalentMemberIds(ctx.db, recipientCanonicalId)
+    );
+
     return { success: true };
   }
 });
@@ -204,15 +250,23 @@ export const accept = mutation({
  * Rejects a friend request.
  */
 export const reject = mutation({
-  args: { requestId: v.id("friend_requests") },
+  args: {
+    requestId: v.id("friend_requests"),
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string())
+  },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
 
     const request = await ctx.db.get(args.requestId);
     if (!request) throw new Error("Request not found");
     if (request.recipient_email.trim().toLowerCase() !== user.email.trim().toLowerCase())
       throw new Error("Not authorized");
 
+    if (request.status !== "pending") throw new Error("Request not pending");
     await ctx.db.patch(request._id, {
       status: "rejected",
       updated_at: Date.now()
@@ -226,11 +280,12 @@ export const reject = mutation({
  * Lists incoming pending requests.
  */
 export const listIncoming = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { financial_contract_version: v.optional(v.number()) },
+  handler: async (ctx, args) => {
     if (!(await ctx.auth.getUserIdentity())) return [];
     const { user } = await resolveAuthenticatedAccount(ctx);
     if (!user) return [];
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     const recipientEmail = user.email.trim().toLowerCase();
 
     const requests = await ctx.db
@@ -245,6 +300,12 @@ export const listIncoming = query({
     for (const req of requests) {
       const sender = await ctx.db.get(req.sender_id);
       if (sender) {
+        await assertMemberFinancialContract(
+          ctx,
+          [sender.member_id ?? sender.id],
+          args.financial_contract_version,
+          user._id
+        );
         const senderCanonicalId = await resolveCanonicalMemberIdInternal(
           ctx.db,
           sender.member_id ?? sender.id

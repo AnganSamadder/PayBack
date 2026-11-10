@@ -1,15 +1,26 @@
-import { internalMutation, mutation, query } from "./_generated/server";
+import { assertGroupHistoryReady } from "./groupHistory";
+import {
+  assertFinancialContract,
+  assertExpectedActor,
+  assertMemberFinancialContract,
+  assertMemberIdentityReady,
+  withIdentityReadBudget,
+  resolveLiveAccountForMember
+} from "./financialContract";
+import { internalMutation, mutation, query, type QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { Doc } from "./_generated/dataModel";
 import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
-import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
+import { getOwnerLocalAliasMap, getOwnerEquivalentMemberIds } from "./aliases";
 import { normalizeMemberId } from "./identity";
 import {
   assertAccountCanAcceptChanges,
   getCurrentUserOrThrow,
-  isAccountDeletionFenced
+  isAccountDeletionFenced,
+  createExpenseIdentityResolutionCache,
+  deriveOwnerScopedFinancialIdentityMap
 } from "./helpers";
 import {
   deleteGroupVisibilityRowWithRevision,
@@ -34,6 +45,132 @@ import {
   syncV2NotReadyError
 } from "./syncState";
 import { GROUP_VISIBILITY_MATERIALIZATION_KEY } from "./migrations/groupVisibility";
+
+async function canReadGroup(
+  ctx: any,
+  group: Doc<"groups">,
+  user: Doc<"accounts">
+): Promise<boolean> {
+  if (group.deletion_token || isAccountDeletionFenced(user)) return false;
+  if (group.owner_id === user._id) return true;
+  const owner = await ctx.db.get(group.owner_id);
+  const localAliases =
+    owner && !isAccountDeletionFenced(owner)
+      ? await getOwnerLocalAliasMap(ctx, owner.email, {
+          memberIds: group.members.map((member) => member.id)
+        })
+      : new Map<string, string>();
+  for (const member of group.members) {
+    const account = await resolveLiveAccountForMember(
+      ctx,
+      localAliases.get(normalizeMemberId(member.id)) ?? member.id
+    );
+    if (account?._id === user._id && !isAccountDeletionFenced(account)) return true;
+  }
+  return false;
+}
+
+/** Public mutations must also fence global claims of owner-local alias targets. */
+async function assertGroupMemberFinancialContract(
+  ctx: Pick<QueryCtx, "db">,
+  memberIds: readonly string[],
+  version: number | undefined,
+  ownerId: Doc<"accounts">["_id"]
+) {
+  const ready = new Set<string>();
+  await assertMemberFinancialContract(ctx, memberIds, version, ownerId, ready);
+  const owner = await ctx.db.get(ownerId);
+  if (!owner) return;
+  const aliases = await getOwnerLocalAliasMap(ctx, owner.email, { memberIds });
+  await assertMemberIdentityReady(ctx, [...aliases.values()], ownerId, ready);
+  const canonical = new Set<string>();
+  for (const raw of new Set([...memberIds, ...aliases.values()])) {
+    const account = await resolveLiveAccountForMember(ctx, raw);
+    if (account?.member_id) canonical.add(account.member_id);
+  }
+  await assertMemberIdentityReady(ctx, [...canonical], ownerId, ready);
+}
+
+export const GROUP_PROJECTION_PAGE_TOO_LARGE =
+  "GROUP_PROJECTION_PAGE_TOO_LARGE: Retry with a smaller groups:listV2 page; a single oversized group requires maintenance.";
+const MAX_LEGACY_GROUP_SOURCE_ROWS = 64;
+type ProjectedGroup = Doc<"groups"> & { member_identity_map: Record<string, string> };
+
+/** One shared budget/cache covers authorization and projection across the entire response. */
+async function projectReadableGroupPage(
+  ctx: Pick<QueryCtx, "db">,
+  groups: readonly Doc<"groups">[],
+  user: Doc<"accounts">,
+  version?: number,
+  visibilityCandidates = false
+): Promise<ProjectedGroup[]> {
+  let queries = 0,
+    rows = groups.length;
+  let bytes = groups.reduce((total, group) => total + getConvexSize(group), 0);
+  const check = () => {
+    if (queries > 2048 || rows > 2048 || bytes > 8 * 1024 * 1024)
+      throw new Error(GROUP_PROJECTION_PAGE_TOO_LARGE);
+  };
+  check();
+  const budgeted = withIdentityReadBudget(ctx, {
+    chargeQueries: (count) => {
+      queries += count;
+      check();
+    },
+    chargeRows: (values) => {
+      rows += values.length;
+      bytes += values.reduce<number>((total, value) => total + getConvexSize(value), 0);
+      check();
+    }
+  });
+  const cache = createExpenseIdentityResolutionCache();
+  const page: ProjectedGroup[] = [];
+  try {
+    for (const group of groups) {
+      let candidate = visibilityCandidates || group.owner_id === user._id;
+      if (!candidate) {
+        const priorVisibility = await budgeted.db
+          .query("group_visibility")
+          .withIndex("by_group_id_and_account_id", (q) =>
+            q.eq("group_id", group._id).eq("account_id", user._id)
+          )
+          .first();
+        candidate = !!priorVisibility || (await canReadGroup(budgeted, group, user));
+      }
+      if (!candidate) continue;
+      await assertGroupHistoryReady(budgeted, group, user);
+      // Fence a previously visible row before changed identity would filter it from the snapshot.
+      await assertMemberFinancialContract(
+        budgeted,
+        group.members.map((member) => member.id),
+        version,
+        group.owner_id,
+        cache.readyIdentityMembers
+      );
+      if (group.deletion_token) continue;
+      const member_identity_map = await deriveOwnerScopedFinancialIdentityMap(
+        budgeted,
+        group,
+        group.members.map((member) => member.id),
+        new Set(),
+        cache
+      );
+      const memberId = normalizeMemberId(user.member_id ?? user.id);
+      if (group.owner_id !== user._id && !Object.values(member_identity_map).includes(memberId))
+        continue;
+      page.push({ ...group, member_identity_map });
+    }
+  } catch (error) {
+    const message = String(error);
+    if (
+      message.includes("Expense identity query budget exceeded") ||
+      message.includes("Expense identity read budget exceeded")
+    )
+      throw new Error(GROUP_PROJECTION_PAGE_TOO_LARGE);
+    throw error;
+  }
+  return page;
+}
 
 // Helper to get current user or throw
 async function getCurrentUser(ctx: any) {
@@ -309,6 +446,9 @@ async function prepareGroupMembers(
 
 export const create = mutation({
   args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
     id: v.optional(v.string()),
     name: v.string(),
     members: v.array(
@@ -324,8 +464,18 @@ export const create = mutation({
     is_payback_generated_mock_data: v.optional(v.boolean())
   },
   handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
+    assertExpectedActor(financialActor, args);
     const { identity, user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found in database");
+
+    await assertGroupMemberFinancialContract(
+      ctx,
+      args.members.map((member) => member.id),
+      args.financial_contract_version,
+      user._id
+    );
 
     // Deduplication check: Check if group with this ID already exists
     if (args.id) {
@@ -339,6 +489,23 @@ export const create = mutation({
           throw new Error("Forbidden: cannot update a group you do not own");
         }
         assertGroupWritable(existing);
+        const oldMembership = [
+          ...new Set(existing.members.map((member) => normalizeMemberId(member.id)))
+        ].sort();
+        const newMembership = [
+          ...new Set(args.members.map((member) => normalizeMemberId(member.id)))
+        ].sort();
+        if (
+          JSON.stringify(oldMembership) !== JSON.stringify(newMembership) ||
+          (args.is_direct !== undefined && Boolean(args.is_direct) !== Boolean(existing.is_direct))
+        )
+          await assertGroupHistoryReady(ctx, existing, user);
+        await assertGroupMemberFinancialContract(
+          ctx,
+          existing.members.map((member) => member.id),
+          args.financial_contract_version,
+          existing.owner_id
+        );
 
         const members = await prepareGroupMembers(ctx, args.members, existing.members);
         await patchGroupWithVisibility(ctx, existing._id, {
@@ -372,73 +539,43 @@ export const create = mutation({
   }
 });
 
-export async function listInternal(ctx: any) {
-  const { identity, user } = await getCurrentUser(ctx);
+export async function listInternal(ctx: any, financialContractVersion?: number) {
+  const { user } = await getCurrentUser(ctx);
   if (!user) return [];
-
-  // Check by owner_account_id
-  const groupsByOwnerId = await ctx.db
-    .query("groups")
-    .withIndex("by_owner_account_id", (q: any) => q.eq("owner_account_id", user.id))
-    .collect();
-
-  // Check by owner_email
-  const groupsByEmail = await ctx.db
-    .query("groups")
-    .withIndex("by_owner_email", (q: any) => q.eq("owner_email", user.email))
-    .collect();
-
-  // Check by membership (using canonical member_id + aliases)
-  let groupsByMembership: any[] = [];
-  const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-    ctx.db,
-    user.member_id ?? user.id
-  );
-  const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-  const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
-
-  const allGroups = await ctx.db.query("groups").collect();
-  groupsByMembership = allGroups.filter((g: any) =>
-    g.members.some((m: any) => membershipIds.has(normalizeMemberId(m.id)))
-  );
-
-  // Merge results
-  const groupMap = new Map();
-  groupsByOwnerId.forEach((g: any) => {
-    if (!g.deletion_token) groupMap.set(g._id, g);
-  });
-  groupsByEmail.forEach((g: any) => {
-    if (!g.deletion_token) groupMap.set(g._id, g);
-  });
-  groupsByMembership.forEach((g: any) => {
-    if (!g.deletion_token) groupMap.set(g._id, g);
-  });
-
-  return Array.from(groupMap.values());
+  // The legacy wire shape promises a complete list. Never silently truncate it.
+  const scan = {
+    cursor: null,
+    numItems: MAX_LEGACY_GROUP_SOURCE_ROWS + 1,
+    maximumRowsRead: MAX_LEGACY_GROUP_SOURCE_ROWS + 1,
+    maximumBytesRead: 4 * 1024 * 1024
+  };
+  const candidates = await ctx.db.query("groups").paginate(scan);
+  if (!candidates.isDone || candidates.page.length > MAX_LEGACY_GROUP_SOURCE_ROWS)
+    throw new Error(GROUP_PROJECTION_PAGE_TOO_LARGE);
+  return await projectReadableGroupPage(ctx, candidates.page, user, financialContractVersion);
 }
 
 export const list = query({
-  args: {},
-  handler: async (ctx) => {
-    return await listInternal(ctx);
+  args: { financial_contract_version: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
+    return await listInternal(ctx, args.financial_contract_version);
   }
 });
 
 export const listLegacyPage = query({
   args: {
+    financial_contract_version: v.optional(v.number()),
     paginationOpts: paginationOptsValidator
   },
   handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
     requireSafeSyncPageSize(args.paginationOpts.numItems);
 
-    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-      ctx.db,
-      user.member_id ?? user.id
-    );
-    const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-    const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
     const result = await ctx.db
       .query("groups")
       .order("desc")
@@ -448,15 +585,14 @@ export const listLegacyPage = query({
         maximumBytesRead: 1024 * 1024
       } as typeof args.paginationOpts);
 
+    const authorized = await projectReadableGroupPage(
+      ctx,
+      result.page,
+      user,
+      args.financial_contract_version
+    );
     return {
-      page: result.page.filter(
-        (group) =>
-          !group.deletion_token &&
-          (group.owner_id === user._id ||
-            group.owner_account_id === user.id ||
-            group.owner_email.trim().toLowerCase() === user.email.trim().toLowerCase() ||
-            group.members.some((member) => membershipIds.has(normalizeMemberId(member.id))))
-      ),
+      page: authorized,
       continueCursor: result.continueCursor,
       isDone: result.isDone
     };
@@ -465,10 +601,13 @@ export const listLegacyPage = query({
 
 export const listV2 = query({
   args: {
+    financial_contract_version: v.optional(v.number()),
     paginationOpts: paginationOptsValidator,
     expectedRevision: v.optional(v.number())
   },
   handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
     requireSafeSyncPageSize(args.paginationOpts.numItems);
@@ -486,15 +625,19 @@ export const listV2 = query({
         maximumRowsRead: MAX_SYNC_PAGE_SIZE,
         maximumBytesRead: 1024 * 1024
       } as typeof args.paginationOpts);
-    const page: Doc<"groups">[] = [];
+    const candidates: Doc<"groups">[] = [];
     for (const visibility of visibilityPage.page) {
       const group = await ctx.db.get(visibility.group_id);
-      if (!group) {
-        throw syncV2NotReadyError("group visibility references a missing group");
-      }
-      if (group.deletion_token) continue;
-      page.push(group);
+      if (!group) throw syncV2NotReadyError("group visibility references a missing group");
+      candidates.push(group);
     }
+    const page = await projectReadableGroupPage(
+      ctx,
+      candidates,
+      user,
+      args.financial_contract_version,
+      true
+    );
     return {
       page,
       continueCursor: visibilityPage.continueCursor,
@@ -506,25 +649,40 @@ export const listV2 = query({
 
 export const listPaginated = query({
   args: {
+    financial_contract_version: v.optional(v.number()),
     cursor: v.optional(v.string()),
     limit: v.optional(v.number())
   },
   handler: async (ctx, args) => {
-    // Reusing list logic for consistency, but mocking pagination structure
-    // Ideally this should use real pagination, but list() merges multiple sources.
-    // For now, returning all items as a single page is safe and correct.
-    const allItems = await listInternal(ctx);
-
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
+    // Compatibility shape remains complete; larger datasets must use listV2 pagination.
+    const limit = args.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LEGACY_GROUP_SOURCE_ROWS)
+      throw new Error(
+        "Legacy group page limit must be between 1 and 64; use listV2 for larger datasets"
+      );
+    const offset = args.cursor === undefined ? 0 : Number(args.cursor);
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      (args.cursor !== undefined && !/^\d+$/.test(args.cursor))
+    )
+      throw new Error("Invalid legacy group cursor");
+    const allItems = await listInternal(ctx, args.financial_contract_version);
+    const nextOffset = offset + limit;
     return {
-      items: allItems,
-      nextCursor: null
+      items: allItems.slice(offset, nextOffset),
+      nextCursor: nextOffset < allItems.length ? String(nextOffset) : null
     };
   }
 });
 
 export const get = query({
-  args: { id: v.string() }, // This is the Client UUID, not the internal _id
+  args: { financial_contract_version: v.optional(v.number()), id: v.string() }, // This is the Client UUID, not the internal _id
   handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
     const { user } = await getCurrentUser(ctx);
     if (!user) return null;
 
@@ -533,33 +691,26 @@ export const get = query({
       .withIndex("by_client_id", (q) => q.eq("id", args.id))
       .first();
 
-    if (!group || group.deletion_token) return null;
-
-    // Auth check
-    if (group.owner_account_id !== user.id && group.owner_email !== user.email) {
-      const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-        ctx.db,
-        user.member_id ?? user.id
-      );
-      const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-      const membershipIds = new Set([canonicalMemberId, ...equivalentIds]);
-
-      if (group.members.some((m: any) => membershipIds.has(normalizeMemberId(m.id)))) {
-        return group;
-      }
-      return null;
-    }
-
-    return group;
+    if (!group) return null;
+    return (
+      (await projectReadableGroupPage(ctx, [group], user, args.financial_contract_version))[0] ??
+      null
+    );
   }
 });
 
 export const removeMemberAndExpenses = mutation({
   args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
     id: v.string(),
     memberId: v.string()
   },
   handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
+    assertExpectedActor(financialActor, args);
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
@@ -568,16 +719,24 @@ export const removeMemberAndExpenses = mutation({
       .withIndex("by_client_id", (query) => query.eq("id", args.id))
       .unique();
     if (!group) throw new Error("Group not found");
+    await assertGroupMemberFinancialContract(
+      ctx,
+      group.members.map((member) => member.id),
+      args.financial_contract_version,
+      group.owner_id
+    );
     if (!isGroupOwner(group, user)) {
       throw new Error("Not authorized to remove members from this group");
     }
     assertGroupWritable(group);
 
     const targetMemberIds = new Set(
-      (await getAllEquivalentMemberIds(ctx.db, args.memberId)).map(normalizeMemberId)
+      (await getOwnerEquivalentMemberIds(ctx, user.email, args.memberId)).map(normalizeMemberId)
     );
     const callerMemberIds = new Set(
-      (await getAllEquivalentMemberIds(ctx.db, user.member_id ?? user.id)).map(normalizeMemberId)
+      (await getOwnerEquivalentMemberIds(ctx, user.email, user.member_id ?? user.id)).map(
+        normalizeMemberId
+      )
     );
     if (Array.from(targetMemberIds).some((memberId) => callerMemberIds.has(memberId))) {
       throw new Error("Cannot remove the current user from a group");
@@ -617,8 +776,16 @@ export const removeMemberAndExpenses = mutation({
 
 // Delete a single group by client UUID
 export const deleteGroup = mutation({
-  args: { id: v.string() },
+  args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
+    id: v.string()
+  },
   handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
+    assertExpectedActor(financialActor, args);
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
@@ -628,6 +795,12 @@ export const deleteGroup = mutation({
       .unique();
 
     if (!group) return;
+    await assertGroupMemberFinancialContract(
+      ctx,
+      group.members.map((member) => member.id),
+      args.financial_contract_version,
+      group.owner_id
+    );
 
     // Auth check - only owner can delete
     if (!isGroupOwner(group, user)) {
@@ -649,8 +822,16 @@ export const deleteGroup = mutation({
 
 // Delete multiple groups by client UUIDs
 export const deleteGroups = mutation({
-  args: { ids: v.array(v.string()) },
+  args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
+    ids: v.array(v.string())
+  },
   handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
+    assertExpectedActor(financialActor, args);
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
     if (args.ids.length > MAX_EXPENSE_WRITE_OPERATIONS) {
@@ -667,6 +848,12 @@ export const deleteGroups = mutation({
         .unique();
 
       if (!group) continue;
+      await assertGroupMemberFinancialContract(
+        ctx,
+        group.members.map((member) => member.id),
+        args.financial_contract_version,
+        group.owner_id
+      );
 
       // Auth check - only owner can delete
       if (!isGroupOwner(group, user)) {
@@ -725,17 +912,30 @@ type ClearAllProgress = {
   cutoff: number;
 };
 
-async function clearAllMembershipIds(ctx: any, user: Doc<"accounts">): Promise<Set<string>> {
-  const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-    ctx.db,
-    user.member_id ?? user.id
-  );
-  const equivalentIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-  return new Set([
-    normalizeMemberId(canonicalMemberId),
-    ...equivalentIds.map(normalizeMemberId),
-    ...(user.alias_member_ids ?? []).map(normalizeMemberId)
-  ]);
+/** Use the record owner's current local equivalence for every membership-removal path. */
+async function groupMemberIdsForAccount(
+  ctx: Pick<QueryCtx, "db">,
+  group: Doc<"groups">,
+  account: Doc<"accounts">
+): Promise<Set<string>> {
+  const owner = await ctx.db.get(group.owner_id);
+  const membershipIds = new Set<string>();
+  if (owner && !isAccountDeletionFenced(owner)) {
+    for (const memberId of await getOwnerEquivalentMemberIds(
+      ctx,
+      owner.email,
+      account.member_id ?? account.id
+    )) {
+      membershipIds.add(normalizeMemberId(memberId));
+    }
+  } else {
+    for (const memberId of [account.member_id, ...(account.alias_member_ids ?? [])]) {
+      if (memberId && (await resolveLiveAccountForMember(ctx, memberId))?._id === account._id) {
+        membershipIds.add(normalizeMemberId(memberId));
+      }
+    }
+  }
+  return membershipIds;
 }
 
 async function processClearAllGroupStep(
@@ -749,6 +949,12 @@ async function processClearAllGroupStep(
     .filter((q: any) => q.lte(q.field("created_at"), cutoff))
     .first();
   if (ownedGroup) {
+    await assertGroupMemberFinancialContract(
+      ctx,
+      ownedGroup.members.map((member: { id: string }) => member.id),
+      2,
+      ownedGroup.owner_id
+    );
     const fenced = await fenceGroupForDeletion(ctx, ownedGroup);
     await processGroupCascadeStep(ctx, fenced.group);
     return { inProgress: true, processed: 1, cutoff };
@@ -770,7 +976,13 @@ async function processClearAllGroupStep(
     return { inProgress: false, processed: 0, cutoff };
   }
 
-  const membershipIds = await clearAllMembershipIds(ctx, user);
+  await assertGroupMemberFinancialContract(
+    ctx,
+    group.members.map((member: { id: string }) => member.id),
+    2,
+    group.owner_id
+  );
+  const membershipIds = await groupMemberIdsForAccount(ctx, group, user);
   const remainingMembers = group.members.filter(
     (member) => !membershipIds.has(normalizeMemberId(member.id))
   );
@@ -800,9 +1012,16 @@ async function scheduleGroupClearContinuation(
 
 // Compatibility endpoint for deployed clients that decode a null mutation result.
 export const clearAllForUser = mutation({
-  args: {},
+  args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string())
+  },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
+    assertExpectedActor(financialActor, args);
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
     await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
@@ -813,9 +1032,17 @@ export const clearAllForUser = mutation({
 });
 
 export const clearAllForUserV2 = mutation({
-  args: { cutoff: v.optional(v.number()) },
+  args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
+    cutoff: v.optional(v.number())
+  },
   returns: clearAllProgressValidator,
   handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
+    assertExpectedActor(financialActor, args);
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
     await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
@@ -835,8 +1062,15 @@ export const clearAllForUserBatch = internalMutation({
 });
 
 export const clearDebugDataForUser = mutation({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string())
+  },
+  handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
+    assertExpectedActor(financialActor, args);
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
     const groupVisibilityBatch = new GroupVisibilityWriteBatch(ctx);
@@ -870,8 +1104,16 @@ export const clearDebugDataForUser = mutation({
 });
 
 export const leaveGroup = mutation({
-  args: { id: v.string() },
+  args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
+    id: v.string()
+  },
   handler: async (ctx, args) => {
+    const financialActor = (await getCurrentUserOrThrow(ctx)).user;
+    await assertFinancialContract(ctx, financialActor, args.financial_contract_version);
+    assertExpectedActor(financialActor, args);
     const { user } = await getCurrentUser(ctx);
     if (!user) throw new Error("User not found");
 
@@ -881,13 +1123,16 @@ export const leaveGroup = mutation({
       .unique();
 
     if (!group) throw new Error("Group not found");
-
-    const canonicalMemberId = await resolveCanonicalMemberIdInternal(
-      ctx.db,
-      user.member_id ?? user.id
+    await assertGroupMemberFinancialContract(
+      ctx,
+      group.members.map((member) => member.id),
+      args.financial_contract_version,
+      group.owner_id
     );
-    const aliases = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
-    const membershipIds = new Set([canonicalMemberId, ...aliases]);
+
+    if (!(await canReadGroup(ctx, group, user)))
+      throw new Error("You are not a member of this group");
+    const membershipIds = await groupMemberIdsForAccount(ctx, group, user);
 
     const isMember = group.members.some((m: any) => membershipIds.has(normalizeMemberId(m.id)));
     if (!isMember) throw new Error("You are not a member of this group");

@@ -106,6 +106,7 @@ describe("linking abuse controls", () => {
     const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
 
     await owner.mutation(api.linkRequests.createV2, {
+      financial_contract_version: 2,
       id: "request_one",
       recipient_email: "first@example.com",
       target_member_id: "friend_member",
@@ -113,6 +114,7 @@ describe("linking abuse controls", () => {
     });
     await expect(
       owner.mutation(api.linkRequests.createV2, {
+        financial_contract_version: 2,
         id: "request_two",
         recipient_email: "second@example.com",
         target_member_id: "friend_member",
@@ -134,6 +136,7 @@ describe("linking abuse controls", () => {
 
     for (let index = 0; index < 10; index += 1) {
       await owner.mutation(api.linkRequests.createV2, {
+        financial_contract_version: 2,
         id: `request_${index}`,
         recipient_email: `recipient${index}@example.com`,
         target_member_id: memberIds[index],
@@ -142,6 +145,7 @@ describe("linking abuse controls", () => {
     }
     await expect(
       owner.mutation(api.linkRequests.createV2, {
+        financial_contract_version: 2,
         id: "request_10",
         recipient_email: "recipient10@example.com",
         target_member_id: memberIds[10],
@@ -161,12 +165,14 @@ describe("linking abuse controls", () => {
     const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
 
     await owner.mutation(api.inviteTokens.create, {
+      financial_contract_version: 2,
       id: "invite_one",
       target_member_id: "friend_member",
       target_member_name: "Friend"
     });
     await expect(
       owner.mutation(api.inviteTokens.create, {
+        financial_contract_version: 2,
         id: "invite_two",
         target_member_id: "friend_member",
         target_member_name: "Friend"
@@ -187,6 +193,7 @@ describe("linking abuse controls", () => {
 
     for (let index = 0; index < 10; index += 1) {
       await owner.mutation(api.inviteTokens.create, {
+        financial_contract_version: 2,
         id: `invite_${index}`,
         target_member_id: memberIds[index],
         target_member_name: memberIds[index]
@@ -194,6 +201,7 @@ describe("linking abuse controls", () => {
     }
     await expect(
       owner.mutation(api.inviteTokens.create, {
+        financial_contract_version: 2,
         id: "invite_10",
         target_member_id: memberIds[10],
         target_member_name: memberIds[10]

@@ -108,7 +108,7 @@ test("expense debug cleanup removes caller-owned generated data with stale membe
   });
 
   const owner = t.withIdentity(identity("owner@example.com", "owner_subject"));
-  await owner.mutation(api.expenses.clearDebugDataForUser, {});
+  await owner.mutation(api.expenses.clearDebugDataForUser, { financial_contract_version: 2 });
 
   const remaining = await t.run(async (ctx) =>
     (await ctx.db.query("expenses").collect()).map((expense) => expense.id).sort()
@@ -196,7 +196,7 @@ test("group debug cleanup removes caller-owned generated data with stale member 
   });
 
   const owner = t.withIdentity(identity("owner@example.com", "owner_subject"));
-  await owner.mutation(api.groups.clearDebugDataForUser, {});
+  await owner.mutation(api.groups.clearDebugDataForUser, { financial_contract_version: 2 });
 
   const remaining = await t.run(async (ctx) =>
     (await ctx.db.query("groups").collect()).map((group) => group.id).sort()
@@ -323,8 +323,12 @@ test("debug cleanup ignores unrelated generated-data cardinality", async () => {
   });
 
   const owner = t.withIdentity(identity("bounded-owner@example.com", "bounded_owner_subject"));
-  await expect(owner.mutation(api.expenses.clearDebugDataForUser, {})).resolves.toBeNull();
-  await expect(owner.mutation(api.groups.clearDebugDataForUser, {})).resolves.toBeNull();
+  await expect(
+    owner.mutation(api.expenses.clearDebugDataForUser, { financial_contract_version: 2 })
+  ).resolves.toBeNull();
+  await expect(
+    owner.mutation(api.groups.clearDebugDataForUser, { financial_contract_version: 2 })
+  ).resolves.toBeNull();
 
   const ownerArtifacts = await t.run(async (ctx) => ({
     group: await ctx.db

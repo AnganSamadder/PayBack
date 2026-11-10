@@ -142,10 +142,10 @@ final class InviteLinkClaimViewTests: XCTestCase {
         )
     }
 
-    func testUnknownClaimErrorCopyWithMergeConfirmsExistingFriendWasNotChanged() {
+    func testUnknownClaimErrorCopyWithMergeKeepsCommittedOperationRecoverable() {
         XCTAssertEqual(
             InviteLinkClaimFailureCopy.message(mergingExistingFriend: true),
-            "We couldn’t claim this invite. Your existing friend was not changed."
+            "Linking did not finish. Resume linking before changing your merge selection."
         )
     }
 }

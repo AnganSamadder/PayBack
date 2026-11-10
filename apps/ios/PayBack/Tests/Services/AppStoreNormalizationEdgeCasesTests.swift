@@ -47,14 +47,14 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
 
     // MARK: - normalizeGroup Tests (0% coverage - 47 lines)
 
-    func testNormalizeGroup_WithAliasButNoCurrentUser() async throws {
+    func testHydrationPreservesSameNameMemberWithoutClaim() async throws {
         // This triggers the path where containsAlias && !containsCurrent
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "John Doe")
 
-        // Create a group with an alias (same name as current user, different ID)
+        // A matching display name is not evidence of identity.
         let aliasId = UUID()
         let alice = GroupMember(name: "Alice")
-        let johnAlias = GroupMember(id: aliasId, name: "John Doe") // Alias!
+        let johnAlias = GroupMember(id: aliasId, name: "John Doe")
 
         let remoteGroup = SpendingGroup(
             name: "Test Group",
@@ -67,19 +67,15 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         // When: Complete authentication (triggers normalization)
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
-        // Then: Group should be normalized with current user added
-        XCTAssertGreaterThanOrEqual(sut.groups.count, 1)
-        if let normalizedGroup = sut.groups.first {
-            // Should have Alice + actual current user (alias removed)
-            XCTAssertTrue(normalizedGroup.members.contains { $0.id == sut.currentUser.id }, "Should contain actual current user")
-            XCTAssertFalse(normalizedGroup.members.contains { $0.id == aliasId }, "Should not contain alias ID")
-        }
+        let loaded = try XCTUnwrap(sut.groups.first { $0.id == remoteGroup.id })
+        XCTAssertEqual(loaded.members, remoteGroup.members)
+        XCTAssertFalse(loaded.members.contains { $0.id == sut.currentUser.id })
     }
 
-    func testNormalizeGroup_WithMultipleAliases() async throws {
+    func testHydrationPreservesMultipleSameNamePeople() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Jane Smith")
 
-        // Create multiple aliases for the same user
+        // Preserve people whose display names happen to overlap.
         let alias1 = GroupMember(id: UUID(), name: "Jane Smith")
         let alias2 = GroupMember(id: UUID(), name: "jane smith") // Different case
         let alias3 = GroupMember(id: UUID(), name: "Jane")  // Partial name
@@ -95,13 +91,9 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
 
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
-        // Then: All aliases should be consolidated
-        XCTAssertGreaterThanOrEqual(sut.groups.count, 1)
-        if let normalizedGroup = sut.groups.first {
-            // Should have Bob + current user (all aliases removed)
-            XCTAssertEqual(normalizedGroup.members.count, 2, "Should consolidate all aliases")
-            XCTAssertTrue(normalizedGroup.members.contains { $0.id == sut.currentUser.id })
-        }
+        let loaded = try XCTUnwrap(sut.groups.first { $0.id == remoteGroup.id })
+        XCTAssertEqual(loaded.members, remoteGroup.members)
+        XCTAssertEqual(Set(loaded.members.map(\.id)).count, 4)
     }
 
     func testNormalizeGroup_WithDuplicateMemberIds() async throws {
@@ -129,18 +121,18 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         }
     }
 
-    func testNormalizeGroup_InferDirectGroup() async throws {
+    func testHydrationDoesNotInferDirectLedgerFromDisplayName() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Example User")
 
         // Complete authentication first to establish currentUser
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
-        // Create a group with exactly 2 members (should be inferred as direct)
+        // An explicitly named group remains a group even with two members.
         let currentUserMember = GroupMember(id: sut.currentUser.id, name: account.displayName)
         let friend = GroupMember(name: "Friend")
 
         let remoteGroup = SpendingGroup(
-            name: "Friend", // Must match other member's name to be inferred as direct
+            name: "Friend", // A matching name does not change its persisted context
             members: [currentUserMember, friend],
             isDirect: false // Explicitly false
         )
@@ -150,16 +142,12 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         // Trigger reload
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
-        // Then: Should be inferred as direct group
-        XCTAssertGreaterThanOrEqual(sut.groups.count, 1)
-        if let normalizedGroup = sut.groups.first {
-            XCTAssertTrue(normalizedGroup.isDirect == true, "Should infer as direct group")
-        }
+        let loaded = try XCTUnwrap(sut.groups.first { $0.id == remoteGroup.id })
+        XCTAssertEqual(loaded.isDirect, false)
+        XCTAssertEqual(loaded.members, remoteGroup.members)
     }
 
-    // MARK: - normalizeExpenses Tests (7.5% coverage - 62 lines)
-
-    func testNormalizeExpenses_WithAliasInPaidBy() async throws {
+    func testHydrationPreservesSameNamePayer() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "John Doe")
 
         // Complete authentication first to establish currentUser
@@ -181,7 +169,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
             groupId: remoteGroup.id,
             description: "Lunch",
             totalAmount: 50.0,
-            paidByMemberId: aliasId, // Alias paid
+            paidByMemberId: aliasId, // Distinct same-name person paid
             involvedMemberIds: [alice.id, aliasId],
             splits: [
                 ExpenseSplit(memberId: alice.id, amount: 25.0),
@@ -195,14 +183,11 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         // Trigger reload
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
-        // Then: Expense should be normalized with current user as payer
-        XCTAssertGreaterThanOrEqual(sut.expenses.count, 1)
-        if let normalizedExpense = sut.expenses.first {
-            XCTAssertEqual(normalizedExpense.paidByMemberId, sut.currentUser.id, "Should replace alias with current user")
-        }
+        let loaded = try XCTUnwrap(sut.expenses.first { $0.id == expense.id })
+        XCTAssertEqual(loaded, expense, "Hydration must preserve raw financial identities, amounts, and settlement states")
     }
 
-    func testNormalizeExpenses_WithAliasInSplits() async throws {
+    func testHydrationPreservesSameNameSplit() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Jane Smith")
 
         // Complete authentication first to establish currentUser
@@ -227,7 +212,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
             involvedMemberIds: [bob.id, aliasId],
             splits: [
                 ExpenseSplit(memberId: bob.id, amount: 50.0),
-                ExpenseSplit(memberId: aliasId, amount: 50.0) // Alias in split
+                ExpenseSplit(memberId: aliasId, amount: 50.0) // Distinct same-name person
             ]
         )
 
@@ -237,16 +222,11 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         // Trigger reload
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
-        // Then: Splits should be normalized
-        XCTAssertGreaterThanOrEqual(sut.expenses.count, 1)
-        if let normalizedExpense = sut.expenses.first {
-            let currentUserSplit = normalizedExpense.splits.first { $0.memberId == sut.currentUser.id }
-            XCTAssertNotNil(currentUserSplit, "Should have split for current user")
-            XCTAssertFalse(normalizedExpense.splits.contains { $0.memberId == aliasId }, "Should not have alias in splits")
-        }
+        let loaded = try XCTUnwrap(sut.expenses.first { $0.id == expense.id })
+        XCTAssertEqual(loaded, expense, "Hydration must preserve raw financial identities, amounts, and settlement states")
     }
 
-    func testNormalizeExpenses_WithMultipleAliasesInSameSplit() async throws {
+    func testHydrationDoesNotAggregateSameNameShares() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Alice Wonder")
 
         // Complete authentication first to establish currentUser
@@ -265,7 +245,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
             isDirect: false
         )
 
-        // Create expense with multiple aliases in splits (should be aggregated)
+        // Same-name rows retain their original IDs and amounts.
         let expense = Expense(
             groupId: remoteGroup.id,
             description: "Shopping",
@@ -275,7 +255,7 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
             splits: [
                 ExpenseSplit(memberId: bob.id, amount: 50.0),
                 ExpenseSplit(memberId: alias1, amount: 40.0),
-                ExpenseSplit(memberId: alias2, amount: 60.0) // Should be aggregated
+                ExpenseSplit(memberId: alias2, amount: 60.0) // Separate historical row
             ]
         )
 
@@ -285,19 +265,11 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         // Trigger reload
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
-        // Then: Splits should be aggregated
-        XCTAssertGreaterThanOrEqual(sut.expenses.count, 1)
-        if let normalizedExpense = sut.expenses.first {
-            let currentUserSplit = normalizedExpense.splits.first { $0.memberId == sut.currentUser.id }
-            XCTAssertNotNil(currentUserSplit)
-            // Should aggregate 40 + 60 = 100
-            if let split = currentUserSplit {
-                XCTAssertEqual(split.amount, 100.0, accuracy: 0.01, "Should aggregate alias splits")
-            }
-        }
+        let loaded = try XCTUnwrap(sut.expenses.first { $0.id == expense.id })
+        XCTAssertEqual(loaded, expense, "Hydration must preserve raw financial identities, amounts, and settlement states")
     }
 
-    func testNormalizeExpenses_WithAliasInInvolvedMembers() async throws {
+    func testHydrationPreservesRawInvolvedMemberIDs() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Example User")
 
         // Complete authentication first to establish currentUser
@@ -332,17 +304,11 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         // Trigger reload
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
-        // Then: Involved members should be normalized and deduplicated
-        XCTAssertGreaterThanOrEqual(sut.expenses.count, 1)
-        if let normalizedExpense = sut.expenses.first {
-            XCTAssertTrue(normalizedExpense.involvedMemberIds.contains(sut.currentUser.id))
-            XCTAssertFalse(normalizedExpense.involvedMemberIds.contains(aliasId))
-            // Should deduplicate
-            XCTAssertEqual(normalizedExpense.involvedMemberIds.count, 2)
-        }
+        let loaded = try XCTUnwrap(sut.expenses.first { $0.id == expense.id })
+        XCTAssertEqual(loaded, expense, "Hydration must preserve raw financial identities, amounts, and settlement states")
     }
 
-    func testNormalizeExpenses_WithSettledSplits() async throws {
+    func testHydrationPreservesSeparateSettledAndUnsettledRows() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "User One")
 
         // Complete authentication first to establish currentUser
@@ -380,17 +346,9 @@ final class AppStoreNormalizationEdgeCasesTests: XCTestCase {
         // Trigger reload
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
 
-        // Then: Aggregated split should have isSettled = false (both must be true)
-        XCTAssertGreaterThanOrEqual(sut.expenses.count, 1)
-        if let normalizedExpense = sut.expenses.first {
-            let currentUserSplit = normalizedExpense.splits.first { $0.memberId == sut.currentUser.id }
-            XCTAssertNotNil(currentUserSplit)
-            // When aggregating, isSettled should be false if any split is unsettled
-            XCTAssertFalse(currentUserSplit?.isSettled ?? true, "Should be unsettled when aggregating mixed states")
-        }
+        let loaded = try XCTUnwrap(sut.expenses.first { $0.id == expense.id })
+        XCTAssertEqual(loaded, expense, "Hydration must preserve raw financial identities, amounts, and settlement states")
     }
-
-    // MARK: - synthesizeGroup Tests (0% coverage - 35 lines)
 
     func testSynthesizeGroup_WithOrphanExpenses() async throws {
         let account = UserAccount(id: "user-123", email: "test@example.com", displayName: "Example User")

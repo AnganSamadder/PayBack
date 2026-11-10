@@ -11,6 +11,9 @@ actor MockAccountServiceForAppStore: AccountService {
     private var shouldFailLinkedMemberUpdate = false
     private var shouldFailNextFriendFetch = false
     private var shouldSuspendNextFriendFetch = false
+    private var shouldSuspendNextFriendSync = false
+    private var friendSyncWaiters: [CheckedContinuation<Void, Never>] = []
+    private var friendSyncContinuation: CheckedContinuation<Void, Never>?
     private var friendFetchWaiters: [CheckedContinuation<Void, Never>] = []
     private var friendFetchContinuation: CheckedContinuation<Void, Never>?
     private var selfDeleteCallCount = 0
@@ -31,6 +34,110 @@ actor MockAccountServiceForAppStore: AccountService {
     private var profileImageUploadContinuation: CheckedContinuation<Void, Never>?
     private var profileImageUploadInvocationCount = 0
     private var profileImageUploadExpectedAccountIds: [String] = []
+
+    private var historyJobs: [GroupHistoryJob] = []
+    private var historyResumeResult: GroupHistoryJob?
+    private var historySnapshotError: GroupHistoryRecoveryError?
+    private var historyResumeCalls = 0
+    private var knownHistoryJobs: [String: GroupHistoryJob] = [:]
+    private var historyResumeFailure: PayBackError?
+    private var historyStatusFailure: PayBackError?
+    func configureHistoryStatusFailure(_ error: PayBackError?) { historyStatusFailure = error }
+    private var suspendHistoryResume = false
+    private var historyResumeContinuation: CheckedContinuation<Void, Never>?
+    func configureForeignHistoryJob(_ job: GroupHistoryJob) { knownHistoryJobs[job.jobId] = job }
+    func configureHistoryResumeFailure(_ error: PayBackError?) { historyResumeFailure = error }
+    func suspendNextHistoryResume() { suspendHistoryResume = true }
+    func isHistoryResumeSuspended() -> Bool { historyResumeContinuation != nil }
+    func continueHistoryResume() { historyResumeContinuation?.resume(); historyResumeContinuation = nil }
+    private var bootstrapCalls = 0
+    func configureHistoryRecovery(jobs: [GroupHistoryJob], snapshotError: GroupHistoryRecoveryError?, resumed: GroupHistoryJob? = nil) {
+        historyJobs = jobs
+        historySnapshotError = snapshotError
+        historyResumeResult = resumed
+    }
+    func historyRecoveryResumeCount() -> Int { historyResumeCalls }
+    func bootstrapInvocationCount() -> Int { bootstrapCalls }
+    func pendingGroupHistory(expectedAccountId: String) async throws -> [GroupHistoryJob] { historyJobs.filter { $0.phase != "complete" } }
+    func groupHistoryStatus(jobId: String, visibleExpenseId: String?, expectedAccountId: String) async throws -> GroupHistoryJob {
+        if let historyStatusFailure { throw historyStatusFailure }
+        guard let result = historyJobs.first(where: { $0.jobId == jobId }) ?? knownHistoryJobs[jobId] ?? historyResumeResult else { throw PayBackError.networkUnavailable }
+        return result
+    }
+    func resumeGroupHistory(jobId: String, visibleExpenseId: String?, expectedAccountId: String) async throws -> GroupHistoryJob {
+        historyResumeCalls += 1
+        if suspendHistoryResume {
+            suspendHistoryResume = false
+            await withCheckedContinuation { historyResumeContinuation = $0 }
+        }
+        if let historyResumeFailure { throw historyResumeFailure }
+        guard let result = historyResumeResult ?? historyJobs.first(where: { $0.jobId == jobId }) ?? knownHistoryJobs[jobId] else { throw PayBackError.networkUnavailable }
+        if result.phase == "complete" { historyJobs = []; knownHistoryJobs[jobId] = result; historySnapshotError = nil }
+        return result
+    }
+
+    private var snapshotGenerations: [String] = []
+    private var pendingOperation: IdentityOperationResult?
+    private var resumedOperation: IdentityOperationResult?
+    private var operationResumeCount = 0
+    private var accountAfterIdentityResume: UserAccount?
+    private var friendDeletionResumeError: PayBackError?
+    private var failLookupAfterDeletionResume = false
+    func configureFriendDeletionResumeFailure(_ error: PayBackError?) { friendDeletionResumeError = error }
+    func configureLookupFailureAfterDeletionResume() { failLookupAfterDeletionResume = true }
+    func resumePendingFriendDeletion(expectedAccountId: String) async throws {
+        if let friendDeletionResumeError { throw friendDeletionResumeError }
+        if failLookupAfterDeletionResume { shouldFail = true }
+    }
+    private var suspendBootstrap = false
+    private var bootstrapContinuation: CheckedContinuation<Void, Never>?
+    private var bootstrapWaiters: [CheckedContinuation<Void, Never>] = []
+    func suspendNextBootstrap() { suspendBootstrap = true }
+    func waitUntilBootstrapSuspends() async {
+        if bootstrapContinuation != nil { return }
+        await withCheckedContinuation { bootstrapWaiters.append($0) }
+    }
+    func resumeBootstrap() {
+        bootstrapContinuation?.resume()
+        bootstrapContinuation = nil
+    }
+
+    func configureSnapshotGenerations(_ values: [String]) { snapshotGenerations = values }
+    func snapshotGeneration() async throws -> String? {
+        if let historySnapshotError { throw historySnapshotError }
+        guard !snapshotGenerations.isEmpty else { return nil }
+        if snapshotGenerations.count == 1 { return snapshotGenerations[0] }
+        return snapshotGenerations.removeFirst()
+    }
+    func configurePendingOperation(_ pending: IdentityOperationResult?, resumed: IdentityOperationResult?) {
+        pendingOperation = pending
+        resumedOperation = resumed
+    }
+    func pendingIdentityOperation() async throws -> IdentityOperationResult? { pendingOperation }
+    func resumeIdentityOperation(_ operationId: String, expectedAccountId: String) async throws -> IdentityOperationResult {
+        operationResumeCount += 1
+        guard let resumedOperation else { throw PayBackError.networkUnavailable }
+        pendingOperation = resumedOperation.status == "complete" ? nil : resumedOperation
+        if pendingOperation == nil, let accountAfterIdentityResume { accounts[accountAfterIdentityResume.email] = accountAfterIdentityResume }
+        return resumedOperation
+    }
+    func identityResumeCount() -> Int { operationResumeCount }
+    func configureAccountAfterIdentityResume(_ account: UserAccount) { accountAfterIdentityResume = account }
+    func bootstrapMemberIdentity(accountId: String) async throws -> UUID {
+        bootstrapCalls += 1
+        guard pendingOperation == nil else { throw PayBackError.underlying(message: "IDENTITY_OPERATION_PENDING") }
+        if suspendBootstrap {
+            suspendBootstrap = false
+            await withCheckedContinuation { continuation in
+                bootstrapContinuation = continuation
+                bootstrapWaiters.forEach { $0.resume() }
+                bootstrapWaiters.removeAll()
+            }
+        }
+        let id = UUID()
+        try await updateLinkedMember(accountId: accountId, memberId: id)
+        return id
+    }
 
     nonisolated func normalizedEmail(from rawValue: String) throws -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -68,6 +175,15 @@ actor MockAccountServiceForAppStore: AccountService {
     }
 
     func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {
+        if shouldSuspendNextFriendSync {
+            shouldSuspendNextFriendSync = false
+            await withCheckedContinuation { continuation in
+                friendSyncContinuation = continuation
+                let waiters = friendSyncWaiters
+                friendSyncWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
         if shouldFail {
             throw PayBackError.networkUnavailable
         }
@@ -142,6 +258,20 @@ actor MockAccountServiceForAppStore: AccountService {
         shouldFailLinkedMemberUpdate = fail
     }
 
+    func suspendNextFriendSync() {
+        shouldSuspendNextFriendSync = true
+    }
+
+    func waitUntilFriendSyncSuspends() async {
+        if friendSyncContinuation != nil { return }
+        await withCheckedContinuation { friendSyncWaiters.append($0) }
+    }
+
+    func resumeFriendSync() {
+        friendSyncContinuation?.resume()
+        friendSyncContinuation = nil
+    }
+
     func suspendNextFriendFetch() {
         shouldSuspendNextFriendFetch = true
     }
@@ -159,6 +289,29 @@ actor MockAccountServiceForAppStore: AccountService {
     }
 
     func reset() {
+        historyJobs = []
+        historyResumeResult = nil
+        historySnapshotError = nil
+        historyResumeCalls = 0
+        knownHistoryJobs = [:]
+        historyResumeFailure = nil
+        historyStatusFailure = nil
+        suspendHistoryResume = false
+        historyResumeContinuation?.resume()
+        historyResumeContinuation = nil
+        bootstrapCalls = 0
+        snapshotGenerations = []
+        pendingOperation = nil
+        resumedOperation = nil
+        operationResumeCount = 0
+        accountAfterIdentityResume = nil
+        friendDeletionResumeError = nil
+        failLookupAfterDeletionResume = false
+        suspendBootstrap = false
+        bootstrapContinuation?.resume()
+        bootstrapContinuation = nil
+        bootstrapWaiters.forEach { $0.resume() }
+        bootstrapWaiters.removeAll()
         accounts.removeAll()
         friends.removeAll()
         friendSyncHistory.removeAll()
@@ -166,6 +319,11 @@ actor MockAccountServiceForAppStore: AccountService {
         shouldFailLinkedMemberUpdate = false
         shouldFailNextFriendFetch = false
         shouldSuspendNextFriendFetch = false
+        shouldSuspendNextFriendSync = false
+        friendSyncWaiters.forEach { $0.resume() }
+        friendSyncWaiters.removeAll()
+        friendSyncContinuation?.resume()
+        friendSyncContinuation = nil
         friendFetchWaiters.forEach { $0.resume() }
         friendFetchWaiters.removeAll()
         friendFetchContinuation?.resume()

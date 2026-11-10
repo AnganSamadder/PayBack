@@ -1,17 +1,73 @@
 import SwiftUI
 
+enum PeopleLinkingLogic {
+    static let unavailableHistory = "Expense history is unavailable before linking. A missing preview does not mean there are no expenses or balances."
+
+    static func selectedFriend(_ selected: AccountFriend?, from eligible: [AccountFriend]) -> AccountFriend? {
+        guard let selected else { return nil }
+        return eligible.first { $0.memberId == selected.memberId }
+    }
+}
+
+/// A pending server operation survives closing this screen or relaunching the app.
+struct LinkingOperationStatusView: View {
+    @EnvironmentObject private var store: AppStore
+    var onRecovered: (() -> Void)? = nil
+    @State private var isResuming = false
+    @State private var recoveryError: String?
+
+    var body: some View {
+        if store.isLinkingProcessing || store.linkingRecoveryMessage != nil || isResuming {
+            VStack(alignment: .leading, spacing: 12) {
+                if store.isLinkingProcessing || isResuming {
+                    ProgressView("Finishing linking…")
+                }
+                Text("You can close this screen and resume linking later.").font(.caption).foregroundStyle(.secondary)
+                if let recoveryError { Text(recoveryError).font(.caption).foregroundStyle(.red) }
+                Text(store.linkingRecoveryMessage ?? "Your previous balances remain available while linking finishes.")
+                    .font(.caption)
+                if !store.isLinkingProcessing && !isResuming {
+                    Button("Resume Linking") {
+                        isResuming = true
+                        recoveryError = nil
+                        let accountId = store.session?.account.id
+                        Task {
+                            defer { isResuming = false }
+                            do {
+                                try await store.resumePendingIdentityOperation()
+                                try Task.checkCancellation()
+                                await store.loadRemoteData()
+                                guard !Task.isCancelled, store.session?.account.id == accountId else { return }
+                                onRecovered?()
+                            } catch {
+                                guard !Task.isCancelled, !(error is CancellationError), store.session?.account.id == accountId else { return }
+                                recoveryError = error.userFacingMessage(fallback: "Unable to resume linking. Check your connection and try again.")
+                            }
+                        }
+                    }
+                }
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.brand.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+}
+
 struct LinkRequestDetailView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
 
     let request: LinkRequest
 
-    @State private var expensePreview: ExpensePreview?
-    @State private var isLoading = true
     @State private var isProcessing = false
     @State private var errorMessage: String?
     @State private var showSuccess = false
     @State private var showReAcceptConfirmation = false
+    @State private var showMergeSheet = false
+    @State private var selectedMergeFriend: AccountFriend?
+    @State private var actionTask: Task<Void, Never>?
     @State private var successScale: CGFloat = 0.5
     @State private var successOpacity: Double = 0
 
@@ -25,12 +81,12 @@ struct LinkRequestDetailView: View {
                     // Name confirmation prompt
                     nameConfirmationSection
 
-                    // Expense preview
-                    if isLoading {
-                        ProgressView("Loading expense history...")
-                            .padding()
-                    } else if let preview = expensePreview {
-                        expensePreviewSection(preview: preview)
+                    Text(PeopleLinkingLogic.unavailableHistory)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    LinkingOperationStatusView(onRecovered: { dismiss() })
+                    if request.status == .pending && !showSuccess {
+                        mergeSelectionSection
                     }
 
                     // Error message
@@ -64,13 +120,19 @@ struct LinkRequestDetailView: View {
                     }
                 }
             }
-            .task {
-                await loadExpensePreview()
+            .sheet(isPresented: $showMergeSheet) {
+                MergeExistingFriendSheet(
+                    friends: availableMergeFriends,
+                    preselected: selectedMergeFriend,
+                    onSelect: { selectedMergeFriend = $0 },
+                    onClear: { selectedMergeFriend = nil }
+                ).environmentObject(store)
             }
+            .onDisappear { actionTask?.cancel() }
             .alert("Confirm Re-Acceptance", isPresented: $showReAcceptConfirmation) {
                 Button("Cancel", role: .cancel) { }
                 Button("Accept Anyway", role: .destructive) {
-                    Task {
+                    actionTask = Task {
                         await acceptRequest()
                     }
                 }
@@ -78,6 +140,35 @@ struct LinkRequestDetailView: View {
                 Text("Are you sure you want to accept this request you previously rejected?")
             }
         }
+    }
+
+    private var availableMergeFriends: [AccountFriend] {
+        let excluded = InviteMergeFriendFilter.excludedIdentityRoots(
+            currentUserId: store.currentUser.id,
+            linkedMemberId: store.session?.account.linkedMemberId,
+            accountEquivalentMemberIds: store.session?.account.equivalentMemberIds ?? [],
+            inviteTargetMemberId: request.targetMemberId
+        )
+        return InviteMergeFriendFilter.availableFriends(
+            from: store.friends,
+            excludedMemberIds: store.accountFriendIdentityMemberIds(for: Array(excluded)),
+            isMergeable: store.isMergeableUnlinkedFriend,
+            areSamePerson: store.areSamePerson
+        )
+    }
+
+    private var mergeSelectionSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button(selectedMergeFriend.map { "Merge with \($0.name)" } ?? "Merge with existing friend (optional)") {
+                showMergeSheet = true
+            }
+            Text("Select your existing unlinked record for \(request.requesterName). Only the record you choose will be combined with this person.")
+                .font(.caption).foregroundStyle(.secondary)
+            if selectedMergeFriend != nil {
+                Button("Clear selection") { selectedMergeFriend = nil }
+            }
+        }
+        .disabled(isProcessing || store.isLinkingProcessing || store.linkingRecoveryMessage != nil)
     }
 
     // MARK: - Requester Info Section
@@ -138,104 +229,6 @@ struct LinkRequestDetailView: View {
             .background(AppTheme.brand.opacity(0.1))
             .cornerRadius(12)
         }
-    }
-
-    // MARK: - Expense Preview Section
-
-    @ViewBuilder
-    private func expensePreviewSection(preview: ExpensePreview) -> some View {
-        VStack(spacing: 16) {
-            // Summary header
-            VStack(spacing: 8) {
-                Text("Expense History")
-                    .font(.headline)
-
-                Text("Here's what will be linked to your account")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            // Balance card
-            balanceCard(balance: preview.totalBalance)
-
-            // Expense counts
-            HStack(spacing: 16) {
-                expenseCountCard(
-                    count: preview.personalExpenses.count,
-                    label: "Personal",
-                    icon: "person.2"
-                )
-
-                expenseCountCard(
-                    count: preview.groupExpenses.count,
-                    label: "Group",
-                    icon: "person.3"
-                )
-            }
-
-            // Groups involved
-            if !preview.groupNames.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Groups")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-
-                    ForEach(preview.groupNames, id: \.self) { groupName in
-                        HStack {
-                            Image(systemName: "person.3.fill")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(groupName)
-                                .font(.subheadline)
-                            Spacer()
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-                .padding()
-                .background(Color(.systemGray6))
-                .cornerRadius(12)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func balanceCard(balance: Double) -> some View {
-        VStack(spacing: 8) {
-            Text("Total Balance")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            Text(formatBalance(balance))
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(balanceColor(balance))
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-        .background(Color(.systemBackground))
-        .cornerRadius(12)
-        .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 2)
-    }
-
-    @ViewBuilder
-    private func expenseCountCard(count: Int, label: String, icon: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(AppTheme.brand)
-
-            Text("\(count)")
-                .font(.title2)
-                .fontWeight(.bold)
-
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(12)
     }
 
     // MARK: - Error Section
@@ -356,7 +349,7 @@ struct LinkRequestDetailView: View {
                 if store.wasPreviouslyRejected(request) {
                     showReAcceptConfirmation = true
                 } else {
-                    Task {
+                    actionTask = Task {
                         await acceptRequest()
                     }
                 }
@@ -377,7 +370,7 @@ struct LinkRequestDetailView: View {
                 .foregroundStyle(.white)
                 .cornerRadius(12)
             }
-            .disabled(isProcessing)
+            .disabled(isProcessing || store.isLinkingProcessing || store.linkingRecoveryMessage != nil)
             .scaleEffect(isProcessing ? 0.98 : 1.0)
             .animation(AppAnimation.quick, value: isProcessing)
 
@@ -385,7 +378,7 @@ struct LinkRequestDetailView: View {
                 // Trigger selection haptic
                 Haptics.selection()
 
-                Task {
+                actionTask = Task {
                     await declineRequest()
                 }
             }) {
@@ -404,7 +397,7 @@ struct LinkRequestDetailView: View {
                 .foregroundStyle(.primary)
                 .cornerRadius(12)
             }
-            .disabled(isProcessing)
+            .disabled(isProcessing || store.isLinkingProcessing || store.linkingRecoveryMessage != nil)
             .scaleEffect(isProcessing ? 0.98 : 1.0)
             .animation(AppAnimation.quick, value: isProcessing)
         }
@@ -412,23 +405,21 @@ struct LinkRequestDetailView: View {
 
     // MARK: - Helper Methods
 
-    private func loadExpensePreview() async {
-        isLoading = true
-        errorMessage = nil
-
-        // Generate expense preview for the target member
-        await MainActor.run {
-            expensePreview = store.generateExpensePreview(forMemberId: request.targetMemberId)
-            isLoading = false
-        }
-    }
-
     private func acceptRequest() async {
+        guard !isProcessing else { return }
+        let accountId = store.session?.account.id
+        let selected = PeopleLinkingLogic.selectedFriend(selectedMergeFriend, from: availableMergeFriends)
+        guard selectedMergeFriend == nil || selected != nil else {
+            errorMessage = "That friend is no longer available to merge. Choose another friend or clear your selection."
+            return
+        }
         isProcessing = true
         errorMessage = nil
+        defer { isProcessing = false }
 
         do {
-            try await store.acceptLinkRequest(request)
+            try await store.acceptLinkRequest(request, mergeLocalFriendMemberId: selected?.memberId)
+            guard !Task.isCancelled, store.session?.account.id == accountId else { return }
 
             await MainActor.run {
                 isProcessing = false
@@ -439,16 +430,12 @@ struct LinkRequestDetailView: View {
                 withAnimation(AppAnimation.springy) {
                     showSuccess = true
                 }
-
-                // Dismiss after a delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    dismiss()
-                }
             }
         } catch {
+            guard !Task.isCancelled, !(error is CancellationError), store.session?.account.id == accountId else { return }
             await MainActor.run {
                 isProcessing = false
-                errorMessage = error.localizedDescription
+                errorMessage = error.userFacingMessage(fallback: "Unable to update this request. Please try again.")
 
                 // Trigger error haptic
                 Haptics.notify(.error)
@@ -457,11 +444,15 @@ struct LinkRequestDetailView: View {
     }
 
     private func declineRequest() async {
+        guard !isProcessing else { return }
+        let accountId = store.session?.account.id
         isProcessing = true
         errorMessage = nil
+        defer { isProcessing = false }
 
         do {
             try await store.declineLinkRequest(request)
+            guard !Task.isCancelled, store.session?.account.id == accountId else { return }
 
             await MainActor.run {
                 isProcessing = false
@@ -472,9 +463,10 @@ struct LinkRequestDetailView: View {
                 dismiss()
             }
         } catch {
+            guard !Task.isCancelled, !(error is CancellationError), store.session?.account.id == accountId else { return }
             await MainActor.run {
                 isProcessing = false
-                errorMessage = error.localizedDescription
+                errorMessage = error.userFacingMessage(fallback: "Unable to update this request. Please try again.")
 
                 // Trigger error haptic
                 Haptics.notify(.error)
@@ -482,28 +474,4 @@ struct LinkRequestDetailView: View {
         }
     }
 
-    private func formatBalance(_ balance: Double) -> String {
-        if abs(balance) < 0.01 {
-            return "$0.00"
-        }
-
-        let currencyCode = Locale.current.currency?.identifier ?? "USD"
-        let formatted = abs(balance).formatted(.currency(code: currencyCode))
-
-        if balance >= 0 {
-            return "You're owed \(formatted)"
-        } else {
-            return "You owe \(formatted)"
-        }
-    }
-
-    private func balanceColor(_ balance: Double) -> Color {
-        if balance > 0.01 {
-            return .green
-        } else if balance < -0.01 {
-            return .red
-        } else {
-            return .secondary
-        }
-    }
 }

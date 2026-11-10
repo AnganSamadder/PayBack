@@ -1,3 +1,19 @@
+import { resolveRestoredHistoryAccess } from "./restoredHistory";
+import { createExpenseIdentityResolutionCache } from "./helpers";
+import { MeasuredBudgetError } from "./restoreContracts";
+import type { HistoryWorkerScope } from "./financialContract";
+import {
+  bindHistoryExpenseScope,
+  requiresCurrentFinancialContract,
+  hasFinancialContractMembers,
+  withIdentityReadBudget
+} from "./financialContract";
+import {
+  expenseReferenceMemberIds,
+  prepareMemberReferences,
+  applyPreparedMemberReferences,
+  type PreparedMemberReferences
+} from "./memberReferences";
 import { getConvexSize, type Value } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx } from "./_generated/server";
@@ -38,6 +54,7 @@ export type ExpenseWriteOperation =
       kind: "visibility";
       expense: Doc<"expenses">;
       viewerAccountIds: readonly Id<"accounts">[];
+      forceRevision?: boolean;
     }
   | {
       kind: "delete";
@@ -67,7 +84,10 @@ export type ExpenseWriteBatchBudgetHooks = {
 };
 
 export type ExpenseWriteBatchOptions = {
+  requireFinancialContract?: boolean;
   budget?: ExpenseWriteBatchBudgetHooks;
+  historyScope?: HistoryWorkerScope;
+  historyCache?: ReturnType<typeof createExpenseIdentityResolutionCache>;
 };
 
 type VisibilityAccountRows = {
@@ -77,6 +97,10 @@ type VisibilityAccountRows = {
 
 type PreparedOperation = {
   operation: ExpenseWriteOperation;
+  references: PreparedMemberReferences;
+  referenceWriteCount: number;
+  referenceWriteBytes: number;
+  floorAccounts: Doc<"accounts">[];
   updatedAt: number;
   desiredAccounts: Map<string, Doc<"accounts">>;
   rowsByAccount: Map<string, VisibilityAccountRows>;
@@ -85,31 +109,36 @@ type PreparedOperation = {
 };
 
 type PreflightCache = {
+  requireFinancialContract?: boolean;
   accountsById: Map<string, Doc<"accounts"> | null>;
   accountsByAuthId: Map<string, Doc<"accounts"> | null>;
   expensesById: Map<string, Doc<"expenses"> | null>;
+  historyScope?: HistoryWorkerScope;
+  identityCache: ReturnType<typeof createExpenseIdentityResolutionCache>;
 };
 
-function expenseWriteLimitError(message: string): Error {
+function expenseWriteLimitError(message: string, measured = false): Error {
+  if (measured)
+    return new MeasuredBudgetError("expense", `Expense write limit exceeded: ${message}`);
   return new Error(`Expense write limit exceeded: ${message}`);
 }
 
-function chargeQuery(budget: ReadBudget): void {
-  budget.queries += 1;
+function chargeQuery(budget: ReadBudget, count = 1): void {
+  budget.queries += count;
   if (budget.queries > MAX_EXPENSE_WRITE_QUERIES) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_QUERIES} queries`);
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_QUERIES} queries`, true);
   }
-  budget.hooks.chargeQueries?.(1);
+  budget.hooks.chargeQueries?.(count);
 }
 
 function chargeRows(budget: ReadBudget, rows: readonly Value[]): void {
   budget.rows += rows.length;
   budget.bytes += rows.reduce<number>((total, row) => total + getConvexSize(row), 0);
   if (budget.rows > MAX_EXPENSE_WRITE_READ_ROWS) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_READ_ROWS} rows`);
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_READ_ROWS} rows`, true);
   }
   if (budget.bytes > MAX_EXPENSE_WRITE_READ_BYTES) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_READ_BYTES} bytes`);
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_READ_BYTES} bytes`, true);
   }
   budget.hooks.chargeRows?.(rows);
 }
@@ -318,10 +347,65 @@ async function prepareOperation(
   cache: PreflightCache
 ): Promise<PreparedOperation> {
   await assertOperationTarget(ctx, operation, budget, cache);
+  if (operation.kind === "patch") {
+    for (const field of [
+      "has_restored_history",
+      "restored_historical_member_ids",
+      "restored_history_context_member_ids"
+    ] as const) {
+      if (
+        Object.prototype.hasOwnProperty.call(operation.patch, field) &&
+        JSON.stringify(operation.patch[field]) !== JSON.stringify(operation.expense[field])
+      )
+        throw new Error("Restored history restrictions are immutable");
+    }
+  }
   const desiredAccounts =
     operation.kind === "delete"
       ? new Map<string, Doc<"accounts">>()
       : await validateDesiredAccounts(ctx, operation.viewerAccountIds, budget, cache);
+  const source =
+    operation.kind === "patch" ? { ...operation.expense, ...operation.patch } : operation.expense;
+  if (operation.kind !== "delete") {
+    const historyScope = await bindHistoryExpenseScope(
+      withIdentityReadBudget(ctx, {
+        chargeQueries: (count) => chargeQuery(budget, count),
+        chargeRows: (rows) => chargeRows(budget, rows)
+      }),
+      cache.historyScope,
+      operation.expense
+    );
+    const access = await resolveRestoredHistoryAccess(ctx, source, {
+      cache: cache.identityCache,
+      scope: historyScope,
+      budget: {
+        chargeQueries: (count) => chargeQuery(budget, count),
+        chargeRows: (rows) => chargeRows(budget, rows)
+      }
+    });
+    if (access) {
+      for (const accountId of access.eligibleFinancialAccountIds) {
+        const account = await loadAccountById(ctx, accountId, budget, cache);
+        if (account && isActiveAccount(account)) desiredAccounts.set(String(accountId), account);
+      }
+    }
+    if (access)
+      for (const [key, account] of desiredAccounts) {
+        if (account._id !== source.owner_id && !access.eligibleFinancialAccountIds.has(account._id))
+          desiredAccounts.delete(key);
+      }
+  }
+  for (const [key, account] of desiredAccounts) {
+    chargeQuery(budget);
+    const suppressed = await ctx.db
+      .query("expense_visibility_suppressions")
+      .withIndex("by_account_expense", (q) =>
+        q.eq("account_ref", account._id).eq("expense_id", operation.expense.id)
+      )
+      .take(1);
+    chargeRows(budget, suppressed as Value[]);
+    if (suppressed.length) desiredAccounts.delete(key);
+  }
   const rows = await collectVisibilityRows(ctx, operation, budget);
   const rowsByAccount = new Map<string, VisibilityAccountRows>();
   const rowsWithoutAccount: Doc<"user_expenses">[] = [];
@@ -359,6 +443,10 @@ async function prepareOperation(
       ? (operation.patch.updated_at ?? Date.now())
       : operation.expense.updated_at;
   if (operation.kind === "visibility") {
+    if (operation.forceRevision) {
+      for (const accountId of beforeAccountIds) revisionAccountIds.add(accountId);
+      for (const accountId of afterAccountIds) revisionAccountIds.add(accountId);
+    }
     for (const accountId of beforeAccountIds) {
       if (!afterAccountIds.has(accountId)) revisionAccountIds.add(accountId);
     }
@@ -386,8 +474,69 @@ async function prepareOperation(
     for (const accountId of afterAccountIds) revisionAccountIds.add(accountId);
   }
 
+  let referenceWriteCount = 0;
+  let referenceWriteBytes = 0;
+  const referenceSource =
+    operation.kind === "delete"
+      ? null
+      : operation.kind === "insert"
+        ? {
+            ...operation.expense,
+            _id: "pending-expense-reference" as Id<"expenses">,
+            _creationTime: Date.now()
+          }
+        : operation.kind === "patch"
+          ? { ...operation.expense, ...operation.patch, updated_at: updatedAt }
+          : operation.expense;
+  const references = await prepareMemberReferences(
+    ctx,
+    "expense",
+    referenceSource,
+    operation.kind === "insert" ? "pending-expense-reference" : String(operation.expense._id),
+    {
+      chargeQueries: (count) => {
+        for (let i = 0; i < count; i++) chargeQuery(budget);
+      },
+      chargeRows: (rows) => chargeRows(budget, rows),
+      chargeWrites: (count, bytes) => {
+        referenceWriteCount += count;
+        referenceWriteBytes += bytes;
+      }
+    }
+  );
+  const requiresFinancialContract =
+    referenceSource &&
+    (cache.requireFinancialContract === true ||
+      requiresCurrentFinancialContract(referenceSource) ||
+      referenceSource.has_restored_history === true ||
+      referenceSource.currency_code !== undefined ||
+      (await hasFinancialContractMembers(
+        ctx,
+        expenseReferenceMemberIds(referenceSource),
+        referenceSource.owner_id,
+        {
+          chargeQueries: (count) => {
+            for (let i = 0; i < count; i++) chargeQuery(budget);
+          },
+          chargeRows: (rows) => chargeRows(budget, rows)
+        }
+      )));
+  const financialAccounts = new Map(desiredAccounts);
+  if (requiresFinancialContract && referenceSource?.owner_id) {
+    const owner = await loadAccountById(ctx, referenceSource.owner_id, budget, cache);
+    if (owner && isActiveAccount(owner)) financialAccounts.set(String(owner._id), owner);
+  }
+  const floorAccounts = requiresFinancialContract
+    ? [...financialAccounts.values()].filter(
+        (account) => (account.required_financial_contract ?? 0) < 2
+      )
+    : [];
   return {
     operation,
+    references,
+    referenceWriteCount,
+    referenceWriteBytes,
+    floorAccounts,
     updatedAt,
     desiredAccounts,
     rowsByAccount,
@@ -504,7 +653,7 @@ export async function prepareExpenseWriteBatch(
   options: ExpenseWriteBatchOptions = {}
 ): Promise<PreparedExpenseWriteBatch> {
   if (operations.length > MAX_EXPENSE_WRITE_OPERATIONS) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_OPERATIONS} operations`);
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_OPERATIONS} operations`, true);
   }
   const operationKeys = new Set<string>();
   for (const operation of operations) {
@@ -520,9 +669,12 @@ export async function prepareExpenseWriteBatch(
     hooks: options.budget ?? {}
   };
   const cache: PreflightCache = {
+    requireFinancialContract: options.requireFinancialContract,
     accountsById: new Map(),
     accountsByAuthId: new Map(),
-    expensesById: new Map()
+    expensesById: new Map(),
+    historyScope: options.historyScope,
+    identityCache: options.historyCache ?? createExpenseIdentityResolutionCache()
   };
   const plans: PreparedOperation[] = [];
   for (const operation of operations) {
@@ -532,7 +684,7 @@ export async function prepareExpenseWriteBatch(
   const revisionAccountIds = new Map<string, Id<"accounts">>();
   let writeCount = 0;
   for (const plan of plans) {
-    writeCount += visibilityWriteCount(plan);
+    writeCount += visibilityWriteCount(plan) + plan.referenceWriteCount + plan.floorAccounts.length;
     if (plan.operation.kind !== "visibility") writeCount += 1;
     for (const accountId of plan.revisionAccountIds) {
       revisionAccountIds.set(String(accountId), accountId);
@@ -540,14 +692,22 @@ export async function prepareExpenseWriteBatch(
   }
   const revisionIds = Array.from(revisionAccountIds.values());
   if (writeCount + revisionIds.length > MAX_EXPENSE_WRITE_WRITES) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_WRITES} writes`);
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_WRITES} writes`, true);
   }
   const writeBytes = plans.reduce(
-    (total, plan) => total + expenseWriteBytes(plan) + visibilityWriteBytes(plan),
+    (total, plan) =>
+      total +
+      expenseWriteBytes(plan) +
+      visibilityWriteBytes(plan) +
+      plan.referenceWriteBytes +
+      plan.floorAccounts.reduce(
+        (sum, account) => sum + convexValueSize({ ...account, required_financial_contract: 2 }),
+        0
+      ),
     0
   );
   if (writeBytes > MAX_EXPENSE_WRITE_BYTES) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_BYTES} write bytes`);
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_BYTES} write bytes`, true);
   }
   options.budget?.chargeWrites?.(writeCount, writeBytes);
 
@@ -579,10 +739,10 @@ async function prepareExpenseSyncRevisions(
   );
   const revisionMetrics = preparedAccountSyncRevisionBatchMetrics(revisions);
   if (prepared.writeCount + revisionMetrics.writes > MAX_EXPENSE_WRITE_WRITES) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_WRITES} writes`);
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_WRITES} writes`, true);
   }
   if (prepared.writeBytes + revisionMetrics.writeBytes > MAX_EXPENSE_WRITE_BYTES) {
-    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_BYTES} write bytes`);
+    throw expenseWriteLimitError(`more than ${MAX_EXPENSE_WRITE_BYTES} write bytes`, true);
   }
   return revisions;
 }
@@ -603,11 +763,16 @@ export async function applyPreparedExpenseWriteBatch(
   const operationResults: ExpenseWriteBatchResult["operations"] = [];
   for (const plan of prepared.plans) {
     const { operation } = plan;
+    for (const account of plan.floorAccounts)
+      await ctx.db.patch(account._id, { required_financial_contract: 2 });
     if (operation.kind === "insert") {
       const expenseId = await ctx.db.insert("expenses", {
         ...operation.expense,
         owner_email: operation.expense.owner_email.trim().toLowerCase()
       });
+      for (const reference of plan.references.inserts)
+        reference.entity_document_id = String(expenseId);
+      await applyPreparedMemberReferences(ctx, plan.references);
       await applyVisibilityPlan(
         ctx,
         plan,
@@ -626,6 +791,7 @@ export async function applyPreparedExpenseWriteBatch(
         operation.expense.id,
         operation.expense.updated_at
       );
+      await applyPreparedMemberReferences(ctx, plan.references);
       await ctx.db.delete(operation.expense._id);
       operationResults.push({
         kind: operation.kind,
@@ -642,6 +808,7 @@ export async function applyPreparedExpenseWriteBatch(
         ...(ownerEmail ? { owner_email: ownerEmail } : {}),
         updated_at: updatedAt
       });
+      await applyPreparedMemberReferences(ctx, plan.references);
       await applyVisibilityPlan(ctx, plan, operation.expense._id, operation.expense.id, updatedAt);
       operationResults.push({
         kind: operation.kind,
@@ -650,6 +817,7 @@ export async function applyPreparedExpenseWriteBatch(
       });
       continue;
     }
+    await applyPreparedMemberReferences(ctx, plan.references);
     await applyVisibilityPlan(
       ctx,
       plan,
@@ -669,10 +837,11 @@ export async function applyPreparedExpenseWriteBatch(
 
 export async function applyExpenseWriteBatch(
   ctx: MutationCtx,
-  operations: readonly ExpenseWriteOperation[]
+  operations: readonly ExpenseWriteOperation[],
+  options: ExpenseWriteBatchOptions = {}
 ): Promise<ExpenseWriteBatchResult> {
-  const prepared = await prepareExpenseWriteBatch(ctx, operations);
-  const revisions = await prepareExpenseSyncRevisions(ctx, prepared, {});
+  const prepared = await prepareExpenseWriteBatch(ctx, operations, options);
+  const revisions = await prepareExpenseSyncRevisions(ctx, prepared, options);
   const result = await applyPreparedExpenseWriteBatch(ctx, prepared);
   const revisionsBumped = await applyPreparedAccountSyncRevisionBatch(ctx, revisions);
   return { ...result, revisionsBumped };

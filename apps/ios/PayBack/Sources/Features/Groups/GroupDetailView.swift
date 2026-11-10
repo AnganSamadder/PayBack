@@ -1,4 +1,36 @@
 import SwiftUI
+import Observation
+
+/// Presentation state for promoting an exact group participant to a confirmed friend.
+@MainActor
+@Observable
+final class GroupMemberFriendAddAction {
+    private(set) var pendingMember: GroupMember?
+    private(set) var errorMessage: String?
+
+    func add(_ member: GroupMember, to store: AppStore) async -> Bool {
+        guard pendingMember == nil, !store.isCurrentUser(member) else { return false }
+        let accountId = store.session?.account.id
+        let epoch = store.dataEpoch
+        pendingMember = member
+        errorMessage = nil
+        defer { pendingMember = nil }
+
+        do {
+            try await store.addUnlinkedFriend(member)
+            guard !Task.isCancelled, store.session?.account.id == accountId,
+                  store.dataEpoch == epoch else { return false }
+            return true
+        } catch {
+            guard !Task.isCancelled, !(error is CancellationError),
+                  store.session?.account.id == accountId, store.dataEpoch == epoch else { return false }
+            errorMessage = error.userFacingMessage(
+                fallback: "This friend was not saved. Check your connection and try again."
+            )
+            return false
+        }
+    }
+}
 
 struct GroupDetailView: View {
     @EnvironmentObject var store: AppStore
@@ -14,6 +46,8 @@ struct GroupDetailView: View {
     @State private var showUnsettledAlert = false
     @State private var showLeaveConfirmation = false
     @State private var isUpdatingGroup = false
+    @State private var friendAddAction = GroupMemberFriendAddAction()
+    @State private var friendAddTask: Task<Void, Never>?
     @State private var groupOperationErrorMessage: String?
 
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
@@ -92,6 +126,7 @@ struct GroupDetailView: View {
                 }
             }
         }
+        .onDisappear { friendAddTask?.cancel() }
         .navigationTitle("Group Details")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showAddExpense) {
@@ -187,10 +222,10 @@ struct GroupDetailView: View {
     }
 
     private func expenseRow(_ exp: Expense) -> some View {
-        let otherSplits = exp.splits.filter { !isMe($0.memberId) }
+        let otherSplits = exp.splits.filter { !store.isMe($0.memberId, in: exp) }
         let allOthersSettled = !otherSplits.isEmpty && otherSplits.allSatisfy(\.isSettled)
-        let mySplitSummary = SettlementAmountLogic.identitySummary(for: exp, matchesIdentity: isMe)
-        let mySettled = isMe(exp.paidByMemberId)
+        let mySplitSummary = SettlementAmountLogic.identitySummary(for: exp, matchesIdentity: { store.isMe($0, in: exp) })
+        let mySettled = store.isMe(exp.paidByMemberId, in: exp)
             ? allOthersSettled
             : mySplitSummary.isFullySettled
 
@@ -217,30 +252,30 @@ struct GroupDetailView: View {
             }
             Spacer()
             VStack(alignment: .trailing) {
-                Text(exp.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                Text(ExpenseMoneyText.format(exp.totalAmount, currencyCode: exp.currencyCode))
                     .font(.headline)
                     .foregroundStyle(mySettled ? .secondary : .primary)
 
                 // "Who owes" subtitle
-                if isMe(exp.paidByMemberId) {
+                if store.isMe(exp.paidByMemberId, in: exp) {
                     let totalLent = otherSplits.filter { !$0.isSettled }.reduce(0.0) { $0 + $1.amount }
 
                     if allOthersSettled {
-                        Text("Settled \(currency(otherSplits.reduce(0.0) { $0 + $1.amount }))")
+                        Text("Settled \(ExpenseMoneyText.format(otherSplits.reduce(0.0) { $0 + $1.amount }, currencyCode: exp.currencyCode))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else if totalLent > 0 {
-                        Text("You lent \(currency(totalLent))")
+                        Text("You lent \(ExpenseMoneyText.format(totalLent, currencyCode: exp.currencyCode))")
                             .font(.caption)
                             .foregroundStyle(.green)
                     }
                 } else if mySplitSummary.hasMatchingSplits {
                     if mySplitSummary.isFullySettled {
-                        Text("You paid \(currency(mySplitSummary.relationshipAmount))")
+                        Text("You paid \(ExpenseMoneyText.format(mySplitSummary.relationshipAmount, currencyCode: exp.currencyCode))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("You owe \(currency(mySplitSummary.relationshipAmount))")
+                        Text("You owe \(ExpenseMoneyText.format(mySplitSummary.relationshipAmount, currencyCode: exp.currencyCode))")
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
@@ -254,86 +289,38 @@ struct GroupDetailView: View {
         .padding(.vertical, AppMetrics.listRowVerticalPadding)
     }
 
-    private func balanceText(for member: GroupMember) -> String {
-        let net = calculateNetBalance(for: member)
-        if net > 0.0001 { return "Get \(currency(net))" }
-        if net < -0.0001 { return "Owe \(currency(abs(net)))" }
-        return "Settled"
-    }
-
-    private func balanceColor(for member: GroupMember) -> Color {
-        let net = calculateNetBalance(for: member)
-        if net > 0.0001 { return .green }
-        if net < -0.0001 { return .red }
-        return .secondary
-    }
-
-    private func currency(_ v: Double) -> String {
-        let id = Locale.current.currency?.identifier ?? "USD"
-        return v.formatted(.currency(code: id))
-    }
-
     private func isMemberMatch(_ expenseMemberId: UUID, _ member: GroupMember) -> Bool {
         store.isFriendMember(expenseMemberId, friendId: member.id, accountFriendMemberId: member.accountFriendMemberId)
     }
 
-    private func calculateNetBalance(for member: GroupMember) -> Double {
-        // Positive means member should receive; negative means owes
+    private func groupTotalText() -> String {
         let items = store.expenses(in: groupId)
-        var paidByMember: Double = 0
-        var owes: Double = 0
-
-        for exp in items {
-            // Skip fully settled expenses entirely
-            if exp.isSettled { continue }
-
-            if isMemberMatch(exp.paidByMemberId, member) {
-                // If member paid, they are credited with the total amount...
-                var credit = exp.totalAmount
-
-                // ...MINUS any splits that are already settled (reimbursed)
-                // This handles partial settlements correctly
-                for split in exp.splits {
-                    if split.isSettled {
-                        credit -= split.amount
-                    }
-                }
-                paidByMember += credit
-            }
-
-            // If member owes money (their split is not settled), debit them
-            let splitSummary = SettlementAmountLogic.identitySummary(for: exp) {
-                isMemberMatch($0, member)
-            }
-            owes += splitSummary.unsettledAmount
+        var totals: [String: Double] = [:]
+        for expense in items {
+            if let code = expense.currencyCode { totals[code, default: 0] += expense.totalAmount }
         }
-        return paidByMember - owes
+        return ExpenseMoneyText.overview(totals, unknownExpenses: items.filter { $0.currencyCode == nil })
     }
-
-    private func calculateGroupTotalBalance() -> Double {
-        let items = store.expenses(in: groupId)
-        return items.reduce(0) { $0 + $1.totalAmount }
-    }
-
-    private func isMe(_ memberId: UUID) -> Bool { store.isMe(memberId) }
 
     private var hasUnsettledExpenses: Bool {
         let expenses = store.expenses(in: groupId)
         return expenses.contains { exp in
             // I owe someone: unsettled split in an expense I didn't pay
-            if !isMe(exp.paidByMemberId),
-               SettlementAmountLogic.identitySummary(for: exp, matchesIdentity: isMe).unsettledAmount > 0 {
+            if !store.isMe(exp.paidByMemberId, in: exp),
+               SettlementAmountLogic.identitySummary(for: exp, matchesIdentity: { store.isMe($0, in: exp) }).unsettledAmount > 0 {
                 return true
             }
             // Someone owes me: I paid and others still have unsettled splits
-            if isMe(exp.paidByMemberId),
-               exp.splits.contains(where: { !isMe($0.memberId) && !$0.isSettled }) {
+            if store.isMe(exp.paidByMemberId, in: exp),
+               exp.splits.contains(where: { !store.isMe($0.memberId, in: exp) && !$0.isSettled }) {
                 return true
             }
             return false
         }
     }
 
+    // Membership cards retain raw identities for navigation. Financial identity
+    // can differ between expense owners, so balances belong to scoped summaries.
     @ViewBuilder
     private func memberCard(for member: GroupMember) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -344,9 +331,6 @@ struct GroupDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(balanceText(for: member))
-                .font(.subheadline)
-                .foregroundStyle(balanceColor(for: member))
         }
         .padding(12)
         .background(AppTheme.card)
@@ -422,7 +406,7 @@ struct GroupDetailView: View {
                     Text("Total spent")
                         .font(.system(.caption, design: .rounded, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Text(currency(calculateGroupTotalBalance()))
+                    Text(groupTotalText())
                         .font(.system(.title, design: .rounded, weight: .bold))
                         .foregroundStyle(AppTheme.brand)
                 }
@@ -483,6 +467,17 @@ struct GroupDetailView: View {
                 .buttonStyle(.plain)
             }
 
+            if let member = friendAddAction.pendingMember {
+                ProgressView("Adding \(member.name)…")
+                    .font(.caption)
+            }
+            if let message = friendAddAction.errorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("group.friendAddError")
+            }
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(group.members) { member in
@@ -505,18 +500,15 @@ struct GroupDetailView: View {
 
                                 if !store.friends.contains(where: { store.areSamePerson($0.memberId, member.id) }) {
                                     Button {
-                                        let newFriend = AccountFriend(
-                                            memberId: member.id,
-                                            name: member.name,
-                                            profileImageUrl: member.profileImageUrl,
-                                            profileColorHex: member.profileColorHex,
-                                            status: "friend"
-                                        )
-                                        store.addImportedFriend(newFriend)
-                                        Haptics.notify(.success)
+                                        friendAddTask = Task {
+                                            if await friendAddAction.add(member, to: store) {
+                                                Haptics.notify(.success)
+                                            }
+                                        }
                                     } label: {
                                         Label("Add Friend", systemImage: "person.badge.plus")
                                     }
+                                    .disabled(friendAddAction.pendingMember != nil)
 
                                 }
                             }
@@ -592,7 +584,7 @@ private struct SettleConfirmationView: View {
     let group: SpendingGroup
     let selectedExpenseIds: Set<UUID>
     let selectedExpenses: [Expense]
-    let paymentRecipients: [(member: GroupMember, amount: Double)]
+    let paymentRecipients: [ExpensePaymentRecipient]
     let onConfirm: () -> Void
     let onCancel: () -> Void
 
@@ -601,7 +593,7 @@ private struct SettleConfirmationView: View {
 
     private func memberName(for id: UUID, in expense: Expense) -> String {
         // Current user always shows their name
-        if store.isMe(id) {
+        if store.isMe(id, in: expense) {
             return store.currentUser.name
         }
 
@@ -686,13 +678,10 @@ private struct SettleConfirmationView: View {
 
                             Spacer()
 
-                            Text(
-                                SettlementAmountLogic.totalToSettle(
-                                    expenses: selectedExpenses,
-                                    isCurrentUser: store.isMe
-                                ),
-                                format: .currency(code: Locale.current.currency?.identifier ?? "USD")
-                            )
+                            Text(ExpenseMoneyText.format(
+                                SettlementAmountLogic.totalToSettle(expenses: selectedExpenses, isCurrentUserInExpense: { store.isMe($0, in: $1) }),
+                                currencyCode: ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses)
+                            ))
                                 .font(.system(.title2, design: .rounded, weight: .bold))
                                 .foregroundStyle(AppTheme.brand)
                         }
@@ -727,7 +716,7 @@ private struct SettleConfirmationView: View {
                                 .padding(.horizontal, 20)
 
                             VStack(spacing: 8) {
-                                ForEach(paymentRecipients, id: \.member.id) { recipient in
+                                ForEach(paymentRecipients) { recipient in
                                     HStack(spacing: 12) {
                                         AvatarView(name: recipientDisplayName(recipient.member), colorHex: recipient.member.profileColorHex)
                                             .frame(width: 40, height: 40)
@@ -750,7 +739,7 @@ private struct SettleConfirmationView: View {
 
                                         Spacer()
 
-                                        Text(recipient.amount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                                        Text(ExpenseMoneyText.format(recipient.amount, currencyCode: ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses)))
                                             .font(.system(.title2, design: .rounded, weight: .bold))
                                             .foregroundStyle(AppTheme.brand)
                                     }
@@ -798,14 +787,14 @@ private struct SettleConfirmationView: View {
 
                                         Spacer()
 
-                                        Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                                        Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
                                             .font(.system(.headline, design: .rounded, weight: .bold))
                                             .foregroundStyle(AppTheme.brand)
                                     }
 
                                     // Your Split
                                     let myUnsettledAmount = expense.splits
-                                        .filter { store.isMe($0.memberId) && !$0.isSettled }
+                                        .filter { store.isMe($0.memberId, in: expense) && !$0.isSettled }
                                         .reduce(0) { $0 + $1.amount }
                                     if myUnsettledAmount > 0 {
                                         HStack {
@@ -815,7 +804,7 @@ private struct SettleConfirmationView: View {
 
                                             Spacer()
 
-                                            Text(myUnsettledAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                                            Text(ExpenseMoneyText.format(myUnsettledAmount, currencyCode: expense.currencyCode))
                                                 .font(.system(.callout, design: .rounded, weight: .medium))
                                                 .foregroundStyle(AppTheme.settlementText)
                                         }
@@ -931,6 +920,10 @@ private struct SettleModal: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     if !selectedExpenseIds.isEmpty {
                         Button("Settle") {
+                            guard ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses) != nil else {
+                                settlementErrorMessage = "Select expenses in one recorded currency. Settle expenses with unknown currency individually from their details."
+                                return
+                            }
                             showConfirmationPage = true
                         }
                         .foregroundStyle(AppTheme.brand)
@@ -969,7 +962,7 @@ private struct SettleModal: View {
         let allExpenses = store.expenses(in: group.id)
         let filtered = allExpenses.filter { expense in
             // Show expenses where ANY of the current user's equivalent splits are still unsettled.
-            let mySplits = expense.splits.filter { store.isMe($0.memberId) }
+            let mySplits = expense.splits.filter { store.isMe($0.memberId, in: expense) }
             return mySplits.contains { !$0.isSettled }
         }
 
@@ -977,9 +970,10 @@ private struct SettleModal: View {
     }
 
     var selectedTotal: Double {
-        SettlementAmountLogic.totalToSettle(
+        guard ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses) != nil else { return 0 }
+        return SettlementAmountLogic.totalToSettle(
             expenses: unsettledExpenses.filter { selectedExpenseIds.contains($0.id) },
-            isCurrentUser: store.isMe
+            isCurrentUserInExpense: { store.isMe($0, in: $1) }
         )
     }
 
@@ -987,35 +981,13 @@ private struct SettleModal: View {
         unsettledExpenses.filter { selectedExpenseIds.contains($0.id) }
     }
 
-    var paymentRecipients: [(member: GroupMember, amount: Double)] {
-        let selectedExpenses = unsettledExpenses.filter { selectedExpenseIds.contains($0.id) }
-        var payments: [(memberId: UUID, amount: Double)] = []
-
-        for expense in selectedExpenses {
-            // Only consider expenses where current user is not the payer
-            if !store.isMe(expense.paidByMemberId) {
-                let unsettledMyAmount = expense.splits
-                    .filter { store.isMe($0.memberId) && !$0.isSettled }
-                    .reduce(0) { $0 + $1.amount }
-                if unsettledMyAmount > 0 {
-                    if let index = payments.firstIndex(where: {
-                        store.areSamePerson($0.memberId, expense.paidByMemberId)
-                    }) {
-                        payments[index].amount += unsettledMyAmount
-                    } else {
-                        payments.append((memberId: expense.paidByMemberId, amount: unsettledMyAmount))
-                    }
-                }
-            }
-        }
-
-        return payments.compactMap { (memberId, amount) in
-            if let member = store.navigationMember(id: memberId) {
-                return (member: member, amount: amount)
-            }
-            return nil
-        }
-        .sorted { $0.member.name < $1.member.name }
+    var paymentRecipients: [ExpensePaymentRecipient] {
+        ExpensePaymentBreakdown.recipients(
+            expenses: selectedExpenses,
+            isCurrentUser: { store.isMe($0, in: $1) },
+            resolveMember: { store.navigationMember(id: $0) },
+            participantName: { store.participantDisplayName(memberId: $0, in: $1) }
+        )
     }
 
     var totalAmountCard: some View {
@@ -1024,7 +996,7 @@ private struct SettleModal: View {
                 .font(.system(.caption, design: .rounded, weight: .medium))
                 .foregroundStyle(.secondary)
 
-            Text(selectedTotal, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+            Text(ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses).map { ExpenseMoneyText.format(selectedTotal, currencyCode: $0) } ?? "Select one recorded currency")
                 .font(.system(.title, design: .rounded, weight: .bold))
                 .foregroundStyle(AppTheme.brand)
         }
@@ -1094,7 +1066,7 @@ private struct SettleModal: View {
 
                     Spacer()
 
-                    Text(expense.totalAmount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                    Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
                         .font(.system(.subheadline, design: .rounded, weight: .semibold))
                         .foregroundStyle(AppTheme.brand)
                 }
@@ -1146,6 +1118,11 @@ private struct SettleModal: View {
     @MainActor
     private func settleSelectedExpenses() async {
         guard !isSettling else { return }
+        guard ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses) != nil else {
+            settlementErrorMessage = "Select one recorded currency, or settle an unknown-currency expense from its details."
+            showConfirmationPage = false
+            return
+        }
         let expensesToSettle = selectedExpenses.sorted { $0.id.uuidString < $1.id.uuidString }
         guard !expensesToSettle.isEmpty else {
             showConfirmationPage = false

@@ -12,7 +12,7 @@
 # Environment Variables:
 #   SANITIZER: none (default, enables coverage), thread, or address
 #   CI_FLAVOR: xcodecloud (enables XcodeCloud parity mode)
-#   DERIVED_DATA_PATH: custom DerivedData path (default: ./DerivedDataCI in xcodecloud mode)
+#   DERIVED_DATA_PATH: reusable DerivedData path (default: ./DerivedDataCI)
 #   FAIL_ON_WARNINGS: 1 (fail if any warnings are detected)
 #   RUN_WEB_E2E: 1 (default) to run web Playwright smoke tests; set to 0 to skip
 #   PAYBACK_SIMULATOR_UDID: explicit available iPhone simulator UDID (optional)
@@ -57,12 +57,13 @@ else
 	EFFECTIVE_PARALLEL_TESTING="NO"
 fi
 
+# Keep one build directory across focused, standard, and sanitizer verification.
+DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$PROJECT_ROOT/DerivedDataCI}"
+
 # XcodeCloud parity mode settings
 if [ "$CI_FLAVOR" = "xcodecloud" ]; then
-	DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$PROJECT_ROOT/DerivedDataCI}"
 	XCODECLOUD_MODE=true
 else
-	DERIVED_DATA_PATH=""
 	XCODECLOUD_MODE=false
 fi
 
@@ -87,7 +88,7 @@ if ! command -v bun &>/dev/null; then
 	exit 1
 fi
 
-bun install >/dev/null
+bun install --frozen-lockfile >/dev/null
 bun run ci
 
 if [ "$RUN_WEB_E2E" = "1" ]; then
@@ -154,11 +155,11 @@ echo -e "${GREEN}✓ Environment captured${NC}"
 echo ""
 
 # =============================================================================
-# Clean simulators
+# Check simulator inventory without deleting devices used by other worktrees.
 # =============================================================================
-echo -e "${YELLOW}[3/10] Cleaning simulators...${NC}"
-xcrun simctl delete unavailable 2>/dev/null || true
-echo -e "${GREEN}✓ Cleaned${NC}"
+echo -e "${YELLOW}[3/10] Checking simulators...${NC}"
+xcrun simctl list devices available >/dev/null
+echo -e "${GREEN}✓ Simulator inventory available${NC}"
 echo ""
 
 # =============================================================================
@@ -208,10 +209,6 @@ if [ -f "PayBack.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.reso
 	echo "Dependencies already resolved (Package.resolved exists)"
 	echo -e "${GREEN}✓ Already resolved${NC}"
 else
-	# Kill any existing xcodebuild processes that might be hanging
-	pkill -9 xcodebuild 2>/dev/null || true
-	sleep 1
-
 	# Resolve with timeout and visible output
 	echo "Resolving Swift Package dependencies (this may take 2-3 minutes)..."
 	RESOLVE_LOG="/tmp/resolve-deps-$$.log"
@@ -326,7 +323,9 @@ for runtime, devices in data.get("devices", {}).items():
     if not device.get("isAvailable"):
       continue
     name = device.get("name", "")
-    if "iPhone" not in name:
+    device_type = device.get("deviceTypeIdentifier", "")
+    is_iphone = ".iPhone-" in device_type if device_type else "iPhone" in name
+    if not is_iphone:
       continue
     udid = device.get("udid")
     if not udid:
@@ -391,12 +390,9 @@ echo -e "${YELLOW}[9/10] Running tests (sanitizer: ${SANITIZER}, mode: ${CI_FLAV
 echo ""
 rm -rf TestResults.xcresult coverage-report.txt coverage.json test_output.log build_output.log 2>/dev/null || true
 
-# Clean DerivedData in XcodeCloud mode for fresh builds
-if [ "$XCODECLOUD_MODE" = true ]; then
-	echo "Cleaning DerivedData for XcodeCloud parity..."
-	rm -rf "$DERIVED_DATA_PATH" 2>/dev/null || true
-	mkdir -p "$DERIVED_DATA_PATH"
-fi
+# Xcode tracks build-setting changes, including sanitizer instrumentation. Reuse
+# its cache; do not erase an explicitly supplied directory or unrelated builds.
+mkdir -p "$DERIVED_DATA_PATH"
 
 # Determine sanitizer flags and parallel testing
 SANITIZER_FLAGS=""
@@ -495,6 +491,7 @@ else
     -configuration Debug \
     -destination 'platform=iOS Simulator,id=${SIMULATOR_UDID}' \
     $SANITIZER_FLAGS \
+    $DERIVED_DATA_ARG \
     $PARALLEL_FLAG \
     $TEST_SELECTION_FLAGS \
     -resultBundlePath TestResults.xcresult"
@@ -847,11 +844,10 @@ fi
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo ""
 
-# Cleanup
-rm -f test_output.log build_output.log 2>/dev/null || true
-
 if [ "$TEST_SUCCESS" = true ] && [ "$WARNINGS_FAILED" != true ] && [ "$SANITIZER_FAILED" != true ]; then
+	rm -f test_output.log build_output.log 2>/dev/null || true
 	exit 0
 else
+	echo "Build and test logs retained in $PROJECT_ROOT for diagnosis."
 	exit 1
 fi

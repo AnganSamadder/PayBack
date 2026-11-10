@@ -45,7 +45,7 @@ test("users.store preserves one-shot client behavior for small orphan cleanup", 
   const user = t.withIdentity(identity("legacy@example.com", "new_legacy_auth"));
   const result = await user.mutation(api.users.store, {});
   expect(result).not.toContain("preparing:");
-  expect(await user.query(api.users.viewer, {})).toMatchObject({
+  expect(await user.query(api.users.viewer, { financial_contract_version: 2 })).toMatchObject({
     id: "new_legacy_auth",
     email: "legacy@example.com"
   });
@@ -78,7 +78,7 @@ test("legacy users.store cleans normalized orphan artifacts for mixed-case auth 
 
   expect(accountId).not.toContain("preparing:");
   expect(await t.run((ctx) => ctx.db.query("account_friends").collect())).toEqual([]);
-  expect(await user.query(api.users.viewer, {})).toMatchObject({
+  expect(await user.query(api.users.viewer, { financial_contract_version: 2 })).toMatchObject({
     id: "mixed_auth",
     email: "mixed@example.com"
   });
@@ -827,8 +827,11 @@ test("pending orphan cleanup fences block late canonical member claims", async (
 
   const user = t.withIdentity(identity("legacy@example.com", "legacy_auth"));
   await expect(
-    user.mutation(api.users.updateLinkedMemberId, { member_id: "fenced_member" })
-  ).rejects.toThrow("temporarily locked for account cleanup");
+    user.mutation(api.users.updateLinkedMemberId, {
+      financial_contract_version: 2,
+      member_id: "fenced_member"
+    })
+  ).rejects.toThrow("Refresh or upgrade required");
   expect(await t.run((ctx) => ctx.db.get(accountId))).not.toHaveProperty("member_id");
 });
 

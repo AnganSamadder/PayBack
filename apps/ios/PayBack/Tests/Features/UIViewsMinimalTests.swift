@@ -320,7 +320,7 @@ final class UIViewsMinimalTests: XCTestCase {
         XCTAssertFalse(closureCalled)
     }
 
-    func test_addExpensePayerLogic_defaultPayer_prefersCurrentUserMarker() {
+    func test_addExpensePayerLogic_defaultPayer_doesNotTrustCreatorMarker() {
         let other = GroupMember(name: "Angan", isCurrentUser: false)
         let me = GroupMember(name: "Test User", isCurrentUser: true)
 
@@ -329,7 +329,55 @@ final class UIViewsMinimalTests: XCTestCase {
             currentUserMemberId: nil
         )
 
-        XCTAssertEqual(defaultPayer, me.id)
+        XCTAssertNil(defaultPayer, "A stored creator-relative marker cannot choose the current actor's payer")
+    }
+
+    func test_addExpensePayerLogic_foreignCreatorFlagDoesNotChangeSignedInPayerOrLabels() {
+        let creator = GroupMember(name: "Alice", isCurrentUser: true)
+        let viewer = GroupMember(name: "Bob", isCurrentUser: false)
+        let members = [creator, viewer]
+        let resolved = AddExpensePayerLogic.currentUserMemberId(
+            in: members, preferredMemberId: viewer.id, matchesCurrentUser: { $0 == viewer.id }
+        )
+        XCTAssertEqual(resolved, viewer.id)
+        XCTAssertEqual(AddExpensePayerLogic.defaultPayerId(for: members, currentUserMemberId: resolved), viewer.id)
+        XCTAssertEqual(AddExpensePayerLogic.payerLabel(for: creator.id, in: members, currentUserMemberId: resolved), "Alice")
+        XCTAssertEqual(AddExpensePayerLogic.payerLabel(for: viewer.id, in: members, currentUserMemberId: resolved), "Me")
+        XCTAssertEqual(AddExpenseFlowLogic.splitModeSummary(mode: .equal, selectedMembers: [creator], totalMembers: 2, currentUserMemberId: resolved), "Only Alice")
+    }
+
+    func test_addExpensePayerLogic_unresolvedPlaceholderRequiresExplicitPayer() {
+        let placeholder = GroupMember(name: "Bob", isCurrentUser: true)
+        let viewerCanonicalId = UUID()
+        let resolved = AddExpensePayerLogic.currentUserMemberId(
+            in: [placeholder], preferredMemberId: viewerCanonicalId, matchesCurrentUser: { $0 == viewerCanonicalId }
+        )
+        XCTAssertNil(resolved)
+        XCTAssertNil(AddExpensePayerLogic.defaultPayerId(for: [placeholder], currentUserMemberId: resolved))
+        XCTAssertEqual(AddExpensePayerLogic.payerLabel(for: nil, in: [placeholder], currentUserMemberId: resolved), "Choose payer")
+        XCTAssertEqual(AddExpensePayerLogic.payerLabel(for: placeholder.id, in: [placeholder], currentUserMemberId: resolved), "Bob")
+        XCTAssertEqual(AddExpenseFlowLogic.splitModeSummary(mode: .equal, selectedMembers: [placeholder], totalMembers: 1, currentUserMemberId: resolved), "Only Bob")
+    }
+
+    func test_addExpensePayerLogic_prefersCanonicalViewerOverKnownGlobalAlias() {
+        let canonical = GroupMember(name: "Bob")
+        let alias = GroupMember(name: "Old Bob", isCurrentUser: true)
+        let knownSelfIds: Set<UUID> = [canonical.id, alias.id]
+        XCTAssertEqual(AddExpensePayerLogic.currentUserMemberId(in: [alias, canonical], preferredMemberId: canonical.id, matchesCurrentUser: knownSelfIds.contains), canonical.id)
+        XCTAssertEqual(AddExpensePayerLogic.currentUserMemberId(in: [alias], preferredMemberId: canonical.id, matchesCurrentUser: knownSelfIds.contains), alias.id)
+    }
+
+    func test_addExpenseAuthoringProjection_usesLinkedViewerCanonicalAsPayerWithoutRawDuplicate() {
+        let creator = GroupMember(name: "Alice", isCurrentUser: true)
+        let rawViewer = GroupMember(name: "Bob placeholder")
+        let viewerCanonical = GroupMember(name: "Bob")
+        let source = SpendingGroup(name: "Shared", members: [creator, rawViewer, viewerCanonical], memberIdentityMap: [creator.id: creator.id, rawViewer.id: viewerCanonical.id, viewerCanonical.id: viewerCanonical.id])
+        let view = AddExpenseView(group: source)
+        XCTAssertEqual(view.group.members.map(\.id), [creator.id, viewerCanonical.id])
+        let resolved = AddExpensePayerLogic.currentUserMemberId(in: view.group.members, preferredMemberId: viewerCanonical.id, matchesCurrentUser: { $0 == viewerCanonical.id })
+        XCTAssertEqual(AddExpensePayerLogic.defaultPayerId(for: view.group.members, currentUserMemberId: resolved), viewerCanonical.id)
+        XCTAssertEqual(AddExpensePayerLogic.payerLabel(for: viewerCanonical.id, in: view.group.members, currentUserMemberId: resolved), "Me")
+        XCTAssertEqual(source.members.map(\.id), [creator.id, rawViewer.id, viewerCanonical.id])
     }
 
     func test_addExpensePayerLogic_label_usesCurrentUserIdNotFirstMember() {

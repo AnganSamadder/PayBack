@@ -32,21 +32,27 @@ final class DomainModelsExtendedTests: XCTestCase {
         XCTAssertTrue(expense.unsettledSplits.isEmpty)
     }
 
-    func testExpense_splitFor_multipleSplitsSameMember_returnsFirst() {
+    func testExpense_splitFor_multipleSplitsSameMember_aggregatesWithoutRewritingHistory() {
         let memberId = UUID()
-        let expense = Expense(
-            groupId: UUID(),
-            description: "Test",
-            totalAmount: 150,
-            paidByMemberId: UUID(),
-            involvedMemberIds: [memberId],
-            splits: [
-                ExpenseSplit(memberId: memberId, amount: 50),
-                ExpenseSplit(memberId: memberId, amount: 100) // Duplicate member
-            ]
-        )
-        let split = expense.split(for: memberId)
-        XCTAssertEqual(split?.amount, 50) // First one
+        let settledRow = ExpenseSplit(memberId: memberId, amount: 50, isSettled: true)
+        let unpaidRow = ExpenseSplit(memberId: memberId, amount: 100)
+
+        for rows in [[settledRow, unpaidRow], [unpaidRow, settledRow]] {
+            let expense = Expense(
+                groupId: UUID(),
+                description: "Test",
+                totalAmount: 150,
+                paidByMemberId: UUID(),
+                involvedMemberIds: [memberId],
+                splits: rows
+            )
+            let summary = expense.split(for: memberId)
+
+            XCTAssertEqual(summary?.amount, 150)
+            XCTAssertEqual(summary?.isSettled, false)
+            XCTAssertFalse(expense.isSettled(for: memberId))
+            XCTAssertEqual(expense.splits, rows, "A summary must preserve the original row IDs, amounts, and settlement flags")
+        }
     }
 
     func testExpense_isSettledFor_memberWithZeroAmount_checksSettledFlag() {

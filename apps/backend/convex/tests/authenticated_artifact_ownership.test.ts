@@ -1,3 +1,4 @@
+import { backfillMemberReferences } from "../../tests/helpers/memberReferenceTestUtils";
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api } from "../_generated/api";
@@ -67,14 +68,28 @@ test("same-email different-subject identities cannot read another account's arti
 
   const attacker = t.withIdentity(identity("shared@example.com", "attacker_subject"));
 
-  await expect(attacker.query(api.friends.list, {})).resolves.toEqual([]);
-  await expect(attacker.query(api.linkRequests.listIncoming, {})).resolves.toEqual([]);
   await expect(
-    attacker.query(api.linkRequests.listIncomingPage, { cursor: null, numItems: 5 })
+    attacker.query(api.friends.list, { financial_contract_version: 2 })
+  ).resolves.toEqual([]);
+  await expect(
+    attacker.query(api.linkRequests.listIncoming, { financial_contract_version: 2 })
+  ).resolves.toEqual([]);
+  await expect(
+    attacker.query(api.linkRequests.listIncomingPage, {
+      financial_contract_version: 2,
+      cursor: null,
+      numItems: 5
+    })
   ).resolves.toMatchObject({ page: [], isDone: true });
-  await expect(attacker.query(api.linkRequests.listOutgoing, {})).resolves.toEqual([]);
   await expect(
-    attacker.query(api.linkRequests.listOutgoingPage, { cursor: null, numItems: 5 })
+    attacker.query(api.linkRequests.listOutgoing, { financial_contract_version: 2 })
+  ).resolves.toEqual([]);
+  await expect(
+    attacker.query(api.linkRequests.listOutgoingPage, {
+      financial_contract_version: 2,
+      cursor: null,
+      numItems: 5
+    })
   ).resolves.toMatchObject({ page: [], isDone: true });
 });
 
@@ -108,6 +123,7 @@ test.each(["upsert", "clear", "clearV2"] as const)(
     const result =
       operation === "upsert"
         ? attacker.mutation(api.friends.upsert, {
+            financial_contract_version: 2,
             member_id: "new_friend",
             name: "New Friend",
             has_linked_account: false
@@ -191,16 +207,26 @@ test.each(["create", "accept", "decline", "cancel"] as const)(
     const result =
       operation === "create"
         ? attacker.mutation(api.linkRequests.createV2, {
+            financial_contract_version: 2,
             id: "new_request",
             recipient_email: "recipient@example.com",
             target_member_id: "owner_friend",
             target_member_name: "Owner Friend"
           })
         : operation === "accept"
-          ? attacker.mutation(api.linkRequests.accept, { id: "existing_request" })
+          ? attacker.mutation(api.linkRequests.accept, {
+              financial_contract_version: 2,
+              id: "existing_request"
+            })
           : operation === "decline"
-            ? attacker.mutation(api.linkRequests.decline, { id: "existing_request" })
-            : attacker.mutation(api.linkRequests.cancel, { id: "existing_request" });
+            ? attacker.mutation(api.linkRequests.decline, {
+                financial_contract_version: 2,
+                id: "existing_request"
+              })
+            : attacker.mutation(api.linkRequests.cancel, {
+                financial_contract_version: 2,
+                id: "existing_request"
+              });
 
     await expect(result).rejects.toThrow("User not found");
     const requests = await t.run((ctx) => ctx.db.query("link_requests").collect());
@@ -250,16 +276,18 @@ test("subject-owned mixed-case accounts use normalized artifact keys", async () 
   });
 
   const owner = t.withIdentity(identity("owner@example.com", "owner_subject"));
-  await expect(owner.query(api.friends.list, {})).resolves.toMatchObject([
-    { member_id: "existing_friend" }
-  ]);
+  await expect(
+    owner.query(api.friends.list, { financial_contract_version: 2 })
+  ).resolves.toMatchObject([{ member_id: "existing_friend" }]);
 
   await owner.mutation(api.friends.upsert, {
+    financial_contract_version: 2,
     member_id: "new_friend",
     name: "New Friend",
     has_linked_account: false
   });
   const created = await owner.mutation(api.linkRequests.createV2, {
+    financial_contract_version: 2,
     id: "outgoing_request",
     recipient_email: "recipient@example.com",
     target_member_id: "existing_friend",
@@ -271,12 +299,12 @@ test("subject-owned mixed-case accounts use normalized artifact keys", async () 
     requester_email: "owner@example.com",
     recipient_email: "recipient@example.com"
   });
-  await expect(owner.query(api.linkRequests.listIncoming, {})).resolves.toMatchObject([
-    { id: "incoming_request" }
-  ]);
-  await expect(owner.query(api.linkRequests.listOutgoing, {})).resolves.toMatchObject([
-    { id: "outgoing_request" }
-  ]);
+  await expect(
+    owner.query(api.linkRequests.listIncoming, { financial_contract_version: 2 })
+  ).resolves.toMatchObject([{ id: "incoming_request" }]);
+  await expect(
+    owner.query(api.linkRequests.listOutgoing, { financial_contract_version: 2 })
+  ).resolves.toMatchObject([{ id: "outgoing_request" }]);
 
   const friendEmails = await t.run(async (ctx) =>
     (await ctx.db.query("account_friends").collect()).map((friend) => friend.account_email)
@@ -317,6 +345,7 @@ test("mixed-case legacy accounts can delete a linked friend stored under normali
   });
 
   const owner = t.withIdentity(identity("owner@example.com", "owner_subject"));
+  await backfillMemberReferences(t);
   await expect(
     owner.mutation(api.cleanup.deleteLinkedFriend, { friendMemberId: "linked_friend" })
   ).resolves.toMatchObject({ success: true });

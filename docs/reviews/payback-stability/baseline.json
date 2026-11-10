@@ -1,0 +1,1992 @@
+{
+  "title": "PayBack stability and identity review",
+  "date": "2026-11-05",
+  "commit": "4fa2bedecaf14c1079a4eef631c4842557036c6a",
+  "reviewers": 10,
+  "findings": [
+    {
+      "id": "F01",
+      "priority": "P1",
+      "title": "First signup deletes valid incoming email-link requests",
+      "case": "A adds offline B and sends an email request; B then creates an account.",
+      "intended": "B sees the pending request and can accept it.",
+      "actual": "Both legacy and current resumable signup cleanup delete the incoming request. B finishes signup with no request; A must resend.",
+      "fix": "Distinguish fresh incoming invitations from deleted-account artifacts. Preserve valid pending requests bound to an active sender and owned target.",
+      "evidence": "Two new expected-correct tests fail: expected one incoming request, received zero. Independently reproduced.",
+      "sources": [
+        "apps/backend/convex/users.ts:583",
+        "apps/backend/convex/users.ts:715",
+        "apps/backend/convex/orphanCleanup.ts:599",
+        "apps/backend/convex/tests/review_email_linking.test.ts:63"
+      ]
+    },
+    {
+      "id": "F02",
+      "priority": "P1",
+      "title": "Hydration treats another person with your name as you",
+      "case": "Two distinct Alex Smiths share a group; the other Alex paid dinner.",
+      "intended": "Keep both UUIDs, original payer, and settlement amounts.",
+      "actual": "normalizeGroup removes the other Alex solely by name; normalizeExpenses rewrites payer/splits to self. Dirty data is sent back to the backend. Mixed settlement states can also collapse.",
+      "fix": "Use trusted canonical/alias equivalence for identity. Separate historical name-based repair from normal hydration.",
+      "evidence": "Actual loadRemoteData XCTest fails: the other person disappears, payer changes, 3 shares become 2, settled self share becomes 60 unpaid instead of 30 settled. Independently traced.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:2774",
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:2848",
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:2649"
+      ]
+    },
+    {
+      "id": "F03",
+      "priority": "P1",
+      "title": "Merging duplicates can revive paid debt",
+      "case": "The same expense has B-old: $10 settled and B-new: $15 unpaid; A merges the people.",
+      "intended": "Keep $15 outstanding and $10 settled.",
+      "actual": "Amounts are summed and settlement flags ANDed: the result is $25 unpaid. Backend and iOS use this aggregation.",
+      "fix": "Preserve settled and outstanding portions. Until supported, reject mixed-state coalescence atomically. Changing AND to OR would instead forgive unpaid debt.",
+      "evidence": "Authenticated merge regression fails: expected 15, actual 25. Independent financial reviewer reran it.",
+      "sources": [
+        "apps/backend/convex/aliases.ts:288",
+        "apps/backend/convex/aliases.ts:311",
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:2854",
+        "apps/backend/convex/tests/review_identity_merges.test.ts:1"
+      ]
+    },
+    {
+      "id": "F04",
+      "priority": "P1",
+      "title": "Legacy canonical bootstrap can claim a stranger\u2019s placeholder",
+      "case": "An existing authenticated legacy account has no member_id and knows an unregistered person\u2019s member ID.",
+      "intended": "Assign its own canonical identity; claiming someone else\u2019s history requires consent-bound linking.",
+      "actual": "users.updateLinkedMemberId accepts that placeholder without owner/invite approval. A previously inaccessible private group and its expenses become readable. New accounts already receive random canonical IDs and cannot use this path.",
+      "fix": "Generate missing canonical IDs server-side. Route historical claims through the authenticated linking core. Audit legacy accounts without member_id read-only before any repair.",
+      "evidence": "Authenticated before/after group and expense reads reproduced and independently checked. Production prevalence of the legacy prerequisite is unknown.",
+      "sources": [
+        "apps/backend/convex/users.ts:1307",
+        "apps/backend/convex/migrations.ts:1236",
+        "apps/backend/convex/tests/review_security_auth.test.ts:10"
+      ]
+    },
+    {
+      "id": "F05",
+      "priority": "P1",
+      "title": "Successful linking can leave shared history absent from current sync",
+      "case": "A knows offline B; A/B/C share a group and C owns an expense involving B. B links through A.",
+      "intended": "B gains the relevant group/expense history after successful consent.",
+      "actual": "The alias installs, but V2 group and expense visibility remain empty for mixed-owner or C-owned history. Legacy alias-aware queries can see the group. Current iOS uses V2.",
+      "fix": "Reconcile derived visibility for every record affected by a trusted alias. Preserve foreign financial content and use bounded resumable indexing.",
+      "evidence": "Four expected-correct tests fail: invite and email acceptance, each with inviter-owned and third-party-owned groups. Explicit reconciliation makes the histories appear.",
+      "sources": [
+        "apps/backend/convex/aliases.ts:775",
+        "apps/backend/convex/inviteTokens.ts:1098",
+        "apps/backend/convex/inviteTokens.ts:1351",
+        "apps/backend/convex/groups.ts:480",
+        "apps/backend/convex/expenses.ts:1384",
+        "apps/backend/convex/tests/review_invite_claims.test.ts:193"
+      ]
+    },
+    {
+      "id": "F06",
+      "priority": "P1",
+      "title": "Normal adjustments can persist negative or nonconserved debt",
+      "case": "A $20 expense starts with $10/$10; the user subtracts $15 from the friend\u2019s adjustment.",
+      "intended": "Reject or rebalance the adjustment so valid shares conserve the expense total.",
+      "actual": "The saved shares are $10 and \u2212$5, totaling $5. Backend also accepts NaN totals and Infinity shares from malformed clients.",
+      "fix": "Validate finite values, sign/refund policy, precision and conservation server-side; apply the same rules in the real UI splitting code.",
+      "evidence": "Authenticated payload tests persist negative/nonconserved and nonfinite amounts. UI adjustment and save paths traced independently.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Features/Expenses/AddExpenseView.swift:266",
+        "apps/ios/PayBack/Sources/Features/Expenses/AddExpenseView.swift:1207",
+        "apps/ios/PayBack/Sources/Features/Expenses/AddExpenseView.swift:2221",
+        "apps/backend/convex/expenses.ts:1097",
+        "apps/backend/convex/tests/review_expenses_math.test.ts:1"
+      ]
+    },
+    {
+      "id": "F07",
+      "priority": "P1",
+      "title": "Selected currency is discarded",
+      "case": "Enter 100 EUR, then view the expense on a US-locale device.",
+      "intended": "Preserve denomination and value; balances must use an explicit currency contract.",
+      "actual": "Currency changes the form\u2019s presentation, but Expense, DTO and schema store no currency and no conversion occurs. Detail views label 100 with the viewer\u2019s locale, e.g. $100.",
+      "fix": "Temporarily constrain to one explicit currency or introduce a complete currency-aware storage, display and balance contract. Existing historical denomination cannot be inferred reliably.",
+      "evidence": "Reachable picker \u2192 save \u2192 model \u2192 backend \u2192 detail cross-layer source trace; not simulator-verified.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Features/Expenses/AddExpenseView.swift:709",
+        "apps/ios/PayBack/Sources/Features/Expenses/AddExpenseView.swift:333",
+        "apps/ios/PayBack/Sources/Features/Expenses/AddExpenseView.swift:807",
+        "apps/ios/PayBack/Sources/Models/DomainModels.swift:108",
+        "apps/ios/PayBack/Sources/Features/Activity/ExpenseDetailView.swift:142"
+      ]
+    },
+    {
+      "id": "F08",
+      "priority": "P1",
+      "title": "Recovery can publish A\u2019s friends into B\u2019s local state",
+      "case": "Recovery starts for A, friend fetch suspends, then B signs in before completion.",
+      "intended": "Discard every completion from A.",
+      "actual": "reconcileAfterNetworkRecovery invokes reconciliation without a context; stale-result checks are conditional. A\u2019s remote friends can be merged with B\u2019s current list.",
+      "fix": "Require account ID and data epoch for every reconciliation; check after each await and before state publication.",
+      "evidence": "Deterministic suspend/switch/resume XCTest fails: A\u2019s friend remains in B\u2019s friend set. Reachable network/app-activation callers traced.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:4724",
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:4761",
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:4851"
+      ]
+    },
+    {
+      "id": "F09",
+      "priority": "P1",
+      "title": "Friend-sync batches are not bound to the starting account",
+      "case": "A multirow friend sync suspends; the shared Convex authentication changes to B.",
+      "intended": "Stop or reject A\u2019s remaining writes.",
+      "actual": "The real adapter ignores accountEmail and sends separately awaited upserts without per-write session/cancellation checks. Later rows may execute as B. Mocks partition by accountEmail and hide this risk.",
+      "fix": "Validate expected actor on each server write and cancellation/session generation between batch operations. Apply the same discipline to chunked import.",
+      "evidence": "Cross-layer code trace; live auth-switch reproduction not performed. This is a supported race risk, not a demonstrated production incident.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/Convex/ConvexAccountService.swift:181",
+        "apps/backend/convex/friends.ts:397",
+        "apps/ios/PayBack/Sources/Services/Core/DataImportService.swift:1207"
+      ]
+    },
+    {
+      "id": "F10",
+      "priority": "P1",
+      "title": "Import silently merges different people with equal names",
+      "case": "An export contains two different Bobs with distinct UUIDs, even into an empty account.",
+      "intended": "Preserve each source identity unless the user explicitly merges it.",
+      "actual": "Name-keyed mapping collapses two friends into one and creates duplicate member IDs within a group. This also occurs with createNew.",
+      "fix": "Preserve source UUID mapping independently. Use names only to suggest an explicit user choice.",
+      "evidence": "Actual model/export/parser/import harness: 2 friends \u2192 1; 3 member rows \u2192 2 unique IDs. Independently rerun.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/Core/DataImportService.swift:413",
+        "apps/ios/PayBack/Sources/Services/Core/DataImportService.swift:493"
+      ]
+    },
+    {
+      "id": "F11",
+      "priority": "P1",
+      "title": "Backups drop grouped-individual expenses",
+      "case": "Export a multi-friend expense created without a persisted group, then restore.",
+      "intended": "Restore context, participants, splits, settlement and notes.",
+      "actual": "Export omits contextKind. iOS import skips an expense without a mapped group; backend import also requires a group reference. One exported expense becomes zero imported. Notes are omitted for ordinary expenses too.",
+      "fix": "Version the backup contract, include context and notes, and support group-free import without fabricating a group.",
+      "evidence": "Actual production import/export source harness reproduces loss; adapter replaces network/storage, so this is not a complete live backend transaction.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/Core/DataExportService.swift:93",
+        "apps/ios/PayBack/Sources/Services/Core/DataImportService.swift:647",
+        "apps/backend/convex/bulkImport.ts:789"
+      ]
+    },
+    {
+      "id": "F12",
+      "priority": "P2",
+      "title": "Multiline CSV fields lose expenses on restore",
+      "case": "An expense description contains a newline.",
+      "intended": "Round-trip the quoted multiline field.",
+      "actual": "Exporter quotes it, but importer splits physical lines before CSV parsing; the expense fragments are silently skipped.",
+      "fix": "Parse logical CSV records across quoted newlines and surface malformed-row errors.",
+      "evidence": "Actual exporter/parser harness: one exported expense \u2192 zero parsed expenses.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/Core/DataImportService.swift:185",
+        "apps/ios/PayBack/Sources/Services/Core/DataExportService.swift:93"
+      ]
+    },
+    {
+      "id": "F13",
+      "priority": "P2",
+      "title": "Import turns group participants into local confirmed friends",
+      "case": "Restore a group containing someone absent from the explicit friend list.",
+      "intended": "Keep the person in group history only.",
+      "actual": "Importer appends every non-self group member to local friends with confirmed status. Production bulk import sends only explicit friend rows, causing local/server disagreement; the alternate CI path syncs the promoted list.",
+      "fix": "Import friendship only from explicit friend records and preserve group participants separately.",
+      "evidence": "Actual import transformation harness: zero exported friends \u2192 one local confirmed friend.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/Core/DataImportService.swift:605",
+        "apps/ios/PayBack/Sources/Services/Core/DataImportService.swift:724"
+      ]
+    },
+    {
+      "id": "F14",
+      "priority": "P2",
+      "title": "An active invite cannot be resent through the app",
+      "case": "Create an invite, dismiss its share sheet or lose the URL, then tap Send Invite Link.",
+      "intended": "Reuse the active invite or deliberately revoke and replace it.",
+      "actual": "Client generates a new UUID; backend rejects another active token for the friend. Existing list/revoke APIs have no UI callers. The default active lifetime is 30 days.",
+      "fix": "Return/reuse the existing active token and construct the URL from the returned ID. Offer an explicit replacement path.",
+      "evidence": "Existing abuse-control test proves backend rejection; actual iOS callers traced.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/Convex/ConvexInviteLinkService.swift:53",
+        "apps/backend/convex/inviteTokens.ts:439",
+        "apps/ios/PayBack/Sources/Features/People/FriendDetailView.swift:708",
+        "apps/backend/convex/tests/linking_abuse_controls.test.ts:153"
+      ]
+    },
+    {
+      "id": "F15",
+      "priority": "P2",
+      "title": "Stale Decline/Cancel can change accepted linking history",
+      "case": "One device accepts a request; another declines it or the sender cancels it afterward.",
+      "intended": "Reject terminal-state actions and preserve acceptance evidence.",
+      "actual": "Decline changes accepted to declined; cancel deletes the accepted request. New marked links remain linked with inconsistent history; legacy links depending on historical evidence become visibly unlinked.",
+      "fix": "Require pending state and retain durable acceptance provenance. Test stale actions and immutable accepted history.",
+      "evidence": "Four expected-correct failures, including visible legacy linked state true \u2192 false.",
+      "sources": [
+        "apps/backend/convex/linkRequests.ts:401",
+        "apps/backend/convex/linkRequests.ts:431",
+        "apps/backend/convex/friendLinkProvenance.ts:142",
+        "apps/backend/convex/tests/review_email_linking.test.ts:91"
+      ]
+    },
+    {
+      "id": "F16",
+      "priority": "P2",
+      "title": "Normal accumulated history can permanently block linking or merging",
+      "case": "A relevant friendship has 65 expenses, or a duplicate merge touches one 12-person expense.",
+      "intended": "Complete through safe bounded continuation.",
+      "actual": "More than 64 relevant expenses reject. A fixed 80-lookups-per-ID estimate rejects 13 priced IDs at 1,040 > 1,024 even without aliases. Retrying cannot reduce history; no continuation exists.",
+      "fix": "Budget actual indexed work and design resumable identity/reference/visibility reconciliation with appropriate fences. Raising constants alone is insufficient.",
+      "evidence": "Existing 64/65 boundary tests pass their rejection contract; new expected-success 12-person regression fails.",
+      "sources": [
+        "apps/backend/convex/aliases.ts:345",
+        "apps/backend/convex/aliases.ts:544",
+        "apps/backend/convex/aliases.ts:872",
+        "apps/backend/convex/aliases.ts:1006",
+        "apps/backend/convex/tests/review_identity_merges.test.ts:50"
+      ]
+    },
+    {
+      "id": "F17",
+      "priority": "P2",
+      "title": "Cleared shared expenses can return after someone else updates them",
+      "case": "B clears expenses, groups and friends; A later settles an old shared expense.",
+      "intended": "B remains detached while A\u2019s history is preserved.",
+      "actual": "Clear-all removes derived visibility but not a durable exclusion. Later reconciliation recreates B\u2019s visibility and the old expense reappears.",
+      "fix": "Persist per-account suppression/revocation and honor it on all visibility reconstruction paths.",
+      "evidence": "Authenticated complete Clear All sequence followed by another participant\u2019s settlement reproduces reappearance.",
+      "sources": [
+        "apps/backend/convex/expenses.ts:1540",
+        "apps/backend/convex/expenses.ts:1226",
+        "apps/backend/convex/tests/review_unlink_cleanup.test.ts:1"
+      ]
+    },
+    {
+      "id": "F18",
+      "priority": "P2",
+      "title": "Stale linked-friend deletion becomes false local success",
+      "case": "B deletes their account; A still has linked B cached and deletes that friend.",
+      "intended": "Delete current server state or report failure and restore local state.",
+      "actual": "Backend returns success:false for ghost/unlinked state. iOS discards the result, retains its deletion tombstone and hides a server row that still exists until reset.",
+      "fix": "Enforce the response or throw on failure; preferably let one server operation handle the current relationship state atomically.",
+      "evidence": "Backend contract reproduced; adapter/tombstone path independently traced by iOS reviewer.",
+      "sources": [
+        "apps/backend/convex/cleanup.ts:878",
+        "apps/ios/PayBack/Sources/Services/Convex/ConvexAccountService.swift:325",
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:1554",
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:519"
+      ]
+    },
+    {
+      "id": "F19",
+      "priority": "P2",
+      "title": "513 unrelated owned expenses block deleting an unused friend",
+      "case": "A has 513 owned expenses and deletes a friend with no history.",
+      "intended": "Complete friend deletion safely.",
+      "actual": "Cleanup collects all owned expenses before targeting the person and rejects beyond 512. No resumable user path exists.",
+      "fix": "Use indexed target references and/or durable bounded deletion jobs.",
+      "evidence": "Authenticated reproduction passes by asserting the safety-limit error and preserved friend.",
+      "sources": [
+        "apps/backend/convex/cleanup.ts:374",
+        "apps/backend/convex/cleanup.ts:1038",
+        "apps/backend/convex/tests/review_unlink_cleanup.test.ts:1"
+      ]
+    },
+    {
+      "id": "F20",
+      "priority": "P2",
+      "title": "Stale devices create duplicate direct ledgers",
+      "case": "Two devices independently save first direct expenses for the same pair using different draft UUIDs.",
+      "intended": "Reuse one identity-equivalent server ledger.",
+      "actual": "Backend only looks up the supplied UUID and inserts a second container. Distinct expense IDs remain distinct; this alone does not double-count debt in the friend balance.",
+      "fix": "Resolve a canonical pair transactionally and return the chosen ledger identity to each client.",
+      "evidence": "Two sequential authenticated saves reproduce two direct groups; no timing race required.",
+      "sources": [
+        "apps/backend/convex/expenses.ts:772",
+        "apps/backend/convex/expenses.ts:809",
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:3683",
+        "apps/backend/convex/tests/review_expenses_math.test.ts:1"
+      ]
+    },
+    {
+      "id": "F21",
+      "priority": "P1",
+      "title": "Existing ledgers and ordinary groups allow inconsistent financial participants",
+      "case": "An A/B ledger declares A/B involved but names unrelated C as payer or split participant; ordinary group payload names C outside the group.",
+      "intended": "Payer, splits and participant records must agree with the authorized identity set.",
+      "actual": "Both payload classes persist; unrelated registered C receives visibility to the fabricated new expense. New-direct/grouped-individual paths have stronger matching-set checks than these paths.",
+      "fix": "Apply canonical participant-set and payer validation to every write/context, with narrow historical compatibility.",
+      "evidence": "Two authenticated reproduction tests. Scope is injection/sharing of a newly created expense, not proof of reading C\u2019s existing history.",
+      "sources": [
+        "apps/backend/convex/expenses.ts:883",
+        "apps/backend/convex/expenses.ts:1097",
+        "apps/backend/convex/tests/review_expenses_math.test.ts:1"
+      ]
+    },
+    {
+      "id": "F22",
+      "priority": "P2",
+      "title": "Unproven linked email grants visibility to a newly created expense",
+      "case": "Submit an offline friend B with C\u2019s registered email as linked participant metadata.",
+      "intended": "Derive registered recipients only from trusted member/link provenance.",
+      "actual": "C can read the new expense through the authenticated expense list even though B is unlinked. This shares/injects creator data into C\u2019s account.",
+      "fix": "Reject inconsistent linkage and stop treating input-derived email as independent visibility authority.",
+      "evidence": "Authenticated create and C read reproduced. Does not establish access to C\u2019s unrelated data.",
+      "sources": [
+        "apps/backend/convex/expenses.ts:562",
+        "apps/backend/convex/helpers.ts:241",
+        "apps/backend/convex/helpers.ts:385",
+        "apps/backend/convex/tests/review_expenses_math.test.ts:1"
+      ]
+    },
+    {
+      "id": "F23",
+      "priority": "P2",
+      "title": "Two add-friend paths confirm people before persistence succeeds",
+      "case": "Email Add\u2019s first friend write fails, or a group-only detail Add Friend runs offline.",
+      "intended": "Confirm and show success only after remote friend persistence.",
+      "actual": "Email flow appends before sync and keeps the row after failure. Group-person detail uses addImportedFriend and immediately emits success. Normal Add Friend correctly awaits persistence.",
+      "fix": "Route these flows through the acknowledged add operation; keep confirmation only after the friend write succeeds.",
+      "evidence": "Email persistence failure XCTest fails: confirmedFriends is nonempty after the first friend write fails. Detail-view path source traced.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:3930",
+        "apps/ios/PayBack/Sources/Features/People/FriendDetailView.swift:593"
+      ]
+    },
+    {
+      "id": "F24",
+      "priority": "P2",
+      "title": "Adding by name can choose the wrong historical person",
+      "case": "Work Alex and School Alex have different UUIDs; user adds a friend named Alex.",
+      "intended": "Preserve ambiguity and require selection, or create a distinct identity.",
+      "actual": "knownGroupParticipants first collapses UUIDs by name, so manualFriendCandidate sees an apparently unique person and reuses an arbitrary historical UUID.",
+      "fix": "Count distinct identity-equivalent candidates before display-name projection; never infer uniqueness after name deduplication.",
+      "evidence": "Deterministic same-name XCTest fails: candidate reuses one of the two unrelated historical UUIDs.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:1772",
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:3083"
+      ]
+    },
+    {
+      "id": "F25",
+      "priority": "P1",
+      "title": "Release builds still use Clerk development authentication",
+      "case": "Archive the Release app that targets production Convex.",
+      "intended": "Use coordinated production authentication and backend configuration.",
+      "actual": "AppConfig has one pk_test_ key for all configurations; backend trusts the corresponding accounts.dev issuer. Clerk documents a 100-user development cap and says development instances are unsuitable for production.",
+      "fix": "Configure auth by environment and plan account-ID continuity deliberately. A blind key switch can strand existing users.",
+      "evidence": "Repository configuration plus current official Clerk environment/deployment documentation. Actual dashboard configuration and deployed state were not inspected.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Services/AppConfig.swift:13",
+        "apps/ios/PayBack/Sources/PayBackApp.swift:368",
+        "apps/backend/convex/auth.config.ts:4",
+        "https://clerk.com/docs/guides/development/managing-environments",
+        "https://clerk.com/docs/guides/development/deployment/production"
+      ]
+    },
+    {
+      "id": "F26",
+      "priority": "P3",
+      "title": "Repeating the legacy friend request downgrades its status",
+      "case": "A and B already accepted a legacy friend request; A sends again.",
+      "intended": "Keep confirmed status and return an idempotent result.",
+      "actual": "The confirmed row becomes request_sent while linked flags remain true. Current direct-expense eligibility survives. No active UI caller was found.",
+      "fix": "Preserve confirmed rows in the legacy send path.",
+      "evidence": "New expected-correct test fails; linked flags and impact checked.",
+      "sources": [
+        "apps/backend/convex/friend_requests.ts:67",
+        "apps/backend/convex/tests/review_email_linking.test.ts:118"
+      ]
+    },
+    {
+      "id": "F27",
+      "priority": "P2",
+      "title": "One-way email acceptance leaves an existing manual inviter without a merge path",
+      "case": "B already tracks A manually with expenses; A sends B an email request and B accepts.",
+      "intended": "Offer an explicit choice to merge B\u2019s existing A record into linked A, preserving history. Do not guess from a name.",
+      "actual": "B has the old manual A plus new linked canonical A. Email acceptance has no merge selection; Settings merge allows only two unlinked friends, so that UI cannot repair this pair afterward. Crossed requests or invite claim with selection behave differently.",
+      "fix": "Add an owner-validated optional local merge selection to email acceptance, using the same atomic semantics as invite claim.",
+      "evidence": "Authenticated API characterization returns both visible rows; client merge eligibility and email accept view traced.",
+      "sources": [
+        "apps/backend/convex/linkRequests.ts:380",
+        "apps/ios/PayBack/Sources/Features/People/LinkRequestDetailView.swift:426",
+        "apps/ios/PayBack/Sources/Features/Settings/MergeFriendsView.swift:43",
+        "apps/ios/PayBack/Sources/Services/State/AppStore.swift:4491"
+      ]
+    },
+    {
+      "id": "F28",
+      "priority": "P2",
+      "title": "Direct expense permissions are asymmetric after removing friendship",
+      "case": "A/B accept a request and A creates a ledger. B clears friends and submits a new direct expense; separately A clears friends and edits notes on retained history.",
+      "intended": "Require confirmed friendship for new exposure; allow authorized owner edits to unchanged historical participants.",
+      "actual": "B can still create because A\u2019s persisted is_current_user flag bypasses A\u2019s friendship check. Conversely, A\u2019s notes-only update is rejected after A removes friendship.",
+      "fix": "Derive self only from authenticated identity. Separate new participant exposure from owner edits to retained historical records.",
+      "evidence": "Both cases reproduced through actual public request acceptance and friend removal. Normal picker hides removed friend; stale/API writes remain possible.",
+      "sources": [
+        "apps/backend/convex/expenses.ts:860",
+        "apps/backend/convex/expenses.ts:885",
+        "apps/backend/convex/expenses.ts:742",
+        "apps/backend/convex/tests/review_expenses_math.test.ts:1"
+      ]
+    },
+    {
+      "id": "F29",
+      "priority": "P2",
+      "title": "Rounding tests do not exercise production equal splitting",
+      "case": "Split $10 equally among three people.",
+      "intended": "Allocate minor units deterministically, e.g. $3.34/$3.33/$3.33.",
+      "actual": "Production stores three repeating Double fractions, displayed as $3.33 each. Existing rounding tests call a separate test-only helper that allocates cents correctly.",
+      "fix": "Move minor-unit splitting into production and test that exact implementation across split modes/currency precision.",
+      "evidence": "Production call path and test helper compared; source evidence, not a simulator assertion.",
+      "sources": [
+        "apps/ios/PayBack/Sources/Features/Expenses/AddExpenseView.swift:217",
+        "apps/ios/PayBack/Tests/Helpers/TestHelpers.swift:273"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "C001",
+      "category": "Friend creation & registration",
+      "status": "Traced",
+      "case": "A adds B by name; B has no account",
+      "intended": "Persist confirmed manual friend, no ledger",
+      "actual": "Normal addUnlinkedFriend awaits sync before local success",
+      "evidence": "AppStore.addUnlinkedFriend; iOS review",
+      "findings": []
+    },
+    {
+      "id": "C002",
+      "category": "Friend creation & registration",
+      "status": "Tested pass",
+      "case": "A saves first direct expense with offline confirmed B",
+      "intended": "Create ledger and expense atomically",
+      "actual": "Existing authenticated direct-expense test passes",
+      "evidence": "expenses_direct_validation.test.ts:58",
+      "findings": []
+    },
+    {
+      "id": "C003",
+      "category": "Friend creation & registration",
+      "status": "Tested pass",
+      "case": "First direct expense targets no confirmed friend",
+      "intended": "Reject and create neither record",
+      "actual": "Rollback test passes",
+      "evidence": "expenses_direct_validation.test.ts:114",
+      "findings": []
+    },
+    {
+      "id": "C004",
+      "category": "Friend creation & registration",
+      "status": "Traced",
+      "case": "Open or cancel direct Add Expense",
+      "intended": "Keep only transient memory target",
+      "actual": "directExpenseTarget is lookup/draft only",
+      "evidence": "AppStore.directExpenseTarget",
+      "findings": []
+    },
+    {
+      "id": "C005",
+      "category": "Friend creation & registration",
+      "status": "Fails",
+      "case": "A emails a link before B signs up, current client",
+      "intended": "B sees request after registration",
+      "actual": "Resumable signup deletes it",
+      "evidence": "review_email_linking signup resumable=true",
+      "findings": ["F01"]
+    },
+    {
+      "id": "C006",
+      "category": "Friend creation & registration",
+      "status": "Fails",
+      "case": "A emails a link before B signs up, legacy client",
+      "intended": "B sees request after registration",
+      "actual": "Legacy signup deletes it",
+      "evidence": "review_email_linking signup resumable=false",
+      "findings": ["F01"]
+    },
+    {
+      "id": "C007",
+      "category": "Friend creation & registration",
+      "status": "Tested pass",
+      "case": "B signs up first; A then emails link",
+      "intended": "B accepts and both become linked friends",
+      "actual": "Both friend lists linked; no groups or expenses created",
+      "evidence": "review_email_linking registered recipient",
+      "findings": []
+    },
+    {
+      "id": "C008",
+      "category": "Friend creation & registration",
+      "status": "Traced",
+      "case": "A adds a group-only person from detail while offline",
+      "intended": "Confirm only after persistence",
+      "actual": "Detail shows success through local import helper",
+      "evidence": "FriendDetailView.swift:593",
+      "findings": ["F23"]
+    },
+    {
+      "id": "C009",
+      "category": "Friend creation & registration",
+      "status": "Fails",
+      "case": "Email Add\u2019s first persistence call fails",
+      "intended": "No confirmed unsaved friend",
+      "actual": "Local friend was appended before failing write",
+      "evidence": "iOS executed testReview_FailedEmailFriendPersistenceDoesNotConfirmFriend",
+      "findings": ["F23"]
+    },
+    {
+      "id": "C010",
+      "category": "Friend creation & registration",
+      "status": "Tested pass",
+      "case": "Client upsert supplies fabricated linked-account fields",
+      "intended": "Do not trust client link provenance",
+      "actual": "Backend downgrades/rejects promotion and preserves trusted tuple",
+      "evidence": "account_linking.test.ts upsert tests",
+      "findings": []
+    },
+    {
+      "id": "C011",
+      "category": "Friend creation & registration",
+      "status": "Tested pass",
+      "case": "Old client syncs unlinked-looking data after linking",
+      "intended": "Keep server-owned linkage",
+      "actual": "Downgrade-resistant upsert tests pass",
+      "evidence": "account_linking.test.ts:934",
+      "findings": []
+    },
+    {
+      "id": "C012",
+      "category": "Friend creation & registration",
+      "status": "Fails",
+      "case": "A adds Alex with two different group Alexes",
+      "intended": "Preserve ambiguity or create new ID",
+      "actual": "Name projection makes one candidate look unique",
+      "evidence": "AppStore.swift:1772,3083; executed iOS regression",
+      "findings": ["F24"]
+    },
+    {
+      "id": "C013",
+      "category": "Friend creation & registration",
+      "status": "Fails",
+      "case": "User\u2019s name equals another group participant\u2019s",
+      "intended": "Keep people separate",
+      "actual": "Remote normalization treats the other as self",
+      "evidence": "AppStore.swift:2774; executed iOS regression",
+      "findings": ["F02"]
+    },
+    {
+      "id": "C014",
+      "category": "Friend creation & registration",
+      "status": "Needs integration",
+      "case": "Auth provider changes email for same account subject",
+      "intended": "Defined migration and recovery",
+      "actual": "users.store and authenticated helpers reject email mismatch; no migration found",
+      "evidence": "users.ts:689; helpers.ts:24",
+      "findings": []
+    },
+    {
+      "id": "C015",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "A and B each have offline records and send crossed email requests",
+      "intended": "One visible friend each after both accept",
+      "actual": "Both accepted; public lists deduplicate identity-equivalent stored rows",
+      "evidence": "review_email_linking crossed requests",
+      "findings": []
+    },
+    {
+      "id": "C016",
+      "category": "Email requests & multi-person linking",
+      "status": "Fails",
+      "case": "B already has manual A, accepts only A\u2019s email request",
+      "intended": "Explicitly merge selected manual A into linked A",
+      "actual": "Two visible rows remain; Settings cannot merge linked target",
+      "evidence": "review_email_linking one-way acceptance; Settings eligibility",
+      "findings": ["F27"]
+    },
+    {
+      "id": "C017",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "A and C independently know B; B accepts both emails",
+      "intended": "Keep B canonical ID and both aliases; separate owner relationships",
+      "actual": "A and C each see B once; B sees A and C",
+      "evidence": "review_email_linking two independent owners",
+      "findings": []
+    },
+    {
+      "id": "C018",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "Recipient email differs by case/outer whitespace",
+      "intended": "Resolve same recipient",
+      "actual": "Normalized request accepts successfully",
+      "evidence": "review_email_linking registered recipient",
+      "findings": []
+    },
+    {
+      "id": "C019",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "A sends a link to self",
+      "intended": "Reject without mutation",
+      "actual": "Self-email guard tested",
+      "evidence": "review_email_linking self-link",
+      "findings": []
+    },
+    {
+      "id": "C020",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "Requester accepts request addressed to another account",
+      "intended": "Reject",
+      "actual": "Unauthorized acceptance tested",
+      "evidence": "review_email_linking non-owner acceptance",
+      "findings": []
+    },
+    {
+      "id": "C021",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "A targets a friend owned only by C",
+      "intended": "Reject",
+      "actual": "Owned target friend binding enforced",
+      "evidence": "account_linking.test.ts:1176",
+      "findings": []
+    },
+    {
+      "id": "C022",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "Same request ID and same payload retried",
+      "intended": "Return canonical request",
+      "actual": "Exact idempotency tested",
+      "evidence": "account_linking.test.ts:1008",
+      "findings": []
+    },
+    {
+      "id": "C023",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "Same request ID reused with changed payload/owner",
+      "intended": "Reject collision",
+      "actual": "Idempotency boundary tests pass",
+      "evidence": "account_linking.test.ts:1008",
+      "findings": []
+    },
+    {
+      "id": "C024",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "Same sender/target/email sends new ID while pending",
+      "intended": "Reuse active logical request",
+      "actual": "Canonical active request reuse tested",
+      "evidence": "account_linking.test.ts:1008",
+      "findings": []
+    },
+    {
+      "id": "C025",
+      "category": "Email requests & multi-person linking",
+      "status": "Traced",
+      "case": "Same target is sent to another email while pending",
+      "intended": "Reject conflicting pending destination",
+      "actual": "Pending target conflict guard",
+      "evidence": "linkRequests.ts:172",
+      "findings": []
+    },
+    {
+      "id": "C026",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "Recipient declines a pending request",
+      "intended": "Leave identity unlinked; no later acceptance",
+      "actual": "Acceptance rejects after decline",
+      "evidence": "review_email_linking accept after declined",
+      "findings": []
+    },
+    {
+      "id": "C027",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "Sender cancels pending request",
+      "intended": "Remove request; no later acceptance",
+      "actual": "Acceptance rejects after cancel",
+      "evidence": "review_email_linking accept after cancelled",
+      "findings": []
+    },
+    {
+      "id": "C028",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "Request expires before acceptance",
+      "intended": "Reject without aliases or friend linking",
+      "actual": "Expiration rollback check passes",
+      "evidence": "review_email_linking accept after expired",
+      "findings": []
+    },
+    {
+      "id": "C029",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "Target friend deleted before acceptance",
+      "intended": "Reject stale target binding",
+      "actual": "No alias/link writes",
+      "evidence": "review_email_linking accept after deleted friend",
+      "findings": []
+    },
+    {
+      "id": "C030",
+      "category": "Email requests & multi-person linking",
+      "status": "Fails",
+      "case": "Another device declines after acceptance",
+      "intended": "Reject terminal action",
+      "actual": "Accepted history changes to declined",
+      "evidence": "review_email_linking stale decline",
+      "findings": ["F15"]
+    },
+    {
+      "id": "C031",
+      "category": "Email requests & multi-person linking",
+      "status": "Fails",
+      "case": "Sender cancels after acceptance",
+      "intended": "Reject terminal action",
+      "actual": "Accepted history is deleted",
+      "evidence": "review_email_linking stale cancel",
+      "findings": ["F15"]
+    },
+    {
+      "id": "C032",
+      "category": "Email requests & multi-person linking",
+      "status": "Fails",
+      "case": "Legacy link uses accepted-request evidence; stale action runs",
+      "intended": "Preserve proven link",
+      "actual": "Visible has_linked_account changes true to false",
+      "evidence": "review_email_linking legacy provenance pair",
+      "findings": ["F15"]
+    },
+    {
+      "id": "C033",
+      "category": "Email requests & multi-person linking",
+      "status": "Traced",
+      "case": "Accept request again after committed success",
+      "intended": "Do not repeat identity mutation",
+      "actual": "Safe rejection: Request is no longer pending; response-loss UX unverified",
+      "evidence": "linkRequests.ts:350",
+      "findings": []
+    },
+    {
+      "id": "C034",
+      "category": "Email requests & multi-person linking",
+      "status": "Tested pass",
+      "case": "Requester or claimant is deleting/deleted",
+      "intended": "Reject claim writes",
+      "actual": "Deletion-fence tests pass",
+      "evidence": "account_linking.test.ts; deletion_fence_mutations.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C035",
+      "category": "Email requests & multi-person linking",
+      "status": "Traced",
+      "case": "More than 50 active requests in iOS channel",
+      "intended": "Keep requests actionable through pagination",
+      "actual": "iOS uses compatibility lists that throw above 50 despite page APIs",
+      "evidence": "linkRequests.ts:70; ConvexLinkRequestService.swift:45",
+      "findings": []
+    },
+    {
+      "id": "C036",
+      "category": "Email requests & multi-person linking",
+      "status": "Fails",
+      "case": "Legacy accepted friend request is sent again",
+      "intended": "Retain confirmed status",
+      "actual": "Status becomes request_sent, linked flags survive",
+      "evidence": "review_email_linking legacy repeat",
+      "findings": ["F26"]
+    },
+    {
+      "id": "C037",
+      "category": "Email requests & multi-person linking",
+      "status": "Needs policy",
+      "case": "Email recipient sees zero pre-link expense preview",
+      "intended": "Explain available history accurately",
+      "actual": "Preview reads recipient-local data; requester history may be inaccessible",
+      "evidence": "LinkRequestDetailView.swift:415",
+      "findings": []
+    },
+    {
+      "id": "C038",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Traced",
+      "case": "A creates first invite for owned unlinked B",
+      "intended": "Shareable token and no ledger",
+      "actual": "Only token/rate-limit writes",
+      "evidence": "inviteTokens.create",
+      "findings": []
+    },
+    {
+      "id": "C039",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Invite targets group-only or another owner\u2019s person",
+      "intended": "Reject",
+      "actual": "Owned friend surface enforced",
+      "evidence": "account_linking.test.ts:1209",
+      "findings": []
+    },
+    {
+      "id": "C040",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Traced",
+      "case": "Invite targets linked or ghost friend",
+      "intended": "Reject",
+      "actual": "isUnlinkedInviteTarget enforces state",
+      "evidence": "inviteTokens.create",
+      "findings": []
+    },
+    {
+      "id": "C041",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Needs integration",
+      "case": "Logged-out B opens invite, signs up, returns",
+      "intended": "Preserve deep-link and claim only as authenticated B",
+      "actual": "Authentication gates exist; full cold-start continuation not executed",
+      "evidence": "InviteLinkClaimView; signup pipeline",
+      "findings": []
+    },
+    {
+      "id": "C042",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Existing registered B claims A\u2019s offline B",
+      "intended": "Preserve B canonical ID; add placeholder alias",
+      "actual": "Claim/merge tests pass for ordinary owned history",
+      "evidence": "invite_claim_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C043",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "A and C each invite B using different placeholders",
+      "intended": "Both placeholders resolve to B",
+      "actual": "New positive test retains canonical B and both aliases",
+      "evidence": "review_invite_claims independent inviters",
+      "findings": []
+    },
+    {
+      "id": "C044",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Traced",
+      "case": "A claims own invite",
+      "intended": "Reject SELF_CLAIM",
+      "actual": "Explicit self-claim guard",
+      "evidence": "inviteTokens.claimForUser",
+      "findings": []
+    },
+    {
+      "id": "C045",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Target is already another account\u2019s canonical identity",
+      "intended": "Reject without token consumption",
+      "actual": "Canonical collision/conflict tests pass",
+      "evidence": "identity_materialization.test.ts; invite_claim_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C046",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Target alias already belongs to another account",
+      "intended": "Reject ALIAS_CONFLICT",
+      "actual": "Conflict guard tests pass",
+      "evidence": "identity_materialization.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C047",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Same claimant repeats claimed token with same selection",
+      "intended": "Idempotent success without repeat merge",
+      "actual": "Retry tests include retry after expiry",
+      "evidence": "invite_claim_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C048",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Retry changes merge selection",
+      "intended": "Reject",
+      "actual": "Fixed claim-selection contract tested",
+      "evidence": "invite_claim_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C049",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Traced",
+      "case": "Different account reuses claimed token",
+      "intended": "Reject",
+      "actual": "Claimed-by identity check",
+      "evidence": "inviteTokens.ts:1411",
+      "findings": []
+    },
+    {
+      "id": "C050",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Needs integration",
+      "case": "Two accounts truly race one token on live backend",
+      "intended": "Exactly one claim",
+      "actual": "One transaction has shared read/write conflict; no live concurrent run",
+      "evidence": "Convex OCC contract; inviteTokens.claim",
+      "findings": []
+    },
+    {
+      "id": "C051",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Traced",
+      "case": "First claim arrives after expiration",
+      "intended": "Reject",
+      "actual": "Expiry guard before new claim",
+      "evidence": "inviteTokens.ts:1437",
+      "findings": []
+    },
+    {
+      "id": "C052",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Traced",
+      "case": "Creator revokes token",
+      "intended": "Remove preview/claim availability",
+      "actual": "Creator-authorized token deletion",
+      "evidence": "inviteTokens.revoke",
+      "findings": []
+    },
+    {
+      "id": "C053",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Traced",
+      "case": "Noncreator attempts revocation",
+      "intended": "Reject",
+      "actual": "Creator ownership guard",
+      "evidence": "inviteTokens.ts:1508",
+      "findings": []
+    },
+    {
+      "id": "C054",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Target friend deleted/replaced/linked after token creation",
+      "intended": "Reject stale invite",
+      "actual": "Exact target_friend_id/live-state tests pass",
+      "evidence": "account_linking.test.ts stale binding",
+      "findings": []
+    },
+    {
+      "id": "C055",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Legacy invite lacks bound target row",
+      "intended": "Require a new invitation",
+      "actual": "Unverifiable legacy token rejection tested",
+      "evidence": "account_linking.test.ts:1392",
+      "findings": []
+    },
+    {
+      "id": "C056",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Needs policy",
+      "case": "Invite is forwarded to the wrong registered person",
+      "intended": "Choose bearer-link or recipient-bound policy",
+      "actual": "Any eligible signed-in possessor can claim; no recipient email binding",
+      "evidence": "inviteTokens.claim",
+      "findings": []
+    },
+    {
+      "id": "C057",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "B selects own existing unlinked A while claiming A invite",
+      "intended": "Atomic reciprocal merge and claim",
+      "actual": "Owner-local aliases retained without globalizing local merge",
+      "evidence": "invite_claim_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C058",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Selected merge source belongs to another owner",
+      "intended": "Reject whole claim",
+      "actual": "Ownership rollback tests pass",
+      "evidence": "invite_claim_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C059",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Selected merge source is linked",
+      "intended": "Reject unsupported source",
+      "actual": "Linked-source tests pass",
+      "evidence": "invite_claim_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C060",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Selected source intersects claimant\u2019s own identity",
+      "intended": "Reject self-merge",
+      "actual": "Canonical/local-alias self-merge checks tested",
+      "evidence": "invite_claim_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C061",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Canonical reciprocal friend already exists",
+      "intended": "Keep canonical metadata and remove bound placeholder",
+      "actual": "Duplicate canonical row test passes",
+      "evidence": "invite_claim_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C062",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Fails",
+      "case": "A-owned group has a C-owned expense involving B",
+      "intended": "B sees shared history after claim",
+      "actual": "Claim succeeds but V2 group/expense feed omits it",
+      "evidence": "review_invite_claims inviter-owned invite/email pair",
+      "findings": ["F05"]
+    },
+    {
+      "id": "C063",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Fails",
+      "case": "C owns group and expense involving A\u2019s placeholder B",
+      "intended": "B sees shared history after claim",
+      "actual": "Alias-aware legacy query sees it; V2 feeds omit it",
+      "evidence": "review_invite_claims third-party invite/email pair",
+      "findings": ["F05"]
+    },
+    {
+      "id": "C064",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Fails",
+      "case": "A tries resending active invite after dismissing share sheet",
+      "intended": "Recover same link or replace deliberately",
+      "actual": "Fresh client UUID rejected; no in-app recover/revoke caller",
+      "evidence": "linking_abuse_controls.test.ts:153 + iOS trace",
+      "findings": ["F14"]
+    },
+    {
+      "id": "C065",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Public preview exceeds byte or scope cap",
+      "intended": "Keep invite usable; omit preview safely",
+      "actual": "Oversized previews are omitted",
+      "evidence": "account_linking.test.ts preview cases",
+      "findings": []
+    },
+    {
+      "id": "C066",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Public preview would include foreign-owned details",
+      "intended": "Do not disclose those details",
+      "actual": "Foreign preview exclusion tests pass",
+      "evidence": "account_linking.test.ts:1608",
+      "findings": []
+    },
+    {
+      "id": "C067",
+      "category": "Invite lifecycle & claim selection",
+      "status": "Tested pass",
+      "case": "Preview contains canonical/alias splits and settled shares",
+      "intended": "Count unsettled equivalent shares once",
+      "actual": "Aggregation and expense dedupe tests pass",
+      "evidence": "account_linking.test.ts:1800,1851",
+      "findings": []
+    },
+    {
+      "id": "C068",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Two confirmed offline duplicates with ordinary unpaid history",
+      "intended": "Owner-scoped consolidation",
+      "actual": "Merge tests preserve owned history and local aliases",
+      "evidence": "local_friend_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C069",
+      "category": "Merge graph, provenance & scale",
+      "status": "Fails",
+      "case": "Same expense contains settled and unpaid duplicate shares",
+      "intended": "Preserve outstanding balance",
+      "actual": "$10 paid + $15 unpaid becomes $25 unpaid",
+      "evidence": "review_identity_merges mixed settlement",
+      "findings": ["F03"]
+    },
+    {
+      "id": "C070",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Same eligible offline source and target ID",
+      "intended": "Harmless idempotent result",
+      "actual": "Same-ID path covered",
+      "evidence": "local_friend_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C071",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Retry completed merge after source deletion",
+      "intended": "No duplicate transformation",
+      "actual": "Idempotent retry tests pass",
+      "evidence": "local_friend_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C072",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Source record reappears after completed merge",
+      "intended": "Reconcile duplicate safely",
+      "actual": "Replay/source-reappearance tests pass",
+      "evidence": "local_friend_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C073",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Source has nested owner-local aliases",
+      "intended": "Carry forward identity closure locally",
+      "actual": "Closure preservation tested",
+      "evidence": "local_friend_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C074",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Either merge source is pending/rejected/request/ghost/unknown",
+      "intended": "Reject without financial mutation",
+      "actual": "Status matrix covered",
+      "evidence": "local_friend_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C075",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Unlinked-looking source is actually registered/global alias",
+      "intended": "Reject offline merge",
+      "actual": "Registered-account truth checked",
+      "evidence": "local_friend_merge.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C076",
+      "category": "Merge graph, provenance & scale",
+      "status": "Traced",
+      "case": "Two distinct linked accounts are selected for merge",
+      "intended": "Never fuse registered identities",
+      "actual": "Client excludes linked; backend account collision protections",
+      "evidence": "AppStore.isMergeableUnlinkedFriend; aliases guards",
+      "findings": []
+    },
+    {
+      "id": "C077",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Legacy merge into proven linked target",
+      "intended": "Owner-scoped historical cleanup only",
+      "actual": "Server-proven target tests pass; active Settings UI cannot select it",
+      "evidence": "local_friend_merge.test.ts:1909",
+      "findings": []
+    },
+    {
+      "id": "C078",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Legacy merge target merely claims linked metadata",
+      "intended": "Reject",
+      "actual": "Provenance guard tested",
+      "evidence": "local_friend_merge.test.ts:1880",
+      "findings": []
+    },
+    {
+      "id": "C079",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "A merges source UUID also present in C\u2019s records",
+      "intended": "Do not alter C or create global alias",
+      "actual": "Owner isolation test passes",
+      "evidence": "local_friend_merge.test.ts:612",
+      "findings": []
+    },
+    {
+      "id": "C080",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "A group has C-owned expense still referencing merge source",
+      "intended": "Keep references required by foreign expense",
+      "actual": "Foreign-reference preservation passes; separate visibility defect remains",
+      "evidence": "local_friend_merge.test.ts:728",
+      "findings": ["F05"]
+    },
+    {
+      "id": "C081",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "A owns expense in C-owned group",
+      "intended": "Respect group authority and references",
+      "actual": "Owned-expense/foreign-group test passes",
+      "evidence": "local_friend_merge.test.ts:880",
+      "findings": []
+    },
+    {
+      "id": "C082",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Strong owner IDs or email disagree",
+      "intended": "Reject before writes",
+      "actual": "Conflicting ownership rollback tests pass",
+      "evidence": "local_friend_merge.test.ts:1109,1712",
+      "findings": []
+    },
+    {
+      "id": "C083",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Active source would collapse into inactive target",
+      "intended": "Reject; preserve history",
+      "actual": "Inactive-target check passes",
+      "evidence": "local_friend_merge.test.ts:1587",
+      "findings": []
+    },
+    {
+      "id": "C084",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Third friend overlaps source/target closure",
+      "intended": "Reject ambiguity",
+      "actual": "Overlapping identity closure tests pass",
+      "evidence": "local_friend_merge.test.ts:1315,2047",
+      "findings": []
+    },
+    {
+      "id": "C085",
+      "category": "Merge graph, provenance & scale",
+      "status": "Traced",
+      "case": "Local alias closure cycles",
+      "intended": "Reject cycle",
+      "actual": "Explicit cycle guard",
+      "evidence": "aliases.ts:1601",
+      "findings": []
+    },
+    {
+      "id": "C086",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Identity materialization pending",
+      "intended": "Reject identity writes, preserve pending request/token",
+      "actual": "Readiness tests pass",
+      "evidence": "identity_readiness_gates.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C087",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Global alias shadows registered canonical ID",
+      "intended": "Reject conflict",
+      "actual": "Canonical IDs take precedence; migration checks pass",
+      "evidence": "identity_materialization.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C088",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Legacy alias lacks trusted account provenance",
+      "intended": "Quarantine and block unsafe readiness",
+      "actual": "Provenance migration tests pass",
+      "evidence": "identity_materialization.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C089",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Mixed-case identities and duplicate same-owner alias rows",
+      "intended": "Normalize/deduplicate deterministically",
+      "actual": "Materialization cases pass",
+      "evidence": "identity_materialization.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C090",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Conflicting global alias ownership during migration",
+      "intended": "Block page without partial domain changes",
+      "actual": "Migration preflight tests pass",
+      "evidence": "identity_materialization.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C091",
+      "category": "Merge graph, provenance & scale",
+      "status": "Tested pass",
+      "case": "Exactly 64 relevant expenses",
+      "intended": "Complete bounded rewrite",
+      "actual": "Boundary success test passes",
+      "evidence": "local_friend_merge.test.ts:1063",
+      "findings": []
+    },
+    {
+      "id": "C092",
+      "category": "Merge graph, provenance & scale",
+      "status": "Fails",
+      "case": "65 relevant expenses",
+      "intended": "Complete through safe continuation",
+      "actual": "Permanent safe rejection; no continuation",
+      "evidence": "local_friend_merge.test.ts:1081; claim helper",
+      "findings": ["F16"]
+    },
+    {
+      "id": "C093",
+      "category": "Merge graph, provenance & scale",
+      "status": "Fails",
+      "case": "One 12-person expense during duplicate merge",
+      "intended": "Remain usable for normal history",
+      "actual": "Worst-case priced lookups exceed 1,024",
+      "evidence": "review_identity_merges 12-person regression",
+      "findings": ["F16"]
+    },
+    {
+      "id": "C094",
+      "category": "Expenses, balances & permissions",
+      "status": "Traced",
+      "case": "Later expense uses locally known canonical/alias ledger",
+      "intended": "Reuse existing ledger",
+      "actual": "Identity-aware local lookup",
+      "evidence": "AppStore.existingDirectExpenseLedger",
+      "findings": []
+    },
+    {
+      "id": "C095",
+      "category": "Expenses, balances & permissions",
+      "status": "Fails",
+      "case": "Two stale clients submit different first-ledger UUIDs",
+      "intended": "One server ledger per equivalent pair",
+      "actual": "Two direct containers inserted; not inherently duplicate debt",
+      "evidence": "review_expenses_math stale clients",
+      "findings": ["F20"]
+    },
+    {
+      "id": "C096",
+      "category": "Expenses, balances & permissions",
+      "status": "Tested pass",
+      "case": "Registered direct counterparty has proven accepted friend row",
+      "intended": "Allow expense",
+      "actual": "Authoritative friend-link test passes",
+      "evidence": "expenses_direct_validation.test.ts:795",
+      "findings": []
+    },
+    {
+      "id": "C097",
+      "category": "Expenses, balances & permissions",
+      "status": "Tested pass",
+      "case": "Registered counterparty only shares a group or has pending metadata",
+      "intended": "Reject new direct expense",
+      "actual": "Creator-direction guards pass",
+      "evidence": "expenses_direct_validation.test.ts:679,732",
+      "findings": []
+    },
+    {
+      "id": "C098",
+      "category": "Expenses, balances & permissions",
+      "status": "Tested pass",
+      "case": "Linked direct friend is referenced via trusted alias",
+      "intended": "Allow and preserve identity",
+      "actual": "Alias/legacy compatibility cases pass",
+      "evidence": "expenses_direct_validation.test.ts:155,285,354",
+      "findings": []
+    },
+    {
+      "id": "C099",
+      "category": "Expenses, balances & permissions",
+      "status": "Tested pass",
+      "case": "Grouped-individual expense uses confirmed friends",
+      "intended": "Save without persisted group; fan out to participants",
+      "actual": "Group-free expense tests pass",
+      "evidence": "expenses_grouped_individual.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C100",
+      "category": "Expenses, balances & permissions",
+      "status": "Tested pass",
+      "case": "Grouped-individual excludes caller or mismatches participant sets",
+      "intended": "Reject",
+      "actual": "Member-set and caller checks pass",
+      "evidence": "expenses_grouped_individual.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C101",
+      "category": "Expenses, balances & permissions",
+      "status": "Tested pass",
+      "case": "Participant settles their own canonical/alias share",
+      "intended": "Allow; leave other shares unchanged",
+      "actual": "Settlement authorization cases pass",
+      "evidence": "security_authorization.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C102",
+      "category": "Expenses, balances & permissions",
+      "status": "Tested pass",
+      "case": "Participant settles another person\u2019s share or stranger settles",
+      "intended": "Reject",
+      "actual": "Authorization cases pass",
+      "evidence": "security_authorization.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C103",
+      "category": "Expenses, balances & permissions",
+      "status": "Fails",
+      "case": "Existing direct expense names hidden third-party payer/split",
+      "intended": "Reject inconsistent financial identities",
+      "actual": "C is persisted and gets new-expense visibility",
+      "evidence": "review_expenses_math hidden third-party",
+      "findings": ["F21"]
+    },
+    {
+      "id": "C104",
+      "category": "Expenses, balances & permissions",
+      "status": "Fails",
+      "case": "Ordinary-group expense names person outside group",
+      "intended": "Reject unauthorized participant exposure",
+      "actual": "Foreign payer/split accepted and visibility added",
+      "evidence": "review_expenses_math foreign account",
+      "findings": ["F21"]
+    },
+    {
+      "id": "C105",
+      "category": "Expenses, balances & permissions",
+      "status": "Fails",
+      "case": "Offline B participant carries C\u2019s unproven linked email",
+      "intended": "Keep B unlinked; do not grant C access",
+      "actual": "C reads newly created expense",
+      "evidence": "review_expenses_math untrusted linked email",
+      "findings": ["F22"]
+    },
+    {
+      "id": "C106",
+      "category": "Expenses, balances & permissions",
+      "status": "Fails",
+      "case": "B removes friendship, then submits new expense in A-created ledger",
+      "intended": "Reject new direct expense without friendship",
+      "actual": "Creator-relative is_current_user skips A check",
+      "evidence": "review_expenses_math real accepted request lifecycle",
+      "findings": ["F28"]
+    },
+    {
+      "id": "C107",
+      "category": "Expenses, balances & permissions",
+      "status": "Fails",
+      "case": "A removes friendship then edits retained direct-expense notes",
+      "intended": "Allow unchanged historical owner edit",
+      "actual": "Rejected as not a confirmed friend",
+      "evidence": "review_expenses_math notes-only edit",
+      "findings": ["F28"]
+    },
+    {
+      "id": "C108",
+      "category": "Expenses, balances & permissions",
+      "status": "Tested pass",
+      "case": "Owner edits retained grouped-individual history after friendship removal",
+      "intended": "Permit unchanged historical participants",
+      "actual": "Dedicated history-edit test passes",
+      "evidence": "expenses_grouped_individual.test.ts:424",
+      "findings": []
+    },
+    {
+      "id": "C109",
+      "category": "Expenses, balances & permissions",
+      "status": "Fails",
+      "case": "Adjustments make split sum differ from total or negative",
+      "intended": "Reject/rebalance",
+      "actual": "Negative \u22125 split on 20 total persists",
+      "evidence": "review_expenses_math adjustments",
+      "findings": ["F06"]
+    },
+    {
+      "id": "C110",
+      "category": "Expenses, balances & permissions",
+      "status": "Fails",
+      "case": "Malformed client sends NaN/Infinity",
+      "intended": "Reject nonfinite money",
+      "actual": "Nonfinite numbers persist",
+      "evidence": "review_expenses_math nonfinite money",
+      "findings": ["F06"]
+    },
+    {
+      "id": "C111",
+      "category": "Expenses, balances & permissions",
+      "status": "Traced",
+      "case": "Equal $10/3 split",
+      "intended": "Deterministic minor-unit allocation",
+      "actual": "Three repeating fractions; display sum $9.99",
+      "evidence": "AddExpenseView.swift:217; test-only helper comparison",
+      "findings": ["F29"]
+    },
+    {
+      "id": "C112",
+      "category": "Expenses, balances & permissions",
+      "status": "Traced",
+      "case": "Select EUR/BTC then save; view in another locale",
+      "intended": "Preserve currency and value",
+      "actual": "Denomination absent; same number relabeled",
+      "evidence": "AddExpenseView.swift:333,709; ExpenseDetailView.swift:142",
+      "findings": ["F07"]
+    },
+    {
+      "id": "C113",
+      "category": "Account switching, connectivity & failure",
+      "status": "Traced",
+      "case": "Normal remote hydration completes after account switch",
+      "intended": "Discard stale data",
+      "actual": "Explicit RemoteLoadContext checks after fetches and before writes",
+      "evidence": "AppStore.performRemoteLoad",
+      "findings": []
+    },
+    {
+      "id": "C114",
+      "category": "Account switching, connectivity & failure",
+      "status": "Traced",
+      "case": "Invite claim completion arrives after account switch",
+      "intended": "Discard local completion for old account",
+      "actual": "Account ID/data epoch guards exist",
+      "evidence": "AppStore claim flow",
+      "findings": []
+    },
+    {
+      "id": "C115",
+      "category": "Account switching, connectivity & failure",
+      "status": "Traced",
+      "case": "User dismisses invite view during committed claim",
+      "intended": "Complete operation without changing a new session",
+      "actual": "Detached lifetime + captured session guards",
+      "evidence": "AppStore claim flow",
+      "findings": []
+    },
+    {
+      "id": "C116",
+      "category": "Account switching, connectivity & failure",
+      "status": "Traced",
+      "case": "Account switches during explicit offline-friend merge",
+      "intended": "Discard stale completion",
+      "actual": "Account/epoch checked after mutation and hydration",
+      "evidence": "AppStore.mergeFriend",
+      "findings": []
+    },
+    {
+      "id": "C117",
+      "category": "Account switching, connectivity & failure",
+      "status": "Fails",
+      "case": "Network-recovery fetch for A completes in B session",
+      "intended": "Discard old result",
+      "actual": "Optional context is absent; A/B local friend lists can mix",
+      "evidence": "Executed iOS reconciliation regression",
+      "findings": ["F08"]
+    },
+    {
+      "id": "C118",
+      "category": "Account switching, connectivity & failure",
+      "status": "Traced",
+      "case": "Account switches during multirow friend sync",
+      "intended": "Stop or reject old writes",
+      "actual": "No per-write expected actor/session fence",
+      "evidence": "ConvexAccountService.swift:181",
+      "findings": ["F09"]
+    },
+    {
+      "id": "C119",
+      "category": "Account switching, connectivity & failure",
+      "status": "Needs integration",
+      "case": "Account switches during chunked bulk import",
+      "intended": "Stop/reject later chunks",
+      "actual": "Shared-client sequential loop lacks import-level captured fence; backend may reject some chunks",
+      "evidence": "DataImportService.swift:1207",
+      "findings": ["F09"]
+    },
+    {
+      "id": "C120",
+      "category": "Account switching, connectivity & failure",
+      "status": "Needs integration",
+      "case": "Email accept commits but response is lost",
+      "intended": "Recover success without false persistent failure",
+      "actual": "Backend second accept safely rejects terminal state; retry UX not exercised",
+      "evidence": "linkRequests.accept + RetryPolicy",
+      "findings": []
+    },
+    {
+      "id": "C121",
+      "category": "Account switching, connectivity & failure",
+      "status": "Needs integration",
+      "case": "Physical devices race editing/settling same expense",
+      "intended": "Define stale-write policy and preserve totals",
+      "actual": "Some server/runtime revision tests pass; no live two-device sequence executed",
+      "evidence": "expense_revisions.test.ts; prepared_sync_revisions.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C122",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Delete linked friend with multiple direct ledgers",
+      "intended": "Remove caller-owned direct history and relation",
+      "actual": "Cleanup integrity cases pass",
+      "evidence": "cleanup_integrity.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C123",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Delete friend referenced through case/owner-local aliases",
+      "intended": "Resolve equivalent identities",
+      "actual": "Identity cleanup regression tests pass",
+      "evidence": "cleanup_identity_regressions.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C124",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Delete unlinked friend from multi-person shared history",
+      "intended": "Preserve surviving math/names consistently",
+      "actual": "Cleanup cases pass",
+      "evidence": "cleanup_integrity.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C125",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Use friend deletion API for group-only person",
+      "intended": "Reject without mutation",
+      "actual": "Friend boundary tests pass",
+      "evidence": "cleanup_integrity.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C126",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Cleanup encounters foreign/conflicting ownership",
+      "intended": "Reject before destructive writes",
+      "actual": "Preflight tests pass",
+      "evidence": "cleanup_integrity.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C127",
+      "category": "Deletion, revocation & long histories",
+      "status": "Fails",
+      "case": "Delete unused friend with 513 unrelated owned expenses",
+      "intended": "Complete through targeted/resumable work",
+      "actual": "Global owned-expense bound rejects",
+      "evidence": "review_unlink_cleanup 513 expenses",
+      "findings": ["F19"]
+    },
+    {
+      "id": "C128",
+      "category": "Deletion, revocation & long histories",
+      "status": "Fails",
+      "case": "B becomes ghost before stale linked-delete by A",
+      "intended": "Handle current state or report failure",
+      "actual": "Backend success:false is discarded; local tombstone hides server row",
+      "evidence": "review_unlink_cleanup + iOS adapter trace",
+      "findings": ["F18"]
+    },
+    {
+      "id": "C129",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "B clears all owned records",
+      "intended": "Remove owned records",
+      "actual": "Clear-all tests pass",
+      "evidence": "clear_all_for_user.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C130",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "B clears shared data, immediately checks results",
+      "intended": "Detach B and preserve other viewers",
+      "actual": "Immediate state correct",
+      "evidence": "clear_all_for_user.test.ts; review_unlink_cleanup",
+      "findings": []
+    },
+    {
+      "id": "C131",
+      "category": "Deletion, revocation & long histories",
+      "status": "Fails",
+      "case": "A updates an old shared expense after B cleared everything",
+      "intended": "Keep B detached",
+      "actual": "Visibility is reconstructed and old data returns",
+      "evidence": "review_unlink_cleanup settlement after clear",
+      "findings": ["F17"]
+    },
+    {
+      "id": "C132",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Clear-all exceeds one batch or is retried",
+      "intended": "Resume safely and finish",
+      "actual": "Durable resumability tests pass",
+      "evidence": "clear_all_resumability.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C133",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Soft-delete account with shared history and aliases",
+      "intended": "Preserve math/names; remove access/PII; fence identities",
+      "actual": "Stewardship/deletion receipt and fence tests pass",
+      "evidence": "self_delete_account.test.ts; deletion_fence_mutations.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C134",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Retry completed account deletion",
+      "intended": "Return completed result consistently",
+      "actual": "Deletion idempotency tests pass",
+      "evidence": "self_delete_account.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C135",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Claim/import/write overlaps deletion-fenced identity",
+      "intended": "Reject rather than reclaim",
+      "actual": "Fence tests pass",
+      "evidence": "deletion_fence_guards.test.ts; deletion_fence_mutations.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C136",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Hard delete large legacy history",
+      "intended": "Drain bounded jobs",
+      "actual": "Above-legacy-limit tests pass",
+      "evidence": "hard_delete_cleanup.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C137",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Orphan cleanup races a new live account",
+      "intended": "Protect new account",
+      "actual": "Live-account/fence cases pass",
+      "evidence": "users_store_orphan_cleanup.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C138",
+      "category": "Deletion, revocation & long histories",
+      "status": "Tested pass",
+      "case": "Migration rewrites revoked legacy identity",
+      "intended": "Keep revocation effective",
+      "actual": "Revocation tests pass",
+      "evidence": "expense_migration_revocation.test.ts; alias_revocation.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C139",
+      "category": "Backup, release & verification boundaries",
+      "status": "Fails",
+      "case": "Restore two same-name people with different UUIDs",
+      "intended": "Preserve distinct identities",
+      "actual": "2 Bobs become 1 even under createNew",
+      "evidence": "ImportExportHarness actual source",
+      "findings": ["F10"]
+    },
+    {
+      "id": "C140",
+      "category": "Backup, release & verification boundaries",
+      "status": "Fails",
+      "case": "Restore grouped-individual expense with no group row",
+      "intended": "Restore expense and context",
+      "actual": "Expense skipped: group not found",
+      "evidence": "ImportExportHarness actual source",
+      "findings": ["F11"]
+    },
+    {
+      "id": "C141",
+      "category": "Backup, release & verification boundaries",
+      "status": "Fails",
+      "case": "Restore expense with multiline quoted description",
+      "intended": "Preserve logical CSV record",
+      "actual": "1 exported expense becomes 0 parsed",
+      "evidence": "ImportExportHarness actual source",
+      "findings": ["F12"]
+    },
+    {
+      "id": "C142",
+      "category": "Backup, release & verification boundaries",
+      "status": "Fails",
+      "case": "Restore ordinary expense notes",
+      "intended": "Preserve notes",
+      "actual": "Notes are absent after round-trip",
+      "evidence": "ImportExportHarness actual source",
+      "findings": ["F11"]
+    },
+    {
+      "id": "C143",
+      "category": "Backup, release & verification boundaries",
+      "status": "Fails",
+      "case": "Restore group-only participant with no friend record",
+      "intended": "Keep group-only identity",
+      "actual": "Local confirmed friend is created",
+      "evidence": "ImportExportHarness actual source",
+      "findings": ["F13"]
+    },
+    {
+      "id": "C144",
+      "category": "Backup, release & verification boundaries",
+      "status": "Traced",
+      "case": "Archive Release against production Convex",
+      "intended": "Production backend config",
+      "actual": "project.yml separates production/development Convex correctly",
+      "evidence": "project.yml; ConvexConfig",
+      "findings": []
+    },
+    {
+      "id": "C145",
+      "category": "Backup, release & verification boundaries",
+      "status": "Fails",
+      "case": "Archive Release authentication environment",
+      "intended": "Production identity infrastructure",
+      "actual": "Single pk_test_ key and accounts.dev issuer remain",
+      "evidence": "AppConfig.swift:13; auth.config.ts:4; official Clerk docs",
+      "findings": ["F25"]
+    },
+    {
+      "id": "C146",
+      "category": "Backup, release & verification boundaries",
+      "status": "Tested pass",
+      "case": "Authenticated actor supplies another owner\u2019s fields",
+      "intended": "Server must derive actor and reject mismatch",
+      "actual": "Existing artifact/group/expense ownership cases pass",
+      "evidence": "authenticated_artifact_ownership.test.ts; security_authorization.test.ts",
+      "findings": []
+    },
+    {
+      "id": "C147",
+      "category": "Backup, release & verification boundaries",
+      "status": "Fails",
+      "case": "Legacy account lacking canonical ID adopts unrelated placeholder",
+      "intended": "Consent-bound claim only",
+      "actual": "Previously forbidden group and expense become readable",
+      "evidence": "review_security_auth bootstrap",
+      "findings": ["F04"]
+    },
+    {
+      "id": "C148",
+      "category": "Backup, release & verification boundaries",
+      "status": "Traced",
+      "case": "Authenticated stranger calls validateAccountIds for unrelated IDs",
+      "intended": "Restrict cross-account directory surface",
+      "actual": "Existence result returned without visible relationship or PayBack account",
+      "evidence": "review_security_auth account existence characterization",
+      "findings": []
+    },
+    {
+      "id": "C149",
+      "category": "Backup, release & verification boundaries",
+      "status": "Needs integration",
+      "case": "Production identity/visibility migrations are incomplete",
+      "intended": "Complete operational rollout before dependent writes",
+      "actual": "Code intentionally fails closed; actual production markers not inspected",
+      "evidence": "identity_readiness_gates.test.ts; linking runbook",
+      "findings": []
+    },
+    {
+      "id": "C150",
+      "category": "Backup, release & verification boundaries",
+      "status": "Needs integration",
+      "case": "Assume current SDK proves live server pagination behavior",
+      "intended": "Verify backend version if runtime concern occurs",
+      "actual": "Upstream now permits repeated pagination in mutations; old server behavior is not a confirmed defect",
+      "evidence": "Convex backend commit 8449d41, 2026-10-16",
+      "findings": []
+    },
+    {
+      "id": "C151",
+      "category": "Backup, release & verification boundaries",
+      "status": "Traced",
+      "case": "Run web unit-test script",
+      "intended": "Exercise meaningful product assertions",
+      "actual": "Script succeeds with No test files found",
+      "evidence": "apps/web/vitest.config.ts",
+      "findings": []
+    },
+    {
+      "id": "C152",
+      "category": "Backup, release & verification boundaries",
+      "status": "Needs integration",
+      "case": "Use CI target with PAYBACK_CI_NO_CONVEX as real adapter proof",
+      "intended": "Verify production Convex path separately",
+      "actual": "Some service tests excluded; import network branch differs; current main workflow uses real PayBackTests",
+      "evidence": "project.yml:496,555; DataImportService.swift:724",
+      "findings": []
+    }
+  ],
+  "validation": {
+    "Repository": "Reviewed commit 4fa2bedecaf14c1079a4eef631c4842557036c6a; source restored and working tree clean.",
+    "Existing backend suite": "Fresh run: 54 files, 575 tests passed. Command: bun run --cwd apps/backend test --exclude convex/tests/review_*.test.ts.",
+    "Existing iOS suite": "Full PayBackTests suite: 2,797 tests passed, zero failures. Real PayBack target with ConvexMobile 0.7.0; Xcode 26.0.1; one dedicated iPhone 17 Pro / iOS 26.0 simulator; stable /tmp/PayBackReviewDerivedData.",
+    "Repository CI": "bun run ci passed after temporary tests were archived; Turbo tasks were cache hits. Format check ran through the CI command.",
+    "Fresh static checks": "bunx --no-install turbo lint typecheck --force passed: six tasks, zero cached. Android tasks are scaffold-only.",
+    "Backend review regressions": "Six new files / 36 cases: 13 expected-correct failures and 23 passes. Passing characterization tests include observed defects and positive controls. These are separate from the existing 575 tests.",
+    "iOS review regressions": "All four selected review tests failed with eight expected assertion failures. Confirmed same-name hydration corruption, old-account reconciliation, unsaved friend confirmation and ambiguous name reuse.",
+    "Import/export harness": "Compiled actual Swift models/export/parser/import with a minimal in-memory AppStore adapter. Reproduced five local transformation/round-trip defects; not a live backend import.",
+    "Web": "One Playwright landing-page title test passed. Web unit script has no test files and succeeds by configuration; this is thin coverage.",
+    "Verification method": "Ran underlying xcodebuild build-for-testing/test commands and independent repository/web gates; did not invoke the complete scripts/test-ci-locally.sh wrapper. No TSan/ASan run; production source was not modified.",
+    "Report QA": "Desktop dark and mobile light previews inspected. Search, expand/collapse and finding links passed scripted checks; no horizontal overflow at 390 px.",
+    "Production boundary": "No production database or dashboard access, mutation, migration, deployment, commit, push or merge. Actual deployed code/configuration and production legacy-data prevalence remain unverified."
+  }
+}

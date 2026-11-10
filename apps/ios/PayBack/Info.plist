@@ -37,6 +37,10 @@
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.finance</string>
+	<key>PAYBACK_CLERK_ISSUER</key>
+	<string>$(PAYBACK_CLERK_ISSUER)</string>
+	<key>PAYBACK_CLERK_PUBLISHABLE_KEY</key>
+	<string>$(PAYBACK_CLERK_PUBLISHABLE_KEY)</string>
 	<key>PAYBACK_CONVEX_ENV</key>
 	<string>$(PAYBACK_CONVEX_ENV)</string>
 	<key>UILaunchScreen</key>

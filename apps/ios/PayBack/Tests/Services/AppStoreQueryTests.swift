@@ -376,10 +376,11 @@ final class AppStoreQueryTests: XCTestCase {
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
 
+        try await sut.addUnlinkedFriend(alice)
         try await sut.updateFriendNickname(memberId: alice.id, nickname: "Ally")
 
         try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertTrue(true)
+        XCTAssertEqual(sut.friends.first(where: { $0.memberId == alice.id })?.nickname, "Ally")
     }
 
     func testUpdateFriendNickname_ClearsNickname() async throws {
@@ -389,10 +390,11 @@ final class AppStoreQueryTests: XCTestCase {
         sut.addGroup(name: "Trip", memberNames: ["Alice"])
         let alice = sut.groups[0].members.first { $0.name == "Alice" }!
 
+        try await sut.addUnlinkedFriend(alice)
         try await sut.updateFriendNickname(memberId: alice.id, nickname: nil)
 
         try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertTrue(true)
+        XCTAssertEqual(sut.friends.first(where: { $0.memberId == alice.id })?.nickname, nil)
     }
 
     // MARK: - Duplicate Prevention Tests

@@ -847,15 +847,16 @@ actor TestAccountService: AccountService {
             throw errorToThrow
         }
 
-        if let account = createdAccount {
-            return account
-        }
-
-        return UserAccount(id: UUID().uuidString, email: email, displayName: displayName)
+        let account = createdAccount ?? UserAccount(id: UUID().uuidString, email: email, displayName: displayName)
+        // Production users:store persists its result before canonical refresh.
+        existingAccount = account
+        return account
     }
 
     func updateLinkedMember(accountId: String, memberId: UUID?) async throws {
-        // No-op for tests
+        guard var account = existingAccount, account.id == accountId else { throw PayBackError.authSessionMissing }
+        account.linkedMemberId = memberId
+        existingAccount = account
     }
 
     func syncFriends(accountEmail: String, friends: [AccountFriend]) async throws {

@@ -98,7 +98,9 @@ describe("durable clear-all processing", () => {
       expect(ownerId).toBeDefined();
 
       const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
-      await expect(owner.mutation(api.expenses.clearAllForUser, {})).resolves.toBeNull();
+      await expect(
+        owner.mutation(api.expenses.clearAllForUser, { financial_contract_version: 2 })
+      ).resolves.toBeNull();
       await finishScheduledFunctions(t);
 
       expect(await t.run((ctx) => ctx.db.query("expenses").collect())).toEqual([]);
@@ -158,9 +160,12 @@ describe("durable clear-all processing", () => {
     });
 
     const member = t.withIdentity(identity("member@example.com", "member_auth"));
-    let result = await member.mutation(api.groups.clearAllForUserV2, {});
+    let result = await member.mutation(api.groups.clearAllForUserV2, {
+      financial_contract_version: 2
+    });
     while (result.inProgress) {
       result = await member.mutation(api.groups.clearAllForUserV2, {
+        financial_contract_version: 2,
         cutoff: result.cutoff
       });
     }
@@ -205,9 +210,9 @@ describe("durable clear-all processing", () => {
     });
 
     const caller = t.withIdentity(identity("caller@example.com", "caller_auth"));
-    await expect(caller.mutation(api.expenses.clearAllForUserV2, {})).rejects.toThrow(
-      "Expense owner identity is inconsistent"
-    );
+    await expect(
+      caller.mutation(api.expenses.clearAllForUserV2, { financial_contract_version: 2 })
+    ).rejects.toThrow("Expense owner identity is inconsistent");
 
     expect(await t.run((ctx) => ctx.db.get(fixture))).not.toBeNull();
   });
@@ -273,24 +278,30 @@ describe("durable clear-all processing", () => {
 
       const viewer = t.withIdentity(identity("viewer@example.com", "viewer_auth"));
       const owner = t.withIdentity(identity("owner@example.com", "owner_auth"));
-      let result = await viewer.mutation(api.expenses.clearAllForUserV2, {});
-      const remainingExpenseId = await t.run(async (ctx) => {
+      let result = await viewer.mutation(api.expenses.clearAllForUserV2, {
+        financial_contract_version: 2
+      });
+      const remainingExpense = await t.run(async (ctx) => {
         const row = await ctx.db
           .query("user_expenses")
           .withIndex("by_user_id", (query) => query.eq("user_id", "viewer_auth"))
           .unique();
-        return row?.expense_id;
+        return row ? await ctx.db.get(row.expense_ref!) : null;
       });
-      expect(remainingExpenseId).toBeDefined();
+      expect(remainingExpense).not.toBeNull();
 
       vi.setSystemTime(result.cutoff + 1_000);
       await owner.mutation(api.expenses.setSettlementState, {
-        expenseId: remainingExpenseId!,
-        memberIds: ["viewer_member"],
+        financial_contract_version: 2,
+        expenseId: remainingExpense!.id,
+        splitIds: remainingExpense!.splits
+          .filter((split) => split.member_id === "viewer_member")
+          .map((split) => split.id),
         settled: true
       });
       while (result.inProgress) {
         result = await viewer.mutation(api.expenses.clearAllForUserV2, {
+          financial_contract_version: 2,
           cutoff: result.cutoff
         });
       }
@@ -352,9 +363,12 @@ describe("durable clear-all processing", () => {
     });
 
     const owner = t.withIdentity(identity("large-owner@example.com", "large_owner_auth"));
-    let result = await owner.mutation(api.groups.clearAllForUserV2, {});
+    let result = await owner.mutation(api.groups.clearAllForUserV2, {
+      financial_contract_version: 2
+    });
     for (let attempt = 0; result.inProgress && attempt < 520; attempt += 1) {
       result = await owner.mutation(api.groups.clearAllForUserV2, {
+        financial_contract_version: 2,
         cutoff: result.cutoff
       });
     }

@@ -82,7 +82,10 @@ describe("identity mutation readiness gates", () => {
     const claimer = t.withIdentity(identity("claimer@test.com", "claimer_auth"));
 
     await expect(
-      claimer.mutation(api.inviteTokens.claim, { id: "pending_rollout_invite" })
+      claimer.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
+        id: "pending_rollout_invite"
+      })
     ).rejects.toThrow("Identity maintenance required");
     await expectClaimStateUnchanged(t);
   });
@@ -156,7 +159,10 @@ describe("identity mutation readiness gates", () => {
 
     const recipient = t.withIdentity(identity("recipient@test.com", "recipient_auth"));
     await expect(
-      recipient.mutation(api.linkRequests.accept, { id: "pending_link_request" })
+      recipient.mutation(api.linkRequests.accept, {
+        financial_contract_version: 2,
+        id: "pending_link_request"
+      })
     ).rejects.toThrow("Identity maintenance required");
     const request = await t.run(async (ctx) =>
       ctx.db
@@ -190,6 +196,7 @@ describe("identity mutation readiness gates", () => {
     const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await expect(
       owner.mutation(api.bulkImport.bulkImport, {
+        financial_contract_version: 2,
         friends: [
           {
             member_id: "Legacy_Linked",
@@ -233,6 +240,7 @@ describe("identity mutation readiness gates", () => {
     const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await expect(
       owner.mutation(api.bulkImport.bulkImport, {
+        financial_contract_version: 2,
         friends: [
           {
             member_id: "legacy_target",
@@ -344,8 +352,11 @@ describe("identity mutation readiness gates", () => {
 
     const legacy = t.withIdentity(identity("legacy@test.com", "legacy_auth"));
     await expect(
-      legacy.mutation(api.users.updateLinkedMemberId, { member_id: "Canonical_Member" })
-    ).rejects.toThrow("Identity maintenance required");
+      legacy.mutation(api.users.updateLinkedMemberId, {
+        financial_contract_version: 2,
+        member_id: "Canonical_Member"
+      })
+    ).rejects.toThrow("Refresh or upgrade required");
     const account = await t.run(async (ctx) =>
       ctx.db
         .query("accounts")
@@ -438,9 +449,12 @@ describe("identity pending-read compatibility", () => {
       const viewer = t.withIdentity(identity("viewer@test.com", "viewer_auth"));
       const [account, groups, expenses, resolvedLegacy, resolvedAccountAlias, aliases] =
         await Promise.all([
-          viewer.query(api.users.viewer, {}),
-          viewer.query(api.groups.list, {}),
-          viewer.query(api.expenses.listByGroup, { group_id: `pending_${phase}_group` }),
+          viewer.query(api.users.viewer, { financial_contract_version: 2 }),
+          viewer.query(api.groups.list, { financial_contract_version: 2 }),
+          viewer.query(api.expenses.listByGroup, {
+            financial_contract_version: 2,
+            group_id: `pending_${phase}_group`
+          }),
           t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "legacy_alias" }),
           t.query(internal.aliases.resolveCanonicalMemberId, { memberId: "account_array_alias" }),
           t.query(internal.aliases.getAliasesForMember, { canonicalMemberId: "canonical_member" })

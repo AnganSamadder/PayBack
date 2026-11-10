@@ -10,7 +10,13 @@ import Foundation
 /// | Release      | External TestFlight / App Store | ❌ | ❌ | Prod |
 enum AppConfig {
 
-    static let clerkPublishableKey = "pk_test_YWNjdXJhdGUtZWFnbGUtODAuY2xlcmsuYWNjb3VudHMuZGV2JA=="
+    static var clerkPublishableKey: String {
+        Bundle.main.object(forInfoDictionaryKey: "PAYBACK_CLERK_PUBLISHABLE_KEY") as? String ?? ""
+    }
+
+    static var clerkIssuer: String {
+        Bundle.main.object(forInfoDictionaryKey: "PAYBACK_CLERK_ISSUER") as? String ?? ""
+    }
 
     // MARK: - Build Detection
 

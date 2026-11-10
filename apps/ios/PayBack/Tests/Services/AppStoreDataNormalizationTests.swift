@@ -574,7 +574,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
 
     // MARK: - Known Group Participant Deduplication Tests
 
-    func testKnownGroupParticipants_SkipsUnlinkedRemoteFriendWhenNameMatchesGroupMemberButIdsDiffer() async throws {
+    func testKnownGroupParticipants_PreservesUnlinkedFriendAndDistinctSameNameGroupMember() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Current User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
@@ -607,9 +607,9 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         // When
         let friends = sut.knownGroupParticipants
 
-        // Then - prefer the group member ID (matches groups/expenses) and avoid duplicates
+        // Distinct IDs remain distinct until explicit linking establishes equivalence.
         XCTAssertTrue(friends.contains(where: { $0.id == groupMemberId }))
-        XCTAssertFalse(friends.contains(where: { $0.id == remoteFriendId }))
+        XCTAssertTrue(friends.contains(where: { $0.id == remoteFriendId }))
     }
 
     func testKnownGroupParticipants_DoesNotSkipLinkedRemoteFriendWhenNameMatchesGroupMemberButIdsDiffer() async throws {
@@ -649,7 +649,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
         XCTAssertTrue(friends.contains(where: { $0.id == remoteFriendId }))
     }
 
-    func testKnownGroupParticipants_SkipsUnlinkedRemoteFriendWhenNicknameMatchesGroupMemberNameButIdsDiffer() async throws {
+    func testKnownGroupParticipants_PreservesDistinctNicknameCollision() async throws {
         // Given
         let account = UserAccount(id: "test-123", email: "test@example.com", displayName: "Example User")
         try await sut.completeAuthenticationAndWait(email: account.email, name: account.displayName)
@@ -683,7 +683,7 @@ final class AppStoreDataNormalizationTests: XCTestCase {
 
         // Then
         XCTAssertTrue(friends.contains(where: { $0.id == groupMemberId }))
-        XCTAssertFalse(friends.contains(where: { $0.id == remoteFriendId }))
+        XCTAssertTrue(friends.contains(where: { $0.id == remoteFriendId }))
     }
 
     // MARK: - Complex Alias Mapping Tests

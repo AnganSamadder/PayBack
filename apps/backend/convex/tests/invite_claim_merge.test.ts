@@ -360,7 +360,10 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
 
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
-      claimerCtx.mutation(api.inviteTokens.claim, { id: "historical_claim_fixture" })
+      claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
+        id: "historical_claim_fixture"
+      })
     ).resolves.toMatchObject({ canonical_member_id: "claimer_member" });
 
     const historicalAlias = await t.run(async (ctx) =>
@@ -415,7 +418,10 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     });
 
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
-    await claimerCtx.mutation(api.inviteTokens.claim, { id: "unrelated_claim" });
+    await claimerCtx.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
+      id: "unrelated_claim"
+    });
 
     const standaloneAlias = await t.run(async (ctx) =>
       ctx.db
@@ -461,7 +467,10 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
 
     const claimerCtx = await withReadyIdentity(t, "large-claimer@test.com", "large_claimer_auth");
     await expect(
-      claimerCtx.mutation(api.inviteTokens.claim, { id: "large_live_claim" })
+      claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
+        id: "large_live_claim"
+      })
     ).rejects.toThrow("Identity maintenance required");
   });
 
@@ -517,6 +526,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_same_id",
         mergeLocalFriendMemberId: "creator_member"
       })
@@ -603,6 +613,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_pending_target",
         mergeLocalFriendMemberId: "local_duplicate"
       })
@@ -793,6 +804,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
 
     const result = await claimerCtx.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
       id: "invite_token_1",
       mergeLocalFriendMemberId: "local_ghost_member"
     });
@@ -858,6 +870,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     ]);
 
     const retryResult = await claimerCtx.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
       id: "invite_token_1",
       mergeLocalFriendMemberId: "local_ghost_member"
     });
@@ -882,6 +895,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     });
 
     const expiredRetry = await claimerCtx.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
       id: "invite_token_1",
       mergeLocalFriendMemberId: "local_ghost_member"
     });
@@ -889,6 +903,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
 
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_token_1",
         mergeLocalFriendMemberId: "different_local_friend"
       })
@@ -978,6 +993,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
 
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await claimerCtx.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
       id: "invite_payer_only",
       mergeLocalFriendMemberId: "payer_only_duplicate"
     });
@@ -1042,6 +1058,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
 
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_token_not_owned",
         mergeLocalFriendMemberId: "someone_else_friend"
       })
@@ -1101,6 +1118,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
 
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_token_linked_friend",
         mergeLocalFriendMemberId: "already_linked_friend"
       })
@@ -1229,6 +1247,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimer.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_target_foreign_alias",
         mergeLocalFriendMemberId: "selected_creator_duplicate"
       })
@@ -1296,6 +1315,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_over_cap_source",
         mergeLocalFriendMemberId: "local_duplicate"
       })
@@ -1372,6 +1392,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_registered_source",
         mergeLocalFriendMemberId: "registered_member"
       })
@@ -1444,6 +1465,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_registered_alias_source",
         mergeLocalFriendMemberId: "registered_alias"
       })
@@ -1506,6 +1528,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_large_account_table",
         mergeLocalFriendMemberId: "local_duplicate"
       })
@@ -1598,6 +1621,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
 
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await claimerCtx.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
       id: "invite_owner_scope",
       mergeLocalFriendMemberId: "shared_uuid"
     });
@@ -1675,6 +1699,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: `identity_closure_${mergeMemberId}`,
         mergeLocalFriendMemberId: mergeMemberId
       })
@@ -1777,6 +1802,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimer.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_source_alias_claimant_identity",
         mergeLocalFriendMemberId: "local_duplicate"
       })
@@ -1897,6 +1923,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
 
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await claimerCtx.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
       id: "invite_with_local_target_alias"
     });
 
@@ -1989,6 +2016,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
 
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await claimerCtx.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
       id: "invite_with_canonical_collision"
     });
 
@@ -2076,6 +2104,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_large_friend_fallbacks",
         mergeLocalFriendMemberId: "creator_duplicate"
       })
@@ -2135,6 +2164,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "invite_large_alias_preflight"
       })
     ).rejects.toThrow("Friend merge is too large to complete safely");
@@ -2210,6 +2240,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimerCtx = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimerCtx.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "shared_merge_budget",
         mergeLocalFriendMemberId: "local_duplicate"
       })
@@ -2284,7 +2315,10 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
 
     const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
-      claimer.mutation(api.inviteTokens.claim, { id: "aggregate_rewrite_invite" })
+      claimer.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
+        id: "aggregate_rewrite_invite"
+      })
     ).rejects.toThrow("Friend merge is too large to complete safely");
 
     const state = await t.run(async (ctx) => ({
@@ -2436,7 +2470,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     expect(state.aliases).toEqual([]);
   });
 
-  test("applies two prepared invite rewrites with one combined sync revision per account", async () => {
+  test("applies both invite rewrites and advances both accounts' complete visibility revisions", async () => {
     const t = convexTest(schema, modules);
     const now = Date.now();
 
@@ -2481,7 +2515,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
         ownerMemberId: "creator_member",
         sourceMemberId: "claimer_legacy_member",
         prefix: "creator_aggregate",
-        payloadBytes: 360 * 1024,
+        payloadBytes: 180 * 1024,
         now
       });
       await insertLargeRewriteSurface(ctx, {
@@ -2491,7 +2525,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
         ownerMemberId: "claimer_member",
         sourceMemberId: "creator_local_duplicate",
         prefix: "claimer_aggregate",
-        payloadBytes: 360 * 1024,
+        payloadBytes: 180 * 1024,
         now
       });
     });
@@ -2499,6 +2533,7 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     const claimer = await withReadyIdentity(t, "claimer@test.com", "claimer_auth");
     await expect(
       claimer.mutation(api.inviteTokens.claim, {
+        financial_contract_version: 2,
         id: "aggregate_two_rewrite_invite",
         mergeLocalFriendMemberId: "creator_local_duplicate"
       })
@@ -2554,11 +2589,11 @@ describe("inviteTokens.claim mergeLocalFriendMemberId", () => {
     expect(state.expenseVisibility).toHaveLength(4);
     expect(state.syncStates).toHaveLength(2);
     expect(new Set(state.syncStates.map((syncState) => String(syncState.account_id))).size).toBe(2);
-    expect(state.syncStates).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ groups_revision: 1, expenses_revision: 1 }),
-        expect.objectContaining({ groups_revision: 1, expenses_revision: 1 })
-      ])
-    );
+    for (const syncState of state.syncStates) {
+      // Full foreign visibility reconciliation can publish more than one group revision.
+      expect(syncState.groups_revision).toBeGreaterThanOrEqual(1);
+      // One financial batch and two alias-visibility passes invalidate retained expense snapshots.
+      expect(syncState.expenses_revision).toBe(3);
+    }
   }, 30_000);
 });

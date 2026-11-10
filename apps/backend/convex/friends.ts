@@ -1,9 +1,18 @@
+import { scheduleChangedFriendHistory } from "./cleanup";
+import { syncOwnerLocalAliasReferences } from "./aliases";
+import {
+  assertFinancialContract,
+  assertExpectedActor,
+  assertMemberFinancialContract,
+  pendingIdentityOperation
+} from "./financialContract";
 import { query, mutation, internalMutation, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc } from "./_generated/dataModel";
 import { getConvexSize, type Value, v } from "convex/values";
 import { getRandomAvatarColor } from "./utils";
 import {
+  getEquivalentAliasMemberIds,
   findAccountByAuthIdOrDocId,
   findAccountByMemberId,
   normalizeMemberId,
@@ -114,7 +123,31 @@ async function deleteFriendBatch(
     .order("asc")
     .take(FRIEND_CLEAR_BATCH_SIZE);
 
-  await Promise.all(friends.map((friend) => ctx.db.delete(friend._id)));
+  const owner = await ctx.db
+    .query("accounts")
+    .withIndex("by_email", (q) => q.eq("email", accountEmail))
+    .unique();
+  if (owner) {
+    const pending = await pendingIdentityOperation(ctx, owner._id);
+    if (pending?.kind === "friend_history") {
+      if (scheduleContinuation && pending.phase !== "failed")
+        await ctx.scheduler.runAfter(1000, internal.friends.clearAllForUserBatch, {
+          accountEmail,
+          cutoff
+        });
+      return { inProgress: true, processed: 0, cutoff };
+    }
+    await assertFinancialContract(ctx, owner, 2);
+    if (friends.length)
+      await ctx.db.patch(owner._id, {
+        updated_at: Math.max(Date.now(), (owner.updated_at ?? 0) + 1)
+      });
+  }
+  for (const friend of friends) {
+    await syncOwnerLocalAliasReferences(ctx, null, friend._id);
+    await ctx.db.delete(friend._id);
+  }
+  await scheduleChangedFriendHistory(ctx, friends);
   if (scheduleContinuation && friends.length === FRIEND_CLEAR_BATCH_SIZE) {
     await ctx.scheduler.runAfter(0, internal.friends.clearAllForUserBatch, {
       accountEmail,
@@ -129,8 +162,12 @@ async function deleteFriendBatch(
 }
 
 export const list = query({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string())
+  },
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
 
@@ -146,6 +183,8 @@ export const list = query({
     accountFriendListRows(budget, user ? [user] : []);
 
     if (!user) return [];
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     const accountEmail = user.email.trim().toLowerCase();
 
     chargeFriendListQueries(budget, 1);
@@ -155,6 +194,16 @@ export const list = query({
       .order("asc")
       .take(FRIEND_LIST_LIMITS.friends + 1);
     accountFriendListRows(budget, friends, true);
+    await assertMemberFinancialContract(
+      ctx,
+      friends.flatMap((friend) => [
+        friend.member_id,
+        friend.linked_member_id ?? friend.member_id,
+        ...(friend.local_alias_member_ids ?? [])
+      ]),
+      args.financial_contract_version,
+      user._id
+    );
 
     type LinkedIdentityContext = {
       provenLink: ProvenFriendLink;
@@ -167,6 +216,7 @@ export const list = query({
     // present in account_friends for this owner.
     const linkedIdentityContexts = new Map<string, LinkedIdentityContext>();
     const provenLinksByFriendId = new Map<string, ProvenFriendLink>();
+    const globalAliasesByAccountId = new Map<string, string[]>();
     const normalizedFriends = friends.map((friend) => ({
       ...friend,
       normalizedMemberId: normalizeMemberId(friend.member_id)
@@ -183,9 +233,15 @@ export const list = query({
       if (!provenLink) continue;
       provenLinksByFriendId.set(String(friend._id), provenLink);
 
+      let globalAliases = globalAliasesByAccountId.get(provenLink.linkedAccountId);
+      if (!globalAliases) {
+        chargeFriendListQueries(budget, 4);
+        globalAliases = await getEquivalentAliasMemberIds(ctx.db, provenLink.linkedMemberId);
+        globalAliasesByAccountId.set(provenLink.linkedAccountId, globalAliases);
+      }
       const aliasSet = new Set<string>();
       aliasSet.add(provenLink.linkedMemberId);
-      for (const alias of provenLink.account.alias_member_ids || []) {
+      for (const alias of globalAliases) {
         aliasSet.add(normalizeMemberId(alias));
       }
       for (const alias of friend.local_alias_member_ids || []) {
@@ -262,7 +318,7 @@ export const list = query({
         const context = linkedIdentityContexts.get(provenLink.linkedAccountId);
         const duplicateMemberIds = context ? Array.from(context.memberIds) : [];
         const enrichedAliases = normalizeMemberIds([
-          ...(provenLink.account.alias_member_ids || []),
+          ...(globalAliasesByAccountId.get(provenLink.linkedAccountId) ?? []),
           ...(friend.local_alias_member_ids || []),
           ...duplicateMemberIds
         ]);
@@ -378,6 +434,9 @@ export const list = query({
  */
 export const upsert = mutation({
   args: {
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
+    financial_contract_version: v.optional(v.number()),
     member_id: v.string(),
     name: v.string(),
     nickname: v.optional(v.string()),
@@ -394,6 +453,11 @@ export const upsert = mutation({
   },
   handler: async (ctx, args) => {
     const { user: caller } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(caller, args);
+    await assertFinancialContract(ctx, caller, args.financial_contract_version);
+    await ctx.db.patch(caller._id, {
+      updated_at: Math.max(Date.now(), (caller.updated_at ?? 0) + 1)
+    });
     const accountEmail = caller.email.trim().toLowerCase();
     const normalizedMemberId = normalizeMemberId(args.member_id);
 
@@ -464,6 +528,12 @@ export const upsert = mutation({
           status: "ghost",
           updated_at: Date.now()
         });
+        await syncOwnerLocalAliasReferences(
+          ctx,
+          await ctx.db.get(existingLegacy._id),
+          existingLegacy._id
+        );
+        await scheduleChangedFriendHistory(ctx, [existingLegacy]);
         return existingLegacy._id;
       }
       const provenLink = await resolveProvenFriendLink(ctx, existingLegacy);
@@ -473,9 +543,9 @@ export const upsert = mutation({
         member_id: normalizedMemberId,
         name: safeName,
         nickname: normalizedNickname,
-        original_name: args.original_name,
-        original_nickname: args.original_nickname,
-        prefer_nickname: args.prefer_nickname,
+        original_name: args.original_name ?? existingLegacy.original_name,
+        original_nickname: args.original_nickname ?? existingLegacy.original_nickname,
+        prefer_nickname: args.prefer_nickname ?? existingLegacy.prefer_nickname,
         first_name: args.first_name ?? existingLegacy.first_name,
         last_name: args.last_name ?? existingLegacy.last_name,
         display_preference:
@@ -491,6 +561,17 @@ export const upsert = mutation({
         status: isGhost ? "ghost" : (existingLegacy.status ?? (provenLink ? "friend" : "manual")),
         updated_at: Date.now()
       });
+      await syncOwnerLocalAliasReferences(
+        ctx,
+        await ctx.db.get(existingLegacy._id),
+        existingLegacy._id
+      );
+      if (
+        existingLegacy.has_linked_account !== (provenLink !== null) ||
+        existingLegacy.linked_account_id !== provenLink?.linkedAccountId ||
+        existingLegacy.linked_member_id !== provenLink?.linkedMemberId
+      )
+        await scheduleChangedFriendHistory(ctx, [existingLegacy]);
       return existingLegacy._id;
     } else {
       const isGhost =
@@ -520,17 +601,25 @@ export const upsert = mutation({
  * Clears all friends for the current authenticated user.
  */
 export const clearAllForUser = mutation({
-  args: {},
-  handler: async (ctx) => {
+  args: { financial_contract_version: v.optional(v.number()) },
+  handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
 
+    await assertFinancialContract(ctx, user, args.financial_contract_version, {
+      allowPending: true
+    });
     await deleteFriendBatch(ctx, user.email.trim().toLowerCase(), Date.now(), true);
     return null;
   }
 });
 
 export const clearAllForUserV2 = mutation({
-  args: { cutoff: v.optional(v.number()) },
+  args: {
+    cutoff: v.optional(v.number()),
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string())
+  },
   returns: v.object({
     inProgress: v.boolean(),
     processed: v.number(),
@@ -538,6 +627,10 @@ export const clearAllForUserV2 = mutation({
   }),
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version, {
+      allowPending: true
+    });
     return await deleteFriendBatch(
       ctx,
       user.email.trim().toLowerCase(),

@@ -394,7 +394,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertTrue(isCurrent)
     }
 
-    func testIsCurrentUser_WithNameYou_ReturnsTrue() async throws {
+    func testIsCurrentUser_WithNameYouPreservesDistinctIdentity() async throws {
         // Given
         let member = GroupMember(name: "You")
 
@@ -402,7 +402,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         let isCurrent = sut.isCurrentUser(member)
 
         // Then
-        XCTAssertTrue(isCurrent)
+        XCTAssertFalse(isCurrent)
     }
 
     func testIsCurrentUser_WithLinkedMemberId_ReturnsTrue() async throws {
@@ -463,7 +463,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         XCTAssertFalse(isCurrent)
     }
 
-    func testIsCurrentUser_WithMatchingName_ReturnsTrue() async throws {
+    func testIsCurrentUser_WithMatchingNamePreservesDistinctIdentity() async throws {
         // Given
         let member = GroupMember(name: sut.currentUser.name)
 
@@ -471,7 +471,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         let isCurrent = sut.isCurrentUser(member)
 
         // Then
-        XCTAssertTrue(isCurrent)
+        XCTAssertFalse(isCurrent)
     }
 
     // MARK: - Is Direct Group Tests
@@ -968,7 +968,10 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
         sut.session = UserSession(account: accountB)
         await mockLinkRequestService.resumeAccept()
-        try await operation.value
+        do {
+            try await operation.value
+            XCTFail("A stale acceptance must report cancellation")
+        } catch is CancellationError { }
 
         XCTAssertEqual(sut.session?.account, accountB)
     }
@@ -1256,6 +1259,17 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         )
     }
 
+    func testRealtimeAccountUpdateCannotEstablishSessionOrCrossAccounts() {
+        let accountA = UserAccount(id: "account-a", email: "a@example.com", displayName: "A")
+        let accountB = UserAccount(id: "account-b", email: "b@example.com", displayName: "B", status: "deleting")
+        sut.handleRealtimeAccountUpdate(accountA)
+        XCTAssertNil(sut.session)
+        sut.session = UserSession(account: accountA)
+        sut.handleRealtimeAccountUpdate(accountB)
+        XCTAssertEqual(sut.session?.account, accountA)
+        XCTAssertEqual(sut.accountDeletionState, .idle)
+    }
+
     func testRealtimeDeletingAccountEntersBackendDeletionRecovery() {
         let recoveryStore = makeDeletionStore(emailAuthService: ControlledDeletionEmailAuthService())
         let deletingAccount = UserAccount(
@@ -1265,6 +1279,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             status: "deleting"
         )
 
+        recoveryStore.session = UserSession(account: deletingAccount)
         recoveryStore.handleRealtimeAccountUpdate(deletingAccount)
 
         XCTAssertEqual(recoveryStore.accountDeletionState, .awaitingBackendDeletion)
@@ -1283,6 +1298,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             groups: [[staleRemoteGroup]],
             delaysNanoseconds: [500_000_000]
         )
+        recoveryStore.session = UserSession(account: account)
         recoveryStore.handleRealtimeAccountUpdate(account)
 
         let remoteLoad = Task { @MainActor in
@@ -1318,6 +1334,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             email: "owner@example.com",
             displayName: "Owner"
         )
+        recoveryStore.session = UserSession(account: account)
         recoveryStore.handleRealtimeAccountUpdate(account)
 
         var deletingAccount = account
@@ -1416,6 +1433,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
         let sessionLoader = SequencedAuthenticationSessionLoader(
             outcomes: [.identity(identity), .noUser]
         )
+        let authService = ControlledDeletionEmailAuthService()
         let recoveryStore = AppStore(
             persistence: mockPersistence,
             accountService: mockAccountService,
@@ -1423,7 +1441,7 @@ final class AppStoreEdgeCaseTests: XCTestCase {
             groupCloudService: mockGroupCloudService,
             linkRequestService: mockLinkRequestService,
             inviteLinkService: mockInviteLinkService,
-            emailAuthService: MockEmailAuthService(),
+            emailAuthService: authService,
             skipClerkInit: true,
             authenticationSessionLoader: {
                 try await sessionLoader.load()
@@ -1433,8 +1451,13 @@ final class AppStoreEdgeCaseTests: XCTestCase {
 
         await recoveryStore.checkSession()
 
-        XCTAssertNotNil(recoveryStore.session)
+        XCTAssertNil(recoveryStore.session, "Initial hydration must not expose an incomplete logical session")
         XCTAssertTrue(recoveryStore.isAuthenticationSessionRecoveryBlocking)
+        XCTAssertFalse(recoveryStore.canPresentAuthenticationFlow)
+        XCTAssertNotNil(recoveryStore.authenticationSessionRecoveryMessage)
+        XCTAssertNotNil(recoveryStore.dataSyncRecoveryMessage)
+        let signOutCalls = await authService.signOutCalls()
+        XCTAssertEqual(signOutCalls, 0, "Recoverable data failure retains provider authentication")
 
         await recoveryStore.checkSession()
 

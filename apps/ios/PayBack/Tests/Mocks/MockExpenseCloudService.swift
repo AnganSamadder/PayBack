@@ -21,6 +21,8 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var upsertDelaysNanoseconds: [UInt64] = []
     private var upsertInvocationCount = 0
     private var shouldSuspendUpsert = false
+    private var shouldSuspendAfterUpsertCommit = false
+    private var checksCancellationBeforeUpsertCommit = false
     private var upsertContinuation: CheckedContinuation<Void, Never>?
     private var settlementInvocationCount = 0
     private var queuedSettlementResponses: [QueuedSettlementResponse] = []
@@ -31,12 +33,23 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     private var shouldSuspendClearAll = false
     private var clearAllContinuation: CheckedContinuation<Void, Never>?
 
+    private var canonicalSaveResult: SavedExpenseResult?
+    private var savedExpectedActorIds: [String] = []
+    func configureCanonicalSaveResult(_ result: SavedExpenseResult) { canonicalSaveResult = result }
+    func expectedSaveActors() -> [String] { savedExpectedActorIds }
+    func saveExpense(_ expense: Expense, participants: [ExpenseParticipant], expectedAccountId: String) async throws -> SavedExpenseResult {
+        savedExpectedActorIds.append(expectedAccountId)
+        try await upsertExpense(expense, participants: participants)
+        return canonicalSaveResult ?? SavedExpenseResult(expense: expense, group: nil)
+    }
+
     func upsertExpense(_ expense: Expense, participants: [ExpenseParticipant]) async throws {
         if shouldFail {
             throw PayBackError.authSessionMissing
         }
         upsertInvocationCount += 1
         if shouldSuspendUpsert {
+            shouldSuspendUpsert = false
             await withCheckedContinuation { continuation in
                 upsertContinuation = continuation
             }
@@ -45,8 +58,13 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         if delay > 0 {
             try await Task.sleep(nanoseconds: delay)
         }
+        if checksCancellationBeforeUpsertCommit { try Task.checkCancellation() }
         expenses[expense.id] = expense
         participantsByExpenseId[expense.id] = participants
+        if shouldSuspendAfterUpsertCommit {
+            shouldSuspendAfterUpsertCommit = false
+            await withCheckedContinuation { upsertContinuation = $0 }
+        }
     }
 
     func fetchExpenses() async throws -> [Expense] {
@@ -57,6 +75,12 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     }
 
     func setSettlementState(expenseId: UUID, memberIds: Set<UUID>, settled: Bool) async throws -> Expense {
+        guard let expense = expenses[expenseId] else { throw PayBackError.expenseNotFound(id: expenseId) }
+        let splitIds = Set(expense.splits.filter { memberIds.contains($0.memberId) }.map(\.id))
+        return try await setSettlementState(expenseId: expenseId, splitIds: splitIds, settled: settled, expectedAccountId: "mock")
+    }
+
+    func setSettlementState(expenseId: UUID, splitIds: Set<UUID>, settled: Bool, expectedAccountId: String) async throws -> Expense {
         settlementInvocationCount += 1
         if !queuedSettlementResponses.isEmpty {
             let response = queuedSettlementResponses.removeFirst()
@@ -83,7 +107,7 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         }
 
         expense.splits = expense.splits.map { split in
-            guard memberIds.contains(split.memberId) else { return split }
+            guard splitIds.contains(split.id) else { return split }
             var updatedSplit = split
             updatedSplit.isSettled = settled
             return updatedSplit
@@ -152,6 +176,10 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
         shouldSuspendUpsert = true
     }
 
+    func suspendNextUpsertAfterCommit() { shouldSuspendAfterUpsertCommit = true }
+    func setCancellationBeforeUpsertCommit(_ enabled: Bool) { checksCancellationBeforeUpsertCommit = enabled }
+    func isUpsertSuspended() -> Bool { upsertContinuation != nil }
+
     func resumeUpsert() {
         shouldSuspendUpsert = false
         upsertContinuation?.resume()
@@ -199,12 +227,16 @@ actor MockExpenseCloudServiceForAppStore: ExpenseCloudService {
     }
 
     func reset() {
+        canonicalSaveResult = nil
+        savedExpectedActorIds = []
         expenses.removeAll()
         participantsByExpenseId.removeAll()
         shouldFail = false
         upsertDelaysNanoseconds.removeAll()
         upsertInvocationCount = 0
         shouldSuspendUpsert = false
+        shouldSuspendAfterUpsertCommit = false
+        checksCancellationBeforeUpsertCommit = false
         upsertContinuation?.resume()
         upsertContinuation = nil
         settlementInvocationCount = 0

@@ -1,3 +1,5 @@
+import { isAccountDeletionFenced } from "./helpers";
+import { scheduleChangedFriendHistory } from "./cleanup";
 import {
   internalAction,
   internalMutation,
@@ -5,18 +7,21 @@ import {
   mutation,
   query,
   action,
-  MutationCtx
+  MutationCtx,
+  QueryCtx
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { getConvexSize, v, type Value } from "convex/values";
 import { Doc } from "./_generated/dataModel";
 import { getRandomAvatarColor } from "./utils";
-import { getAllEquivalentMemberIds, resolveCanonicalMemberIdInternal } from "./aliases";
+import {
+  getAllEquivalentMemberIds,
+  resolveCanonicalMemberIdInternal,
+  syncOwnerLocalAliasReferences
+} from "./aliases";
 import { checkRateLimit } from "./rateLimit";
 import {
   assertIdentityMaterializationReady,
-  assertMemberIdentityNotCleanupFenced,
-  findAliasByAliasMemberId,
   findAccountByAuthIdOrDocId,
   findAccountByMemberId,
   findAccountsByEmailIdentity,
@@ -28,13 +33,23 @@ import {
   getCurrentUserOrThrow,
   resolveAuthenticatedAccount
 } from "./helpers";
+import { resolveProvenFriendLink } from "./friendLinkProvenance";
 import { GroupVisibilityWriteBatch } from "./groupVisibility";
 import {
   applyExpenseWriteBatch,
   MAX_EXPENSE_VIEWERS,
   MAX_EXPENSE_WRITE_OPERATIONS
 } from "./expenseWrites";
-import { inferOrphanCleanupMetadata, processOrphanCleanupStep } from "./orphanCleanup";
+import {
+  inferOrphanCleanupMetadata,
+  processOrphanCleanupStep,
+  isLiveIncomingLinkRequest
+} from "./orphanCleanup";
+import {
+  assertFinancialContract,
+  assertExpectedActor,
+  assertMemberFinancialContract
+} from "./financialContract";
 import { beginHardDeleteAccount } from "./cleanup";
 import { requireSyncMaterializationReady } from "./syncState";
 import { GROUP_VISIBILITY_MATERIALIZATION_KEY } from "./migrations/groupVisibility";
@@ -83,7 +98,6 @@ async function deleteBoundedOrphanVisibility(
   for (const row of rows) await ctx.db.delete(row._id);
 }
 
-const MAX_EQUIVALENT_MEMBER_IDS = 50;
 // Stay well below the iOS preparation deadline so one login attempt can recover a lost worker.
 const ORPHAN_JOB_STALE_MS = 30_000;
 
@@ -404,10 +418,12 @@ async function cleanupOrphanedDataForEmailLegacy(
     .collect();
   const friendIds: string[] = [];
   for (const friend of friends) {
+    await syncOwnerLocalAliasReferences(ctx, null, friend._id);
     await ctx.db.delete(friend._id);
     friendIds.push(friend._id);
   }
 
+  await scheduleChangedFriendHistory(ctx, friends);
   const groupsByEmail = await ctx.db
     .query("groups")
     .withIndex("by_owner_email", (q: any) => q.eq("owner_email", email))
@@ -559,7 +575,7 @@ async function cleanupOrphanedDataForEmailLegacy(
       throw new Error("Cannot clean a friend with conflicting linked ownership");
     }
     const survivingAccount = Array.from(candidates.values())[0];
-    if (survivingAccount && survivingAccount.status !== "deleted") {
+    if (survivingAccount && !isAccountDeletionFenced(survivingAccount)) {
       await ctx.db.patch(friend._id, {
         has_linked_account: true,
         linked_account_id: survivingAccount.id,
@@ -568,6 +584,7 @@ async function cleanupOrphanedDataForEmailLegacy(
         link_state: "linked",
         updated_at: Date.now()
       });
+      await scheduleChangedFriendHistory(ctx, [friend, (await ctx.db.get(friend._id))!]);
       continue;
     }
     await ctx.db.patch(friend._id, {
@@ -577,6 +594,7 @@ async function cleanupOrphanedDataForEmailLegacy(
       linked_member_id: undefined,
       updated_at: Date.now()
     });
+    await scheduleChangedFriendHistory(ctx, [friend]);
     unlinkedIds.push(friend._id);
   }
 
@@ -586,6 +604,7 @@ async function cleanupOrphanedDataForEmailLegacy(
     .collect();
   const deletedRequestIds = new Set<string>();
   for (const req of incomingRequests) {
+    if (await isLiveIncomingLinkRequest(ctx, req, email)) continue;
     await ctx.db.delete(req._id);
     deletedRequestIds.add(req._id);
   }
@@ -670,6 +689,7 @@ export const store = mutation({
       }
       await checkRateLimit(ctx, identity.subject, "users:store", 10);
       assertAccountCanAcceptChanges(user);
+      await assignCanonicalMemberId(ctx, user);
       // Update existing user if needed (e.g. name changed)
       if (
         (user.display_name !== identity.name && identity.name) ||
@@ -1256,9 +1276,24 @@ export const isAuthenticated = query({
 /**
  * Gets the current user's account information.
  */
-export const viewer = query({
-  args: {},
+export const authenticationStatus = query({
+  args: { financial_contract_version: v.optional(v.number()) },
   handler: async (ctx) => {
+    if (!(await ctx.auth.getUserIdentity())) return null;
+    const { user } = await resolveAuthenticatedAccount(ctx);
+    if (!user || user.status === "deleted") return null;
+    return {
+      id: user.id,
+      email: user.email,
+      display_name: user.display_name,
+      status: user.status ?? "active"
+    };
+  }
+});
+
+export const viewer = query({
+  args: { financial_contract_version: v.optional(v.number()) },
+  handler: async (ctx, args) => {
     if (!(await ctx.auth.getUserIdentity())) return null;
     const { user } = await resolveAuthenticatedAccount(ctx);
 
@@ -1266,11 +1301,18 @@ export const viewer = query({
       return null;
     }
 
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     const canonicalMemberId = await resolveCanonicalMemberIdInternal(
       ctx.db,
       user.member_id ?? user.id
     );
     const equivalentMemberIds = await getAllEquivalentMemberIds(ctx.db, canonicalMemberId);
+    await assertMemberFinancialContract(
+      ctx,
+      equivalentMemberIds,
+      args.financial_contract_version,
+      user._id
+    );
 
     return {
       ...user,
@@ -1280,62 +1322,51 @@ export const viewer = query({
   }
 });
 
-/**
- * Updates the canonical member_id for the current user.
- * This links the user's account to a member from another user's friend list using canonical identity.
- */
-export const updateLinkedMemberId = mutation({
-  args: { member_id: v.string() },
+/** Assign identity only on the server. Existing canonical IDs never change. */
+async function assignCanonicalMemberId(ctx: MutationCtx, user: Doc<"accounts">): Promise<string> {
+  if (user.member_id) return normalizeMemberId(user.member_id);
+  const memberId = crypto.randomUUID();
+  // Historical alias claims require consent; bootstrap never adopts a client placeholder.
+  await syncAccountAliasMaterialization(
+    ctx,
+    { id: user.id, email: user.email, member_id: memberId },
+    user.alias_member_ids ?? []
+  );
+  await ctx.db.patch(user._id, { member_id: memberId, updated_at: Date.now() });
+  return memberId;
+}
+
+export const bootstrapMemberIdentityV2 = mutation({
+  args: {
+    financial_contract_version: v.optional(v.number()),
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string())
+  },
+  returns: v.object({ account_id: v.string(), member_id: v.string(), version: v.literal(2) }),
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
+    return {
+      account_id: user.id,
+      member_id: await assignCanonicalMemberId(ctx, user),
+      version: 2 as const
+    };
+  }
+});
 
-    const requestedMemberId = normalizeMemberId(args.member_id);
-    if (!requestedMemberId) {
-      throw new Error("member_id is required");
+/** Legacy acknowledgement only: client-selected identities are never authoritative. */
+export const updateLinkedMemberId = mutation({
+  args: { member_id: v.string(), financial_contract_version: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const { user } = await getCurrentUserOrThrow(ctx);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
+    const requested = normalizeMemberId(args.member_id);
+    if (!requested || !user.member_id || normalizeMemberId(user.member_id) !== requested) {
+      throw new Error(
+        "Refresh or upgrade required: canonical member_id must be assigned by the server and cannot be reassigned"
+      );
     }
-    const existingCanonical = user.member_id ? normalizeMemberId(user.member_id) : undefined;
-
-    // Harden against identity spoofing:
-    // callers cannot swap canonical member IDs on an existing account.
-    if (existingCanonical) {
-      if (existingCanonical !== requestedMemberId) {
-        throw new Error("Forbidden: canonical member_id cannot be reassigned");
-      }
-      return user._id;
-    }
-
-    await assertIdentityMaterializationReady(ctx.db);
-    await assertMemberIdentityNotCleanupFenced(ctx, requestedMemberId);
-    // Legacy-only bootstrap path for old rows without member_id.
-    // Never allow adopting a member ID already used by a different account.
-    const takenByAccount = await ctx.db
-      .query("accounts")
-      .withIndex("by_member_id", (q) => q.eq("member_id", requestedMemberId))
-      .unique();
-    if (takenByAccount && takenByAccount._id !== user._id) {
-      throw new Error("Forbidden: member_id already in use");
-    }
-    if (await findAliasByAliasMemberId(ctx.db, args.member_id)) {
-      throw new Error("Forbidden: member_id already used as alias");
-    }
-
-    const updatedAliases = Array.from(
-      new Set((user.alias_member_ids || []).map((id: string) => normalizeMemberId(id)))
-    )
-      .filter((id) => id !== requestedMemberId)
-      .slice(0, MAX_EQUIVALENT_MEMBER_IDS);
-
-    await syncAccountAliasMaterialization(
-      ctx,
-      { id: user.id, email: user.email, member_id: requestedMemberId },
-      updatedAliases
-    );
-    await ctx.db.patch(user._id, {
-      member_id: requestedMemberId,
-      alias_member_ids: updatedAliases,
-      updated_at: Date.now()
-    });
-
     return user._id;
   }
 });
@@ -1420,11 +1451,14 @@ export const updateProfile = mutation({
  */
 export const updateSettings = mutation({
   args: {
+    expected_account_id: v.optional(v.string()),
+    expected_account_email: v.optional(v.string()),
     prefer_nicknames: v.optional(v.boolean()),
     prefer_whole_names: v.optional(v.boolean())
   },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(user, args);
 
     const patches: any = { updated_at: Date.now() };
     if (args.prefer_nicknames !== undefined) patches.prefer_nicknames = args.prefer_nicknames;
@@ -1453,29 +1487,167 @@ export const sessionStatus = query({
  * Validates a list of account IDs (auth IDs) and returns those that exist.
  */
 export const validateAccountIds = query({
-  args: { ids: v.array(v.string()) },
+  args: { ids: v.array(v.string()), financial_contract_version: v.optional(v.number()) },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("Unauthenticated");
-    }
-
-    const existingIds: string[] = [];
-    for (const id of args.ids) {
+    const { user } = await getCurrentUserOrThrow(ctx);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
+    if (args.ids.length > MAX_EXPENSE_VIEWERS)
+      throw new Error(`Account validation supports at most ${MAX_EXPENSE_VIEWERS} IDs`);
+    const surface = await callerVisibleMemberIds(ctx, user);
+    await assertMemberFinancialContract(
+      ctx,
+      [...surface],
+      args.financial_contract_version,
+      user._id
+    );
+    const result: string[] = [];
+    for (const id of new Set(args.ids)) {
+      if (id === user.id) {
+        result.push(id);
+        continue;
+      }
       const account = await ctx.db
         .query("accounts")
         .withIndex("by_auth_id", (q) => q.eq("id", id))
         .unique();
-      if (account) {
-        existingIds.push(id);
-      }
+      if (
+        !account ||
+        account.status === "deleted" ||
+        account.status === "deleting" ||
+        !account.member_id
+      )
+        continue;
+      const equivalents = await getAllEquivalentMemberIds(ctx.db, account.member_id);
+      if (equivalents.some((memberId) => surface.has(normalizeMemberId(memberId)))) result.push(id);
     }
-    return existingIds;
+    return result;
   }
 });
 
+async function callerVisibleMemberIds(ctx: QueryCtx, user: Doc<"accounts">): Promise<Set<string>> {
+  await assertIdentityMaterializationReady(ctx.db);
+  await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
+  const accountEmail = user.normalized_email ?? user.email.trim().toLowerCase();
+
+  // Build the caller's authorized member-id surface from:
+  // - self canonical/aliases
+  // - owned/shared groups
+  // - direct friends + linked friend accounts
+  const authorizedMemberIds = new Set<string>();
+  let surfaceEncodedBytes = 0;
+  let surfaceLookups = 3;
+  const consumeSurfaceRows = (rows: readonly Value[], resource: string) => {
+    surfaceEncodedBytes += rows.reduce<number>((total, row) => total + getConvexSize(row), 0);
+    if (surfaceEncodedBytes > MAX_LINKED_ACCOUNT_SURFACE_ENCODED_BYTES) {
+      throw linkedAccountSurfaceLimitError(`${resource} encoded-byte`);
+    }
+  };
+  const remainingSurfaceBytes = () =>
+    Math.max(1, MAX_LINKED_ACCOUNT_SURFACE_ENCODED_BYTES - surfaceEncodedBytes);
+  const surfacePageOptions = (maximumRowsRead: number) => ({
+    cursor: null,
+    numItems: maximumRowsRead,
+    maximumRowsRead,
+    maximumBytesRead: remainingSurfaceBytes()
+  });
+  const reserveSurfaceLookups = (count: number) => {
+    surfaceLookups += count;
+    if (surfaceLookups > MAX_LINKED_ACCOUNT_SURFACE_LOOKUPS) {
+      throw linkedAccountSurfaceLimitError("query");
+    }
+  };
+  const ownCanonical = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id ?? user.id);
+  const ownEquivalent = await getAllEquivalentMemberIds(ctx.db, ownCanonical);
+  for (const id of [ownCanonical, ...ownEquivalent]) {
+    authorizedMemberIds.add(normalizeMemberId(id));
+  }
+
+  const ownerGroupPage = await ctx.db
+    .query("groups")
+    .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
+    .paginate(surfacePageOptions(MAX_LINKED_ACCOUNT_SURFACE_GROUPS + 1));
+  if (
+    !ownerGroupPage.isDone ||
+    ownerGroupPage.pageStatus === "SplitRequired" ||
+    ownerGroupPage.page.length > MAX_LINKED_ACCOUNT_SURFACE_GROUPS
+  ) {
+    throw linkedAccountSurfaceLimitError("owned-group row");
+  }
+  const ownerGroups = ownerGroupPage.page;
+  consumeSurfaceRows(ownerGroups, "owned-group");
+  const visibilityPage = await ctx.db
+    .query("group_visibility")
+    .withIndex("by_account_id_and_group_updated_at", (q) => q.eq("account_id", user._id))
+    .paginate(surfacePageOptions(MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS + 1));
+  if (
+    !visibilityPage.isDone ||
+    visibilityPage.pageStatus === "SplitRequired" ||
+    visibilityPage.page.length > MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS
+  ) {
+    throw linkedAccountSurfaceLimitError("visibility row");
+  }
+  const visibilityRows = visibilityPage.page;
+  consumeSurfaceRows(visibilityRows, "visibility");
+  const visibleGroups = new Map(ownerGroups.map((group) => [String(group._id), group]));
+  for (const visibilityRow of visibilityRows) {
+    reserveSurfaceLookups(1);
+    const group = await ctx.db.get(visibilityRow.group_id);
+    if (
+      group &&
+      !group.deletion_token &&
+      (group.owner_id === user._id ||
+        group.members.some((member) =>
+          ownEquivalent.some((id) => normalizeMemberId(id) === normalizeMemberId(member.id))
+        ))
+    ) {
+      consumeSurfaceRows([group], "visible-group");
+      visibleGroups.set(String(group._id), group);
+    }
+  }
+  for (const group of visibleGroups.values()) {
+    for (const member of group.members) {
+      authorizedMemberIds.add(normalizeMemberId(member.id));
+    }
+  }
+
+  const friendPage = await ctx.db
+    .query("account_friends")
+    .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
+    .paginate(surfacePageOptions(MAX_LINKED_ACCOUNT_SURFACE_FRIENDS + 1));
+  if (
+    !friendPage.isDone ||
+    friendPage.pageStatus === "SplitRequired" ||
+    friendPage.page.length > MAX_LINKED_ACCOUNT_SURFACE_FRIENDS
+  ) {
+    throw linkedAccountSurfaceLimitError("friend row");
+  }
+  const myFriends = friendPage.page;
+  consumeSurfaceRows(myFriends, "friend");
+  for (const friend of myFriends) {
+    authorizedMemberIds.add(normalizeMemberId(friend.member_id));
+    for (const memberId of friend.local_alias_member_ids ?? [])
+      authorizedMemberIds.add(normalizeMemberId(memberId));
+    if (friend.linked_account_id?.trim()) {
+      const identityQueries = new Set(
+        [
+          friend.member_id,
+          friend.linked_member_id,
+          ...(friend.local_alias_member_ids ?? [])
+        ].filter(Boolean)
+      ).size;
+      reserveSurfaceLookups(2 + identityQueries + (friend.link_state === "linked" ? 0 : 5));
+    }
+    const provenLink = await resolveProvenFriendLink(ctx, friend, (rows) =>
+      consumeSurfaceRows(rows as readonly Value[], "linked-friend evidence")
+    );
+    if (provenLink) authorizedMemberIds.add(normalizeMemberId(provenLink.linkedMemberId));
+  }
+
+  return authorizedMemberIds;
+}
+
 export const resolveLinkedAccountsForMemberIds = query({
-  args: { memberIds: v.array(v.string()) },
+  args: { memberIds: v.array(v.string()), financial_contract_version: v.optional(v.number()) },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
     if (args.memberIds.length > MAX_EXPENSE_VIEWERS) {
@@ -1483,123 +1655,14 @@ export const resolveLinkedAccountsForMemberIds = query({
         `Linked account resolution supports at most ${MAX_EXPENSE_VIEWERS} member IDs`
       );
     }
-    await assertIdentityMaterializationReady(ctx.db);
-    await requireSyncMaterializationReady(ctx.db, GROUP_VISIBILITY_MATERIALIZATION_KEY);
-    const accountEmail = user.normalized_email ?? user.email.trim().toLowerCase();
-
-    // Build the caller's authorized member-id surface from:
-    // - self canonical/aliases
-    // - owned/shared groups
-    // - direct friends + linked friend accounts
-    const authorizedMemberIds = new Set<string>();
-    let surfaceEncodedBytes = 0;
-    let surfaceLookups = 3;
-    const consumeSurfaceRows = (rows: readonly Value[], resource: string) => {
-      surfaceEncodedBytes += rows.reduce<number>((total, row) => total + getConvexSize(row), 0);
-      if (surfaceEncodedBytes > MAX_LINKED_ACCOUNT_SURFACE_ENCODED_BYTES) {
-        throw linkedAccountSurfaceLimitError(`${resource} encoded-byte`);
-      }
-    };
-    const remainingSurfaceBytes = () =>
-      Math.max(1, MAX_LINKED_ACCOUNT_SURFACE_ENCODED_BYTES - surfaceEncodedBytes);
-    const surfacePageOptions = (maximumRowsRead: number) => ({
-      cursor: null,
-      numItems: maximumRowsRead,
-      maximumRowsRead,
-      maximumBytesRead: remainingSurfaceBytes()
-    });
-    const reserveSurfaceLookups = (count: number) => {
-      surfaceLookups += count;
-      if (surfaceLookups > MAX_LINKED_ACCOUNT_SURFACE_LOOKUPS) {
-        throw linkedAccountSurfaceLimitError("query");
-      }
-    };
-    const ownCanonical = await resolveCanonicalMemberIdInternal(ctx.db, user.member_id ?? user.id);
-    const ownEquivalent = await getAllEquivalentMemberIds(ctx.db, ownCanonical);
-    for (const id of [ownCanonical, ...ownEquivalent, ...(user.alias_member_ids || [])]) {
-      authorizedMemberIds.add(normalizeMemberId(id));
-    }
-
-    const ownerGroupPage = await ctx.db
-      .query("groups")
-      .withIndex("by_owner_id", (q) => q.eq("owner_id", user._id))
-      .paginate(surfacePageOptions(MAX_LINKED_ACCOUNT_SURFACE_GROUPS + 1));
-    if (
-      !ownerGroupPage.isDone ||
-      ownerGroupPage.pageStatus === "SplitRequired" ||
-      ownerGroupPage.page.length > MAX_LINKED_ACCOUNT_SURFACE_GROUPS
-    ) {
-      throw linkedAccountSurfaceLimitError("owned-group row");
-    }
-    const ownerGroups = ownerGroupPage.page;
-    consumeSurfaceRows(ownerGroups, "owned-group");
-    const visibilityPage = await ctx.db
-      .query("group_visibility")
-      .withIndex("by_account_id_and_group_updated_at", (q) => q.eq("account_id", user._id))
-      .paginate(surfacePageOptions(MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS + 1));
-    if (
-      !visibilityPage.isDone ||
-      visibilityPage.pageStatus === "SplitRequired" ||
-      visibilityPage.page.length > MAX_LINKED_ACCOUNT_SURFACE_VISIBILITY_ROWS
-    ) {
-      throw linkedAccountSurfaceLimitError("visibility row");
-    }
-    const visibilityRows = visibilityPage.page;
-    consumeSurfaceRows(visibilityRows, "visibility");
-    const visibleGroups = new Map(ownerGroups.map((group) => [String(group._id), group]));
-    for (const visibilityRow of visibilityRows) {
-      reserveSurfaceLookups(1);
-      const group = await ctx.db.get(visibilityRow.group_id);
-      if (group && !group.deletion_token) {
-        consumeSurfaceRows([group], "visible-group");
-        visibleGroups.set(String(group._id), group);
-      }
-    }
-    for (const group of visibleGroups.values()) {
-      for (const member of group.members) {
-        authorizedMemberIds.add(normalizeMemberId(member.id));
-      }
-    }
-
-    const friendPage = await ctx.db
-      .query("account_friends")
-      .withIndex("by_account_email", (q) => q.eq("account_email", accountEmail))
-      .paginate(surfacePageOptions(MAX_LINKED_ACCOUNT_SURFACE_FRIENDS + 1));
-    if (
-      !friendPage.isDone ||
-      friendPage.pageStatus === "SplitRequired" ||
-      friendPage.page.length > MAX_LINKED_ACCOUNT_SURFACE_FRIENDS
-    ) {
-      throw linkedAccountSurfaceLimitError("friend row");
-    }
-    const myFriends = friendPage.page;
-    consumeSurfaceRows(myFriends, "friend");
-    for (const friend of myFriends) {
-      authorizedMemberIds.add(normalizeMemberId(friend.member_id));
-      if (friend.linked_member_id) {
-        authorizedMemberIds.add(normalizeMemberId(friend.linked_member_id));
-      }
-      let linkedAccount: any | null = null;
-      if (friend.linked_account_id) {
-        reserveSurfaceLookups(2);
-        linkedAccount = await findAccountByAuthIdOrDocId(ctx.db, friend.linked_account_id);
-      }
-      if (!linkedAccount && friend.linked_account_email) {
-        reserveSurfaceLookups(1);
-        linkedAccount = await ctx.db
-          .query("accounts")
-          .withIndex("by_email", (q) => q.eq("email", friend.linked_account_email!))
-          .unique();
-      }
-      if (linkedAccount) consumeSurfaceRows([linkedAccount], "linked-account");
-      if (linkedAccount?.member_id) {
-        authorizedMemberIds.add(normalizeMemberId(linkedAccount.member_id));
-      }
-      for (const aliasId of linkedAccount?.alias_member_ids || []) {
-        authorizedMemberIds.add(normalizeMemberId(aliasId));
-      }
-    }
-
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
+    const authorizedMemberIds = await callerVisibleMemberIds(ctx, user);
+    await assertMemberFinancialContract(
+      ctx,
+      [...authorizedMemberIds],
+      args.financial_contract_version,
+      user._id
+    );
     const results: Array<{
       member_id: string;
       account_id: string;

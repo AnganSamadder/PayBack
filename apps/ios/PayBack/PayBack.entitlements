@@ -4,7 +4,7 @@
 <dict>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>webcredentials:accurate-eagle-80.clerk.accounts.dev</string>
+		<string>$(PAYBACK_AUTH_ASSOCIATED_DOMAIN)</string>
 	</array>
 </dict>
 </plist>

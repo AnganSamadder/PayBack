@@ -55,6 +55,7 @@ test.each(["deleting", "deleted"] as const)(
     const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await expect(
       owner.mutation(api.friends.upsert, {
+        financial_contract_version: 2,
         member_id: "new_friend",
         name: "New Friend",
         has_linked_account: false
@@ -85,6 +86,7 @@ test.each(["deleting", "deleted"] as const)(
     const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await expect(
       owner.mutation(api.friends.upsert, {
+        financial_contract_version: 2,
         member_id: "target_member",
         name: "Target PII",
         has_linked_account: true,
@@ -124,6 +126,7 @@ test("friends.upsert cannot restore PII or link metadata on a deleted identity",
 
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await owner.mutation(api.friends.upsert, {
+    financial_contract_version: 2,
     member_id: "target_member",
     name: "Restored Name",
     nickname: "Restored Nickname",
@@ -196,7 +199,10 @@ test("invite preview and claim reject a deleting creator", async () => {
 
   const claimant = t.withIdentity(identity("claimant@test.com", "claimant_auth"));
   await expect(
-    claimant.mutation(api.inviteTokens.claim, { id: "deleting_creator_invite" })
+    claimant.mutation(api.inviteTokens.claim, {
+      financial_contract_version: 2,
+      id: "deleting_creator_invite"
+    })
   ).rejects.toThrow("creator account is no longer active");
   const token = await t.run(async (ctx) => ctx.db.query("invite_tokens").unique());
   expect(token?.claimed_by).toBeUndefined();
@@ -232,6 +238,7 @@ test.each(["deleting", "deleted"] as const)(
     const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
     await expect(
       owner.mutation(api.linkRequests.createV2, {
+        financial_contract_version: 2,
         id: `${status}_recipient_request`,
         recipient_email: "recipient@test.com",
         target_member_id: "target_member",
@@ -270,6 +277,7 @@ test("group create rejects a new deleted alias identity", async () => {
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await expect(
     owner.mutation(api.groups.create, {
+      financial_contract_version: 2,
       id: "new_group",
       name: "New Group",
       members: [
@@ -312,6 +320,7 @@ test("group update preserves a server-sanitized deleted member", async () => {
 
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await owner.mutation(api.groups.create, {
+    financial_contract_version: 2,
     id: "existing_group",
     name: "Renamed Group",
     members: [
@@ -353,6 +362,7 @@ test("group create caps members and dedupes active aliases onto their canonical 
 
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await owner.mutation(api.groups.create, {
+    financial_contract_version: 2,
     id: "normalized_group",
     name: "Normalized Group",
     members: [
@@ -365,6 +375,7 @@ test("group create caps members and dedupes active aliases onto their canonical 
 
   await expect(
     owner.mutation(api.groups.create, {
+      financial_contract_version: 2,
       id: "oversized_group",
       name: "Oversized Group",
       members: Array.from({ length: 65 }, (_, index) => ({
@@ -398,6 +409,7 @@ test("group create rejects aggregate account identity reads above its exact-byte
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await expect(
     owner.mutation(api.groups.create, {
+      financial_contract_version: 2,
       id: "large_identity_group",
       name: "Large Identity Group",
       members: [
@@ -438,6 +450,7 @@ test("group update rejects a legacy oversized stored member list before identity
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await expect(
     owner.mutation(api.groups.create, {
+      financial_contract_version: 2,
       id: "legacy_oversized_group",
       name: "Attempted update",
       members: [{ id: "owner_member", name: "Owner", is_current_user: true }]
@@ -479,6 +492,8 @@ test("expense create rejects a newly referenced deleted participant", async () =
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await expect(
     owner.mutation(api.expenses.create, {
+      financial_contract_version: 2,
+      currency_code: "USD",
       id: "new_expense",
       group_id: "expense_group",
       description: "Dinner",
@@ -531,27 +546,31 @@ test("expenses.create rejects deprecated linked participant payloads before writ
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await expect(
     owner.mutation(api.expenses.create, {
-      id: "hostile_legacy_payload",
-      context_kind: "group",
-      group_id: "active_group",
-      description: "Hostile payload",
-      date: now,
-      total_amount: 10,
-      paid_by_member_id: "owner_member",
-      involved_member_ids: ["owner_member"],
-      splits: [{ id: "owner_split", member_id: "owner_member", amount: 10, is_settled: false }],
-      is_settled: false,
-      participant_member_ids: ["owner_member"],
-      participants: [{ member_id: "owner_member", name: "Owner" }],
-      linked_participants: [
-        {
-          member_id: "deleting_member",
-          name: "Deleting PII",
-          linked_account_id: "deleting_auth",
-          linked_account_email: "deleting@test.com"
-        }
-      ]
-    } as any)
+      financial_contract_version: 2,
+      ...({
+        currency_code: "USD",
+        id: "hostile_legacy_payload",
+        context_kind: "group",
+        group_id: "active_group",
+        description: "Hostile payload",
+        date: now,
+        total_amount: 10,
+        paid_by_member_id: "owner_member",
+        involved_member_ids: ["owner_member"],
+        splits: [{ id: "owner_split", member_id: "owner_member", amount: 10, is_settled: false }],
+        is_settled: false,
+        participant_member_ids: ["owner_member"],
+        participants: [{ member_id: "owner_member", name: "Owner" }],
+        linked_participants: [
+          {
+            member_id: "deleting_member",
+            name: "Deleting PII",
+            linked_account_id: "deleting_auth",
+            linked_account_email: "deleting@test.com"
+          }
+        ]
+      } as any)
+    })
   ).rejects.toThrow();
 
   expect(
@@ -625,6 +644,7 @@ test("expense update cannot restore an inactive participant's PII or link metada
 
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await owner.mutation(api.expenses.create, {
+    financial_contract_version: 2,
     id: "existing_expense",
     context_kind: "group",
     group_id: "expense_group",
@@ -653,7 +673,12 @@ test("expense update cannot restore an inactive participant's PII or link metada
   const expense = await t.run(async (ctx) => ctx.db.query("expenses").unique());
   expect(expense?.description).toBe("Updated dinner");
   expect(expense?.participants).toEqual([
-    { member_id: "owner_member", name: "Owner" },
+    {
+      member_id: "owner_member",
+      name: "Owner",
+      linked_account_id: "owner_auth",
+      linked_account_email: "owner@test.com"
+    },
     { member_id: "deleted_member", name: "Deleted User" }
   ]);
   expect(expense?.participant_emails).toEqual(["owner@test.com"]);

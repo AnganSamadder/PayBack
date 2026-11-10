@@ -14,7 +14,8 @@ struct ImportExportView: View {
     @State private var showFileSaveDialog = false
 
     // State for import
-    @State private var isImporting = false
+    @State private var importOwnership = ImportOperationOwnership()
+    private var isImporting: Bool { importOwnership.isActive }
     @State private var showImportResult = false
     @State private var importResultTitle = ""
     @State private var importResultMessage = ""
@@ -23,6 +24,7 @@ struct ImportExportView: View {
     @State private var showConflictResolution = false
     @State private var importConflicts: [ImportConflict] = []
     @State private var pendingImportText: String?
+    @State private var importTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -33,6 +35,7 @@ struct ImportExportView: View {
 
                     // Import Section
                     importSection
+                        .disabled(isImporting || store.isImporting)
 
                     // Info Section
                     infoSection
@@ -56,6 +59,14 @@ struct ImportExportView: View {
                     .foregroundStyle(AppTheme.brand)
                 }
             }
+        }
+        .onDisappear { cancelOwnedImport() }
+        .onChange(of: store.dataEpoch) { _, _ in
+            cancelOwnedImport()
+            showImportResult = false
+            showConflictResolution = false
+            pendingImportText = nil
+            importConflicts = []
         }
         .alert(importResultTitle, isPresented: $showImportResult) {
             Button("OK") { }
@@ -287,6 +298,7 @@ struct ImportExportView: View {
     // MARK: - Import Actions
 
     private func importFromClipboard() {
+        guard !isImporting, !store.isImporting else { return }
         guard let clipboardText = UIPasteboard.general.string else {
             showImportError("Clipboard is empty. Please copy PayBack export data first.")
             return
@@ -296,10 +308,12 @@ struct ImportExportView: View {
     }
 
     private func importFromFile() {
+        guard !isImporting, !store.isImporting else { return }
         showFilePickerDialog = true
     }
 
     private func handleFileImport(_ result: Result<[URL], Error>) {
+        guard !isImporting, !store.isImporting else { return }
         switch result {
         case .success(let urls):
             guard let url = urls.first else {
@@ -328,21 +342,19 @@ struct ImportExportView: View {
     }
 
     private func performImport(from text: String, resolutions: [UUID: ImportResolution]? = nil) {
-        isImporting = true
-
-        Task {
+        guard !store.isImporting,
+              let ticket = importOwnership.begin(accountID: store.session?.account.id, dataEpoch: store.dataEpoch) else { return }
+        showImportResult = false
+        importTask = Task {
             let result = await DataImportService.importData(from: text, into: store, resolutions: resolutions)
 
             await MainActor.run {
-                isImporting = false
+                guard importOwnership.finish(ticket, accountID: store.session?.account.id, dataEpoch: store.dataEpoch) else { return }
+                importTask = nil
 
                 switch result {
                 case .success(let summary):
-                    if summary.totalItems == 0 {
-                        showImportSuccess("Import Complete", "All data was already present in your account. No new items were added.")
-                    } else {
-                        showImportSuccess("Import Successful!", summary.description)
-                    }
+                    showImportSuccess("Import Complete", summary.description)
 
                 case .incompatibleFormat(let message):
                     showImportError(message)
@@ -350,9 +362,9 @@ struct ImportExportView: View {
                 case .partialSuccess(let summary, let errors):
                     let errorText = errors.prefix(3).joined(separator: "\n")
                     let moreText = errors.count > 3 ? "\n...and \(errors.count - 3) more issues" : ""
-                    showImportSuccess(
-                        "Import Completed with Issues",
-                        "\(summary.description)\n\nSome items could not be imported:\n\(errorText)\(moreText)"
+                    showImportIncomplete(
+                        "Import Incomplete",
+                        "\(summary.description)\n\n\(errorText)\(moreText)"
                     )
 
                 case .needsResolution(let conflicts):
@@ -364,6 +376,14 @@ struct ImportExportView: View {
         }
     }
 
+    private func cancelOwnedImport() {
+        // Invalidate first: a cancelled task may still return an incomplete result.
+        importOwnership.invalidate()
+        let task = importTask
+        importTask = nil
+        task?.cancel()
+    }
+
     private func showImportSuccess(_ title: String, _ message: String) {
         importResultTitle = title
         importResultMessage = message
@@ -373,6 +393,14 @@ struct ImportExportView: View {
         // Haptic feedback
         let generator = UINotificationFeedbackGenerator()
         generator.notificationOccurred(.success)
+    }
+
+    private func showImportIncomplete(_ title: String, _ message: String) {
+        importResultTitle = title
+        importResultMessage = message
+        importResultIsSuccess = false
+        showImportResult = true
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
     }
 
     private func showImportError(_ message: String) {

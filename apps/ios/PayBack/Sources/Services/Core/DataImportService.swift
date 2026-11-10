@@ -34,31 +34,48 @@ struct ImportSummary: Sendable {
     let friendsAdded: Int
     let groupsAdded: Int
     let expensesAdded: Int
+    var processedItems: Int
+    var alreadyPresentItems: Int
+    var updatedItems: Int
+    var scrubbedItems: Int
+    var incompletePhase: String?
+    var incompleteReason: String?
 
-    var totalItems: Int {
-        friendsAdded + groupsAdded + expensesAdded
+    init(friendsAdded: Int, groupsAdded: Int, expensesAdded: Int, processedItems: Int? = nil,
+         alreadyPresentItems: Int = 0, updatedItems: Int = 0, scrubbedItems: Int = 0,
+         incompletePhase: String? = nil, incompleteReason: String? = nil) {
+        self.friendsAdded = friendsAdded; self.groupsAdded = groupsAdded; self.expensesAdded = expensesAdded
+        self.processedItems = processedItems ?? (friendsAdded + groupsAdded + expensesAdded)
+        self.alreadyPresentItems = alreadyPresentItems; self.updatedItems = updatedItems
+        self.scrubbedItems = scrubbedItems; self.incompletePhase = incompletePhase; self.incompleteReason = incompleteReason
     }
 
+    var totalItems: Int { friendsAdded + groupsAdded + expensesAdded }
+
     var description: String {
-        var parts: [String] = []
-        if friendsAdded > 0 {
-            parts.append("\(friendsAdded) friend\(friendsAdded == 1 ? "" : "s")")
+        var parts = ["Confirmed \(processedItems) item\(processedItems == 1 ? "" : "s")."]
+        var added: [String] = []
+        for (count, name) in [(friendsAdded, "friend"), (groupsAdded, "group"), (expensesAdded, "expense")] where count > 0 {
+            added.append("\(count) \(name)\(count == 1 ? "" : "s")")
         }
-        if groupsAdded > 0 {
-            parts.append("\(groupsAdded) group\(groupsAdded == 1 ? "" : "s")")
+        if !added.isEmpty { parts.append("Added " + added.joined(separator: ", ") + ".") }
+        if updatedItems > 0 { parts.append("\(updatedItems) updated.") }
+        if alreadyPresentItems > 0 {
+            parts.append("\(alreadyPresentItems) already present or saved by an earlier attempt.")
         }
-        if expensesAdded > 0 {
-            parts.append("\(expensesAdded) expense\(expensesAdded == 1 ? "" : "s")")
+        if scrubbedItems > 0 {
+            parts.append("Deleted-account details were removed from \(scrubbedItems) item\(scrubbedItems == 1 ? "" : "s"); financial history was retained.")
         }
-        if parts.isEmpty {
-            return "No new data imported"
+        if let incompletePhase {
+            parts.append("Import is incomplete during \(incompletePhase). Earlier confirmed items remain saved.")
         }
-        return "Added " + parts.joined(separator: ", ")
+        return parts.joined(separator: " ")
     }
 }
 
 /// Parsed data from an export file
 struct ParsedExportData: Sendable {
+    var formatVersion = 1
     var exportedAt: Date?
     var accountEmail: String?
     var currentUserId: UUID?
@@ -134,6 +151,9 @@ struct ParsedExpense: Sendable {
     var paidByMemberId: UUID
     let isSettled: Bool
     let isDebug: Bool
+    var contextKind: ExpenseContextKind = .group
+    var notes: String? = nil
+    var currencyCode: String? = nil
 }
 
 struct ParsedExpenseSplit: Sendable {
@@ -182,7 +202,7 @@ struct DataImportService {
         }
 
         var data = ParsedExportData()
-        let lines = text.components(separatedBy: .newlines)
+        let lines = try logicalRecords(text)
         var currentSection: String?
 
         for line in lines {
@@ -190,6 +210,15 @@ struct DataImportService {
 
             // Skip empty lines and comments
             if trimmed.isEmpty || trimmed.hasPrefix("#") {
+                continue
+            }
+
+            if trimmed == headerMarker || trimmed == legacyHeaderMarker || trimmed == endMarker { continue }
+            if trimmed.hasPrefix("FORMAT_VERSION:") {
+                guard let version = Int(trimmed.dropFirst("FORMAT_VERSION:".count).trimmingCharacters(in: .whitespaces)), version == 2 else {
+                    throw ImportError.parsingFailed("Unsupported backup version. Update PayBack before importing this file.")
+                }
+                data.formatVersion = version
                 continue
             }
 
@@ -229,24 +258,28 @@ struct DataImportService {
 
             switch section {
             case "FRIENDS":
-                if let friend = parseFriend(fields: fields) {
-                    data.friends.append(friend)
+                guard let friend = parseFriend(fields: fields) else {
+                    throw ImportError.parsingFailed("Invalid friends row.")
                 }
+                data.friends.append(friend)
 
             case "GROUPS":
-                if let group = parseGroup(fields: fields) {
-                    data.groups.append(group)
+                guard let group = parseGroup(fields: fields) else {
+                    throw ImportError.parsingFailed("Invalid groups row.")
                 }
+                data.groups.append(group)
 
             case "GROUP_MEMBERS":
-                if let member = parseGroupMember(fields: fields) {
-                    data.groupMembers.append(member)
+                guard let member = parseGroupMember(fields: fields) else {
+                    throw ImportError.parsingFailed("Invalid groupMembers row.")
                 }
+                data.groupMembers.append(member)
 
             case "EXPENSES":
-                if let expense = parseExpense(fields: fields) {
-                    data.expenses.append(expense)
+                guard let expense = parseExpense(fields: fields) else {
+                    throw ImportError.parsingFailed("Invalid expenses row.")
                 }
+                data.expenses.append(expense)
 
             case "EXPENSE_INVOLVED_MEMBERS":
                 if fields.count >= 2,
@@ -256,20 +289,22 @@ struct DataImportService {
                 }
 
             case "EXPENSE_SPLITS":
-                if let split = parseExpenseSplit(fields: fields) {
-                    data.expenseSplits.append(split)
+                guard let split = parseExpenseSplit(fields: fields) else {
+                    throw ImportError.parsingFailed("Invalid expenseSplits row.")
                 }
+                data.expenseSplits.append(split)
 
             case "EXPENSE_SUBEXPENSES":
-                if let sub = parseSubexpense(fields: fields) {
-                    data.expenseSubexpenses.append(sub)
+                guard let sub = parseSubexpense(fields: fields) else {
+                    throw ImportError.parsingFailed("Invalid expenseSubexpenses row.")
                 }
+                data.expenseSubexpenses.append(sub)
 
             case "PARTICIPANT_NAMES":
                 if fields.count >= 3,
                    let expenseId = UUID(uuidString: fields[0]),
                    let memberId = UUID(uuidString: fields[1]) {
-                    data.participantNames.append((expenseId, memberId, unescapeCSV(fields[2])))
+                    data.participantNames.append((expenseId, memberId, fields[2]))
                 }
 
             default:
@@ -288,471 +323,167 @@ struct DataImportService {
     /// - Returns: The result of the import operation
     @MainActor
     static func importData(from text: String, into store: AppStore, resolutions: [UUID: ImportResolution]? = nil) async -> ImportResult {
-        // Enable import mode to suppress real-time sync during bulk operations
+        let parsed: ParsedExportData
+        do { parsed = try parseExport(text) }
+        catch { return .incompatibleFormat(error.localizedDescription) }
+        let epoch = store.dataEpoch
+        let accountID = store.session?.account.id
+        let accountEmail = store.session?.account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        func ownsSession() -> Bool {
+            store.dataEpoch == epoch && store.session?.account.id == accountID
+                && store.session?.account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == accountEmail
+        }
+        func sessionIsCurrent() -> Bool { ownsSession() && !Task.isCancelled }
+        guard !store.isImporting else { return .incompatibleFormat("An import is already running.") }
         store.isImporting = true
-        defer { store.isImporting = false }
+        var ownsImportGate = true
+        defer { if ownsImportGate && ownsSession() { store.isImporting = false } }
 
-        // Validate format
-        guard validateFormat(text) else {
-            return .incompatibleFormat("The data format is not compatible with PayBack. Please ensure you're importing a valid PayBack export file.")
+        // Source UUIDs, never display names, identify people in a backup. Only an
+        // explicit resolution may map another identity onto an existing person.
+        var mapping: [UUID: UUID] = [:]
+        if let sourceSelf = parsed.currentUserId { mapping[sourceSelf] = store.currentUser.id }
+        for (source, resolution) in resolutions ?? [:] {
+            guard source != parsed.currentUserId else { continue }
+            if case .linkToExisting(let target) = resolution {
+                guard store.friends.contains(where: { $0.memberId == target }) else {
+                    return .incompatibleFormat("The selected existing friend is no longer available.")
+                }
+                mapping[source] = target
+            }
         }
+        let restored = applyRemappings(to: parsed, memberIdMapping: mapping, groupIdMapping: [:])
+        do { try validateRestore(restored) }
+        catch { return .incompatibleFormat(error.localizedDescription) }
 
-        // Parse data
-        let parsedData: ParsedExportData
-        do {
-            parsedData = try parseExport(text)
-        } catch {
-            return .incompatibleFormat("Failed to parse the export data: \(error.localizedDescription)")
+        #if !PAYBACK_CI_NO_CONVEX
+        guard let accountID, let accountEmail else {
+            return .incompatibleFormat("Sign in before restoring a backup.")
         }
-
-        var errors: [String] = []
+        let result = await performBulkImport(from: restored,
+            accountService: Dependencies.current.accountService,
+            expectedAccountID: accountID, expectedAccountEmail: accountEmail,
+            isCurrent: sessionIsCurrent)
+        // Keep acknowledged progress even if cancellation/session change stops refresh.
+        func incompleteRefresh(_ reason: String) -> ImportResult {
+            var progress: ImportSummary
+            var errors: [String]
+            switch result {
+            case .success(let summary): progress = summary; errors = []
+            case .partialSuccess(let summary, let existing): progress = summary; errors = existing
+            case .incompatibleFormat, .needsResolution: return result
+            }
+            progress.incompletePhase = progress.incompletePhase ?? "refresh"
+            progress.incompleteReason = reason
+            errors.append(reason)
+            return .partialSuccess(progress, errors: errors)
+        }
+        guard sessionIsCurrent() else {
+            return incompleteRefresh("Import stopped after cancellation or an account change. Earlier confirmed items remain saved.")
+        }
+        // Only the complete actor-bound server snapshot may publish restored data.
+        store.isImporting = false
+        ownsImportGate = false
+        let hydration = await store.refreshAfterImport(expectedAccountID: accountID, expectedDataEpoch: epoch)
+        guard sessionIsCurrent() else { return incompleteRefresh("The account changed before refresh completed.") }
+        guard case .complete = hydration else {
+            return incompleteRefresh("Import requests finished, but your data could not be refreshed. Retry refresh to see the saved items.")
+        }
+        return result
+        #else
+        guard sessionIsCurrent() else { return .incompatibleFormat("Import stopped because the signed-in account changed.") }
         var friendsAdded = 0
         var groupsAdded = 0
         var expensesAdded = 0
-
-        // Build member ID mapping from parsed data to existing/new IDs
-        var memberIdMapping: [UUID: UUID] = [:]
-
-        // Build a name -> existing ID mapping from BOTH friends and ALL group members
-        var nameToExistingId: [String: UUID] = [:]
-        for friend in store.friends {
-            nameToExistingId[friend.name.lowercased()] = friend.memberId
+        for friend in restored.friends where friend.memberId != store.currentUser.id {
+            guard !store.friends.contains(where: { $0.memberId == friend.memberId }) else { continue }
+            // Backups carry display history, not authority to link an account.
+            store.addImportedFriend(AccountFriend(memberId: friend.memberId, name: friend.name,
+                nickname: friend.nickname, hasLinkedAccount: false,
+                profileImageUrl: friend.profileImageUrl, profileColorHex: friend.profileColorHex,
+                status: friend.status ?? "friend"))
+            friendsAdded += 1
         }
-        for group in store.groups {
-            for member in group.members {
-                nameToExistingId[member.name.lowercased()] = member.id
+        for group in restored.groups {
+            guard !store.groups.contains(where: { $0.id == group.id }) else { continue }
+            let members = restored.groupMembers.filter { $0.groupId == group.id }.map {
+                GroupMember(id: $0.memberId, name: $0.memberName,
+                    profileImageUrl: $0.profileImageUrl, profileColorHex: $0.profileColorHex,
+                    isCurrentUser: $0.memberId == store.currentUser.id)
             }
+            store.addExistingGroup(SpendingGroup(id: group.id, name: group.name, members: members,
+                createdAt: group.createdAt, isDirect: group.isDirect, isDebug: group.isDebug))
+            groupsAdded += 1
         }
-
-        // Map current user
-        if let parsedCurrentUserId = parsedData.currentUserId {
-            memberIdMapping[parsedCurrentUserId] = store.currentUser.id
-            nameToExistingId[store.currentUser.name.lowercased()] = store.currentUser.id
-        }
-
-        // 1. First Pass: Identify Conflicts if no resolutions provided
-        if resolutions == nil {
-            var conflicts: [ImportConflict] = []
-            var checkedIds = Set<UUID>()
-
-            // Check friends in export
-            for parsedFriend in parsedData.friends {
-                // Skip self
-                if parsedFriend.memberId == parsedData.currentUserId { continue }
-
-                // If name matches existing friend
-                if let existingId = nameToExistingId[parsedFriend.name.lowercased()],
-                   let existingFriend = store.friends.first(where: { $0.memberId == existingId }) {
-
-                    if !checkedIds.contains(parsedFriend.memberId) {
-                        conflicts.append(ImportConflict(
-                            importMemberId: parsedFriend.memberId,
-                            importName: parsedFriend.name,
-                            importProfileImageUrl: parsedFriend.profileImageUrl,
-                            importProfileColorHex: parsedFriend.profileColorHex,
-                            existingFriend: existingFriend
-                        ))
-                        checkedIds.insert(parsedFriend.memberId)
-                    }
-                }
+        for expense in restored.expenses {
+            guard !store.expenses.contains(where: { $0.id == expense.id }) else { continue }
+            let splits = restored.expenseSplits.filter { $0.expenseId == expense.id }.map {
+                ExpenseSplit(id: $0.splitId, memberId: $0.memberId, amount: $0.amount, isSettled: $0.isSettled)
             }
-
-            // Check group members in export
-            for parsedGroup in parsedData.groups {
-                let groupMemberEntries = parsedData.groupMembers.filter { $0.groupId == parsedGroup.id }
-                for entry in groupMemberEntries {
-                    if entry.memberId == parsedData.currentUserId { continue }
-
-                    // IF name matches and we haven't checked this ID yet
-                    if let existingId = nameToExistingId[entry.memberName.lowercased()],
-                       let existingFriend = store.friends.first(where: { $0.memberId == existingId }) {
-
-                        if !checkedIds.contains(entry.memberId) {
-                            conflicts.append(ImportConflict(
-                                importMemberId: entry.memberId,
-                                importName: entry.memberName,
-                                importProfileImageUrl: entry.profileImageUrl,
-                                importProfileColorHex: entry.profileColorHex,
-                                existingFriend: existingFriend
-                            ))
-                            checkedIds.insert(entry.memberId)
-                        }
-                    }
-                }
+            let names = Dictionary(restored.participantNames.filter { $0.expenseId == expense.id }.map {
+                ($0.memberId, $0.name)
+            }, uniquingKeysWith: { first, _ in first })
+            let subs = restored.expenseSubexpenses.filter { $0.expenseId == expense.id }.map {
+                Subexpense(id: $0.subexpenseId, amount: $0.amount)
             }
-
-            if !conflicts.isEmpty {
-                return .needsResolution(conflicts)
-            }
-        }
-
-        // Import friends (match by name, add if new)
-        // CRITICAL FIX: Clear nameToExistingId to prevent race condition with reconciliation.
-        // After conflict detection is complete, we want to create fresh friends for this import
-        // rather than reusing IDs from potentially stale reconciled data.
-        nameToExistingId.removeAll()
-
-        for parsedFriend in parsedData.friends {
-            // Skip if this is the current user from the export
-            if parsedFriend.memberId == parsedData.currentUserId {
-                continue
-            }
-
-            // Check if friend already exists by name (globally)
-            // Check if friend already exists by name (globally) or has a resolution
-            var matchedExistingId: UUID? = nil
-
-            // Check resolution first
-            if let resolution = resolutions?[parsedFriend.memberId] {
-                switch resolution {
-                case .linkToExisting(let id):
-                    matchedExistingId = id
-                case .createNew:
-                    // FIX: Still check if we've already created a new ID for this name in THIS import session.
-                    // .createNew means "distinct from existing app data" NOT "distinct from other occurrences in this import."
-                    matchedExistingId = nameToExistingId[parsedFriend.name.lowercased()]
-                }
-            } else {
-                // Fallback to auto-match by name if no resolution context (legacy behavior)
-                matchedExistingId = nameToExistingId[parsedFriend.name.lowercased()]
-            }
-
-            if let existingId = matchedExistingId {
-                memberIdMapping[parsedFriend.memberId] = existingId
-
-                // CRITICAL FIX: If matched ID is NOT in friends list (e.g. it was found in a group as a peer),
-                // OR if it IS in the friends list but status is NOT "friend" (peer),
-                // we MUST import this friend record to "promote" them to a Friend.
-                let existingFriend = store.friends.first(where: { $0.memberId == existingId })
-                let isPeerOnly = existingFriend != nil && existingFriend?.status != "friend"
-                let isMissing = existingFriend == nil
-
-                if isMissing || isPeerOnly {
-                    let newFriend = AccountFriend(
-                        memberId: existingId, // Use the existing ID to link to group history
-                        name: parsedFriend.name,
-                        nickname: parsedFriend.nickname,
-                        hasLinkedAccount: parsedFriend.hasLinkedAccount,
-                        linkedAccountId: parsedFriend.linkedAccountId,
-                        linkedAccountEmail: parsedFriend.linkedAccountEmail,
-                        profileImageUrl: parsedFriend.profileImageUrl,
-                        profileColorHex: parsedFriend.profileColorHex,
-                        status: parsedFriend.status ?? "friend" // Default to "friend" if missing/legacy
-                    )
-                    store.addImportedFriend(newFriend)
-                    friendsAdded += 1
-                }
-            } else {
-                // Create new friend with new ID and track it for subsequent name lookups
-                let newMemberId = UUID()
-                memberIdMapping[parsedFriend.memberId] = newMemberId
-                nameToExistingId[parsedFriend.name.lowercased()] = newMemberId
-
-                let newFriend = AccountFriend(
-                    memberId: newMemberId,
-                    name: parsedFriend.name,
-                    nickname: parsedFriend.nickname,
-                    hasLinkedAccount: parsedFriend.hasLinkedAccount,
-                    linkedAccountId: parsedFriend.linkedAccountId,
-                    linkedAccountEmail: parsedFriend.linkedAccountEmail,
-                    profileImageUrl: parsedFriend.profileImageUrl,
-                    profileColorHex: parsedFriend.profileColorHex,
-                    status: parsedFriend.status ?? "friend"
-                )
-                store.addImportedFriend(newFriend)
-
-                friendsAdded += 1
-            }
-        }
-
-        // Import groups
-        var groupIdMapping: [UUID: UUID] = [:]
-
-        for parsedGroup in parsedData.groups {
-            // Build member list for logic duplicate check
-            let groupMemberEntries = parsedData.groupMembers.filter { $0.groupId == parsedGroup.id }
-            var members: [GroupMember] = []
-
-            for entry in groupMemberEntries {
-                var resId = memberIdMapping[entry.memberId]
-
-                // If NOT mapped yet (via friends list), try to resolve now
-                if resId == nil {
-                    // Check resolution
-                    if let resolution = resolutions?[entry.memberId] {
-                        switch resolution {
-                        case .linkToExisting(let id):
-                            resId = id
-                        case .createNew:
-                            // FIX: Still check if we've already created a new ID for this name in THIS import session.
-                            // .createNew means "distinct from existing app data" NOT "distinct from other occurrences in this import."
-                            resId = nameToExistingId[entry.memberName.lowercased()]
-                        }
-                    } else {
-                         // Auto-match fallback
-                        resId = nameToExistingId[entry.memberName.lowercased()]
-                    }
-                }
-
-                if resId == nil {
-                    resId = UUID()
-                    // Track this new ID so other members with same name in this import map to it?
-                    // Or keep them separate? User asked for "smart". Usually if same name in same import, same person.
-                    nameToExistingId[entry.memberName.lowercased()] = resId
-                }
-                let resolvedId = resId!
-                memberIdMapping[entry.memberId] = resolvedId
-                if entry.memberId == parsedData.currentUserId {
-                    members.append(
-                        GroupMember(
-                            id: store.currentUser.id,
-                            name: store.currentUser.name,
-                            profileImageUrl: store.currentUser.profileImageUrl,
-                            profileColorHex: store.currentUser.profileColorHex,
-                            isCurrentUser: true
-                        )
-                    )
-                } else {
-                    members.append(GroupMember(id: resolvedId, name: entry.memberName, profileImageUrl: entry.profileImageUrl, profileColorHex: entry.profileColorHex))
-                }
-            }
-            if !members.contains(where: { $0.id == store.currentUser.id }) {
-                members.insert(
-                    GroupMember(
-                        id: store.currentUser.id,
-                        name: store.currentUser.name,
-                        profileImageUrl: store.currentUser.profileImageUrl,
-                        profileColorHex: store.currentUser.profileColorHex,
-                        isCurrentUser: true
-                    ),
-                    at: 0
-                )
-            }
-
-            // DEDUPLICATION: Check if group already exists (by name + members)
-            let existingGroup = store.groups.first { g in
-                g.name.localizedCaseInsensitiveCompare(parsedGroup.name) == .orderedSame &&
-                Set(g.members.map(\.id)) == Set(members.map(\.id))
-            }
-
-            if let existing = existingGroup {
-                groupIdMapping[parsedGroup.id] = existing.id
-                #if DEBUG
-                print("[DataImportService] Skipping duplicate group: \(parsedGroup.name)")
-                #endif
-            } else {
-                let newGroupId = UUID()
-                groupIdMapping[parsedGroup.id] = newGroupId
-                let newGroup = SpendingGroup(
-                    id: newGroupId,
-                    name: parsedGroup.name,
-                    members: members,
-                    createdAt: parsedGroup.createdAt,
-                    isDirect: parsedGroup.isDirect,
-                    isDebug: parsedGroup.isDebug
-                )
-                store.addExistingGroup(newGroup)
-                groupsAdded += 1
-            }
-        }
-
-        var parsedMemberIdToName: [UUID: String] = [:]
-        for entry in parsedData.groupMembers {
-            parsedMemberIdToName[entry.memberId] = entry.memberName
-        }
-        for entry in parsedData.participantNames {
-            parsedMemberIdToName[entry.memberId] = entry.name
-        }
-
-        func resolveMemberId(_ parsedId: UUID) -> UUID {
-            if let mapped = memberIdMapping[parsedId] {
-                return mapped
-            }
-
-            if let name = parsedMemberIdToName[parsedId],
-               let existingId = nameToExistingId[name.lowercased()] {
-                memberIdMapping[parsedId] = existingId
-                return existingId
-            }
-
-            if let name = parsedMemberIdToName[parsedId] {
-                let newId = UUID()
-                let newFriend = AccountFriend(
-                    memberId: newId,
-                    name: name,
-                    nickname: nil,
-                    hasLinkedAccount: false,
-                    linkedAccountId: nil,
-                    linkedAccountEmail: nil,
-                    profileImageUrl: nil,
-                    profileColorHex: nil,
-                    status: "friend"
-                )
-                store.addImportedFriend(newFriend)
-                friendsAdded += 1
-                memberIdMapping[parsedId] = newId
-                nameToExistingId[name.lowercased()] = newId
-                return newId
-            }
-
-            return parsedId
-        }
-
-        // Track which member NAMES we've already processed in this import session
-        var processedMemberNames = Set<String>()
-
-        // Ensure all group members (who aren't the current user) are added as friends BEFORE importing expenses
-        for parsedGroup in parsedData.groups {
-            let groupMemberEntries = parsedData.groupMembers.filter { $0.groupId == parsedGroup.id }
-            for entry in groupMemberEntries {
-                if entry.memberId == parsedData.currentUserId || entry.memberName.lowercased() == store.currentUser.name.lowercased() {
-                    continue
-                }
-
-                // Skip if we already processed this member name in this import session
-                let normalizedName = entry.memberName.lowercased()
-                if processedMemberNames.contains(normalizedName) {
-                    continue
-                }
-                processedMemberNames.insert(normalizedName)
-
-                let resolvedId = resolveMemberId(entry.memberId)
-
-                // resolveMemberId may have already added this friend - skip the rest if so
-                if store.friends.contains(where: { $0.memberId == resolvedId }) {
-                    continue
-                }
-
-                let newFriend = AccountFriend(
-                    memberId: resolvedId,
-                    name: entry.memberName,
-                    nickname: nil,
-                    hasLinkedAccount: false,
-                    linkedAccountId: nil,
-                    linkedAccountEmail: nil,
-                    profileImageUrl: entry.profileImageUrl,
-                    profileColorHex: entry.profileColorHex,
-                    status: "friend"
-                )
-                store.addImportedFriend(newFriend)
-                friendsAdded += 1
-                #if DEBUG
-                print("[DataImportService] Added \(entry.memberName) as friend with ID \(resolvedId)")
-                #endif
-            }
-        }
-
-        // Import expenses
-        for parsedExpense in parsedData.expenses {
-            guard let newGroupId = groupIdMapping[parsedExpense.groupId] else {
-                errors.append("Skipped expense '\(parsedExpense.description)': group not found")
-                continue
-            }
-
-            let newPaidByMemberId = resolveMemberId(parsedExpense.paidByMemberId)
-            let involvedEntries = parsedData.expenseInvolvedMembers.filter { $0.expenseId == parsedExpense.id }
-            let newInvolvedMemberIds = involvedEntries.map { resolveMemberId($0.memberId) }
-
-            let involvedMemberIdsSet = Set(newInvolvedMemberIds)
-            let targetDescription = parsedExpense.description
-            let targetAmount = parsedExpense.totalAmount
-            let targetDate = parsedExpense.date
-
-            // DEDUPLICATION: Check if expense already exists in the TARGET group
-            let existingExpense = store.expenses.first { e in
-                if e.groupId != newGroupId { return false }
-                if e.description != targetDescription { return false }
-                let amountDiff = e.totalAmount - targetAmount
-                if abs(amountDiff) >= 0.01 { return false }
-                let timeDiff = e.date.timeIntervalSince(targetDate)
-                if abs(timeDiff) >= 300 { return false }
-                if e.paidByMemberId != newPaidByMemberId { return false }
-                return Set(e.involvedMemberIds) == involvedMemberIdsSet
-            }
-
-            if existingExpense != nil {
-                #if DEBUG
-                print("[DataImportService] Skipping duplicate expense: \(parsedExpense.description)")
-                #endif
-                continue
-            }
-
-            let splitEntries = parsedData.expenseSplits.filter { $0.expenseId == parsedExpense.id }
-            let newSplits = splitEntries.map { entry in
-                ExpenseSplit(
-                    id: entry.splitId,
-                    memberId: resolveMemberId(entry.memberId),
-                    amount: entry.amount,
-                    isSettled: entry.isSettled
-                )
-            }
-
-            let nameEntries = parsedData.participantNames.filter { $0.expenseId == parsedExpense.id }
-            var participantNames: [UUID: String]? = nil
-            if !nameEntries.isEmpty {
-                participantNames = [:]
-                for entry in nameEntries {
-                    let mappedId = resolveMemberId(entry.memberId)
-                    participantNames?[mappedId] = entry.name
-                }
-            }
-
-            let subEntries = parsedData.expenseSubexpenses.filter { $0.expenseId == parsedExpense.id }
-            let subexpenses: [Subexpense]? = subEntries.isEmpty ? nil : subEntries.map { entry in
-                Subexpense(id: entry.subexpenseId, amount: entry.amount)
-            }
-
-            let newExpense = Expense(
-                id: parsedExpense.id,
-                groupId: newGroupId,
-                description: parsedExpense.description,
-                date: parsedExpense.date,
-                totalAmount: parsedExpense.totalAmount,
-                paidByMemberId: newPaidByMemberId,
-                involvedMemberIds: newInvolvedMemberIds,
-                splits: newSplits,
-                isSettled: parsedExpense.isSettled,
-                participantNames: participantNames,
-                isDebug: parsedExpense.isDebug,
-                subexpenses: subexpenses
-            )
-
-            store.addExpense(newExpense)
+            store.addExpense(Expense(id: expense.id, groupId: expense.groupId,
+                description: expense.description, date: expense.date, totalAmount: expense.totalAmount,
+                paidByMemberId: expense.paidByMemberId,
+                involvedMemberIds: restored.expenseInvolvedMembers.filter { $0.expenseId == expense.id }.map(\.memberId),
+                splits: splits, isSettled: expense.isSettled, contextKind: expense.contextKind,
+                participantNames: names.isEmpty ? nil : names, isDebug: expense.isDebug,
+                subexpenses: subs.isEmpty ? nil : subs, notes: expense.notes, currencyCode: expense.currencyCode))
             expensesAdded += 1
         }
-
-        #if !PAYBACK_CI_NO_CONVEX
-        let bulkResult = await performBulkImport(
-            from: parsedData,
-            memberIdMapping: memberIdMapping,
-            groupIdMapping: groupIdMapping,
-            accountService: Dependencies.current.accountService
-        )
-        switch bulkResult {
-        case .partialSuccess(_, let bulkErrors):
-            errors.append(contentsOf: bulkErrors)
-        case .incompatibleFormat(let message):
-            errors.append(message)
-        default:
-            break
-        }
-        #else
-        await store.syncFriendsToCloud()
-        await store.syncGroupsToCloud()
-        await store.syncExpensesToCloud()
+        return .success(ImportSummary(friendsAdded: friendsAdded, groupsAdded: groupsAdded, expensesAdded: expensesAdded))
         #endif
+    }
 
-        let summary = ImportSummary(
-            friendsAdded: friendsAdded,
-            groupsAdded: groupsAdded,
-            expensesAdded: expensesAdded
-        )
-
-        if errors.isEmpty {
-            return .success(summary)
-        } else {
-            return .partialSuccess(summary, errors: errors)
+    static func validateRestore(_ data: ParsedExportData) throws {
+        let groups = Set(data.groups.map(\.id))
+        for expense in data.expenses {
+            guard expense.contextKind == .groupedIndividual || groups.contains(expense.groupId) else {
+                throw ImportError.parsingFailed("An expense refers to a missing group.")
+            }
+            let splits = data.expenseSplits.filter { $0.expenseId == expense.id }
+            let sum = splits.reduce(0) { $0 + $1.amount }
+            let tolerance = Double.ulpOfOne * max(1, expense.totalAmount, sum) * Double(max(4, splits.count * 2))
+            guard expense.totalAmount.isFinite, expense.totalAmount >= 0, expense.totalAmount <= 1_000_000_000,
+                splits.allSatisfy({ $0.amount.isFinite && $0.amount >= 0 && $0.amount <= 1_000_000_000 }),
+                !splits.isEmpty, Set(splits.map(\.splitId)).count == splits.count,
+                abs(sum - expense.totalAmount) <= tolerance,
+                data.expenseSubexpenses.filter({ $0.expenseId == expense.id }).allSatisfy({ $0.amount.isFinite && $0.amount >= 0 && $0.amount <= 1_000_000_000 }) else {
+                throw ImportError.parsingFailed("An expense has missing or invalid financial shares. No liability was inferred.")
+            }
         }
+    }
+
+    /// CSV records can span physical lines inside quoted fields.
+    private static func logicalRecords(_ text: String) throws -> [String] {
+        var records: [String] = []
+        var record = ""
+        var quoted = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if character == "\"" {
+                let next = text.index(after: index)
+                if quoted && next < text.endIndex && text[next] == "\"" {
+                    record.append("\"\"")
+                    index = text.index(after: next)
+                    continue
+                }
+                quoted.toggle()
+            }
+            if (character == "\n" || character == "\r" || character == "\r\n") && !quoted {
+                records.append(record)
+                record = ""
+            } else { record.append(character) }
+            index = text.index(after: index)
+        }
+        guard !quoted else { throw ImportError.parsingFailed("Unterminated quoted CSV field.") }
+        if !record.isEmpty { records.append(record) }
+        return records
     }
 
     // MARK: - Private Parsing Helpers
@@ -804,22 +535,31 @@ struct DataImportService {
         return result
     }
 
+    private static func parseBoolean(_ value: String) -> Bool? {
+        switch value.lowercased() {
+        case "true": return true
+        case "false": return false
+        default: return nil
+        }
+    }
+
     private static func parseFriend(fields: [String]) -> ParsedFriend? {
         guard fields.count >= 6,
-              let memberId = UUID(uuidString: fields[0]) else {
+              let memberId = UUID(uuidString: fields[0]),
+              let hasLinkedAccount = parseBoolean(fields[3]) else {
             return nil
         }
 
         return ParsedFriend(
             memberId: memberId,
-            name: unescapeCSV(fields[1]),
-            nickname: fields[2].isEmpty ? nil : unescapeCSV(fields[2]),
-            hasLinkedAccount: fields[3].lowercased() == "true",
+            name: fields[1],
+            nickname: fields[2].isEmpty ? nil : fields[2],
+            hasLinkedAccount: hasLinkedAccount,
             linkedAccountId: fields[4].isEmpty ? nil : fields[4],
             linkedAccountEmail: fields[5].isEmpty ? nil : fields[5],
-            profileImageUrl: fields.count > 6 && !fields[6].isEmpty ? unescapeCSV(fields[6]) : nil,
-            profileColorHex: fields.count > 7 && !fields[7].isEmpty ? unescapeCSV(fields[7]) : nil,
-            status: fields.count > 8 && !fields[8].isEmpty ? unescapeCSV(fields[8]) : nil
+            profileImageUrl: fields.count > 6 && !fields[6].isEmpty ? fields[6] : nil,
+            profileColorHex: fields.count > 7 && !fields[7].isEmpty ? fields[7] : nil,
+            status: fields.count > 8 && !fields[8].isEmpty ? fields[8] : nil
         )
     }
 
@@ -827,15 +567,17 @@ struct DataImportService {
         guard fields.count >= 6,
               let id = UUID(uuidString: fields[0]),
               let createdAt = ISO8601DateFormatter().date(from: fields[4]),
-              let memberCount = Int(fields[5]) else {
+              let memberCount = Int(fields[5]),
+              let isDirect = parseBoolean(fields[2]),
+              let isDebug = parseBoolean(fields[3]) else {
             return nil
         }
 
         return ParsedGroup(
             id: id,
-            name: unescapeCSV(fields[1]),
-            isDirect: fields[2].lowercased() == "true",
-            isDebug: fields[3].lowercased() == "true",
+            name: fields[1],
+            isDirect: isDirect,
+            isDebug: isDebug,
             createdAt: createdAt,
             memberCount: memberCount
         )
@@ -851,9 +593,9 @@ struct DataImportService {
         return ParsedGroupMember(
             groupId: groupId,
             memberId: memberId,
-            memberName: unescapeCSV(fields[2]),
-            profileImageUrl: fields.count > 3 && !fields[3].isEmpty ? unescapeCSV(fields[3]) : nil,
-            profileColorHex: fields.count > 4 && !fields[4].isEmpty ? unescapeCSV(fields[4]) : nil
+            memberName: fields[2],
+            profileImageUrl: fields.count > 3 && !fields[3].isEmpty ? fields[3] : nil,
+            profileColorHex: fields.count > 4 && !fields[4].isEmpty ? fields[4] : nil
         )
     }
 
@@ -863,19 +605,25 @@ struct DataImportService {
               let groupId = UUID(uuidString: fields[1]),
               let date = ISO8601DateFormatter().date(from: fields[3]),
               let totalAmount = Double(fields[4]),
-              let paidByMemberId = UUID(uuidString: fields[5]) else {
+              let paidByMemberId = UUID(uuidString: fields[5]),
+              let isSettled = parseBoolean(fields[6]),
+              let isDebug = parseBoolean(fields[7]),
+              fields.count <= 8 || ExpenseContextKind(rawValue: fields[8]) != nil else {
             return nil
         }
 
         return ParsedExpense(
             id: id,
             groupId: groupId,
-            description: unescapeCSV(fields[2]),
+            description: fields[2],
             date: date,
             totalAmount: totalAmount,
             paidByMemberId: paidByMemberId,
-            isSettled: fields[6].lowercased() == "true",
-            isDebug: fields[7].lowercased() == "true"
+            isSettled: isSettled,
+            isDebug: isDebug,
+            contextKind: fields.count > 8 ? (ExpenseContextKind(rawValue: fields[8]) ?? .group) : .group,
+            notes: fields.count > 9 && !fields[9].isEmpty ? fields[9] : nil,
+            currencyCode: fields.count > 10 && !fields[10].isEmpty ? fields[10] : nil
         )
     }
 
@@ -884,7 +632,8 @@ struct DataImportService {
               let expenseId = UUID(uuidString: fields[0]),
               let splitId = UUID(uuidString: fields[1]),
               let memberId = UUID(uuidString: fields[2]),
-              let amount = Double(fields[3]) else {
+              let amount = Double(fields[3]),
+              let isSettled = parseBoolean(fields[4]) else {
             return nil
         }
 
@@ -893,7 +642,7 @@ struct DataImportService {
             splitId: splitId,
             memberId: memberId,
             amount: amount,
-            isSettled: fields[4].lowercased() == "true"
+            isSettled: isSettled
         )
     }
 
@@ -932,12 +681,24 @@ enum ImportError: Error, LocalizedError {
     }
 }
 
-#if !PAYBACK_CI_NO_CONVEX
 extension DataImportService {
 
     // MARK: - Bulk Import Methods
 
-    static func convertToBulkImportRequest(from parsed: ParsedExportData) -> BulkImportRequest {
+    static func convertToBulkImportRequest(from parsed: ParsedExportData) throws -> BulkImportRequest {
+        let groupIDs = Set(parsed.groups.map(\.id))
+        let manifests = try parsed.expenses.compactMap { expense -> BulkHistoryManifestDTO? in
+            guard expense.contextKind != .groupedIndividual else { return nil }
+            guard groupIDs.contains(expense.groupId) else {
+                throw ImportError.parsingFailed("A historical expense refers to a missing source group.")
+            }
+            let financialIDs = Set([expense.paidByMemberId]
+                + parsed.expenseInvolvedMembers.filter { $0.expenseId == expense.id }.map(\.memberId)
+                + parsed.expenseSplits.filter { $0.expenseId == expense.id }.map(\.memberId))
+            return BulkHistoryManifestDTO(expense_id: expense.id.uuidString,
+                group_id: expense.groupId.uuidString,
+                historical_member_ids: financialIDs.map(\.uuidString).sorted())
+        }
         let friendsByMemberId: [UUID: ParsedFriend] = Dictionary(
             parsed.friends.map { ($0.memberId, $0) },
             uniquingKeysWith: { _, new in new }
@@ -986,7 +747,8 @@ extension DataImportService {
                 BulkGroupMemberDTO(
                     id: entry.memberId.uuidString,
                     name: entry.memberName,
-                    profile_avatar_color: entry.profileColorHex
+                    profile_avatar_color: entry.profileColorHex,
+                    profile_image_url: entry.profileImageUrl
                 )
             }
             return BulkGroupDTO(
@@ -1008,8 +770,6 @@ extension DataImportService {
                 involvedMemberIds.append(id)
             }
 
-            // Always include payer.
-            appendInvolved(expense.paidByMemberId)
             for entry in involvedEntries {
                 appendInvolved(entry.memberId)
             }
@@ -1026,6 +786,7 @@ extension DataImportService {
                 if let name = participantNamesByMemberId[memberId] {
                     return name
                 }
+                if memberId == parsed.currentUserId, let name = parsed.currentUserName { return name }
                 if let name = groupMemberNamesByMemberId[memberId] {
                     return name
                 }
@@ -1036,9 +797,9 @@ extension DataImportService {
             }
 
             let participants: [BulkParticipantDTO] = involvedMemberIds.map { memberId in
-                let friend = friendsByMemberId[memberId]
-                let linkedAccountId = (friend?.hasLinkedAccount ?? false) ? friend?.linkedAccountId : nil
-                let linkedAccountEmail = (friend?.hasLinkedAccount ?? false) ? friend?.linkedAccountEmail : nil
+                // Backup metadata cannot establish trusted account provenance.
+                let linkedAccountId: String? = nil
+                let linkedAccountEmail: String? = nil
                 return BulkParticipantDTO(
                     member_id: memberId.uuidString,
                     name: nameForMember(memberId),
@@ -1051,25 +812,9 @@ extension DataImportService {
             let involvedMemberIdStrings = participantMemberIds
 
             let splitEntries = parsed.expenseSplits.filter { $0.expenseId == expense.id }
-            let splits: [BulkSplitDTO]
-            if splitEntries.isEmpty {
-                splits = [
-                    BulkSplitDTO(
-                        id: UUID().uuidString,
-                        member_id: expense.paidByMemberId.uuidString,
-                        amount: expense.totalAmount,
-                        is_settled: expense.isSettled
-                    )
-                ]
-            } else {
-                splits = splitEntries.map { entry in
-                    BulkSplitDTO(
-                        id: entry.splitId.uuidString,
-                        member_id: entry.memberId.uuidString,
-                        amount: entry.amount,
-                        is_settled: entry.isSettled
-                    )
-                }
+            let splits = splitEntries.map { entry in
+                BulkSplitDTO(id: entry.splitId.uuidString, member_id: entry.memberId.uuidString,
+                    amount: entry.amount, is_settled: entry.isSettled)
             }
 
             let subexpenseEntries = parsed.expenseSubexpenses.filter { $0.expenseId == expense.id }
@@ -1091,15 +836,17 @@ extension DataImportService {
                 is_settled: expense.isSettled,
                 participant_member_ids: participantMemberIds,
                 participants: participants,
-                subexpenses: subexpenses
+                subexpenses: subexpenses,
+                context_kind: expense.contextKind.rawValue, notes: expense.notes, currency_code: expense.currencyCode
             )
         }
 
-        return BulkImportRequest(friends: friends, groups: groups, expenses: expenses)
+        return BulkImportRequest(friends: friends, groups: groups, expenses: expenses,
+            history_manifest: manifests.isEmpty ? nil : manifests)
     }
 
     static func chunkExpenses(from parsed: ParsedExportData, maxPerChunk: Int = 100) -> [[ParsedExpense]] {
-        guard !parsed.expenses.isEmpty else { return [] }
+        guard !parsed.expenses.isEmpty, maxPerChunk > 0 else { return [] }
         return stride(from: 0, to: parsed.expenses.count, by: maxPerChunk).map { startIndex in
             let endIndex = min(startIndex + maxPerChunk, parsed.expenses.count)
             return Array(parsed.expenses[startIndex..<endIndex])
@@ -1114,6 +861,7 @@ extension DataImportService {
         groupIdMapping: [UUID: UUID]
     ) -> ParsedExportData {
         var result = parsed
+        if let currentID = parsed.currentUserId { result.currentUserId = memberIdMapping[currentID] ?? currentID }
 
         result.friends = parsed.friends.map { friend in
             var remapped = friend
@@ -1174,71 +922,127 @@ extension DataImportService {
         return result
     }
 
+    #if !PAYBACK_CI_NO_CONVEX
+    @MainActor
     static func performBulkImport(
         from parsed: ParsedExportData,
         memberIdMapping: [UUID: UUID] = [:],
         groupIdMapping: [UUID: UUID] = [:],
-        accountService: AccountService
+        accountService: AccountService,
+        expectedAccountID: String, expectedAccountEmail: String,
+        isCurrent: () -> Bool,
+        sleeper: (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
     ) async -> ImportResult {
-        let remappedParsed = applyRemappings(
-            to: parsed,
-            memberIdMapping: memberIdMapping,
-            groupIdMapping: groupIdMapping
-        )
-        let chunks = chunkExpenses(from: remappedParsed, maxPerChunk: 100)
-
-        var totalFriendsAdded = 0
-        var totalGroupsAdded = 0
-        var totalExpensesAdded = 0
-        var allErrors: [String] = []
-
-        if chunks.isEmpty {
-            let request = convertToBulkImportRequest(from: remappedParsed)
-            do {
-                let result = try await accountService.bulkImport(request: request)
-                totalFriendsAdded = result.created.friends
-                totalGroupsAdded = result.created.groups
-                totalExpensesAdded = result.created.expenses
-                allErrors.append(contentsOf: result.errors)
-            } catch {
-                return .incompatibleFormat("Bulk import failed: \(error.localizedDescription)")
+        let source = applyRemappings(to: parsed, memberIdMapping: memberIdMapping, groupIdMapping: groupIdMapping)
+        let converted: BulkImportRequest
+        do { converted = try convertToBulkImportRequest(from: source) }
+        catch { return .incompatibleFormat(error.localizedDescription) }
+        let phases: [(kind: String, count: Int, size: Int)] = [
+            ("friend", converted.friends.count, 16), ("group", converted.groups.count, 4), ("expense", converted.expenses.count, 8)
+        ]
+        var terminal: [String: BulkImportResult.ItemOutcome] = [:]
+        func key(_ kind: String, _ id: String) -> String { kind + ":" + id.lowercased() }
+        func requestIDs(_ request: BulkImportRequest, kind: String) -> [String] {
+            switch kind {
+            case "friend": return request.friends.map(\.member_id)
+            case "group": return request.groups.map(\.id)
+            default: return request.expenses.map(\.id)
             }
-        } else {
-            for (index, chunk) in chunks.enumerated() {
-                var chunkParsed = remappedParsed
-                chunkParsed.expenses = chunk
-
-                if index > 0 {
-                    chunkParsed.friends = []
-                    chunkParsed.groups = []
-                    chunkParsed.groupMembers = []
-                }
-
-                let request = convertToBulkImportRequest(from: chunkParsed)
-
-                do {
-                    let result = try await accountService.bulkImport(request: request)
-                    totalFriendsAdded += result.created.friends
-                    totalGroupsAdded += result.created.groups
-                    totalExpensesAdded += result.created.expenses
-                    allErrors.append(contentsOf: result.errors)
-                } catch {
-                    allErrors.append("Chunk \(index + 1) failed: \(error.localizedDescription)")
+        }
+        func summary(phase: String? = nil, reason: String? = nil) -> ImportSummary {
+            let values = Array(terminal.values)
+            return ImportSummary(
+                friendsAdded: values.filter { $0.kind == "friend" && $0.status == "created" }.count,
+                groupsAdded: values.filter { $0.kind == "group" && $0.status == "created" }.count,
+                expensesAdded: values.filter { $0.kind == "expense" && $0.status == "created" }.count,
+                processedItems: values.filter { $0.status != "rejected" }.count,
+                alreadyPresentItems: values.filter { $0.status == "already_present" }.count,
+                updatedItems: values.filter { $0.status == "updated" }.count,
+                scrubbedItems: values.filter { $0.notice == "inactive_party_scrubbed" && $0.status != "rejected" }.count,
+                incompletePhase: phase, incompleteReason: reason)
+        }
+        func incomplete(_ phase: String, _ reason: String) -> ImportResult {
+            .partialSuccess(summary(phase: phase, reason: reason), errors: [reason])
+        }
+        func current() -> Bool { !Task.isCancelled && isCurrent() }
+        func makeRequest(kind: String, range: Range<Int>) -> BulkImportRequest {
+            let expenses = kind == "expense" ? Array(converted.expenses[range]) : []
+            let expenseIDs = Set(expenses.map(\.id))
+            let manifest = converted.history_manifest?.filter { expenseIDs.contains($0.expense_id) }
+            var request = BulkImportRequest(
+                friends: kind == "friend" ? Array(converted.friends[range]) : [],
+                groups: kind == "group" ? Array(converted.groups[range]) : [], expenses: expenses,
+                history_manifest: manifest?.isEmpty == false ? manifest : nil)
+            request.expected_account_id = expectedAccountID
+            request.expected_account_email = expectedAccountEmail
+            return request
+        }
+        // Reject duplicate source items before any phase can commit.
+        for phase in phases {
+            let ids = requestIDs(converted, kind: phase.kind).map { $0.lowercased() }
+            guard Set(ids).count == ids.count else {
+                return .incompatibleFormat("The backup contains duplicate \(phase.kind) IDs.")
+            }
+        }
+        for phase in phases {
+            var queue = stride(from: 0, to: phase.count, by: phase.size).map { $0..<min($0 + phase.size, phase.count) }
+            while !queue.isEmpty {
+                guard current() else { return incomplete(phase.kind, "Import stopped after cancellation or an account change.") }
+                let range = queue.removeFirst()
+                let request = makeRequest(kind: phase.kind, range: range)
+                let expected = Set(requestIDs(request, kind: phase.kind).map { key(phase.kind, $0) })
+                var attempt = 0
+                requestAttempts: while true {
+                    guard current() else { return incomplete(phase.kind, "Import stopped after cancellation or an account change.") }
+                    attempt += 1
+                    do {
+                        let response = try await accountService.bulkImport(request: request)
+                        guard current() else { return incomplete(phase.kind, "Import stopped after cancellation or an account change; the last request may have been saved.") }
+                        guard let outcomes = response.outcomes,
+                              outcomes.count == expected.count,
+                              Set(outcomes.map { key($0.kind, $0.id) }) == expected,
+                              outcomes.allSatisfy({ ["created", "updated", "already_present", "rejected"].contains($0.status) }) else {
+                            return incomplete(phase.kind, "The server did not confirm every requested item. Some data may be saved; refresh before retrying.")
+                        }
+                        // Exact unique coverage is checked before recording any acknowledgement.
+                        for outcome in outcomes { terminal[key(outcome.kind, outcome.id)] = outcome }
+                        if !response.success || !response.errors.isEmpty || outcomes.contains(where: { $0.status == "rejected" }) {
+                            let rejectedIDs = outcomes.filter { $0.status == "rejected" }.map(\.id).prefix(3).joined(separator: ", ")
+                            return incomplete(phase.kind, "Some \(phase.kind) items were not restored.\(rejectedIDs.isEmpty ? "" : " IDs: " + rejectedIDs)")
+                        }
+                        break requestAttempts
+                    } catch let error as ImportTransportError {
+                        guard current() else { return incomplete(phase.kind, "Import stopped after cancellation or an account change.") }
+                        switch error {
+                        case .budgetExceeded:
+                            guard range.count > 1 else {
+                                return incomplete(phase.kind, "This \(phase.kind) item exceeds the supported restore limit: \(requestIDs(request, kind: phase.kind)[0]).")
+                            }
+                            let middle = range.lowerBound + range.count / 2
+                            queue.insert(contentsOf: [range.lowerBound..<middle, middle..<range.upperBound], at: 0)
+                            break requestAttempts
+                        case .uncertainOutcome:
+                            guard attempt < 3 else {
+                                return incomplete(phase.kind, "The server response could not be confirmed after three attempts. The last request may already be saved.")
+                            }
+                            do { try await sleeper(UInt64(attempt) * 250_000_000) }
+                            catch { return incomplete(phase.kind, "Import was cancelled while waiting to retry.") }
+                            guard current() else { return incomplete(phase.kind, "Import stopped after cancellation or an account change.") }
+                            // Retry this immutable request, never generate replacement IDs.
+                            continue requestAttempts
+                        case .rejected(let code):
+                            return incomplete(phase.kind, "The server could not restore this request (\(code)).")
+                        }
+                    } catch is CancellationError {
+                        return incomplete(phase.kind, "Import was cancelled. Earlier confirmed items remain saved.")
+                    } catch {
+                        return incomplete(phase.kind, "The restore request failed. Earlier confirmed items remain saved.")
+                    }
                 }
             }
         }
-
-        let summary = ImportSummary(
-            friendsAdded: totalFriendsAdded,
-            groupsAdded: totalGroupsAdded,
-            expensesAdded: totalExpensesAdded
-        )
-
-        if allErrors.isEmpty {
-            return .success(summary)
-        } else {
-            return .partialSuccess(summary, errors: allErrors)
-        }
+        guard current() else { return incomplete("refresh", "Import stopped after cancellation or an account change.") }
+        return .success(summary())
     }
+    #endif
 }
-#endif

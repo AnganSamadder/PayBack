@@ -12,11 +12,15 @@ enum MergeFriendsLogic {
     static func combinedExpenseCount(
         expenses: [Expense],
         memberIds: [UUID],
-        areSamePerson: (UUID, UUID) -> Bool
+        areSamePerson: (UUID, UUID) -> Bool,
+        areSamePersonInExpense: ((UUID, UUID, Expense) -> Bool)? = nil
     ) -> Int {
         let matchingExpenseIds = Set(expenses.compactMap { expense -> UUID? in
             func matchesSelectedFriend(_ candidateId: UUID) -> Bool {
-                memberIds.contains { areSamePerson(candidateId, $0) }
+                memberIds.contains { selectedId in
+                    areSamePersonInExpense?(candidateId, selectedId, expense)
+                        ?? areSamePerson(candidateId, selectedId)
+                }
             }
 
             let matches = matchesSelectedFriend(expense.paidByMemberId) ||
@@ -37,6 +41,7 @@ struct MergeFriendsView: View {
     @State private var isLoading = false
     @State private var showErrorAlert = false
     @State private var errorMessage = ""
+    @State private var mergeTask: Task<Void, Never>?
 
     var unlinkedFriends: [AccountFriend] {
         store.mergeableUnlinkedFriends
@@ -45,8 +50,9 @@ struct MergeFriendsView: View {
 
     var body: some View {
         Form {
+            LinkingOperationStatusView()
             Section {
-                Text("Select two unlinked friends to merge. All expenses and groups from the first friend will be moved to the second friend.")
+                Text("Select two unlinked friends to merge. The two records will represent the same person in your account. Expense amounts and settlement records stay intact.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -70,6 +76,7 @@ struct MergeFriendsView: View {
                     }
                 }
             }
+            .disabled(isLoading || store.isLinkingProcessing || store.linkingRecoveryMessage != nil)
 
             if let a = friendA, let b = friendB, a.memberId != b.memberId {
                 Section("Preview") {
@@ -88,7 +95,7 @@ struct MergeFriendsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("This action cannot be undone")
                                 .font(.headline)
-                            Text("All groups and expenses associated with \(a.name) will be permanently reassigned to \(b.name).")
+                            Text("Your records for \(a.name) will be combined with \(b.name). This does not merge other people’s friend records.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -108,11 +115,12 @@ struct MergeFriendsView: View {
                                 .frame(maxWidth: .infinity)
                         }
                     }
-                    .disabled(isLoading)
+                    .disabled(isLoading || store.isLinkingProcessing || store.linkingRecoveryMessage != nil)
                 }
             }
         }
         .navigationTitle("Merge Friends")
+        .onDisappear { mergeTask?.cancel() }
         .confirmationDialog(
             "Merge \(friendA?.name ?? "") into \(friendB?.name ?? "")?",
             isPresented: $showConfirmation,
@@ -123,7 +131,7 @@ struct MergeFriendsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This will move all data from \(friendA?.name ?? "Friend A") to \(friendB?.name ?? "Friend B"). This cannot be undone.")
+            Text("This will combine your friend records for \(friendA?.name ?? "Friend A") and \(friendB?.name ?? "Friend B"). Original expense amounts and settlement records are preserved. This cannot be undone.")
         }
         .alert("Unable to Merge", isPresented: $showErrorAlert) {
             Button("OK", role: .cancel) { }
@@ -149,13 +157,13 @@ struct MergeFriendsView: View {
     }
 
     private func combinedExpenseCount(for firstMemberId: UUID, _ secondMemberId: UUID) -> Int {
-        let identityMemberIds = store.accountFriendIdentityMemberIds(
-            for: [firstMemberId, secondMemberId]
-        )
         return MergeFriendsLogic.combinedExpenseCount(
             expenses: store.expenses,
-            memberIds: Array(identityMemberIds),
-            areSamePerson: store.areSamePerson
+            memberIds: [firstMemberId, secondMemberId],
+            areSamePerson: store.areSamePerson,
+            areSamePersonInExpense: { candidateId, friendId, expense in
+                store.isFriendMember(candidateId, friendId: friendId, in: expense)
+            }
         )
     }
 
@@ -163,16 +171,20 @@ struct MergeFriendsView: View {
         guard let a = friendA, let b = friendB else { return }
 
         isLoading = true
+        let accountId = store.session?.account.id
 
-        Task {
+        mergeTask = Task {
+            defer { isLoading = false }
             do {
                 try await store.mergeFriend(unlinkedMemberId: a.memberId, into: b.memberId)
                 await MainActor.run {
+                    guard !Task.isCancelled, store.session?.account.id == accountId else { return }
                     isLoading = false
                     Haptics.notify(.success)
                     dismiss()
                 }
             } catch {
+                guard !Task.isCancelled, !(error is CancellationError), store.session?.account.id == accountId else { return }
                 await MainActor.run {
                     isLoading = false
                     Haptics.notify(.error)

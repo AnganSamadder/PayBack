@@ -108,7 +108,7 @@ test.each([
   }
 );
 
-test("bulk import rejects a group containing a deleting account before writes", async () => {
+test("bulk restore omits a deleting third party without granting group visibility", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
     await seedAccount(ctx, {
@@ -131,24 +131,43 @@ test("bulk import rejects a group containing a deleting account before writes", 
   });
 
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
-  await expect(
-    owner.mutation(api.bulkImport.bulkImport, {
-      friends: [],
-      groups: [
-        {
-          id: "late_group",
-          name: "Late group",
-          members: [
-            { id: "owner_member", name: "Owner", is_current_user: true },
-            { id: "deleting_member", name: "Deleting" }
-          ]
-        }
-      ],
-      expenses: []
-    })
-  ).rejects.toThrow("being deleted");
-
-  expect(await t.run(async (ctx) => ctx.db.query("groups").collect())).toEqual([]);
+  const result = await owner.mutation(api.bulkImport.bulkImport, {
+    financial_contract_version: 2,
+    friends: [],
+    groups: [
+      {
+        id: "late_group",
+        name: "Late group",
+        members: [
+          { id: "owner_member", name: "Owner", is_current_user: true },
+          { id: "deleting_member", name: "Deleting" }
+        ]
+      }
+    ],
+    expenses: []
+  });
+  expect(result.errors).toEqual([]);
+  expect(result.outcomes).toEqual([
+    { kind: "group", id: "late_group", status: "created", notice: "inactive_party_scrubbed" }
+  ]);
+  const stored = await t.run(async (ctx) => ({
+    groups: await ctx.db.query("groups").collect(),
+    visibility: await ctx.db.query("group_visibility").collect(),
+    accounts: await ctx.db.query("accounts").collect(),
+    friends: await ctx.db.query("account_friends").collect(),
+    expenses: await ctx.db.query("expenses").collect()
+  }));
+  expect(stored.groups).toHaveLength(1);
+  expect(stored.groups[0].members).toEqual([
+    { id: "owner_member", name: "Owner", is_current_user: true }
+  ]);
+  const ownerAccount = stored.accounts.find((account) => account.id === "owner_auth")!;
+  const deletingAccount = stored.accounts.find((account) => account.id === "deleting_auth")!;
+  expect(deletingAccount.status).toBe("deleting");
+  expect(stored.visibility.map((row) => row.account_id)).toEqual([ownerAccount._id]);
+  expect(stored.visibility.some((row) => row.account_id === deletingAccount._id)).toBe(false);
+  expect(stored.friends).toEqual([]);
+  expect(stored.expenses).toEqual([]);
 });
 
 test("bulk import rejects writes into a deletion-fenced group", async () => {
@@ -181,6 +200,7 @@ test("bulk import rejects writes into a deletion-fenced group", async () => {
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await expect(
     owner.mutation(api.bulkImport.bulkImport, {
+      financial_contract_version: 2,
       friends: [],
       groups: [
         {
@@ -270,18 +290,25 @@ test("group read surfaces hide deletion-fenced groups", async () => {
   });
 
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
-  const groups = await owner.query(api.groups.list, {});
+  const groups = await owner.query(api.groups.list, { financial_contract_version: 2 });
   expect(groups.map((group) => group.id)).toEqual(["active_group"]);
 
   const groupsV2 = await owner.query(api.groups.listV2, {
+    financial_contract_version: 2,
     paginationOpts: { cursor: null, numItems: 8 }
   });
   expect(groupsV2.page.map((group) => group.id)).toEqual(["active_group"]);
 
-  const groupsPaginated = await owner.query(api.groups.listPaginated, {});
+  const groupsPaginated = await owner.query(api.groups.listPaginated, {
+    financial_contract_version: 2
+  });
   expect(groupsPaginated.items.map((group) => group.id)).toEqual(["active_group"]);
-  expect(await owner.query(api.groups.get, { id: "fenced_group" })).toBeNull();
-  expect(await owner.query(api.groups.get, { id: "active_group" })).toMatchObject({
+  expect(
+    await owner.query(api.groups.get, { financial_contract_version: 2, id: "fenced_group" })
+  ).toBeNull();
+  expect(
+    await owner.query(api.groups.get, { financial_contract_version: 2, id: "active_group" })
+  ).toMatchObject({
     _id: activeGroupId
   });
 
@@ -385,25 +412,38 @@ test("expense read surfaces hide only expenses canonically attached to fenced gr
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   const visibleExpenseIds = ["canonical_collision_survivor"];
 
-  const expenses = await owner.query(api.expenses.list, {});
+  const expenses = await owner.query(api.expenses.list, { financial_contract_version: 2 });
   expect(expenses.map((expense) => expense.id)).toEqual(visibleExpenseIds);
 
   const expensesV2 = await owner.query(api.expenses.listV2, {
+    financial_contract_version: 2,
     paginationOpts: { cursor: null, numItems: 8 }
   });
   expect(expensesV2.page.map((expense) => expense.id)).toEqual(visibleExpenseIds);
 
   const activeExpenses = await owner.query(api.expenses.listByGroup, {
+    financial_contract_version: 2,
     group_id: "active_group"
   });
   expect(activeExpenses.map((expense) => expense.id)).toEqual(visibleExpenseIds);
-  expect(await owner.query(api.expenses.listByGroup, { group_id: "fenced_group" })).toEqual([]);
+  expect(
+    await owner.query(api.expenses.listByGroup, {
+      financial_contract_version: 2,
+      group_id: "fenced_group"
+    })
+  ).toEqual([]);
 
   const activeExpensesPaginated = await owner.query(api.expenses.listByGroupPaginated, {
+    financial_contract_version: 2,
     groupId: activeGroupId
   });
   expect(activeExpensesPaginated.items.map((expense) => expense.id)).toEqual(visibleExpenseIds);
-  expect(await owner.query(api.expenses.listByGroupPaginated, { groupId: fencedGroupId })).toEqual({
+  expect(
+    await owner.query(api.expenses.listByGroupPaginated, {
+      financial_contract_version: 2,
+      groupId: fencedGroupId
+    })
+  ).toEqual({
     items: [],
     nextCursor: null
   });
@@ -460,10 +500,12 @@ test("settlement writes reject expenses canonically attached to a fenced group",
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   await expect(
     owner.mutation(api.expenses.setSettlementState, {
+      financial_contract_version: 2,
       expenseId: "fenced_expense",
+      splitIds: ["fenced_split"],
       settled: true
     })
-  ).rejects.toThrow("Group deletion is in progress");
+  ).rejects.toThrow("Forbidden: expense access denied");
 
   const expense = await t.run((ctx) => ctx.db.query("expenses").unique());
   expect(expense?.is_settled).toBe(false);
@@ -530,7 +572,9 @@ test("settlement writes honor an active canonical group despite a colliding grou
 
   const owner = t.withIdentity(identity("owner@test.com", "owner_auth"));
   const result = await owner.mutation(api.expenses.setSettlementState, {
+    financial_contract_version: 2,
     expenseId: "active_expense",
+    splitIds: ["active_split"],
     settled: true
   });
   expect(result.is_settled).toBe(true);
@@ -555,7 +599,10 @@ test("deleting legacy account cannot bootstrap a new canonical member identity",
 
   const legacy = t.withIdentity(identity("legacy@test.com", "legacy_auth"));
   await expect(
-    legacy.mutation(api.users.updateLinkedMemberId, { member_id: "late_member" })
+    legacy.mutation(api.users.updateLinkedMemberId, {
+      financial_contract_version: 2,
+      member_id: "late_member"
+    })
   ).rejects.toThrow("being deleted");
 
   const state = await t.run(async (ctx) => ({

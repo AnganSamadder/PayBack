@@ -99,14 +99,23 @@ describe("group visibility writes", () => {
     const state = await t.run(async (ctx) => ({
       group: await ctx.db.get(fixture.groupId),
       visibility: await ctx.db.query("group_visibility").collect(),
-      revisions: await ctx.db.query("account_sync_state").collect()
+      revisions: await ctx.db.query("account_sync_state").collect(),
+      references: await ctx.db.query("member_references").collect()
     }));
     expect(state.group).toMatchObject({ name: "After", updated_at: 77 });
     expect(state.visibility).toHaveLength(1);
     expect(state.visibility[0]?.group_updated_at).toBe(77);
     expect(state.visibility[0]?.created_at).toBe(state.visibility[0]?.updated_at);
     expect(state.revisions).toEqual([]);
-    expect(charges.writes).toBe(2);
+    expect(state.references).toMatchObject([
+      {
+        entity_kind: "group",
+        member_id: "prepared_group_owner_member",
+        entity_document_id: String(fixture.groupId)
+      }
+    ]);
+    // Source patch, visibility row, and transactional member reference.
+    expect(charges.writes).toBe(3);
     expect(charges.writeBytes).toBeGreaterThan(0);
   });
 
@@ -150,15 +159,18 @@ describe("group visibility writes", () => {
     const state = await t.run(async (ctx) => ({
       group: await ctx.db.get(groupId),
       visibility: await ctx.db.query("group_visibility").collect(),
-      revisions: await ctx.db.query("account_sync_state").collect()
+      revisions: await ctx.db.query("account_sync_state").collect(),
+      references: await ctx.db.query("member_references").collect()
     }));
-    expect(charges).toMatchObject({ writes: 3 });
+    // The dry run additionally budgets the account revision, without writing any row.
+    expect(charges).toMatchObject({ writes: 4 });
     expect(charges.queries).toBeGreaterThan(0);
     expect(charges.rows).toBeGreaterThan(0);
     expect(charges.writeBytes).toBeGreaterThan(0);
     expect(state.group?.name).toBe("Before");
     expect(state.visibility).toEqual([]);
     expect(state.revisions).toEqual([]);
+    expect(state.references).toEqual([]);
   });
 
   test("rejects new fenced identities and scrubs existing group member snapshots", async () => {

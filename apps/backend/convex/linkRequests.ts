@@ -17,8 +17,22 @@ import { checkRateLimit } from "./rateLimit";
 import {
   applyClaimForUser,
   assertBudgetedIdentityMaterializationReady,
-  prepareClaimForUser
+  prepareClaimForUser,
+  type LinkClaimPlan,
+  linkingCapabilityArgs,
+  type LinkingCapability,
+  startClaimIdentityOperation
 } from "./inviteTokens";
+
+import {
+  assertExpectedActor,
+  assertFinancialContract,
+  assertMemberFinancialContract,
+  resolveLiveAccountForMember,
+  FINANCIAL_CONTRACT_UPGRADE_REQUIRED
+} from "./financialContract";
+import { assertMemberReferencesReady } from "./memberReferences";
+import { getIdentityOperationResult, createIdentityOperation } from "./identityOperations";
 
 function isUnlinkedFriend(friend: {
   has_linked_account: boolean;
@@ -38,13 +52,14 @@ function isUnlinkedFriend(friend: {
 }
 
 const createArgs = {
+  ...linkingCapabilityArgs,
   id: v.string(),
   recipient_email: v.string(),
   target_member_id: v.string(),
   target_member_name: v.string()
 };
 
-type CreateLinkRequestArgs = {
+type CreateLinkRequestArgs = LinkingCapability & {
   id: string;
   recipient_email: string;
   target_member_id: string;
@@ -94,9 +109,17 @@ async function collectCompatibilityLinkRequests<T extends { _id: unknown; create
 
 async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequestArgs) {
   const { user } = await getCurrentUserOrThrow(ctx);
+  assertExpectedActor(user, args);
+  await assertFinancialContract(ctx, user, args.financial_contract_version);
 
   const recipientEmail = args.recipient_email.trim().toLowerCase();
   const targetMemberId = normalizeMemberId(args.target_member_id);
+  await assertMemberFinancialContract(
+    ctx,
+    [targetMemberId],
+    args.financial_contract_version,
+    user._id
+  );
   const targetMemberName = args.target_member_name.trim();
   if (!recipientEmail.includes("@")) {
     throw new Error("Invalid recipient email");
@@ -205,13 +228,15 @@ async function createCanonicalLinkRequest(ctx: MutationCtx, args: CreateLinkRequ
  * Lists all incoming link requests for the current user.
  */
 export const listIncoming = query({
-  args: {},
-  handler: async (ctx) => {
+  args: linkingCapabilityArgs,
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
 
     const { user } = await resolveAuthenticatedAccount(ctx);
     if (!user) return [];
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     const recipientEmail = user.email.trim().toLowerCase();
     const now = Date.now();
     const activeRows = await ctx.db
@@ -227,12 +252,20 @@ export const listIncoming = query({
       )
       .order("desc")
       .take(LINK_REQUEST_LIST_LIMITS.compatibilityRows);
-    return await collectCompatibilityLinkRequests(activeRows, historyRows);
+    const requests = await collectCompatibilityLinkRequests(activeRows, historyRows);
+    await assertMemberFinancialContract(
+      ctx,
+      requests.map((request) => request.target_member_id),
+      args.financial_contract_version,
+      user._id
+    );
+    return requests;
   }
 });
 
 export const listIncomingPage = query({
   args: {
+    ...linkingCapabilityArgs,
     cursor: v.union(v.string(), v.null()),
     numItems: v.number()
   },
@@ -242,14 +275,23 @@ export const listIncomingPage = query({
 
     const { user } = await resolveAuthenticatedAccount(ctx);
     if (!user) return { page: [], continueCursor: "", isDone: true };
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
     const recipientEmail = user.email.trim().toLowerCase();
-    return await ctx.db
+    const result = await ctx.db
       .query("link_requests")
       .withIndex("by_recipient_email_and_created_at", (q) =>
         q.eq("recipient_email", recipientEmail)
       )
       .order("desc")
       .paginate({ cursor: args.cursor, numItems: clampedLinkRequestPageSize(args.numItems) });
+    await assertMemberFinancialContract(
+      ctx,
+      result.page.map((request) => request.target_member_id),
+      args.financial_contract_version,
+      user._id
+    );
+    return result;
   }
 });
 
@@ -257,13 +299,15 @@ export const listIncomingPage = query({
  * Lists all outgoing link requests from the current user.
  */
 export const listOutgoing = query({
-  args: {},
-  handler: async (ctx) => {
+  args: linkingCapabilityArgs,
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
 
     const { user } = await resolveAuthenticatedAccount(ctx);
     if (!user) return [];
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
 
     const now = Date.now();
     const activeRows = await ctx.db
@@ -277,12 +321,20 @@ export const listOutgoing = query({
       .withIndex("by_requester_id_and_created_at", (q) => q.eq("requester_id", user.id))
       .order("desc")
       .take(LINK_REQUEST_LIST_LIMITS.compatibilityRows);
-    return await collectCompatibilityLinkRequests(activeRows, historyRows);
+    const requests = await collectCompatibilityLinkRequests(activeRows, historyRows);
+    await assertMemberFinancialContract(
+      ctx,
+      requests.map((request) => request.target_member_id),
+      args.financial_contract_version,
+      user._id
+    );
+    return requests;
   }
 });
 
 export const listOutgoingPage = query({
   args: {
+    ...linkingCapabilityArgs,
     cursor: v.union(v.string(), v.null()),
     numItems: v.number()
   },
@@ -292,12 +344,21 @@ export const listOutgoingPage = query({
 
     const { user } = await resolveAuthenticatedAccount(ctx);
     if (!user) return { page: [], continueCursor: "", isDone: true };
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
 
-    return await ctx.db
+    const result = await ctx.db
       .query("link_requests")
       .withIndex("by_requester_id_and_created_at", (q) => q.eq("requester_id", user.id))
       .order("desc")
       .paginate({ cursor: args.cursor, numItems: clampedLinkRequestPageSize(args.numItems) });
+    await assertMemberFinancialContract(
+      ctx,
+      result.page.map((request) => request.target_member_id),
+      args.financial_contract_version,
+      user._id
+    );
+    return result;
   }
 });
 
@@ -324,84 +385,164 @@ export const createV2 = mutation({
 /**
  * Accepts a link request and links the accounts.
  */
-export const accept = mutation({
-  args: { id: v.string() },
-  handler: async (ctx, args) => {
-    const budget = createLinkingReadBudget();
+const acceptArgs = {
+  ...linkingCapabilityArgs,
+  id: v.string(),
+  mergeLocalFriendMemberId: v.optional(v.string())
+};
+type AcceptArgs = LinkingCapability & { id: string; mergeLocalFriendMemberId?: string };
+async function acceptRequest(
+  ctx: MutationCtx,
+  args: AcceptArgs,
+  v3: false
+): Promise<LinkClaimPlan["result"]>;
+async function acceptRequest(
+  ctx: MutationCtx,
+  args: AcceptArgs,
+  v3: true
+): Promise<Awaited<ReturnType<typeof getIdentityOperationResult>>>;
+async function acceptRequest(
+  ctx: MutationCtx,
+  args: LinkingCapability & { id: string; mergeLocalFriendMemberId?: string },
+  v3: boolean
+) {
+  const budget = createLinkingReadBudget();
 
-    chargeLinkingQueries(budget, 1);
-    const { user } = await getCurrentUserOrThrow(ctx);
-    accountLinkingRows(budget, [user]);
+  chargeLinkingQueries(budget, 1);
+  const { user } = await getCurrentUserOrThrow(ctx);
+  accountLinkingRows(budget, [user]);
+  assertExpectedActor(user, args);
+  if (v3 && (args.financial_contract_version ?? 0) < 2)
+    throw new Error(FINANCIAL_CONTRACT_UPGRADE_REQUIRED);
+  await assertFinancialContract(ctx, user, args.financial_contract_version, { allowPending: v3 });
 
-    chargeLinkingQueries(budget, 1);
-    const request = await ctx.db
-      .query("link_requests")
-      .withIndex("by_client_id", (q) => q.eq("id", args.id))
-      .unique();
-    accountLinkingRows(budget, request ? [request] : []);
+  chargeLinkingQueries(budget, 1);
+  const request = await ctx.db
+    .query("link_requests")
+    .withIndex("by_client_id", (q) => q.eq("id", args.id))
+    .unique();
+  accountLinkingRows(budget, request ? [request] : []);
 
-    if (!request) throw new Error("Request not found");
+  if (!request) throw new Error("Request not found");
 
-    // Verify recipient
-    if (request.recipient_email.trim().toLowerCase() !== user.email.trim().toLowerCase()) {
-      throw new Error("Not authorized to accept this request");
-    }
-
-    if (request.status !== "pending") {
-      throw new Error("Request is no longer pending");
-    }
-
-    const now = Date.now();
-
-    if (request.expires_at < now) {
-      throw new Error("Request has expired");
-    }
-
-    await assertBudgetedIdentityMaterializationReady(ctx, budget);
-
-    let targetFriendId = request.target_friend_id;
-    if (!targetFriendId) {
-      chargeLinkingQueries(budget, 1);
-      const targetFriends = await ctx.db
-        .query("account_friends")
-        .withIndex("by_account_email_and_member_id", (q) =>
-          q
-            .eq("account_email", request.requester_email.toLowerCase().trim())
-            .eq("member_id", normalizeMemberId(request.target_member_id))
-        )
-        .take(2);
-      accountLinkingRows(budget, targetFriends, true);
-      if (targetFriends.length !== 1) {
-        throw new Error("Target member is no longer an unlinked friend owned by the requester");
-      }
-      targetFriendId = targetFriends[0]._id;
-    }
-
-    const claimPlan = await prepareClaimForUser(
-      ctx,
-      user,
-      {
-        targetMemberId: request.target_member_id,
-        targetFriendId,
-        creatorEmail: request.requester_email.trim().toLowerCase(),
-        creatorId: request.requester_id
-      },
-      budget
-    );
-
-    reserveMergeWriteValuesForLimit(budget, [{ ...request, status: "accepted" } as Value]);
-    await ctx.db.patch(request._id, { status: "accepted" });
-    return await applyClaimForUser(ctx, claimPlan);
+  // Verify recipient
+  if (request.recipient_email.trim().toLowerCase() !== user.email.trim().toLowerCase()) {
+    throw new Error("Not authorized to accept this request");
   }
+
+  const selectedMember = args.mergeLocalFriendMemberId
+    ? normalizeMemberId(args.mergeLocalFriendMemberId)
+    : undefined;
+  if (request.status === "accepted" && request.accepted_by === user.id) {
+    if (request.accept_merge_local_friend_member_id !== selectedMember)
+      throw new Error("Request was already accepted with a different merge selection");
+    if ((await resolveLiveAccountForMember(ctx, request.target_member_id))?._id !== user._id)
+      throw new Error("Accepted link identity is no longer current");
+    if (request.identity_operation_id) {
+      if (!v3) throw new Error(FINANCIAL_CONTRACT_UPGRADE_REQUIRED);
+      return await getIdentityOperationResult(ctx, request.identity_operation_id, user);
+    }
+    if (v3) {
+      await assertFinancialContract(ctx, user, args.financial_contract_version);
+      const creator = await ctx.db
+        .query("accounts")
+        .withIndex("by_auth_id", (q) => q.eq("id", request.requester_id))
+        .unique();
+      if (!creator || !user.member_id) throw new Error("Linked identity is unavailable");
+      await assertFinancialContract(ctx, creator, args.financial_contract_version);
+      const result = await createIdentityOperation(ctx, {
+        actor: user,
+        creator,
+        kind: "claim",
+        sourceMemberIds: [request.target_member_id],
+        targetMemberId: normalizeMemberId(user.member_id),
+        boundRequestId: request._id,
+        selectedLocalMemberId: selectedMember
+      });
+      await ctx.db.patch(request._id, { identity_operation_id: result.operation_id });
+      return result;
+    }
+    if (request.accepted_result) return request.accepted_result;
+  }
+  if (request.status !== "pending") throw new Error("Request is no longer pending");
+
+  await assertFinancialContract(ctx, user, args.financial_contract_version);
+  if (v3) await assertMemberReferencesReady(ctx);
+  const now = Date.now();
+
+  if (request.expires_at < now) {
+    throw new Error("Request has expired");
+  }
+
+  await assertBudgetedIdentityMaterializationReady(ctx, budget);
+
+  let targetFriendId = request.target_friend_id;
+  if (!targetFriendId) {
+    chargeLinkingQueries(budget, 1);
+    const targetFriends = await ctx.db
+      .query("account_friends")
+      .withIndex("by_account_email_and_member_id", (q) =>
+        q
+          .eq("account_email", request.requester_email.toLowerCase().trim())
+          .eq("member_id", normalizeMemberId(request.target_member_id))
+      )
+      .take(2);
+    accountLinkingRows(budget, targetFriends, true);
+    if (targetFriends.length !== 1) {
+      throw new Error("Target member is no longer an unlinked friend owned by the requester");
+    }
+    targetFriendId = targetFriends[0]._id;
+  }
+
+  const claimPlan = await prepareClaimForUser(
+    ctx,
+    user,
+    {
+      targetMemberId: request.target_member_id,
+      targetFriendId,
+      creatorEmail: request.requester_email.trim().toLowerCase(),
+      creatorId: request.requester_id
+    },
+    budget,
+    selectedMember,
+    { preserveFinancialReferences: v3, financialContractVersion: args.financial_contract_version }
+  );
+
+  const patch = {
+    status: "accepted",
+    accepted_by: user.id,
+    accept_merge_local_friend_member_id: selectedMember,
+    accepted_result: claimPlan.result
+  };
+  reserveMergeWriteValuesForLimit(budget, [{ ...request, ...patch } as Value]);
+  await ctx.db.patch(request._id, patch);
+  await applyClaimForUser(ctx, claimPlan);
+  if (!v3) return claimPlan.result;
+  const result = await startClaimIdentityOperation(ctx, user, claimPlan, {
+    boundRequestId: request._id,
+    selectedLocalMemberId: selectedMember
+  });
+  await ctx.db.patch(request._id, { identity_operation_id: result.operation_id });
+  return result;
+}
+export const accept = mutation({
+  args: acceptArgs,
+  handler: async (ctx, args) => acceptRequest(ctx, args, false)
+});
+export const acceptV3 = mutation({
+  args: acceptArgs,
+  handler: async (ctx, args) => acceptRequest(ctx, args, true)
 });
 
 /**
  * Declines a link request.
  */
 export const decline = mutation({
-  args: { id: v.string() },
+  args: { ...linkingCapabilityArgs, id: v.string() },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
 
     const request = await ctx.db
       .query("link_requests")
@@ -417,6 +558,8 @@ export const decline = mutation({
 
     const now = Date.now();
 
+    if (request.status !== "pending") throw new Error("Request is no longer pending");
+
     // Update request status
     await ctx.db.patch(request._id, {
       status: "declined",
@@ -429,9 +572,11 @@ export const decline = mutation({
  * Cancels an outgoing link request.
  */
 export const cancel = mutation({
-  args: { id: v.string() },
+  args: { ...linkingCapabilityArgs, id: v.string() },
   handler: async (ctx, args) => {
     const { user } = await getCurrentUserOrThrow(ctx);
+    assertExpectedActor(user, args);
+    await assertFinancialContract(ctx, user, args.financial_contract_version);
 
     const request = await ctx.db
       .query("link_requests")
@@ -444,6 +589,8 @@ export const cancel = mutation({
     if (request.requester_id !== user.id) {
       throw new Error("Not authorized to cancel this request");
     }
+
+    if (request.status !== "pending") throw new Error("Request is no longer pending");
 
     // Delete the request
     await ctx.db.delete(request._id);
