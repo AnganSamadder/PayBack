@@ -2,12 +2,28 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-function sanitizerTimeout(source: string, sanitizer: "none" | "thread" | "address"): number {
-  const match = source.match(
-    new RegExp(`sanitizer: ${sanitizer}\\n(?:\\s+.+\\n)*?\\s+timeout: (\\d+)`)
+type MatrixEntry = { sanitizer: string; timeout: number };
+
+function emittedMatrices(source: string): { pullRequest: MatrixEntry[]; mainPush: MatrixEntry[] } {
+  const blocks = [...source.matchAll(/echo 'matrix=(\{[^']+\})' >> "\$GITHUB_OUTPUT"/g)].map(
+    (match) => (JSON.parse(match[1]) as { include: MatrixEntry[] }).include
   );
-  if (!match) throw new Error(`Missing timeout for ${sanitizer} sanitizer job`);
-  return Number(match[1]);
+  if (blocks.length !== 2) {
+    throw new Error(
+      `Expected 2 emitted iOS test matrices (PR + main push), found ${blocks.length}`
+    );
+  }
+  const [pullRequest, mainPush] = blocks;
+  return { pullRequest, mainPush };
+}
+
+function sanitizerTimeout(
+  include: MatrixEntry[],
+  sanitizer: "none" | "thread" | "address"
+): number {
+  const entry = include.find((candidate) => candidate.sanitizer === sanitizer);
+  if (!entry) throw new Error(`Missing timeout for ${sanitizer} sanitizer job`);
+  return entry.timeout;
 }
 
 describe("iOS CI timeout policy", () => {
@@ -16,14 +32,24 @@ describe("iOS CI timeout policy", () => {
     resolve(process.cwd(), "../../scripts/test-ci-locally.sh"),
     "utf8"
   );
+  const { pullRequest, mainPush } = emittedMatrices(workflow);
+
+  it("runs only the normal iOS leg on PRs", () => {
+    expect(pullRequest.map((entry) => entry.sanitizer)).toEqual(["none"]);
+  });
 
   it("allows the full standard suite to finish on hosted Xcode runners", () => {
-    expect(sanitizerTimeout(workflow, "none")).toBeGreaterThanOrEqual(90);
+    expect(sanitizerTimeout(pullRequest, "none")).toBeGreaterThanOrEqual(90);
+    expect(sanitizerTimeout(mainPush, "none")).toBeGreaterThanOrEqual(90);
   });
 
   it("gives serialized sanitizer suites additional headroom", () => {
-    expect(sanitizerTimeout(workflow, "thread")).toBeGreaterThanOrEqual(90);
-    expect(sanitizerTimeout(workflow, "address")).toBeGreaterThanOrEqual(90);
+    expect(sanitizerTimeout(mainPush, "thread")).toBeGreaterThanOrEqual(90);
+    expect(sanitizerTimeout(mainPush, "address")).toBeGreaterThanOrEqual(90);
+  });
+
+  it("wires the ios-tests job timeout from the generated matrix", () => {
+    expect(workflow).toContain("timeout-minutes: ${{ matrix.timeout }}");
   });
 
   it("keeps the local parity script's documented budgets synchronized", () => {
