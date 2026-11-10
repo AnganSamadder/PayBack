@@ -75,6 +75,26 @@ final class ExpenseMoneyContractTests: XCTestCase {
         XCTAssertNil(legacy.currencyCode)
     }
 
+    func testOrdinaryHistoricalBalancesUseCompactCurrencyFormatting() {
+        let examples: [(String, Double)] = [
+            ("USD", 36.6175745624846), ("USD", 15.0632018561485),
+            ("USD", 139.673212487039), ("USD", -27.4211239832388),
+            ("USD", 0.1 + 0.2), ("EUR", 45.8852729849643),
+            ("JPY", 139.673212487039), ("TND", 139.673212487039)
+        ]
+        for (code, amount) in examples {
+            let expected = amount.formatted(.currency(code: code))
+            XCTAssertEqual(ExpenseMoneyText.format(amount, currencyCode: code), expected)
+            XCTAssertEqual(ExpenseMoneyText.overview([code: amount]), expected)
+            XCTAssertEqual(ExpenseMoneyText.summary([code: amount]), expected)
+        }
+        let legacyAmount = 36.6175745624846
+        XCTAssertEqual(
+            ExpenseMoneyText.format(legacyAmount, currencyCode: nil),
+            legacyAmount.formatted(.currency(code: ExpenseMoneyText.legacyCurrencyCode))
+        )
+    }
+
     func testHistoricalFractionsSurviveCurrencySpecificMinorUnitFormatting() throws {
         for (code, amount) in [("JPY", 0.5), ("TND", 1.234), ("EUR", 0.000000001), ("USD", -0.001)] {
             let text = ExpenseMoneyText.format(amount, currencyCode: code)
