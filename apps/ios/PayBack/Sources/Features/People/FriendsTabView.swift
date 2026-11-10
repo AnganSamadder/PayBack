@@ -155,7 +155,7 @@ private struct FriendsList: View {
         var displayName: String {
             switch self {
             case .alphabetical: return "Name"
-            case .balance: return "USD Balance"
+            case .balance: return "Balance"
             }
         }
     }
@@ -306,9 +306,8 @@ private struct FriendsList: View {
             }
 
             let recorded = store.balanceByCurrency(forFriend: friend)
-            let unknown = store.unknownCurrencyExpenses(forFriend: friend)
-            if recorded.values.contains(where: { abs($0) > 0.01 }) || !unknown.isEmpty {
-                message += "\n\nRecorded balances: \(ExpenseMoneyText.overview(recorded, unknownExpenses: unknown))."
+            if recorded.values.contains(where: { abs($0) > 0.01 }) {
+                message += "\n\nUnsettled balance: \(ExpenseMoneyText.overview(recorded))."
             }
 
             return Text(message)
@@ -381,18 +380,20 @@ private struct BalanceView: View {
 
     var body: some View {
         let balances = store.balanceByCurrency(forFriend: friend)
-        let balance = balances.count == 1 && store.unknownCurrencyExpenses(forFriend: friend).isEmpty ? (balances.values.first ?? 0) : 0
-        let formattedBalance = ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: friend), unknownExpenses: store.unknownCurrencyExpenses(forFriend: friend))
+        let balance = balances.count == 1 ? (balances.values.first ?? 0) : 0
+        let formattedBalance = ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: friend))
 
         Text(formattedBalance)
             .font(.system(.headline, design: .rounded, weight: .semibold))
             .foregroundStyle(balanceColor(for: balance))
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
     }
 
     private func balanceColor(for balance: Double) -> Color {
-        if balance > 0.01 {
+        if balance > 0 {
             return .green // Friend owes current user
-        } else if balance < -0.01 {
+        } else if balance < 0 {
             return .red // Current user owes friend
         } else {
             return .secondary // Settled up

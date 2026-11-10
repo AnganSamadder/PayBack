@@ -652,7 +652,7 @@ extension AppStoreLinkingTests {
         XCTAssertNil(sut.linkingRecoveryMessage)
     }
 
-    func testReview_KnownCurrenciesRemainSeparateAndUnknownRecordsStayIndividual() {
+    func testReview_RecordedCurrenciesStaySeparateAndLegacyMetadataRemainsAbsent() {
         let selfId = sut.currentUser.id
         let other = UUID()
         func expense(_ amount: Double, _ code: String?) -> Expense {
@@ -660,8 +660,11 @@ extension AppStoreLinkingTests {
                     involvedMemberIds: [selfId, other], splits: [ExpenseSplit(memberId: other, amount: amount)], currencyCode: code)
         }
         sut.expenses = [expense(10, "USD"), expense(20, "EUR"), expense(30, nil), expense(40, nil)]
-        XCTAssertEqual(sut.overallNetBalance(), 10)
-        XCTAssertEqual(sut.overallNetBalanceByCurrency(), ["USD": 10, "EUR": 20])
+        let legacyCode = ExpenseMoneyText.legacyCurrencyCode
+        var expected = ["USD": 10.0, "EUR": 20.0]
+        expected[legacyCode, default: 0] += 70
+        XCTAssertEqual(sut.overallNetBalance(), expected[legacyCode])
+        XCTAssertEqual(sut.overallNetBalanceByCurrency(), expected)
         XCTAssertEqual(sut.overallUnknownCurrencyExpenses().map(\.totalAmount), [30, 40])
     }
 

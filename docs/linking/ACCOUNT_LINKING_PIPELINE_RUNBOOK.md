@@ -30,7 +30,10 @@ V3 does not rewrite original payer IDs, involved IDs, split IDs, amounts, settle
 participant names, or ownership. For example, $10 settled under an old ID and $15 unpaid under the
 canonical ID remain two historical rows with $15 outstanding. Readers must include every matching
 raw row. A person is settled only when all their applicable rows are settled. Currency-aware
-readers keep denominations separate and do not combine unknown-currency records into a balance.
+readers keep explicitly recorded denominations separate. Pre-currency records retain their legacy
+locale-based display and balance behavior through a read-only presentation fallback; their raw
+currency remains absent in storage, transport, and backups. This fallback does not prove a
+historical denomination or convert a recorded currency.
 
 The synchronous legacy merge path can physically coalesce uniform settlement rows. It rejects a
 mixed settled/unpaid collision atomically. Changing the settlement flag aggregation cannot repair

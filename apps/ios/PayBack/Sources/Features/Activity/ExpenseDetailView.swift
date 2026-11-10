@@ -139,6 +139,8 @@ struct ExpenseDetailView: View {
                 .multilineTextAlignment(.center)
 
             Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .font(.system(.title, design: .rounded, weight: .bold))
                 .foregroundStyle(AppTheme.brand)
 
@@ -231,6 +233,8 @@ struct ExpenseDetailView: View {
                             .foregroundStyle(.secondary)
                         Spacer()
                         Text(ExpenseMoneyText.format(sub.amount, currencyCode: expense.currencyCode))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                             .font(.system(.body, design: .rounded, weight: .medium))
                     }
                     .padding(.horizontal, 16)

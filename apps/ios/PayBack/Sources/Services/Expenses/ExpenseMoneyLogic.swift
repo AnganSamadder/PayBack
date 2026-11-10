@@ -56,33 +56,60 @@ enum ExpenseMoneyLogic {
     }
 }
 
-/// Formatting never infers a denomination from the device locale.
-enum ExpenseMoneyText {
-    static func format(_ amount: Double, currencyCode: String?) -> String {
-        if let currencyCode {
-            // Preserve visible historical fractional amounts, including values
-            // smaller than a currency's usual minor unit. No conversion occurs.
-            let style = FloatingPointFormatStyle<Double>.Currency(code: currencyCode)
-                .presentation(.isoCode)
-            let standard = amount.formatted(style)
-            if amount == 0 || (currencyCode == "USD" && ExpenseMoneyLogic.cents(amount).map { Double($0) / 100 == amount } == true) {
-                return standard
+/// Read-only balance arithmetic. Decimal addition avoids inventing tiny debts
+/// from ordinary amounts such as 0.10 + 0.20 - 0.30, without rounding historical
+/// sub-cent values or changing any saved split.
+enum ExpenseBalanceMath {
+    static func sum(_ amounts: [Double]) -> Double {
+        var total = Decimal.zero
+        for amount in amounts {
+            guard amount.isFinite, let value = Decimal(string: String(amount), locale: Locale(identifier: "en_US_POSIX")) else {
+                return amounts.reduce(0, +)
             }
-            return amount.formatted(style.precision(.significantDigits(1...15)))
+            total += value
+            // Decimal has a narrower exponent range than Double. Retain the
+            // existing read behavior for values outside that range.
+            if total.isNaN { return amounts.reduce(0, +) }
         }
-        return "\(amount.formatted(.number.precision(.significantDigits(1...15)))) (currency unknown)"
+        let number = NSDecimalNumber(decimal: total)
+        return Double(number.stringValue) ?? number.doubleValue
+    }
+}
+
+/// Raw currency metadata remains unchanged. Records from older PayBack versions
+/// retain their original locale-based presentation; recorded currencies win.
+enum ExpenseMoneyText {
+    static var legacyCurrencyCode: String { Locale.current.currency?.identifier ?? "USD" }
+
+    static func format(_ amount: Double, currencyCode: String?) -> String {
+        let style = FloatingPointFormatStyle<Double>.Currency(code: currencyCode ?? legacyCurrencyCode)
+        let standard = amount.formatted(style)
+        // Ordinary amounts keep the existing symbol and minor-unit formatting.
+        // Preserve fractions that would otherwise round away in historical data.
+        if let renderedAmount = try? style.parseStrategy.parse(standard),
+           abs(renderedAmount - amount) <= max(renderedAmount.ulp, amount.ulp) * 4 {
+            return standard
+        }
+        return amount.formatted(style.precision(.significantDigits(1...15)))
     }
 
     static func summary(_ balances: [String: Double]) -> String {
         balances.keys.sorted().map { format(balances[$0, default: 0], currencyCode: $0) }.joined(separator: " · ")
     }
 
-    static func overview(_ balances: [String: Double], unknownExpenses: [Expense]) -> String {
-        var parts = balances.keys.sorted().map { format(balances[$0, default: 0], currencyCode: $0) }
-        parts += unknownExpenses.sorted { $0.id.uuidString < $1.id.uuidString }.map {
-            "\($0.description) total: \(format($0.totalAmount, currencyCode: nil))"
-        }
-        return parts.isEmpty ? "No recorded balance" : parts.joined(separator: " · ")
+    static func overview(_ balances: [String: Double]) -> String {
+        guard !balances.isEmpty else { return "$0" }
+        if balances.count > 1 && balances.values.allSatisfy({ $0 == 0 }) { return "$0" }
+        guard balances.count == 1, let code = balances.keys.first else { return "Multiple currencies" }
+        let amount = balances[code, default: 0]
+        return amount == 0 && code == "USD" ? "$0" : format(amount, currencyCode: code)
+    }
+
+    /// Selection compatibility follows the same currency buckets as displayed
+    /// balances. This never supplies currency metadata to a mutation or export.
+    static func singleDisplayCurrency(in expenses: [Expense]) -> String? {
+        let codes = Set(expenses.map(\.displayCurrencyCode))
+        return codes.count == 1 ? codes.first : nil
     }
 
     static func singleKnownCurrency(in expenses: [Expense]) -> String? {
@@ -136,7 +163,7 @@ enum ExpensePaymentBreakdown {
         resolveMember: (UUID) -> GroupMember?,
         participantName: (UUID, Expense) -> String
     ) -> [ExpensePaymentRecipient] {
-        guard ExpenseMoneyText.singleKnownCurrency(in: expenses) != nil else { return [] }
+        guard ExpenseMoneyText.singleDisplayCurrency(in: expenses) != nil else { return [] }
         var recipients: [UUID: ExpensePaymentRecipient] = [:]
         for expense in expenses where !isCurrentUser(expense.paidByMemberId, expense) {
             let amount = expense.splits.filter {

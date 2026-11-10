@@ -126,8 +126,13 @@ struct Expense: Identifiable, Codable, Hashable, Sendable {
     var notes: String?
     var ownerEmail: String?
     var ownerAccountId: String?
-    /// Nil means the historical denomination was never recorded.
+    /// Nil means the historical denomination was never recorded. Preserve this
+    /// value in storage and transport; display compatibility is computed below.
     let currencyCode: String?
+    /// Older app versions displayed all amounts in the device's currency without
+    /// saving a denomination. Keep that presentation for those records without
+    /// rewriting their history or converting explicitly recorded currencies.
+    var displayCurrencyCode: String { currencyCode ?? ExpenseMoneyText.legacyCurrencyCode }
     /// Server-derived owner-scoped identity retained with the trusted local snapshot.
     /// Portable imports and mutation DTOs never accept it as authority.
     let financialIdentityMap: [UUID: UUID]?
