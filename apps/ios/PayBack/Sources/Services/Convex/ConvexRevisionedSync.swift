@@ -2,6 +2,7 @@ import Foundation
 
 #if !PAYBACK_CI_NO_CONVEX
 @preconcurrency import ConvexMobile
+#endif
 
 enum ConvexRevisionedSyncError: Error, Equatable {
     case streamEndedWithoutValue
@@ -10,6 +11,7 @@ enum ConvexRevisionedSyncError: Error, Equatable {
     case duplicateGroupID(String)
 }
 
+#if !PAYBACK_CI_NO_CONVEX
 struct ConvexPreparedGroups {
     let groups: [SpendingGroup]
     let documentIDs: [UUID: String]
