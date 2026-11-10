@@ -2462,16 +2462,18 @@ func completeAuthentication(id: String, email: String, name: String?) {
 
     private func balanceContribution(_ expense: Expense) -> Double {
         if isMe(expense.paidByMemberId, in: expense) {
-            return expense.splits.filter { !isMe($0.memberId, in: expense) && !$0.isSettled }.reduce(0) { $0 + $1.amount }
+            return ExpenseBalanceMath.sum(expense.splits.filter { !isMe($0.memberId, in: expense) && !$0.isSettled }.map(\.amount))
         }
-        return -expense.splits.filter { isMe($0.memberId, in: expense) && !$0.isSettled }.reduce(0) { $0 + $1.amount }
+        return -ExpenseBalanceMath.sum(expense.splits.filter { isMe($0.memberId, in: expense) && !$0.isSettled }.map(\.amount))
     }
 
     private func currencyBalances(_ records: [Expense], contribution: (Expense) -> Double) -> [String: Double] {
-        records.reduce(into: [:]) { totals, expense in
-            guard let currency = expense.currencyCode else { return }
-            totals[currency, default: 0] += contribution(expense)
+        let contributions: [String: [Double]] = records.reduce(into: [:]) { totals, expense in
+            totals[expense.displayCurrencyCode, default: []].append(contribution(expense))
         }
+        let totals = contributions.mapValues(ExpenseBalanceMath.sum)
+        let outstanding = totals.filter { $0.value != 0 }
+        return outstanding.isEmpty ? totals : outstanding
     }
 
     func overallNetBalanceByCurrency() -> [String: Double] {
@@ -2483,7 +2485,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     public func overallNetBalance() -> Double {
-        overallNetBalanceByCurrency()["USD", default: 0]
+        overallNetBalanceByCurrency()[ExpenseMoneyText.legacyCurrencyCode, default: 0]
     }
 
     func hasUnsettledBalanceExposure(in groupId: UUID? = nil) -> Bool {
@@ -2586,12 +2588,32 @@ func completeAuthentication(id: String, email: String, name: String?) {
         currencyBalances(expenses(in: group.id), contribution: balanceContribution)
     }
 
+    func netBalanceByCurrency(for member: GroupMember, in group: SpendingGroup) -> [String: Double] {
+        currencyBalances(expenses(in: group.id)) { memberBalanceContribution($0, member: member) }
+    }
+
+    func hasUnsettledBalanceExposure(for member: GroupMember, in group: SpendingGroup) -> Bool {
+        expenses(in: group.id).contains { memberBalanceContribution($0, member: member) != 0 }
+    }
+
+    private func memberBalanceContribution(_ expense: Expense, member: GroupMember) -> Double {
+        func matches(_ id: UUID) -> Bool {
+            if isCurrentUser(member) { return isMe(id, in: expense) }
+            return isFriendMember(id, friendId: member.id,
+                                  accountFriendMemberId: member.accountFriendMemberId, in: expense)
+        }
+        if matches(expense.paidByMemberId) {
+            return ExpenseBalanceMath.sum(expense.splits.filter { !matches($0.memberId) && !$0.isSettled }.map(\.amount))
+        }
+        return -ExpenseBalanceMath.sum(expense.splits.filter { matches($0.memberId) && !$0.isSettled }.map(\.amount))
+    }
+
     func unknownCurrencyExpenses(in group: SpendingGroup) -> [Expense] {
         expenses(in: group.id).filter { $0.currencyCode == nil }
     }
 
     public func netBalance(for group: SpendingGroup) -> Double {
-        netBalanceByCurrency(in: group)["USD", default: 0]
+        netBalanceByCurrency(in: group)[ExpenseMoneyText.legacyCurrencyCode, default: 0]
     }
 
     private func friendBalanceContribution(_ expense: Expense, friend: GroupMember) -> Double {
@@ -2600,16 +2622,20 @@ func completeAuthentication(id: String, email: String, name: String?) {
         }
         guard expense.involvedMemberIds.contains(where: { isMe($0, in: expense) }), expense.involvedMemberIds.contains(where: matches) else { return 0 }
         if isMe(expense.paidByMemberId, in: expense) {
-            return expense.splits.filter { matches($0.memberId) && !$0.isSettled }.reduce(0) { $0 + $1.amount }
+            return ExpenseBalanceMath.sum(expense.splits.filter { matches($0.memberId) && !$0.isSettled }.map(\.amount))
         }
         if matches(expense.paidByMemberId) {
-            return -expense.splits.filter { isMe($0.memberId, in: expense) && !$0.isSettled }.reduce(0) { $0 + $1.amount }
+            return -ExpenseBalanceMath.sum(expense.splits.filter { isMe($0.memberId, in: expense) && !$0.isSettled }.map(\.amount))
         }
         return 0
     }
 
     func balanceByCurrency(forFriend friend: GroupMember) -> [String: Double] {
         currencyBalances(expenses.filter { expenseInvolves(friend: friend, in: $0) }) { friendBalanceContribution($0, friend: friend) }
+    }
+
+    func hasUnsettledBalanceExposure(forFriend friend: GroupMember) -> Bool {
+        expenses.contains { friendBalanceContribution($0, friend: friend) != 0 }
     }
 
     func unknownCurrencyExpenses(forFriend friend: GroupMember) -> [Expense] {
@@ -2620,7 +2646,7 @@ func completeAuthentication(id: String, email: String, name: String?) {
     }
 
     func netBalance(forFriend friend: GroupMember) -> Double {
-        balanceByCurrency(forFriend: friend)["USD", default: 0]
+        balanceByCurrency(forFriend: friend)[ExpenseMoneyText.legacyCurrencyCode, default: 0]
     }
 
     // MARK: - Friend Sync
@@ -4401,23 +4427,19 @@ func completeAuthentication(id: String, email: String, name: String?) {
             isGroupExpense(expense)
         }
 
-        // Calculate total balance for this member
-        var totalBalance: Double = 0.0
-        for expense in memberExpenses where expense.currencyCode == "USD" {
+        // This preview uses the same legacy display bucket as scalar balances.
+        let totalBalance = ExpenseBalanceMath.sum(memberExpenses.filter {
+            $0.displayCurrencyCode == ExpenseMoneyText.legacyCurrencyCode
+        }.map { expense in
             if areSamePerson(expense.paidByMemberId, memberId, in: expense) {
-                // They paid, so others owe them
-                let othersOwe = expense.splits
-                    .filter { !areSamePerson($0.memberId, memberId, in: expense) && !$0.isSettled }
-                    .reduce(0.0) { $0 + $1.amount }
-                totalBalance += othersOwe
-            } else {
-                // They owe someone
-                let unsettledAmount = expense.splits
-                    .filter { areSamePerson($0.memberId, memberId, in: expense) && !$0.isSettled }
-                    .reduce(0.0) { $0 + $1.amount }
-                totalBalance -= unsettledAmount
+                return ExpenseBalanceMath.sum(expense.splits.filter {
+                    !areSamePerson($0.memberId, memberId, in: expense) && !$0.isSettled
+                }.map(\.amount))
             }
-        }
+            return -ExpenseBalanceMath.sum(expense.splits.filter {
+                areSamePerson($0.memberId, memberId, in: expense) && !$0.isSettled
+            }.map(\.amount))
+        })
 
         // Get unique group names
         let groupNames = Array(Set(memberExpenses.compactMap { expenseDisplayContextName($0) })).sorted()

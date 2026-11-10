@@ -350,6 +350,8 @@ struct InviteLinkClaimView: View {
                                 Text(mergeFriendBalanceText(friend))
                                     .font(.caption)
                                     .foregroundStyle(balanceColor(mergeFriendBalance(friend)))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
                             }
                         } else {
                             ZStack {
@@ -800,18 +802,14 @@ struct InviteLinkClaimView: View {
     }
 
     private func mergeFriendBalance(_ friend: AccountFriend) -> Double {
-        store.netBalance(forFriend: GroupMember(
-            id: friend.memberId,
-            name: friend.name,
-            profileImageUrl: friend.profileImageUrl,
-            profileColorHex: friend.profileColorHex,
-            accountFriendMemberId: friend.memberId
-        ))
+        let member = GroupMember(id: friend.memberId, name: friend.name, accountFriendMemberId: friend.memberId)
+        let balances = store.balanceByCurrency(forFriend: member)
+        return balances.count == 1 ? (balances.values.first ?? 0) : 0
     }
 
     private func mergeFriendBalanceText(_ friend: AccountFriend) -> String {
         let member = GroupMember(id: friend.memberId, name: friend.name, accountFriendMemberId: friend.memberId)
-        return ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: member), unknownExpenses: store.unknownCurrencyExpenses(forFriend: member))
+        return ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: member))
     }
 
     private var attachmentConfirmation: String {

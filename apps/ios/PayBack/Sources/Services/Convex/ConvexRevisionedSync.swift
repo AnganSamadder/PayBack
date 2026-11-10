@@ -464,6 +464,7 @@ extension ConvexExpenseDTO {
             isSettled: is_settled,
             contextKind: contextKind,
             participantNames: participantNames,
+            isDebug: is_payback_generated_mock_data ?? false,
             subexpenses: validatedSubexpenses,
             notes: notes,
             ownerEmail: owner_email,

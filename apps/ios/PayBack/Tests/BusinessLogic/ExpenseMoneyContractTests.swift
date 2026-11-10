@@ -45,11 +45,68 @@ final class ExpenseMoneyContractTests: XCTestCase {
         XCTAssertNil(ExpenseMoneyText.singleKnownCurrency(in: [sample(currency: "USD"), sample(currency: "EUR")]))
         XCTAssertEqual(ExpenseMoneyText.singleKnownCurrency(in: [sample(currency: "EUR")]), "EUR")
         XCTAssertTrue(ExpenseMoneyText.format(0.000000001, currencyCode: "USD").contains("000000001"))
-        let text = ExpenseMoneyText.overview(["EUR": 5, "USD": 10], unknownExpenses: [expense])
-        XCTAssertTrue(text.contains("EUR"))
-        XCTAssertTrue(text.contains("USD"))
-        XCTAssertTrue(text.contains("History total:"))
-        XCTAssertTrue(text.contains("currency unknown"))
+        let encodedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(restored)) as? [String: Any])
+        XCTAssertNil(encodedObject["currencyCode"], "Display compatibility must not invent stored currency metadata")
+    }
+
+    func testLegacyAmountsKeepTheEstablishedCurrencyPresentation() {
+        let expense = sample(currency: nil)
+        let legacyCurrency = Locale.current.currency?.identifier ?? "USD"
+        XCTAssertEqual(expense.displayCurrencyCode, legacyCurrency)
+        XCTAssertEqual(ExpenseMoneyText.format(25, currencyCode: nil), 25.0.formatted(.currency(code: legacyCurrency)))
+        XCTAssertNil(expense.currencyCode)
+    }
+
+    func testExplicitCurrencyOverridesTheLegacyDisplayFallback() {
+        XCTAssertEqual(sample(currency: "USD").displayCurrencyCode, "USD")
+        XCTAssertEqual(sample(currency: "EUR").displayCurrencyCode, "EUR")
+        XCTAssertEqual(ExpenseMoneyText.format(12.50, currencyCode: "EUR"), 12.50.formatted(.currency(code: "EUR")))
+    }
+
+    func testLegacySelectionAcceptsTheMatchingDisplayCurrencyButKeepsForeignCurrencySeparate() {
+        let legacy = sample(currency: nil)
+        let currentCurrency = Locale.current.currency?.identifier ?? "USD"
+        let foreignCurrency = currentCurrency == "EUR" ? "USD" : "EUR"
+        XCTAssertEqual(ExpenseMoneyText.singleDisplayCurrency(in: [legacy]), currentCurrency)
+        XCTAssertEqual(ExpenseMoneyText.singleDisplayCurrency(in: [legacy, sample(currency: currentCurrency)]), currentCurrency)
+        XCTAssertNil(ExpenseMoneyText.singleDisplayCurrency(in: [legacy, sample(currency: foreignCurrency)]))
+        XCTAssertNil(ExpenseMoneyText.singleDisplayCurrency(in: []))
+        XCTAssertNil(ExpenseMoneyText.singleKnownCurrency(in: [legacy]))
+        XCTAssertNil(legacy.currencyCode)
+    }
+
+    func testHistoricalFractionsSurviveCurrencySpecificMinorUnitFormatting() throws {
+        for (code, amount) in [("JPY", 0.5), ("TND", 1.234), ("EUR", 0.000000001), ("USD", -0.001)] {
+            let text = ExpenseMoneyText.format(amount, currencyCode: code)
+            let parsed = try FloatingPointFormatStyle<Double>.Currency(code: code).parseStrategy.parse(text)
+            XCTAssertEqual(parsed, amount, "Historical \(code) amount must not be rounded away: \(text)")
+        }
+    }
+
+    func testLegacyPaymentBreakdownUsesUnsettledSharesAndRejectsMixedDisplayCurrencies() {
+        let legacy = sample(currency: nil)
+        let recipients = ExpensePaymentBreakdown.recipients(
+            expenses: [legacy], isCurrentUser: { id, _ in id == self.a },
+            resolveMember: { GroupMember(id: $0, name: "Payer") },
+            participantName: { _, _ in "Payer" }
+        )
+        XCTAssertEqual(recipients.count, 1)
+        XCTAssertEqual(recipients.first?.id, b)
+        XCTAssertEqual(recipients.first?.amount, 15)
+        let foreign = ExpenseMoneyText.legacyCurrencyCode == "EUR" ? "USD" : "EUR"
+        XCTAssertTrue(ExpensePaymentBreakdown.recipients(
+            expenses: [legacy, sample(currency: foreign)], isCurrentUser: { id, _ in id == self.a },
+            resolveMember: { GroupMember(id: $0, name: "Payer") },
+            participantName: { _, _ in "Payer" }
+        ).isEmpty)
+        XCTAssertNil(legacy.currencyCode)
+    }
+
+    func testBalanceOverviewKeepsEmptySingleAndMixedCurrencyLabelsCompact() {
+        XCTAssertEqual(ExpenseMoneyText.overview([:]), "$0")
+        XCTAssertEqual(ExpenseMoneyText.overview(["USD": 25]), 25.0.formatted(.currency(code: "USD")))
+        XCTAssertEqual(ExpenseMoneyText.overview(["EUR": 5, "USD": 10]), "Multiple currencies")
+        XCTAssertEqual(ExpenseMoneyText.overview(["EUR": 0, "USD": 0]), "$0")
     }
 
     func testMixedRowsStayStableAndStatusIncludesEveryRowInEitherOrder() {

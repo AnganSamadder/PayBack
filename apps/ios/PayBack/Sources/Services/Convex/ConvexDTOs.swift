@@ -133,6 +133,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
     let involved_member_ids: [String]
     let splits: [ConvexSplitDTO]
     let is_settled: Bool
+    let is_payback_generated_mock_data: Bool?
     let owner_email: String?
     let owner_account_id: String?
     let participant_member_ids: [String]?
@@ -158,7 +159,8 @@ struct ConvexExpenseDTO: Decodable, Sendable {
         subexpenses: [ConvexSubexpenseDTO]?,
         notes: String? = nil,
         currency_code: String? = nil,
-        financial_identity_map: [String: String]? = nil
+        financial_identity_map: [String: String]? = nil,
+        is_payback_generated_mock_data: Bool? = nil
     ) {
         self.id = id
         self.group_id = group_id
@@ -170,6 +172,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
         self.involved_member_ids = involved_member_ids
         self.splits = splits
         self.is_settled = is_settled
+        self.is_payback_generated_mock_data = is_payback_generated_mock_data
         self.owner_email = owner_email
         self.owner_account_id = owner_account_id
         self.participant_member_ids = participant_member_ids
@@ -210,6 +213,7 @@ struct ConvexExpenseDTO: Decodable, Sendable {
             isSettled: is_settled,
             contextKind: contextKind,
             participantNames: participantNames,
+            isDebug: is_payback_generated_mock_data ?? false,
             subexpenses: subexpenses?.map { $0.toSubexpense() },
             notes: notes,
             ownerEmail: owner_email,

@@ -57,29 +57,38 @@ struct FriendDetailView: View {
     private var preferNicknames: Bool { store.session?.account.preferNicknames ?? false }
     private var preferWholeNames: Bool { store.session?.account.preferWholeNames ?? false }
 
-    private var netBalance: Double {
-        store.netBalance(forFriend: friend)
+    private var balances: [String: Double] {
+        store.balanceByCurrency(forFriend: friend)
     }
 
+    private var netBalance: Double {
+        balances.count == 1 ? (balances.values.first ?? 0) : 0
+    }
+
+    private var hasMultipleCurrencies: Bool { balances.count > 1 }
+
     private var isSettled: Bool {
-        store.balanceByCurrency(forFriend: friend).values.allSatisfy { abs($0) < 0.01 }
-            && store.unknownCurrencyExpenses(forFriend: friend).isEmpty
+        !store.hasUnsettledBalanceExposure(forFriend: friend)
+    }
+
+    private var hasOffsetBalances: Bool {
+        !isSettled && balances.values.allSatisfy { $0 == 0 }
     }
 
     private var balanceOverview: String {
-        ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: friend), unknownExpenses: store.unknownCurrencyExpenses(forFriend: friend))
+        ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: friend))
     }
 
     private var isPositive: Bool {
-        netBalance > 0.01
+        netBalance > 0
     }
 
     private var balanceColor: Color {
         if isSettled {
             return AppTheme.brand
-        } else if netBalance > 0.01 {
+        } else if netBalance > 0 {
             return .green // Friend owes current user
-        } else if netBalance < -0.01 {
+        } else if netBalance < 0 {
             return .red // Current user owes friend
         } else {
             return .secondary // Settled up
@@ -89,6 +98,8 @@ struct FriendDetailView: View {
     private var balanceIcon: String {
         if isSettled {
             return "checkmark.circle.fill"
+        } else if hasOffsetBalances {
+            return "arrow.left.arrow.right.circle.fill"
         } else if isPositive {
             return "arrow.up.circle.fill"
         } else {
@@ -99,6 +110,8 @@ struct FriendDetailView: View {
     private var balanceText: String {
         if isSettled {
             return "All settled"
+        } else if hasOffsetBalances {
+            return "Balances offset"
         } else if isPositive {
             return "You get"
         } else {
@@ -110,7 +123,7 @@ struct FriendDetailView: View {
         if isSettled {
             return "$0"
         } else {
-            return currencyPositive(netBalance)
+            return ExpenseMoneyText.format(abs(netBalance), currencyCode: balances.keys.first)
         }
     }
 
@@ -511,17 +524,6 @@ struct FriendDetailView: View {
 
     // MARK: - Helper Functions
 
-    private func currency(_ amount: Double) -> String {
-        let id = "USD"
-        return amount.formatted(.currency(code: id))
-    }
-
-    private func currencyPositive(_ amount: Double) -> String {
-        let id = "USD"
-        let positiveAmount = abs(amount)
-        return positiveAmount.formatted(.currency(code: id).sign(strategy: .never))
-    }
-
     private func saveNickname(_ nickname: String?, preferNickname: Bool, displayPreference: String? = nil) async {
         isSavingNickname = true
 
@@ -700,7 +702,7 @@ struct FriendDetailView: View {
             }
 
             if !isSettled {
-                message += "\n\nReview the recorded balances before deleting: \(balanceOverview)."
+                message += "\n\nUnsettled balance: \(balanceOverview)."
             }
 
             return Text(message)
@@ -859,14 +861,37 @@ struct FriendDetailView: View {
 
                          // Balance display with gradient background
              VStack(spacing: AppMetrics.FriendDetail.balanceDisplaySpacing) {
-                 Text("Balances by currency")
-                     .font(.system(.body, design: .rounded, weight: .medium))
-                 Text(balanceOverview)
-                     .font(.system(.title3, design: .rounded, weight: .semibold))
-                     .foregroundStyle(.primary)
-                 Text("Positive balances are owed to you; negative balances are owed by you. Records with unknown currency are listed separately.")
-                     .font(.caption)
-                     .foregroundStyle(.secondary)
+                 if isSettled {
+                     Text("All Settled")
+                         .font(.system(.title3, design: .rounded, weight: .semibold))
+                         .foregroundStyle(AppTheme.brand)
+                 } else if hasMultipleCurrencies {
+                     Text("Multiple currencies")
+                         .font(.system(.title3, design: .rounded, weight: .semibold))
+                         .foregroundStyle(.secondary)
+                         .lineLimit(1)
+                         .minimumScaleFactor(0.8)
+                 } else {
+                     HStack(spacing: AppMetrics.FriendDetail.balanceIconSpacing) {
+                         Image(systemName: balanceIcon)
+                             .font(.system(size: AppMetrics.FriendDetail.balanceIconSize, weight: .semibold))
+                             .foregroundStyle(balanceColor)
+
+                         VStack(alignment: .leading, spacing: AppMetrics.FriendDetail.balanceTextSpacing) {
+                             Text(balanceText)
+                                 .font(.system(.body, design: .rounded, weight: .medium))
+                                 .foregroundStyle(.primary)
+
+                             Text(balanceAmount)
+                                 .font(.system(.title, design: .rounded, weight: .bold))
+                                 .foregroundStyle(balanceColor)
+                                 .lineLimit(1)
+                                 .minimumScaleFactor(0.7)
+                         }
+
+                         Spacer()
+                     }
+                 }
              }
              .frame(maxWidth: .infinity)
              .padding(.horizontal, AppMetrics.FriendDetail.balanceHorizontalPadding)
@@ -1211,6 +1236,8 @@ struct DirectExpenseCard: View {
 
                 VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.expenseAmountSpacing) {
                     Text(ExpenseMoneyText.format(primaryAmount, currencyCode: expense.currencyCode))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                         .font(.system(.body, design: .rounded, weight: .semibold))
                         .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
 
@@ -1368,6 +1395,8 @@ struct GroupExpenseRow: View {
 
             VStack(alignment: .trailing, spacing: AppMetrics.FriendDetail.groupExpenseAmountSpacing) {
                 Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .font(.system(.body, design: .rounded, weight: .semibold))
                     .foregroundStyle(isRelevantSplitSettled ? .secondary : .primary)
 

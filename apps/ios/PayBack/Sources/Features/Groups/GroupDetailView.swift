@@ -253,6 +253,8 @@ struct GroupDetailView: View {
             Spacer()
             VStack(alignment: .trailing) {
                 Text(ExpenseMoneyText.format(exp.totalAmount, currencyCode: exp.currencyCode))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .font(.headline)
                     .foregroundStyle(mySettled ? .secondary : .primary)
 
@@ -297,9 +299,9 @@ struct GroupDetailView: View {
         let items = store.expenses(in: groupId)
         var totals: [String: Double] = [:]
         for expense in items {
-            if let code = expense.currencyCode { totals[code, default: 0] += expense.totalAmount }
+            totals[expense.displayCurrencyCode, default: 0] += expense.totalAmount
         }
-        return ExpenseMoneyText.overview(totals, unknownExpenses: items.filter { $0.currencyCode == nil })
+        return ExpenseMoneyText.overview(totals)
     }
 
     private var hasUnsettledExpenses: Bool {
@@ -319,8 +321,32 @@ struct GroupDetailView: View {
         }
     }
 
-    // Membership cards retain raw identities for navigation. Financial identity
-    // can differ between expense owners, so balances belong to scoped summaries.
+    private func balances(for member: GroupMember) -> [String: Double] {
+        guard let group else { return [:] }
+        return store.netBalanceByCurrency(for: member, in: group)
+    }
+
+    private func balanceText(for member: GroupMember) -> String {
+        guard let group else { return "Settled" }
+        let balances = balances(for: member)
+        if !store.hasUnsettledBalanceExposure(for: member, in: group) { return "Settled" }
+        if balances.values.allSatisfy({ $0 == 0 }) { return "Unsettled" }
+        guard balances.count == 1, let code = balances.keys.first,
+              let net = balances[code] else { return "Multiple currencies" }
+        let amount = ExpenseMoneyText.format(abs(net), currencyCode: code)
+        return net > 0 ? "Get \(amount)" : "Owe \(amount)"
+    }
+
+    private func balanceColor(for member: GroupMember) -> Color {
+        let balances = balances(for: member)
+        guard balances.count == 1, let net = balances.values.first else { return .secondary }
+        if net > 0.0001 { return .green }
+        if net < -0.0001 { return .red }
+        return .secondary
+    }
+
+    // Membership cards retain raw identities for navigation; their financial
+    // balances resolve identity separately in each expense owner's scope.
     @ViewBuilder
     private func memberCard(for member: GroupMember) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -331,6 +357,11 @@ struct GroupDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Text(balanceText(for: member))
+                .font(.subheadline)
+                .foregroundStyle(balanceColor(for: member))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
         .padding(12)
         .background(AppTheme.card)
@@ -409,6 +440,8 @@ struct GroupDetailView: View {
                     Text(groupTotalText())
                         .font(.system(.title, design: .rounded, weight: .bold))
                         .foregroundStyle(AppTheme.brand)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
 
                 Spacer()
@@ -680,7 +713,7 @@ private struct SettleConfirmationView: View {
 
                             Text(ExpenseMoneyText.format(
                                 SettlementAmountLogic.totalToSettle(expenses: selectedExpenses, isCurrentUserInExpense: { store.isMe($0, in: $1) }),
-                                currencyCode: ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses)
+                                currencyCode: ExpenseMoneyText.singleDisplayCurrency(in: selectedExpenses)
                             ))
                                 .font(.system(.title2, design: .rounded, weight: .bold))
                                 .foregroundStyle(AppTheme.brand)
@@ -739,7 +772,9 @@ private struct SettleConfirmationView: View {
 
                                         Spacer()
 
-                                        Text(ExpenseMoneyText.format(recipient.amount, currencyCode: ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses)))
+                                        Text(ExpenseMoneyText.format(recipient.amount, currencyCode: ExpenseMoneyText.singleDisplayCurrency(in: selectedExpenses)))
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.8)
                                             .font(.system(.title2, design: .rounded, weight: .bold))
                                             .foregroundStyle(AppTheme.brand)
                                     }
@@ -788,6 +823,8 @@ private struct SettleConfirmationView: View {
                                         Spacer()
 
                                         Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.8)
                                             .font(.system(.headline, design: .rounded, weight: .bold))
                                             .foregroundStyle(AppTheme.brand)
                                     }
@@ -805,6 +842,8 @@ private struct SettleConfirmationView: View {
                                             Spacer()
 
                                             Text(ExpenseMoneyText.format(myUnsettledAmount, currencyCode: expense.currencyCode))
+                                                .lineLimit(1)
+                                                .minimumScaleFactor(0.8)
                                                 .font(.system(.callout, design: .rounded, weight: .medium))
                                                 .foregroundStyle(AppTheme.settlementText)
                                         }
@@ -920,8 +959,8 @@ private struct SettleModal: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     if !selectedExpenseIds.isEmpty {
                         Button("Settle") {
-                            guard ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses) != nil else {
-                                settlementErrorMessage = "Select expenses in one recorded currency. Settle expenses with unknown currency individually from their details."
+                            guard ExpenseMoneyText.singleDisplayCurrency(in: selectedExpenses) != nil else {
+                                settlementErrorMessage = "Select expenses in the same currency to settle together."
                                 return
                             }
                             showConfirmationPage = true
@@ -970,7 +1009,7 @@ private struct SettleModal: View {
     }
 
     var selectedTotal: Double {
-        guard ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses) != nil else { return 0 }
+        guard ExpenseMoneyText.singleDisplayCurrency(in: selectedExpenses) != nil else { return 0 }
         return SettlementAmountLogic.totalToSettle(
             expenses: unsettledExpenses.filter { selectedExpenseIds.contains($0.id) },
             isCurrentUserInExpense: { store.isMe($0, in: $1) }
@@ -996,7 +1035,9 @@ private struct SettleModal: View {
                 .font(.system(.caption, design: .rounded, weight: .medium))
                 .foregroundStyle(.secondary)
 
-            Text(ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses).map { ExpenseMoneyText.format(selectedTotal, currencyCode: $0) } ?? "Select one recorded currency")
+            Text(selectedExpenses.isEmpty
+                 ? ExpenseMoneyText.format(0, currencyCode: nil)
+                 : (ExpenseMoneyText.singleDisplayCurrency(in: selectedExpenses).map { ExpenseMoneyText.format(selectedTotal, currencyCode: $0) } ?? "Select one currency"))
                 .font(.system(.title, design: .rounded, weight: .bold))
                 .foregroundStyle(AppTheme.brand)
         }
@@ -1067,6 +1108,8 @@ private struct SettleModal: View {
                     Spacer()
 
                     Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                         .font(.system(.subheadline, design: .rounded, weight: .semibold))
                         .foregroundStyle(AppTheme.brand)
                 }
@@ -1118,8 +1161,8 @@ private struct SettleModal: View {
     @MainActor
     private func settleSelectedExpenses() async {
         guard !isSettling else { return }
-        guard ExpenseMoneyText.singleKnownCurrency(in: selectedExpenses) != nil else {
-            settlementErrorMessage = "Select one recorded currency, or settle an unknown-currency expense from its details."
+        guard ExpenseMoneyText.singleDisplayCurrency(in: selectedExpenses) != nil else {
+            settlementErrorMessage = "Select expenses in the same currency to settle together."
             showConfirmationPage = false
             return
         }

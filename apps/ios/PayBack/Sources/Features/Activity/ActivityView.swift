@@ -543,6 +543,8 @@ struct DashboardView: View {
                         .font(.system(size: 48, weight: .bold, design: .rounded))
                         .foregroundStyle(balanceColor)
                         .contentTransition(.numericText(value: calculateOverallNetBalance()))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.45)
 
                     Text(balanceDescription)
                         .font(.system(.caption, design: .rounded))
@@ -660,7 +662,15 @@ struct DashboardView: View {
     // MARK: - Helpers
 
     private var balanceText: String {
-        ExpenseMoneyText.overview(store.overallNetBalanceByCurrency(), unknownExpenses: store.overallUnknownCurrencyExpenses())
+        let balances = store.overallNetBalanceByCurrency()
+        let hasUnsettledExposure = store.hasUnsettledBalanceExposure()
+        if balances.count > 1 && hasUnsettledExposure { return "Multiple currencies" }
+        let net = calculateOverallNetBalance()
+        return ActivityBalancePresentation.overallText(
+            net: net,
+            formattedCurrency: ExpenseMoneyText.format(net, currencyCode: balances.keys.first),
+            hasUnsettledExposure: hasUnsettledExposure
+        )
     }
 
     private var balanceColor: Color {
@@ -671,7 +681,13 @@ struct DashboardView: View {
     }
 
     private var balanceDescription: String {
-        "Balances by recorded currency"
+        if store.overallNetBalanceByCurrency().count > 1 && store.hasUnsettledBalanceExposure() {
+            return "View expenses for each currency"
+        }
+        return ActivityBalancePresentation.overallDescription(
+            net: calculateOverallNetBalance(),
+            hasUnsettledExposure: store.hasUnsettledBalanceExposure()
+        )
     }
 
     private var gradientColors: [Color] {
@@ -687,7 +703,7 @@ struct DashboardView: View {
 
     private func calculateOverallNetBalance() -> Double {
         let balances = store.overallNetBalanceByCurrency()
-        guard balances.count == 1, store.overallUnknownCurrencyExpenses().isEmpty else { return 0 }
+        guard balances.count == 1 else { return 0 }
         return balances.values.first ?? 0
     }
 }
@@ -733,6 +749,8 @@ struct CompactGroupCard: View {
                 Text(balanceText(net))
                     .font(.system(.caption, design: .rounded, weight: .medium))
                     .foregroundStyle(balanceColor(net))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
         }
         .padding(16)
@@ -744,12 +762,19 @@ struct CompactGroupCard: View {
 
     private func calculateNetBalance() -> Double {
         let balances = store.netBalanceByCurrency(in: group)
-        guard balances.count == 1, store.unknownCurrencyExpenses(in: group).isEmpty else { return 0 }
+        guard balances.count == 1 else { return 0 }
         return balances.values.first ?? 0
     }
 
     private func balanceText(_ net: Double) -> String {
-        ExpenseMoneyText.overview(store.netBalanceByCurrency(in: group), unknownExpenses: store.unknownCurrencyExpenses(in: group))
+        let balances = store.netBalanceByCurrency(in: group)
+        let hasUnsettledExposure = store.hasUnsettledBalanceExposure(in: group.id)
+        if balances.count > 1 && hasUnsettledExposure { return "Multiple currencies" }
+        return ActivityBalancePresentation.groupText(
+            net: net,
+            formattedAbsoluteCurrency: ExpenseMoneyText.format(abs(net), currencyCode: balances.keys.first),
+            hasUnsettledExposure: hasUnsettledExposure
+        )
     }
 
     private func balanceColor(_ net: Double) -> Color {
@@ -783,6 +808,8 @@ struct ActivityRow: View {
 
             VStack(alignment: .trailing, spacing: 4) {
                 Text(ExpenseMoneyText.format(expense.totalAmount, currencyCode: expense.currencyCode))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .font(.system(.callout, design: .rounded, weight: .semibold))
                     .foregroundStyle(expense.isSettled ? .secondary : .primary)
 

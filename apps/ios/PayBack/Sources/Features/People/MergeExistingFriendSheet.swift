@@ -191,9 +191,11 @@ struct MergeExistingFriendSheet: View {
                 Spacer(minLength: 8)
 
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: row.friend.asGroupMember), unknownExpenses: store.unknownCurrencyExpenses(forFriend: row.friend.asGroupMember)))
+                    Text(ExpenseMoneyText.overview(store.balanceByCurrency(forFriend: row.friend.asGroupMember)))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(balanceColor(for: row.balance))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
 
                     if isSelected {
                         Text("Selected")
@@ -236,7 +238,7 @@ struct MergeExistingFriendSheet: View {
 
     private func displayBalance(for member: GroupMember) -> Double {
         let balances = store.balanceByCurrency(forFriend: member)
-        guard balances.count == 1, store.unknownCurrencyExpenses(forFriend: member).isEmpty else { return 0 }
+        guard balances.count == 1 else { return 0 }
         return balances.values.first ?? 0
     }
 

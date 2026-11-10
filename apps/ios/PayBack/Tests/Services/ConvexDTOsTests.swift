@@ -813,6 +813,49 @@ final class ConvexDTOsTests: XCTestCase {
 
     // MARK: - Decodable Tests
 
+    func testConvexExpenseDTO_DecodablePreservesGeneratedDataFlag() throws {
+        let payload: [String: Any] = [
+            "id": "550e8400-e29b-41d4-a716-446655440001",
+            "group_id": "550e8400-e29b-41d4-a716-446655440002",
+            "description": "Ordinary-looking expense",
+            "date": 1704067200000,
+            "total_amount": 50.0,
+            "paid_by_member_id": "550e8400-e29b-41d4-a716-446655440003",
+            "involved_member_ids": [],
+            "splits": [],
+            "is_settled": false
+        ]
+
+        for generatedFlag in [true, false] {
+            var response = payload
+            response["is_payback_generated_mock_data"] = generatedFlag
+            let data = try JSONSerialization.data(withJSONObject: response)
+            let dto = try JSONDecoder().decode(ConvexExpenseDTO.self, from: data)
+            let expense = dto.toExpense()
+
+            XCTAssertEqual(expense.isDebug, generatedFlag)
+            XCTAssertEqual(expense.description, "Ordinary-looking expense")
+            XCTAssertEqual(expense.totalAmount, 50.0)
+            #if !PAYBACK_CI_NO_CONVEX
+            XCTAssertEqual(try dto.validatedExpense().isDebug, generatedFlag)
+            #endif
+        }
+
+        // Historical unmarked records must remain real expenses, irrespective of their title.
+        for mockDataValue in [nil, NSNull()] as [NSNull?] {
+            var response = payload
+            response["description"] = "Core Smoke Expense"
+            response["is_payback_generated_mock_data"] = mockDataValue
+            let data = try JSONSerialization.data(withJSONObject: response)
+            let dto = try JSONDecoder().decode(ConvexExpenseDTO.self, from: data)
+
+            XCTAssertFalse(dto.toExpense().isDebug)
+            #if !PAYBACK_CI_NO_CONVEX
+            XCTAssertFalse(try dto.validatedExpense().isDebug)
+            #endif
+        }
+    }
+
     func testConvexExpenseDTO_Decodable() throws {
         let json = """
         {
